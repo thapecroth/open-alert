@@ -352,7 +352,9 @@ export class World {
     if (!p || p.eliminated) return "dead";
     const e = this.ents.get(id);
     if (!e || e.o !== slot || !isBuilding(e.k)) return "can't sell that";
-    p.credits += Math.floor(BUILDINGS[e.k].cost * 0.5);
+    // factory2's cost is 0 (it arrives via upgrade) — value it at factory+upgrade
+    const basis = e.k === "factory2" ? BUILDINGS.factory.cost + UPGRADE_COST : BUILDINGS[e.k].cost;
+    p.credits += Math.floor(basis * 0.5);
     this.destroy(e);
     return null;
   }
@@ -363,7 +365,8 @@ export class World {
     const e = this.ents.get(id);
     if (!e || e.o !== slot || !isBuilding(e.k)) return "can't repair that";
     if (e.hp >= e.mhp) return "already at full health";
-    const cost = Math.ceil(BUILDINGS[e.k].cost * 0.25);
+    const basis = e.k === "factory2" ? BUILDINGS.factory.cost + UPGRADE_COST : BUILDINGS[e.k].cost;
+    const cost = Math.ceil(basis * 0.25);
     if (p.credits < cost) return "insufficient funds";
     p.credits -= cost;
     e.hp = e.mhp;
@@ -430,6 +433,26 @@ export class World {
     if (!q || q.unit !== unit) return;
     p.credits += d.cost;
     if (--q.count === 0) delete p.queues[d.trainsAt];
+  }
+
+  // engineer takes over an enemy building once it reaches the footprint edge.
+  // distance is measured to the edge, not the center, or 3x3 buildings
+  // (conyard/factory/techlab) would stay unreachable.
+  private tryCapture(e: Ent, tgt: Ent): boolean {
+    if (e.k !== "engineer" || !isBuilding(tgt.k) || tgt.o === e.o) return false;
+    const bd = BUILDINGS[tgt.k];
+    const edgeDist = Math.hypot(
+      Math.max(0, Math.abs(e.x - tgt.x) - bd.w / 2),
+      Math.max(0, Math.abs(e.y - tgt.y) - bd.h / 2)
+    );
+    if (edgeDist > CAPTURE_RANGE) return false;
+    const prev = tgt.o;
+    tgt.o = e.o;
+    this.recomputePower(prev);
+    this.recomputePower(e.o);
+    this.events.push({ e: "cap", x: tgt.x, y: tgt.y, slot: e.o });
+    this.destroy(e);
+    return true;
   }
 
   private hasBuilding(slot: number, kind: BuildingKind) {
@@ -526,6 +549,13 @@ export class World {
         if (!q) continue;
         q.left -= rate;
         if (q.left <= 0) {
+          // losing the tech prerequisite mid-queue halts production with a refund
+          const ud = UNITS[q.unit];
+          if (ud.requires && !this.hasBuilding(p.slot, ud.requires)) {
+            p.credits += ud.cost * q.count;
+            delete p.queues[cat];
+            continue;
+          }
           const b = this.buildingsOf(p.slot, cat)[0];
           const spawned = b ? this.spawnNearBuilding(p.slot, q.unit, b) : null;
           if (!spawned) {
@@ -552,22 +582,8 @@ export class World {
       if (!tgt || tgt.o === e.o) {
         e.order = null;
       } else if (e.k === "engineer" && isBuilding(tgt.k)) {
-        // engineers don't shoot — they walk in and take the building.
-        // measure to the footprint edge, not the center, or 3x3 buildings
-        // (conyard/factory/techlab) stay unreachable.
-        const bd = BUILDINGS[tgt.k];
-        const edgeDist = Math.hypot(
-          Math.max(0, Math.abs(e.x - tgt.x) - bd.w / 2),
-          Math.max(0, Math.abs(e.y - tgt.y) - bd.h / 2)
-        );
-        if (edgeDist <= CAPTURE_RANGE) {
-          const prev = tgt.o;
-          tgt.o = e.o;
-          this.recomputePower(prev);
-          this.recomputePower(e.o);
-          this.events.push({ e: "cap", x: tgt.x, y: tgt.y, slot: e.o });
-          this.destroy(e);
-        } else {
+        // engineers don't shoot — they walk in and take the building
+        if (!this.tryCapture(e, tgt)) {
           if (e.repath-- <= 0) {
             e.repath = 12;
             this.pathNear(e, tgt);
@@ -590,17 +606,29 @@ export class World {
     } else if (o?.kind === "amove") {
       const enemy = this.nearestEnemy(e, w.range + 2);
       if (enemy) {
-        const d = dist(e.x, e.y, enemy.x, enemy.y);
-        if (d <= w.range) {
-          this.face(e, enemy.x, enemy.y);
-          this.tryFire(e, enemy);
-        } else {
-          if (e.repath-- <= 0) {
-            e.repath = 12;
-            this.pathNear(e, enemy);
-            e.agro = enemy.id;
+        if (e.k === "engineer" && isBuilding(enemy.k)) {
+          // attack-moving engineers capture buildings they reach
+          if (!this.tryCapture(e, enemy)) {
+            if (e.repath-- <= 0) {
+              e.repath = 12;
+              this.pathNear(e, enemy);
+              e.agro = enemy.id;
+            }
+            this.stepAlong(e);
           }
-          this.stepAlong(e);
+        } else {
+          const d = dist(e.x, e.y, enemy.x, enemy.y);
+          if (d <= w.range) {
+            this.face(e, enemy.x, enemy.y);
+            this.tryFire(e, enemy);
+          } else {
+            if (e.repath-- <= 0) {
+              e.repath = 12;
+              this.pathNear(e, enemy);
+              e.agro = enemy.id;
+            }
+            this.stepAlong(e);
+          }
         }
       } else {
         if (e.agro != null) {
@@ -920,11 +948,12 @@ export class World {
           d2 = dx * dx + dy * dy;
         }
         if (d2 > 0.56) continue;
-        if (a.k === "tank" && b.k === "infantry" && a.o !== b.o) {
+        const crushable = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer";
+        if ((a.k === "tank" || a.k === "heavy") && crushable(b.k) && a.o !== b.o) {
           this.destroy(b);
           continue;
         }
-        if (b.k === "tank" && a.k === "infantry" && a.o !== b.o) {
+        if ((b.k === "tank" || b.k === "heavy") && crushable(a.k) && a.o !== b.o) {
           this.destroy(a);
           continue;
         }

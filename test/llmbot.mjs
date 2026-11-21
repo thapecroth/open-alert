@@ -239,13 +239,14 @@ function nextBuild(me, myB) {
 // ---------- LLM ----------
 const SYS = `You are playing an RA2-style RTS on a 64x64 tile map. Reply ONLY with a JSON object of actions.
 Action vocabulary (every key may be null or omitted):
-{"build":"power|refinery|barracks|factory|turret"|null,
+{"build":"power|refinery|barracks|radar|factory|turret|arc|depot|techlab|purifier"|null,
  "place":{"tx":n,"ty":n}|null,
- "train":"infantry|tank|harvester"|null,
+ "train":"infantry|engineer|rocket|tank|arty|heavy|spider|harvester"|null,
+ "upgrade":<your factory ent id>|null,
  "order":{"ids":[int,...],"kind":"move|amove|attack|harvest","x":n,"y":n,"target":id|null},
  "stop":[ids]|null,
  "notes":"short"}
-Rules: conyard is prebuilt. Costs: power 300, refinery 600, barracks 500, factory 1000, turret 500; infantry 100 (needs barracks), tank 700 (needs factory), harvester 1400 (needs factory+refinery). Recommended build order: power, refinery, barracks, factory, extra power when power LOW, turret for defense.
+Rules: conyard is prebuilt. Costs: power 300, refinery 600, barracks 500, radar 700 (needs barracks), factory 1000, turret 500, arc 800 (needs radar), depot 800 (needs factory), techlab 1800 (needs radar+factory), purifier 900 (needs techlab); infantry 100, engineer 500 (captures enemy buildings — attack-order them), rocket 300 (needs radar), tank 700, arty 1100 (needs radar), heavy 1100 + spider 500 (need factory MKII), harvester 1400 (needs factory+refinery). "upgrade" turns a factory into MKII for $1500 once you have a techlab — unlocks heavy/spider. Recommended order: power, refinery, barracks, factory, radar, extra power when power LOW, turret for defense, techlab then upgrade for heavies.
 "build" starts construction; when the obs shows "awaiting" you MUST "place" it: tx,ty is the footprint TOP-LEFT, must be within 2 tiles of your buildings on tiles free of ore and buildings — use hint.place when provided.
 Refinery placement spawns a free harvester; harvesters auto-mine nearby ore (send kind "harvest" to oreNear tiles only to redirect).
 Combat: group your combat units (myUnits.infantry + myUnits.tank ids) and send ONE "amove" order at an enemy building (foeBldgs tl coords, prefer conyard) when you have 6+; use kind "attack" with target=<enemy ent id> to focus-fire. Retreat badly hurt armies home.
@@ -381,6 +382,13 @@ function applyPlan(raw) {
       send({ t: "train", unit: p.train });
       sent.push(`train ${p.train}`);
     } else sent.push(`!bad-train ${JSON.stringify(p.train)}`);
+  }
+  if (p.upgrade != null && num(p.upgrade)) {
+    const e = S.ents.get(p.upgrade);
+    if (e && e.o === S.slot) {
+      send({ t: "upgrade", id: p.upgrade });
+      sent.push(`upgrade ${p.upgrade}`);
+    } else sent.push(`!bad-upgrade ${p.upgrade}`);
   }
   if (p.order != null) {
     const o = p.order;

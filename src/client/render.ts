@@ -70,6 +70,21 @@ export class Renderer {
     for (const [id, t] of this.tracked) {
       const e = map.get(id);
       if (!e) continue;
+      if (t.last.o !== e.o) {
+        // ownership changed (engineer capture) — rebuild the mesh in the new color
+        const scene = this.gs.scene;
+        scene.remove(t.vis.root);
+        const i = this.gs.pickables.indexOf(t.vis.root);
+        if (i >= 0) this.gs.pickables.splice(i, 1);
+        const color = this.slotColors.get(e.o) ?? "#888888";
+        const vis = makeEntVis(e.k, color, scene);
+        vis.root.position.copy(t.vis.root.position);
+        vis.root.rotation.y = t.vis.root.rotation.y;
+        tagEntity(vis.root, e.id);
+        scene.add(vis.root);
+        this.gs.pickables.push(vis.root);
+        t.vis = vis;
+      }
       t.last = e;
       const frac = Math.max(0, e.hp / e.mhp);
       t.vis.barFg.scale.x = Math.max(0.02, frac * t.vis.barFg.userData.w);

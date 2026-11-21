@@ -131,7 +131,8 @@ input.onOrderLabel = (text, x, y) => {
 };
 
 function has(kind: string) {
-  for (const t of renderer.tracked.values()) if (t.last.o === mySlot && t.last.k === kind) return true;
+  for (const t of renderer.tracked.values())
+    if (t.last.o === mySlot && (t.last.k === kind || (kind === "factory" && t.last.k === "factory2"))) return true;
   return false;
 }
 
@@ -191,6 +192,9 @@ net.onMsg = (m: S2C) => {
           hud.toast(who, ev.slot !== mySlot);
         } else if (ev.e === "alert" && ev.slot === mySlot) {
           hud.toast("UNDER ATTACK!");
+          hud.ping(ev.x, ev.y);
+        } else if (ev.e === "cap") {
+          hud.toast(ev.slot === mySlot ? "BUILDING CAPTURED!" : "a building was captured!", ev.slot !== mySlot);
           hud.ping(ev.x, ev.y);
         }
       }
