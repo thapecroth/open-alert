@@ -26,6 +26,7 @@ export class Input {
   private py = -1;
   private ghost: THREE.Mesh | null = null;
   private ghostOk = false;
+  placePending = false; // a place cmd is in flight — wait for the next snap
   private amoveNext = false;
   verb: "sell" | "repair" | null = null; // armed cursor mode for own buildings
   private occCheck: (tx: number, ty: number, w: number, h: number) => boolean;
@@ -300,6 +301,9 @@ export class Input {
   cancelPlacing() {
     this.placingCancelled = true; // user-initiated: don't auto re-enter
     this.exitPlacing();
+    // the server still holds `awaiting` — cancel it for real or the build
+    // queue stays blocked ("construction in progress") forever
+    this.net.send({ t: "buildCancel" });
   }
 
   private moveGhost() {
@@ -322,9 +326,10 @@ export class Input {
   }
 
   private tryPlace() {
-    if (!this.placing || !this.ghost) return;
+    if (!this.placing || !this.ghost || this.placePending) return;
     const { tx, ty } = this.ghost.userData;
     if (!this.ghostOk) return;
+    this.placePending = true;
     this.net.send({ t: "place", tx, ty });
     // stay in placing mode until server confirms (awaiting clears in next snap)
   }
@@ -332,6 +337,9 @@ export class Input {
   // ---------- per-frame ----------
 
   update(dt: number) {
+    // keep the ghost glued to the cursor + validity fresh even when the
+    // pointer is still (camera pan, units wandering into the footprint)
+    if (this.placing) this.moveGhost();
     const spd = dt * 14; // tiles/sec
     let dx = 0,
       dz = 0;

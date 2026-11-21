@@ -63,7 +63,13 @@ function occCheck(tx: number, ty: number, w: number, h: number): boolean {
   for (let y = ty; y < ty + h; y++)
     for (let x = tx; x < tx + w; x++) if (oreCells.has(y * MAP_W + x)) return false;
   for (const t of renderer.tracked.values()) {
-    if (!isBuildingKind(t.last.k)) continue;
+    if (!isBuildingKind(t.last.k)) {
+      // units block placement too — same check the server runs ("units in the way")
+      const ux = Math.floor(t.last.x),
+        uy = Math.floor(t.last.y);
+      if (ux >= tx && ux < tx + w && uy >= ty && uy < ty + h) return false;
+      continue;
+    }
     const d = BUILDINGS[t.last.k];
     const bx = Math.round(t.last.x - d.w / 2),
       by = Math.round(t.last.y - d.h / 2);
@@ -207,6 +213,9 @@ net.onMsg = (m: S2C) => {
         const awaiting = latestState?.awaiting ?? null;
         if (awaiting !== prevAwaiting) input.placingCancelled = false;
         prevAwaiting = awaiting;
+        // server resolved the last place cmd (denied → awaiting still set) —
+        // allow the next click through
+        if (awaiting) input.placePending = false;
         if (awaiting && !input.placing && !input.placingCancelled) input.enterPlacing(awaiting);
         if (!awaiting && input.placing) input.exitPlacing();
       }

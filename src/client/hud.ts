@@ -17,14 +17,24 @@ import { Renderer } from "./render";
 import { EntSnap } from "../shared/protocol";
 
 const TOOLTIPS: Record<string, string> = {
-  power: "Power Plant — +100 power. Your base slows without it.",
-  refinery: "Ore Refinery — unlocks harvesters; first one is free.",
-  barracks: "Barracks — trains rifle infantry.",
-  factory: "War Factory — builds tanks and ore harvesters.",
-  turret: "Sentry Gun — automated base defense. Needs power.",
   conyard: "Construction Yard — the heart of your base.",
-  infantry: "Rifle Infantry — cheap, fast, good vs infantry.",
-  tank: "Light Tank — armored punch. Crushes infantry.",
+  power: "Reactor Plant — +100 power. Your base slows without it.",
+  refinery: "Ore Refinery — unlocks harvesters; deploys one free.",
+  barracks: "Barracks — trains infantry: Riflemen, Sappers, Rocket Troopers.",
+  radar: "Radar Uplink — reveals the minimap; unlocks rockets, siege, arc coils.",
+  factory: "War Factory — builds vehicles. Upgrade it to unlock heavies.",
+  techlab: "Tech Lab — unlocks the Ore Purifier and War Factory upgrades.",
+  turret: "Sentry Turret — automated base defense. Needs power.",
+  arc: "Arc Coil — heavy zap defense in every direction. Needs power + radar.",
+  purifier: "Ore Purifier — +25% on every harvester deposit.",
+  depot: "Service Depot — repairs nearby vehicles automatically.",
+  infantry: "Rifleman — cheap, fast, good vs infantry.",
+  engineer: "Sapper — captures enemy buildings on contact. Unarmed.",
+  rocket: "Rocket Trooper — long-range anti-armor infantry. Needs radar.",
+  tank: "Battle Tank — armored punch. Crushes infantry.",
+  arty: "Siege Launcher — long-range artillery. Fragile. Needs radar.",
+  heavy: "Mastodon Tank — twin-cannon monster. Needs War Factory II.",
+  spider: "Spider Drone — fast melee scout. Needs War Factory II.",
   harvester: "Ore Harvester — collects ore; a full load is worth $1000.",
 };
 
@@ -98,8 +108,8 @@ export class Hud {
       const d = BUILDINGS[kind];
       const b = document.createElement("button");
       b.className = "sbtn";
-      b.title = TOOLTIPS[kind] ?? BUILDING_NAMES[kind];
-      b.innerHTML = `<span class="icon" data-kind="${kind}"></span><span class="sname">${BUILDING_NAMES[kind]}</span><span class="cost">${d.cost}</span><span class="prog"></span>`;
+      b.title = `${TOOLTIPS[kind] ?? BUILDING_NAMES[kind]} · ${d.buildTicks / 10}s to build`;
+      b.innerHTML = `<span class="icon" data-kind="${kind}"></span><span class="sname">${BUILDING_NAMES[kind]}</span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span>`;
       b.addEventListener("click", () => this.clickBuild(kind));
       b.addEventListener("contextmenu", (e) => {
         e.preventDefault();
@@ -112,8 +122,8 @@ export class Hud {
     for (const { unit, label: l } of TRAIN_ORDER) {
       const b = document.createElement("button");
       b.className = "sbtn";
-      b.title = TOOLTIPS[unit] ?? l;
-      b.innerHTML = `<span class="icon" data-kind="${unit}"></span><span class="sname">${l}</span><span class="cost">${UNITS[unit].cost}</span><span class="prog"></span>`;
+      b.title = `${TOOLTIPS[unit] ?? l} · ${UNITS[unit].buildTicks / 10}s to train`;
+      b.innerHTML = `<span class="icon" data-kind="${unit}"></span><span class="sname">${l}</span><span class="cost">$${UNITS[unit].cost}</span><span class="btime">${UNITS[unit].buildTicks / 10}s</span><span class="prog"></span>`;
       b.addEventListener("click", () => this.onTrain(unit));
       b.addEventListener("contextmenu", (e) => {
         e.preventDefault();

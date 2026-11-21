@@ -576,33 +576,38 @@ try {
         );
         await shot("i-05-placed");
 
-        // --- second plant: ESC cancels placement cleanly, button re-arms, right-click refunds
+        // --- second plant: ESC during placement = real cancel (refund + unblock queue)
         const b1 = await buildBtn();
         await click(b1.x, b1.y);
         const awaiting2 = await until(() => window.__oa.state?.awaiting === "power", 18000);
         const placing2 = await until(() => window.__oa.input.placing === "power", 3000);
-        await page.keyboard.press("Escape");
-        await sleep(300);
-        const esc = await gs();
-        const escOk = esc.placing === null && esc.cancelled === true && esc.awaiting === "power";
-        const b2 = await buildBtn();
-        await click(b2.x, b2.y); // ready button → re-enter placement
-        await sleep(250);
-        const reentered = (await ev(() => window.__oa.input.placing)) === "power";
         const cr0 = (await gs()).credits;
         const m2 = await mark();
-        const b3 = await buildBtn();
-        await rightClick(b3.x, b3.y); // contextmenu → buildCancel
+        await page.keyboard.press("Escape");
+        await sleep(400);
+        const esc = await gs();
         const bcSent = (await sentAfter(m2)).some((m) => m.t === "buildCancel");
         const awGone = await until(() => window.__oa.state?.awaiting == null, 4000);
         await sleep(350);
         const cr1 = (await gs()).credits;
         const refundOk = bcSent && awGone && cr1 - cr0 === 300;
-        const exited = await until(() => window.__oa.input.placing === null, 2500);
+        // the queue must accept a fresh build afterwards (the old stuck-forever bug)
+        const b4 = await buildBtn();
+        await click(b4.x, b4.y);
+        const rebuild = await until(
+          () => window.__oa.state?.bq?.kind === "power" || window.__oa.state?.awaiting === "power",
+          8000,
+        );
+        // clean up the fresh build so later checks start from a clear queue
+        const b5 = await buildBtn();
+        if (b5) {
+          await rightClick(b5.x, b5.y); // contextmenu → buildCancel
+          await until(() => window.__oa.state?.awaiting == null && window.__oa.state?.bq == null, 5000);
+        }
         rec(
-          "5b ESC cancel + right-click refund",
-          awaiting2 && placing2 && escOk && reentered && refundOk && exited,
-          `awaiting2=${awaiting2} placing2=${placing2} esc(placing=${esc.placing},cancelled=${esc.cancelled},awaitingKept=${esc.awaiting}) reenterViaReadyBtn=${reentered} refund +${cr1 - cr0}cr (want +300, cancelMsg=${bcSent}) placingExit=${exited}`,
+          "5b ESC cancel = real buildCancel (refund + queue unblocked)",
+          awaiting2 && placing2 && esc.placing === null && refundOk && rebuild,
+          `awaiting2=${awaiting2} placing2=${placing2} esc(placing=${esc.placing},cancelled=${esc.cancelled}) refund +${cr1 - cr0}cr (want +300, cancelMsg=${bcSent}, awGone=${awGone}) rebuild=${rebuild}`,
         );
       }
     } catch (e) {
@@ -847,13 +852,10 @@ try {
           break;
         }
       }
-      // e) units-in-the-way: a client-legal footprint containing a unit tile →
-      //    GREEN ghost (occCheck ignores units) → place is sent → the server
-      //    must deny it. Footprints covering the halted guard are tried first
-      //    (it is stopped; a wandering unit could drift out before the server
-      //    ticks). If the first place vanishes without a deny AND awaiting is
-      //    still held, one retry on another candidate distinguishes a one-off
-      //    transport drop from a systemic failure — both are reported.
+      // e) units-in-the-way: a footprint containing a unit tile must show a
+      //    RED ghost client-side (occCheck parity with the server) and send no
+      //    place cmd on click. Footprints covering the halted guard are tried
+      //    first (it is stopped; a wandering unit could drift out).
       const gpos2 = await ev((id) => {
         const t = id == null ? null : window.__oa.renderer.tracked.get(id);
         return t ? { x: Math.floor(t.last.x), y: Math.floor(t.last.y) } : null;
@@ -865,18 +867,16 @@ try {
       });
       const attempts = [];
       for (const f of dcands) {
-        if (attempts.length >= 2) break;
+        if (attempts.length >= 1) break;
         if (!inSafe({ x: f.sx, y: f.sy }) || !(await onCanvas(f.sx, f.sy))) continue;
         await hover(f.sx, f.sy, 260);
         const g = await ghost();
-        if (g.ok !== true || g.tx !== f.tx || g.ty !== f.ty) continue;
+        if (g.ok !== false || g.tx !== f.tx || g.ty !== f.ty) continue; // want exactly RED here
         const mE = await mark();
         await page.mouse.down();
         await sleep(50);
         await page.mouse.up();
         const sentE = await sentAfter(mE);
-        const placeMsg = sentE.find((m) => m.t === "place");
-        const denyMsg = await until(() => window.__ilog.deny.some((d) => /units in the way/i.test(d)), 4000);
         const st = await gs();
         const inside = await ev((f) => {
           let n = 0;
@@ -884,25 +884,17 @@ try {
             if (!window.__BK.has(t.last.k) && Math.floor(t.last.x) >= f.tx && Math.floor(t.last.x) < f.tx + 2 && Math.floor(t.last.y) >= f.ty && Math.floor(t.last.y) < f.ty + 2) n++;
           return n;
         }, f);
-        const lastDeny = await ev(() => window.__ilog.deny[window.__ilog.deny.length - 1] ?? null);
-        const ws = await ev(() => window.__oa.net.socket?.readyState ?? "?");
         attempts.push({
           fp: `${f.tx},${f.ty}`,
           g,
-          placeMsg: placeMsg ? `${placeMsg.tx},${placeMsg.ty}` : null,
+          placeSent: sentE.some((m) => m.t === "place"),
           sentE: sentE.map((m) => m.t).join("+") || "none",
-          denyMsg,
-          lastDeny,
           awaitingKept: st.awaiting === "power",
           stillPlacing: st.placing === "power",
           inside,
-          phase: st.phase,
-          slot: st.slot,
-          ws,
         });
-        if (denyMsg || st.awaiting !== "power") break; // deny arrived, or the place consumed awaiting
       }
-      const denyE = attempts.length ? attempts[attempts.length - 1] : { noCand: true, dcands: dcands.length };
+      const redE = attempts.length ? attempts[0] : { noCand: true, dcands: dcands.length };
       // f) re-place a legal spot works
       const cands2 = await findSpots();
       let spot2 = null;
@@ -927,17 +919,17 @@ try {
           return n >= 1 && oa.state?.awaiting == null;
         }, 5000);
       }
-      const denyOk = attempts.some((a) => a.denyMsg && a.placeMsg && a.inside >= 1 && a.g.ok === true);
+      const redOk = attempts.some((a) => a.g.ok === false && a.inside >= 1 && !a.placeSent && a.awaitingKept);
       const sub = {
         parked: parkEv,
         farRed: farRed ? `tile(${farRed.tx},${farRed.ty}) red#${farRed.hex} noPlaceSent=${farRed.noPlaceSent}` : "no far-red spot tested",
         oreRed: oreRed ? `ore(${oreRed.x},${oreRed.y}) red#${oreRed.hex} noPlaceSent=${oreRed.noPlaceSent}` : "no ore tile on screen",
-        deny: denyE?.noCand
-          ? `no legal footprint contains a unit (dcands=${denyE.dcands}; ${parkEv})`
+        unitRed: redE?.noCand
+          ? `no legal footprint contains a unit (dcands=${redE.dcands}; ${parkEv})`
           : attempts
               .map(
                 (a, i) =>
-                  `#${i + 1}@(${a.fp}) ghost{ok=${a.g.ok},#${a.g.hex}} inside=${a.inside} place=${a.placeMsg} sent=${a.sentE} deny=${a.denyMsg}(last=${a.lastDeny}) awaitingKept=${a.awaitingKept} placing=${a.stillPlacing} phase=${a.phase} ws=${a.ws}`,
+                  `#${i + 1}@(${a.fp}) ghost{ok=${a.g.ok},#${a.g.hex}} inside=${a.inside} placeSent=${a.placeSent} sent=${a.sentE} awaitingKept=${a.awaitingKept} placing=${a.stillPlacing}`,
               )
               .join(" ") || "skipped",
         replace: `legal re-place → inSnaps=${placed2}`,
@@ -945,11 +937,11 @@ try {
       const ok =
         farRed?.noPlaceSent === true &&
         (oreRed ? oreRed.noPlaceSent : true) &&
-        denyOk &&
-        denyE.awaitingKept &&
-        denyE.stillPlacing &&
+        redOk &&
+        redE.awaitingKept &&
+        redE.stillPlacing &&
         placed2;
-      rec(name, !!ok, `${buildEv} | ${sub.parked} | far: ${sub.farRed} | ore: ${sub.oreRed} | deny: ${sub.deny} | ${sub.replace}`);
+      rec(name, !!ok, `${buildEv} | ${sub.parked} | far: ${sub.farRed} | ore: ${sub.oreRed} | unitRed: ${sub.unitRed} | ${sub.replace}`);
       } else {
         rec(name, false, `build never reached placement — ${buildEv} awaiting=${awaiting} placing=${placing}`);
       }

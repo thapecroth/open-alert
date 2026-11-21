@@ -84,6 +84,7 @@ button.on { background: #1d4356; border-color: var(--acc); }
 .sbtn .icon.has-icon { border-color: #2a4554; }
 .sbtn .sname { flex: 1; font-size: 12.5px; line-height: 1.05; font-weight: 600; }
 .sbtn .cost { color: var(--amber); font-size: 11px; font-weight: 700; }
+.sbtn .btime { color: #6b8291; font-size: 10px; font-weight: 600; min-width: 22px; text-align: right; }
 .sbtn .prog {
   position: absolute; left: 0; top: 0; bottom: 0; z-index: -1;
   background: linear-gradient(90deg, rgba(69,214,255,0.14), rgba(69,214,255,0.3));
