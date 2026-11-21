@@ -38,13 +38,23 @@ Open the printed URL, pick a name, join a room, add a bot or a friend, READY, ST
 | `npm run dev` | local dev (wrangler dev + vite) |
 | `npm run build` | build client to `dist/` + typecheck |
 | `npm run deploy` | deploy worker + static assets to Cloudflare |
+| `npm test` | RL gym suite — obs, schema, feature maps, RGB frames, upgrade, full episode (no server needed) |
+| `npm run test:ws` | all WebSocket suites (needs `npm run dev`) — regress / bugfix / features / techtree / orderfuzz |
+| `npm run test:browser` | real-Chrome interaction + visual suites (needs `npm run dev` + Chrome) |
+| `npm run test:all` | everything above |
 | `node test/regress.mjs` | protocol regression suite |
 | `node test/features.mjs` | feature checks (sell/repair/chat/resign/bots) |
 | `node test/bugfix.mjs` | targeted regression tests for past bugs |
+| `node test/techtree.mjs` | full tech tree: prereqs, capture, upgrade, purifier, depot, arc |
+| `node test/orderfuzz.mjs` | order fuzzing: malformed/off-map/spoofed/stale/conflicting commands |
+| `node test/interact.mjs` | real-Chrome input e2e: click, drag-select, orders, placement ghost, hotkeys |
+| `node test/techvisual.mjs` | real-Chrome visual pass over the whole roster |
 | `node test/visual.mjs` | headless-Chrome gameplay screenshot pass |
+| `node test/spectate.mjs <room> [secs]` | screenshot a live match as spectator (reload-safe) |
 | `node test/bot.mjs <room>` | run a CABAL bot against a room |
 | `node test/llmbot.mjs <room>` | run an LLM-driven player (set `OA_LLM_URL`/`OA_LLM_MODEL`) |
-| `node test/gym*.mjs` | RL environment smoke tests |
+| `node test/gym.mjs` | RL environment assertion suite |
+| `node test/gym-client.mjs` | RL environment scripted demo |
 
 ## Controls
 
