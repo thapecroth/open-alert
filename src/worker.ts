@@ -190,7 +190,10 @@ export class GameRoom extends Server<Env> {
         p.connId = conn.id;
         p.connected = true;
         p.name = clean;
-        if (this.phase === "playing") p.spectator = !this.world?.players.has(p.slot);
+        if (this.phase === "playing") {
+          const wp = this.world?.players.get(p.slot);
+          p.spectator = !wp || wp.eliminated;
+        }
         this.connPlayer.set(conn.id, tok);
         this.sendInit(conn, p);
         this.broadcastLobby();
@@ -263,7 +266,7 @@ export class GameRoom extends Server<Env> {
     send(conn, {
       t: "init",
       you: p.id,
-      slot: p.slot,
+      slot: p.spectator ? -1 : p.slot,
       w: MAP_W,
       h: MAP_H,
       ore: this.world.oreSnapshot(),

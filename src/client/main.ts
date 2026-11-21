@@ -194,8 +194,12 @@ net.onMsg = (m: S2C) => {
             else oreCells.add(y * MAP_W + x);
           }
         } else if (ev.e === "elim") {
-          const who = ev.slot === mySlot ? "you were eliminated!" : `player ${ev.slot} eliminated`;
-          hud.toast(who, ev.slot !== mySlot);
+          const mine = ev.slot === mySlot;
+          if (mine) {
+            mySlot = -1; // defeated — watch the rest of the match with full vision
+            if (input.placing) input.exitPlacing();
+          }
+          hud.toast(mine ? "you were eliminated!" : `player ${ev.slot} eliminated`, !mine);
         } else if (ev.e === "alert" && ev.slot === mySlot) {
           hud.toast("UNDER ATTACK!");
           hud.ping(ev.x, ev.y);
