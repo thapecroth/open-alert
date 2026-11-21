@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Open Alert — browser RTS</title>
+    <meta name="description" content="Open Alert: a real-time multiplayer strategy game in your browser. Harvest ore, build your base, crush your friends." />
+    <meta name="theme-color" content="#0a1118" />
+    <meta property="og:title" content="Open Alert" />
+    <meta property="og:description" content="Real-time strategy, multiplayer, in the browser. Harvest ore, tech up, crush your friends." />
+    <meta property="og:type" content="website" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Rajdhani:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+
+    <div id="topbar" class="hidden">
+      <div class="tb-left">
+        <span id="room-code"></span>
+        <button id="copy-link" title="Copy invite link">COPY LINK</button>
+        <span id="conn-status"></span>
+      </div>
+      <div class="tb-right">
+        <span id="spec-board"></span>
+        <span id="credits">$0</span>
+        <span id="power"></span>
+        <button id="resign-btn" title="Self-destruct your base and leave the game">RESIGN</button>
+        <button id="help-btn" title="Controls & hotkeys">?</button>
+      </div>
+    </div>
+
+    <div id="verbbar" class="hidden">
+      <button id="verb-amove" title="Attack-move (A): fight everything on the way">ATTACK-MOVE <kbd>A</kbd></button>
+      <button id="verb-stop" title="Stop (S): halt selected units">STOP <kbd>S</kbd></button>
+      <button id="verb-sell" title="Sell ($): click your building for a 50% refund">SELL <kbd>$</kbd></button>
+      <button id="verb-repair" title="Repair (R): click your damaged building to fix it">REPAIR <kbd>R</kbd></button>
+    </div>
+
+    <div id="sidebar" class="hidden">
+      <div class="side-title">STRUCTURES</div>
+      <div id="build-list"></div>
+      <div class="side-title">ARMY</div>
+      <div id="train-list"></div>
+    </div>
+
+    <div id="selinfo" class="hidden"></div>
+    <div id="toasts"></div>
+    <canvas id="minimap" width="160" height="160" class="hidden"></canvas>
+    <div id="order-label" class="hidden"></div>
+
+    <div id="chat-box" class="hidden">
+      <div id="chat-lines"></div>
+      <input id="chat-input" maxlength="120" placeholder="press Enter to chat" />
+    </div>
+
+    <div id="help" class="hidden">
+      <div class="panel help-panel">
+        <h2>CONTROLS</h2>
+        <table>
+          <tr><td>Left-click / drag</td><td>select units</td></tr>
+          <tr><td>Right-click</td><td>move · attack target · harvest ore</td></tr>
+          <tr><td><kbd>A</kbd> + right-click</td><td>attack-move (fight en route)</td></tr>
+          <tr><td><kbd>S</kbd></td><td>stop selected units</td></tr>
+          <tr><td><kbd>$</kbd> / <kbd>R</kbd></td><td>sell / repair mode — click your building</td></tr>
+          <tr><td>Right-click sidebar item</td><td>cancel & refund</td></tr>
+          <tr><td>Wheel / edge / arrows / mid-drag</td><td>zoom · pan camera</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>cancel mode</td></tr>
+          <tr><td>Enter</td><td>chat</td></tr>
+        </table>
+        <p class="hint">Harvest ore → build refinery for harvesters → power → barracks → war factory → destroy the enemy.</p>
+        <button id="help-close">CLOSE</button>
+      </div>
+    </div>
+
+    <div id="lobby">
+      <div class="panel lobby-panel">
+        <h1>OPEN ALERT</h1>
+        <p class="sub">a partykit rts — share the link, destroy your friends</p>
+        <div class="room-row">
+          ROOM <span id="lobby-room">----</span>
+          <button id="copy-link2">COPY INVITE LINK</button>
+        </div>
+        <ul id="player-list"></ul>
+        <div class="row">
+          <button id="ready-btn">READY</button>
+          <button id="addbot-btn" class="hidden">+ BOT</button>
+          <button id="start-btn" class="hidden">START GAME</button>
+        </div>
+        <p class="hint" id="lobby-hint">waiting for players…</p>
+      </div>
+    </div>
+
+    <div id="endscreen" class="hidden">
+      <div class="panel">
+        <h1 id="end-text">GAME OVER</h1>
+        <button id="rematch-btn">REMATCH</button>
+        <p class="hint">rematch returns everyone to the lobby</p>
+      </div>
+    </div>
+
+    <div id="placement-hint" class="hidden">Left-click to place · Right-click to cancel</div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
