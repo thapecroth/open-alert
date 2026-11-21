@@ -428,9 +428,9 @@ export function makeEntVis(kind: EntKind, colorHex: string, scene: THREE.Scene):
       add(box(1.8, 0.7, 1.8, HULL), 0, 1.38, -0.15);
       add(box(1.2, 0.45, 1.2, colorHex), -0.2, 1.95, -0.3);
       add(box(1.5, 0.1, 0.05, WIN_GLOW, 1.0), 0, 0.8, 1.21);
-      // glowing core spire
-      add(cyl(0.45, 1.9, CORE_GLOW, 1.0), 0.8, 1.6, 0.8);
-      add(sph(0.5, CORE_GLOW, 1.0), 0.8, 2.65, 0.8);
+      // glowing core spire — intensity kept modest so bloom doesn't blow it out
+      add(cyl(0.45, 1.9, CORE_GLOW, 0.65), 0.8, 1.6, 0.8);
+      add(sph(0.5, CORE_GLOW, 0.7), 0.8, 2.65, 0.8);
       // antenna on the top step
       add(cyl(0.045, 1.2, GUNM), -0.7, 2.3, -0.7);
       add(sph(0.09, colorHex, 1.0), -0.7, 2.92, -0.7);
