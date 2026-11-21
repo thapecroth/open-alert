@@ -305,7 +305,7 @@ export class RtsBot {
     // mid: second refinery once the first economy is humming
     const refs = bc.get("refinery") ?? 0;
     if (this.phase !== "early" && me.credits > 3000 && refs < 2) return "refinery";
-    if (me.credits > 3200 && !has("depot")) return "depot"; // keeps the armor column repaired
+    if (me.credits > 2400 && !has("depot") && has("factory")) return "depot"; // keeps the armor column repaired
     if (me.credits > 3200 && defense < this.turretCap) return pickDef();
     // late: the purifier pays for itself; keep expanding economy/power when flush
     if (this.phase === "late" && has("techlab") && !has("purifier") && me.credits > 2400) return "purifier";
@@ -375,7 +375,10 @@ export class RtsBot {
           else if (f2 && heavies < 4) unit = "heavy";
           else unit = "tank";
         }
-        if (unit && (unit === "harvester" || army < 45) && me.credits >= UNITS[unit].cost + reserve) {
+        // f2 units bypass the army cap — they're the whole point of the upgrade,
+        // and the cap would starve them exactly when a winning bot unlocks them
+        const f2unit = f2 && (unit === "heavy" || unit === "spider");
+        if (unit && (unit === "harvester" || army < 45 || f2unit) && me.credits >= UNITS[unit].cost + reserve) {
           this.trycmd(() => w.cmdTrain(this.slot, unit));
         }
       } else {
@@ -384,7 +387,8 @@ export class RtsBot {
         const u = q.unit;
         const cap = u === "tank" ? tankGoal : u === "arty" ? 2 : u === "heavy" || u === "spider" ? 4 : 0;
         const fielded = u === "arty" ? artys : u === "heavy" ? heavies : u === "spider" ? spiders : 0;
-        if (cap > 0 && fielded + q.count < cap && army < 45 && me.credits >= UNITS[u].cost + reserve) {
+        const f2u = f2 && (u === "heavy" || u === "spider");
+        if (cap > 0 && fielded + q.count < cap && (army < 45 || f2u) && me.credits >= UNITS[u].cost + reserve) {
           this.trycmd(() => w.cmdTrain(this.slot, u));
         }
         // a queued harvester is left to finish rather than cancelled

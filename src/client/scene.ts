@@ -4,6 +4,7 @@ import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { MAP_W, MAP_H } from "../shared/gamedefs";
 
 // Small facade so callers used to the old engine API keep working:
@@ -63,17 +64,17 @@ export class GameScene {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.12;
+    this.renderer.toneMappingExposure = 1.28;
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x04060a);
-    this.scene.fog = new THREE.FogExp2(0x04060a, 0.0062);
+    this.scene.fog = new THREE.FogExp2(0x04060a, 0.005);
 
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.5, 700);
     this.updateCamera();
 
     // lights — cool hemisphere ambient + warm key with shadows
-    const hemi = new THREE.HemisphereLight(0x8fa8cc, 0x141210, 0.85);
+    const hemi = new THREE.HemisphereLight(0x93aecf, 0x1a1815, 1.15);
     this.scene.add(hemi);
     const dir = new THREE.DirectionalLight(0xffe2b8, 1.9);
     dir.position.set(42, 58, 26);
@@ -199,14 +200,27 @@ export class GameScene {
   }
 
   private buildOre() {
-    const geo = new THREE.OctahedronGeometry(0.34, 0);
-    geo.scale(1, 2.1, 1);
+    // a small crystal cluster per cell reads as an ore deposit, not a floating gem
+    const shards: THREE.BufferGeometry[] = [];
+    const mk = (x: number, z: number, s: number, h: number, rot: number) => {
+      const g = new THREE.OctahedronGeometry(s, 0);
+      g.scale(1, h, 1);
+      g.rotateY(rot);
+      g.rotateZ((x * 7) % 0.3 - 0.15);
+      g.translate(x, 0, z);
+      shards.push(g);
+    };
+    mk(0, 0.02, 0.2, 1.9, 0.4);
+    mk(-0.19, 0.1, 0.15, 1.3, 1.9);
+    mk(0.17, 0.14, 0.12, 1.05, 3.6);
+    mk(0.06, -0.16, 0.1, 0.85, 5.1);
+    const geo = mergeGeometries(shards)!;
     const mat = new THREE.MeshStandardMaterial({
-      color: 0x7a4d10,
+      color: 0x8a5a14,
       emissive: 0xff9d1e,
-      emissiveIntensity: 1.35,
-      roughness: 0.25,
-      metalness: 0.1,
+      emissiveIntensity: 0.95,
+      roughness: 0.3,
+      metalness: 0.15,
     });
     const ore = new THREE.InstancedMesh(geo, mat, GameScene.ORE_MAX);
     ore.count = 0;
