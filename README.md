@@ -18,7 +18,7 @@ A real-time, multiplayer, browser-based strategy game — harvest ore, build you
 - **12 buildings, 8 units** — riflemen, rocket troopers, sappers that *capture* enemy buildings, tanks, siege launchers, spider drones, and the twin-barreled Mastodon
 - **Combat** — attack-move orders, formation moves, tank-crushes-infantry, veterancy-free but brutal
 - **CABAL AI opponent** — phase-aware server bot (early/mid/late game) that plays through the same command API as humans
-- **RL gym** (`src/server/gym.ts`) — `GymEnv` with obs/action schema, shaped rewards, scripted or idle opponents
+- **RL gym** (`src/server/gym.ts`) — `GymEnv` with structured obs + **visual obs** (`featureMaps()` 6×64×64 channels, `rgbFrame()` rendered minimap), action schema incl. factory upgrade, shaped rewards, scripted/idle/mirror opponents
 - **LLM player** (`test/llmbot.mjs`) — plug any OpenAI-compatible model endpoint in to play against you
 - **3D renderer** — Three.js with ACES tone mapping, bloom, shadows, HDR environment, PBR terrain, and generated art
 
