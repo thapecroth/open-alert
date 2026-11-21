@@ -5,11 +5,13 @@
 // is owned by another agent) and must NOT be imported here.
 //
 //   const env = new GymEnv({ opponent: "scripted", maxTicks: 6000 });
-//   let obs = env.reset();
+//   let obs = env.reset();                                    // structured state
 //   const { obs, reward, done, info } = env.step({ build: "power" }, 10);
+//   const planes = env.featureMaps();                         // 6x64x64 channels
+//   const pixels = env.rgbFrame(3);                           // 192x192x3 RGB image
 
 import { World } from "./world";
-import { MAP_W, MAP_H, BUILDINGS, UNITS } from "../shared/gamedefs";
+import { MAP_W, MAP_H, BUILDINGS, UNITS, ORE_CELL_MAX, PLAYER_COLORS } from "../shared/gamedefs";
 import type { BuildingKind, UnitKind, EntKind } from "../shared/gamedefs";
 import type { OrderKind, PlayerState } from "../shared/protocol";
 
@@ -317,6 +319,100 @@ export class GymEnv {
       ents,
       ore: this.w.oreSnapshot(),
     };
+  }
+
+  // ---------- visual observations (for pixel/state-hybrid agents) ----------
+
+  /**
+   * pysc2-style feature planes, 6 channels of MAP_W*MAP_H each:
+   *   [0] ore density 0..1   [1] own units (hp frac)   [2] own buildings (1)
+   *   [3] foe units (hp frac)[4] foe buildings (1)     [5] all-ent hp frac
+   */
+  featureMaps(): { w: number; h: number; c: number; data: Float32Array } {
+    const S = MAP_W * MAP_H;
+    const out = new Float32Array(6 * S);
+    for (const [x, y, amt] of this.w.oreSnapshot()) out[y * MAP_W + x] = Math.min(1, amt / ORE_CELL_MAX);
+    for (const e of this.w.ents.values()) {
+      const mine = e.o === this.slot;
+      const frac = Math.max(0, Math.min(1, e.hp / e.mhp));
+      if (isB(e.k)) {
+        const d = BUILDINGS[e.k];
+        const ch = mine ? 2 : 4;
+        const x0 = Math.round(e.x - d.w / 2), y0 = Math.round(e.y - d.h / 2);
+        for (let dy = 0; dy < d.h; dy++)
+          for (let dx = 0; dx < d.w; dx++) {
+            const x = x0 + dx, y = y0 + dy;
+            if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H) out[ch * S + y * MAP_W + x] = 1;
+          }
+      } else {
+        const ch = mine ? 1 : 3;
+        const x = Math.round(e.x), y = Math.round(e.y);
+        if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H)
+          out[ch * S + y * MAP_W + x] = Math.max(out[ch * S + y * MAP_W + x], frac);
+      }
+      const x = Math.round(e.x), y = Math.round(e.y);
+      if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H)
+        out[5 * S + y * MAP_W + x] = Math.max(out[5 * S + y * MAP_W + x], frac);
+    }
+    return { w: MAP_W, h: MAP_H, c: 6, data: out };
+  }
+
+  /**
+   * Minimap-style RGB rasterization of the world — Uint8Array of w*h*3 bytes,
+   * `scale` pixels per tile (default 3 => 192x192). Terrain is dark noise,
+   * ore is amber by density, ents are slot-colored (dim = low hp).
+   */
+  rgbFrame(scale = 3): { w: number; h: number; data: Uint8Array } {
+    const W = MAP_W * scale, H = MAP_H * scale;
+    const img = new Uint8Array(W * H * 3);
+    const put = (px: number, py: number, r: number, g: number, b: number) => {
+      const i = (py * W + px) * 3;
+      img[i] = r; img[i + 1] = g; img[i + 2] = b;
+    };
+    // terrain: dark slate with a deterministic per-tile hash for texture
+    for (let y = 0; y < MAP_H; y++)
+      for (let x = 0; x < MAP_W; x++) {
+        const v = 12 + (((x * 73856093) ^ (y * 19349663)) >>> 0) % 10;
+        for (let dy = 0; dy < scale; dy++) for (let dx = 0; dx < scale; dx++) put(x * scale + dx, y * scale + dy, v, v + 3, v + 2);
+      }
+    // ore: amber, brightness by density
+    for (const [x, y, amt] of this.w.oreSnapshot()) {
+      const f = 0.45 + 0.55 * Math.min(1, amt / ORE_CELL_MAX);
+      for (let dy = 0; dy < scale; dy++)
+        for (let dx = 0; dx < scale; dx++) put(x * scale + dx, y * scale + dy, Math.round(255 * f), Math.round(170 * f), Math.round(50 * f));
+    }
+    const slotRgb = (o: number): [number, number, number] => {
+      if (o < 0 || o >= PLAYER_COLORS.length) return [140, 140, 140];
+      const h = PLAYER_COLORS[o];
+      return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+    };
+    // buildings: dimmed slot color across the footprint
+    for (const e of this.w.ents.values()) {
+      if (!isB(e.k)) continue;
+      const [r, g, b] = slotRgb(e.o);
+      const f = 0.35 + 0.35 * Math.max(0, Math.min(1, e.hp / e.mhp));
+      const d = BUILDINGS[e.k];
+      const x0 = Math.round(e.x - d.w / 2), y0 = Math.round(e.y - d.h / 2);
+      for (let dy = 0; dy < d.h; dy++)
+        for (let dx = 0; dx < d.w; dx++) {
+          const x = x0 + dx, y = y0 + dy;
+          if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) continue;
+          for (let py = 0; py < scale; py++)
+            for (let px = 0; px < scale; px++) put(x * scale + px, y * scale + py, Math.round(r * f), Math.round(g * f), Math.round(b * f));
+        }
+    }
+    // units: bright slot color square at position
+    for (const e of this.w.ents.values()) {
+      if (isB(e.k)) continue;
+      const x = Math.round(e.x), y = Math.round(e.y);
+      if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) continue;
+      const [r, g, b] = slotRgb(e.o);
+      const f = 0.55 + 0.45 * Math.max(0, Math.min(1, e.hp / e.mhp));
+      const inset = scale >= 3 ? 1 : 0;
+      for (let py = inset; py < scale - inset + 1; py++)
+        for (let px = inset; px < scale - inset + 1; px++) put(x * scale + px, y * scale + py, Math.round(r * f), Math.round(g * f), Math.round(b * f));
+    }
+    return { w: W, h: H, data: img };
   }
 
   private idsOf(slot: number): Set<number> {

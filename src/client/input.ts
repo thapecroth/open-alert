@@ -65,6 +65,12 @@ export class Input {
     }, { passive: false });
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
     window.addEventListener("keydown", (e) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") {
+        // typing in chat must not drive the game
+        if (e.code === "Escape") (e.target as HTMLElement).blur();
+        return;
+      }
       this.keys.add(e.code);
       if (e.code === "KeyA") this.amoveNext = true;
       if (e.code === "KeyS") this.stopSelected();

@@ -271,10 +271,17 @@ export class World {
       if (!e || e.o !== slot || isBuilding(e.k)) continue;
       // unarmed units can't take attack orders (a harvester told to attack would just chase forever)
       if ((kind === "attack" || kind === "amove") && weaponOf(e).dmg <= 0 && e.k !== "engineer") continue;
-      if (kind === "harvest" && e.k !== "harvester") continue;
       // spread group destinations on a small grid so units don't fight for one tile
       const ox = kind === "attack" || kind === "harvest" ? 0 : ((i % 3) - 1) * 1.15;
       const oy = kind === "attack" || kind === "harvest" ? 0 : (((i / 3) | 0) % 3 - 1) * 1.15;
+      if (kind === "harvest" && e.k !== "harvester") {
+        // escorting units in a mixed group follow along as a plain move
+        e.order = { kind: "move", x: x + ox, y: y + oy };
+        e.path = null;
+        e.repath = 0;
+        n++;
+        continue;
+      }
       if (kind === "attack") {
         const tgt = Number.isFinite(target) ? this.ents.get(target as number) : null;
         if (!tgt || tgt.o === slot) continue;

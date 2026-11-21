@@ -2,16 +2,33 @@
 // upgrade flow, and the radar-gated minimap — all in real Chrome.
 // Uses a second headless page as a passive 2nd player (no bot => no attacks).
 import puppeteer from "puppeteer-core";
-import { mkdirSync } from "fs";
+import { mkdirSync, writeFileSync } from "fs";
 
 const HTTP = process.env.OA_HTTP || "http://localhost:8787";
 const ROOM = "tq" + Date.now().toString(36);
 mkdirSync("test/shots", { recursive: true });
 const shot = (p, n) => p.screenshot({ path: `test/shots/${n}.png` });
-const shotEl = async (p, sel, n) => {
-  const el = await p.$(sel);
-  if (!el) return console.log("MISSING ELEMENT", sel);
-  await el.screenshot({ path: `test/shots/${n}.png` });
+// ElementHandle.screenshot's captureBeyondViewport path deadlocks under
+// SwiftShader load — clip a normal page.screenshot to the element box instead.
+const clipShot = async (p, sel, n) => {
+  const r = await p.evaluate((s) => {
+    const e = document.querySelector(s);
+    if (!e) return null;
+    const b = e.getBoundingClientRect();
+    return { x: b.left, y: b.top, width: b.width, height: b.height };
+  }, sel);
+  if (!r) return log("MISSING ELEMENT", sel);
+  r.x = Math.max(0, r.x);
+  r.y = Math.max(0, r.y);
+  r.width = Math.max(1, Math.min(r.width, 1360 - r.x));
+  r.height = Math.max(1, Math.min(r.height, 820 - r.y));
+  await p.screenshot({ path: `test/shots/${n}.png`, clip: r });
+};
+// read a canvas element directly — no compositor capture needed
+const grabCanvas = async (p, sel, n) => {
+  const data = await p.evaluate((s) => document.querySelector(s)?.toDataURL("image/png") ?? null, sel);
+  if (!data) return log("MISSING CANVAS", sel);
+  writeFileSync(`test/shots/${n}.png`, Buffer.from(data.split(",")[1], "base64"));
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const t0 = Date.now();
@@ -25,7 +42,20 @@ const browser = await puppeteer.launch({
   args: ["--no-sandbox", "--enable-unsafe-swiftshader", "--window-size=1360,820"],
   defaultViewport: { width: 1360, height: 820 },
 });
+// SwiftShader renders every rAF frame on CPU in the GPU process — an
+// unthrottled loop saturates it and CDP screenshots/evaluates starve.
+// Cap frame rate in-page so the pipeline drains between frames.
+const throttleRAF = () => {
+  const orig = window.requestAnimationFrame.bind(window);
+  let last = 0;
+  window.requestAnimationFrame = (cb) => {
+    const wrapped = (t) => (t - last < 350 ? orig(wrapped) : ((last = t), cb(t)));
+    return orig(wrapped);
+  };
+};
+
 const page = await browser.newPage();
+await page.evaluateOnNewDocument(throttleRAF);
 page.on("pageerror", (e) => log("PAGE ERROR:", e.message));
 page.on("error", (e) => log("PAGE CRASH:", e.message));
 page.on("console", (m) => {
@@ -38,6 +68,7 @@ await sleep(3000);
 // tiny viewport => its SwiftShader render loop stays cheap and doesn't starve page 1.
 const page2 = await browser.newPage();
 await page2.setViewport({ width: 240, height: 160 });
+await page2.evaluateOnNewDocument(throttleRAF);
 await page2.evaluateOnNewDocument(() => localStorage.setItem("oa-token", "qa-bystander-" + Math.random().toString(36).slice(2, 10)));
 await page2.goto(`${HTTP}/?room=${ROOM}&name=Bystander`, { waitUntil: "domcontentloaded" });
 await sleep(2000);
@@ -86,9 +117,9 @@ report.icons = await page.evaluate(async () => {
 const iconCount = report.icons.filter((i) => i.has).length;
 log(`ICONS: ${iconCount}/${report.icons.length} have rendered thumbnails`);
 for (const i of report.icons) if (!i.has || i.frac === null || i.frac < 0.02) log("  ICON PROBLEM:", JSON.stringify(i));
-await shotEl(page, "#sidebar", "tech-03-sidebar");
+await clipShot(page, "#sidebar", "tech-03-sidebar");
 log("sidebar shot done");
-await shotEl(page, "#minimap", "tech-04-minimap-noradar");
+await grabCanvas(page, "#minimap", "tech-04-minimap-noradar");
 log("minimap shot done");
 
 // ---------- in-page QA helpers ----------
@@ -240,7 +271,7 @@ await page.evaluate(() => {
 });
 await sleep(600);
 await shot(page, "tech-06-radar");
-await shotEl(page, "#minimap", "tech-07-minimap-live");
+await grabCanvas(page, "#minimap", "tech-07-minimap-live");
 report.minimapGate = await page.evaluate(() => {
   // verify the canvas now draws map content instead of the text gate
   const c = document.getElementById("minimap");
