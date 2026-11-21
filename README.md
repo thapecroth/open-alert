@@ -4,6 +4,8 @@ A real-time, multiplayer, browser-based strategy game — harvest ore, build you
 
 **Play it live:** https://open-alert.thapecroth.workers.dev — share the link, join the same room, hit start.
 
+![a three-way CABAL war — tank columns, beam fire, base under siege](docs/img/gameplay.gif)
+
 ![lobby](docs/screenshots/lobby.png)
 ![gameplay](docs/screenshots/gameplay.png)
 ![battle](docs/screenshots/battle.png)
