@@ -53,6 +53,7 @@ export interface GymAction {
   cancelTrain?: string | null;
   order?: { ids: number[]; kind: string; x: number; y: number; target?: number } | null;
   stop?: number[] | null;
+  upgrade?: number | null;
 }
 
 export interface GymStepResult {
@@ -162,6 +163,10 @@ export class GymEnv {
             anyOf: [{ type: "array", items: { type: "integer" } }, { type: "null" }],
             description: "clear orders on these own unit ids",
           },
+          upgrade: {
+            anyOf: [{ type: "integer" }, { type: "null" }],
+            description: "upgrade your war factory ent id to MKII (needs techlab + $1500) — unlocks heavy/spider",
+          },
         },
       },
     };
@@ -215,6 +220,10 @@ export class GymEnv {
         if (e) denied.push(`order: ${e}`);
       }
       if (a.stop != null) this.w.cmdStop(this.slot, this.ownUnitIds(a.stop));
+      if (a.upgrade != null) {
+        const e = this.w.cmdUpgrade(this.slot, a.upgrade);
+        if (e) denied.push(`upgrade: ${e}`);
+      }
       if (this.opponent === "mirror") this.mirrorAction(a);
     }
     if (denied.length) info.denied = denied;
@@ -335,6 +344,7 @@ export class GymEnv {
       if (o.target != null && !num(o.target)) return { ok: false, reason: "bad order target" };
     }
     if (a.stop != null && !Array.isArray(a.stop)) return { ok: false, reason: "bad stop ids" };
+    if (a.upgrade != null && !num(a.upgrade)) return { ok: false, reason: "bad upgrade id" };
     return { ok: true };
   }
 

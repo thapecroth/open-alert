@@ -165,6 +165,11 @@ button.on { background: #1d4356; border-color: var(--acc); }
   letter-spacing: 8px; font-size: 30px; margin-bottom: 4px;
   text-shadow: 0 0 24px rgba(69, 214, 255, 0.5);
 }
+.title-row { display: flex; align-items: center; justify-content: center; gap: 12px; }
+.emblem {
+  width: 42px; height: 42px; border-radius: 9px;
+  filter: drop-shadow(0 0 10px rgba(69, 214, 255, 0.45));
+}
 .panel h2 { font-family: "Orbitron", monospace; color: var(--acc); letter-spacing: 4px; font-size: 17px; margin-bottom: 14px; }
 .panel .sub { color: var(--muted); font-size: 12px; margin-bottom: 20px; letter-spacing: 1px; }
 .room-row { margin-bottom: 16px; font-size: 14px; color: var(--acc); letter-spacing: 3px; font-weight: 700; }
