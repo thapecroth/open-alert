@@ -30,6 +30,7 @@ export async function generateIcons(
   const cam = new THREE.PerspectiveCamera(38, 1, 0.1, 60);
   const viewDir = new THREE.Vector3(3.1, 2.9, 3.9).normalize();
   const bbox = new THREE.Box3();
+  const part = new THREE.Box3();
   const sphere = new THREE.Sphere();
 
   const rt = new THREE.WebGLRenderTarget(ICON_SIZE, ICON_SIZE, {
@@ -47,8 +48,18 @@ export async function generateIcons(
     vis.ring.visible = false;
     scene.add(vis.root);
     try {
-      // fit the icon camera to the model so small units fill the frame too
-      bbox.setFromObject(vis.root);
+      // fit the icon camera to the model so small units fill the frame too;
+      // exclude isBar-tagged helpers (ring + hp bars) — they inflate the bbox
+      vis.root.updateMatrixWorld(true);
+      bbox.makeEmpty();
+      vis.root.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh && !o.userData.isBar) {
+          m.geometry.computeBoundingBox();
+          part.copy(m.geometry.boundingBox!).applyMatrix4(o.matrixWorld);
+          bbox.union(part);
+        }
+      });
       bbox.getBoundingSphere(sphere);
       const dist = (sphere.radius * 1.55) / Math.tan((cam.fov * Math.PI) / 360);
       cam.position.copy(sphere.center).addScaledVector(viewDir, dist);
