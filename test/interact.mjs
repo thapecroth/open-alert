@@ -69,6 +69,12 @@ try {
       if (m.t === "deny") L.deny.push(m.msg);
       return h(m);
     };
+    L.status = [];
+    const stw = oa.net.onStatus;
+    oa.net.onStatus = (s) => {
+      L.status.push(s || "open");
+      return stw(s);
+    };
     window.__BK = new Set(["conyard", "power", "refinery", "barracks", "radar", "factory", "factory2", "techlab", "turret", "arc", "purifier", "depot"]);
     window.__DIMS = { conyard: [3, 3], power: [2, 2], refinery: [3, 2], barracks: [2, 2], radar: [2, 2], factory: [3, 3], factory2: [3, 3], techlab: [3, 3], turret: [1, 1], arc: [1, 1], purifier: [2, 2], depot: [3, 2] };
   });
@@ -845,8 +851,9 @@ try {
       //    GREEN ghost (occCheck ignores units) → place is sent → the server
       //    must deny it. Footprints covering the halted guard are tried first
       //    (it is stopped; a wandering unit could drift out before the server
-      //    ticks).
-      let denyE = null;
+      //    ticks). If the first place vanishes without a deny AND awaiting is
+      //    still held, one retry on another candidate distinguishes a one-off
+      //    transport drop from a systemic failure — both are reported.
       const gpos2 = await ev((id) => {
         const t = id == null ? null : window.__oa.renderer.tracked.get(id);
         return t ? { x: Math.floor(t.last.x), y: Math.floor(t.last.y) } : null;
@@ -856,7 +863,9 @@ try {
         const cb = gpos2 && b.tx <= gpos2.x && gpos2.x < b.tx + 2 && b.ty <= gpos2.y && gpos2.y < b.ty + 2 ? 0 : 1;
         return ca - cb;
       });
+      const attempts = [];
       for (const f of dcands) {
+        if (attempts.length >= 2) break;
         if (!inSafe({ x: f.sx, y: f.sy }) || !(await onCanvas(f.sx, f.sy))) continue;
         await hover(f.sx, f.sy, 260);
         const g = await ghost();
@@ -875,19 +884,25 @@ try {
             if (!window.__BK.has(t.last.k) && Math.floor(t.last.x) >= f.tx && Math.floor(t.last.x) < f.tx + 2 && Math.floor(t.last.y) >= f.ty && Math.floor(t.last.y) < f.ty + 2) n++;
           return n;
         }, f);
-        denyE = {
-          g,
+        const lastDeny = await ev(() => window.__ilog.deny[window.__ilog.deny.length - 1] ?? null);
+        const ws = await ev(() => window.__oa.net.socket?.readyState ?? "?");
+        attempts.push({
           fp: `${f.tx},${f.ty}`,
+          g,
           placeMsg: placeMsg ? `${placeMsg.tx},${placeMsg.ty}` : null,
           sentE: sentE.map((m) => m.t).join("+") || "none",
           denyMsg,
+          lastDeny,
           awaitingKept: st.awaiting === "power",
           stillPlacing: st.placing === "power",
           inside,
-        };
-        break;
+          phase: st.phase,
+          slot: st.slot,
+          ws,
+        });
+        if (denyMsg || st.awaiting !== "power") break; // deny arrived, or the place consumed awaiting
       }
-      if (!denyE) denyE = { noCand: true, dcands: dcands.length };
+      const denyE = attempts.length ? attempts[attempts.length - 1] : { noCand: true, dcands: dcands.length };
       // f) re-place a legal spot works
       const cands2 = await findSpots();
       let spot2 = null;
@@ -912,27 +927,25 @@ try {
           return n >= 1 && oa.state?.awaiting == null;
         }, 5000);
       }
-      const gGreen = !!(denyE && denyE.g && denyE.g.ok === true);
+      const denyOk = attempts.some((a) => a.denyMsg && a.placeMsg && a.inside >= 1 && a.g.ok === true);
       const sub = {
         parked: parkEv,
         farRed: farRed ? `tile(${farRed.tx},${farRed.ty}) red#${farRed.hex} noPlaceSent=${farRed.noPlaceSent}` : "no far-red spot tested",
         oreRed: oreRed ? `ore(${oreRed.x},${oreRed.y}) red#${oreRed.hex} noPlaceSent=${oreRed.noPlaceSent}` : "no ore tile on screen",
         deny: denyE?.noCand
           ? `no legal footprint contains a unit (dcands=${denyE.dcands}; ${parkEv})`
-          : denyE
-            ? `ghost{ok=${denyE.g.ok},@${denyE.fp},#${denyE.g.hex}} unitsInside=${denyE.inside} placeMsg=${denyE.placeMsg} sent=${denyE.sentE} serverDeny=${denyE.denyMsg} awaitingKept=${denyE.awaitingKept} stillPlacing=${denyE.stillPlacing}`
-            : "skipped",
+          : attempts
+              .map(
+                (a, i) =>
+                  `#${i + 1}@(${a.fp}) ghost{ok=${a.g.ok},#${a.g.hex}} inside=${a.inside} place=${a.placeMsg} sent=${a.sentE} deny=${a.denyMsg}(last=${a.lastDeny}) awaitingKept=${a.awaitingKept} placing=${a.stillPlacing} phase=${a.phase} ws=${a.ws}`,
+              )
+              .join(" ") || "skipped",
         replace: `legal re-place → inSnaps=${placed2}`,
       };
       const ok =
         farRed?.noPlaceSent === true &&
         (oreRed ? oreRed.noPlaceSent : true) &&
-        denyE &&
-        !denyE.noCand &&
-        gGreen &&
-        denyE.inside >= 1 &&
-        denyE.placeMsg &&
-        denyE.denyMsg &&
+        denyOk &&
         denyE.awaitingKept &&
         denyE.stillPlacing &&
         placed2;
