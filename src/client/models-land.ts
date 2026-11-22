@@ -1,0 +1,2112 @@
+import * as THREE from "three";
+import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
+import type { EntKind } from "./util";
+import type { AnimRig } from "./models";
+import {
+  getChassisMat,
+  getAccentMat,
+  getGlassMat,
+  getGlowMat,
+  getConcreteMat,
+  getTreadMat,
+  getContactShadowTex,
+} from "./textures";
+
+export interface BuiltModel {
+  topY: number;
+  turret: THREE.Group | null;
+  rig: Partial<AnimRig>;
+  powerGlow?: THREE.Mesh[];
+}
+
+// ---------- Shared 75/25 Military Palette Constants ----------
+const CERAMIC = "#46515d"; // primary weathered ceramic-steel armor
+const CERAMIC_LT = "#5e6b78"; // lighter machined titanium / steel trim
+const CERAMIC_DK = "#343d47"; // darker structural armor plate
+const GUNMETAL = "#242b33"; // deep gunmetal barrels, frames, dark housings
+const GRAPHITE = "#181d23"; // rubber tires, deep joints, recessed vents
+const HAZARD = "#cc9624"; // industrial safety yellow-gold (cranes, engineer, scoops)
+const COPPER = "#b97744"; // copper-chrome induction coils & manifolds
+const GOLD_TRIM = "#d4a432"; // MKII heavy command trim
+
+const CYAN_GLOW = "#48d8ff";
+const AMBER_GLOW = "#ffaa2c";
+const HEAT_GLOW = "#ff6c2c";
+const WHITE_GLOW = "#d8f4ff";
+const HEAL_GLOW = "#3ce080";
+
+// ---------- Shared Sculpted & Beveled Geometries ----------
+const geoRBox = new RoundedBoxGeometry(1, 1, 1, 2, 0.085);
+const geoRBoxSharp = new RoundedBoxGeometry(1, 1, 1, 2, 0.045);
+const geoRBoxSoft = new RoundedBoxGeometry(1, 1, 1, 3, 0.16);
+const geoCyl = new THREE.CylinderGeometry(0.5, 0.5, 1, 16);
+const geoCylOct = new THREE.CylinderGeometry(0.5, 0.5, 1, 8);
+const geoCylTaper = new THREE.CylinderGeometry(0.36, 0.52, 1, 18);
+const geoSph = new THREE.SphereGeometry(0.5, 16, 12);
+const geoCap = new THREE.CapsuleGeometry(0.25, 0.5, 5, 10);
+const geoCone = new THREE.ConeGeometry(0.5, 1, 12);
+const geoTorus = new THREE.TorusGeometry(0.5, 0.08, 10, 28);
+const geoTorusThin = new THREE.TorusGeometry(0.5, 0.046, 8, 28);
+
+const geoContactDisc = new THREE.PlaneGeometry(2, 2);
+geoContactDisc.rotateX(-Math.PI / 2);
+
+// Sloped futuristic military hull (extruded in XY, centered, rotated so +X -> +Z forward)
+function makeSlopedHullGeo(len: number, height: number, width: number, bevel = 0.045): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  const hl = len / 2;
+  const hh = height / 2;
+  s.moveTo(-hl * 0.94, -hh);
+  s.lineTo(hl * 0.82, -hh);
+  s.lineTo(hl, -hh * 0.18);
+  s.lineTo(hl * 0.64, hh);
+  s.lineTo(-hl * 0.78, hh);
+  s.lineTo(-hl, hh * 0.28);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: width,
+    bevelEnabled: true,
+    bevelThickness: bevel,
+    bevelSize: bevel,
+    bevelSegments: 2,
+  });
+  g.center();
+  g.rotateY(-Math.PI / 2);
+  return g;
+}
+
+// Faceted angular wedge turret (narrower armored prow pointing toward +Z!)
+function makeFacetedTurretGeo(w: number, h: number, l: number): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  const hw = w / 2;
+  const hl = l / 2;
+  s.moveTo(-hw * 0.94, -hl);
+  s.lineTo(hw * 0.94, -hl);
+  s.lineTo(hw, -hl * 0.15);
+  s.lineTo(hw * 0.72, hl * 0.78);
+  s.lineTo(hw * 0.44, hl);
+  s.lineTo(-hw * 0.44, hl);
+  s.lineTo(-hw * 0.72, hl * 0.78);
+  s.lineTo(-hw, -hl * 0.15);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: h,
+    bevelEnabled: true,
+    bevelThickness: 0.048,
+    bevelSize: 0.042,
+    bevelSegments: 2,
+  });
+  g.center();
+  // Rotate +PI/2 around X so +Y of 2D shape maps directly to +Z (forward)!
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
+// Sloped armored tactical truck / harvester cab (extruded side profile, +X -> +Z)
+function makeSlopedCabGeo(len: number, height: number, width: number): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  const hl = len / 2;
+  const hh = height / 2;
+  s.moveTo(-hl, -hh);
+  s.lineTo(hl, -hh);
+  s.lineTo(hl, -hh * 0.08);
+  s.lineTo(hl * 0.56, hh);
+  s.lineTo(-hl * 0.88, hh);
+  s.lineTo(-hl, hh * 0.72);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: width,
+    bevelEnabled: true,
+    bevelThickness: 0.036,
+    bevelSize: 0.032,
+    bevelSegments: 2,
+  });
+  g.center();
+  g.rotateY(-Math.PI / 2);
+  return g;
+}
+
+// Angular stealth cyber-arachnid carapace (+Y -> +Z forward)
+function makeSpiderCarapaceGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(0, 0.34);
+  s.lineTo(0.24, 0.16);
+  s.lineTo(0.28, -0.14);
+  s.lineTo(0.16, -0.34);
+  s.lineTo(-0.16, -0.34);
+  s.lineTo(-0.28, -0.14);
+  s.lineTo(-0.24, 0.16);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.16,
+    bevelEnabled: true,
+    bevelThickness: 0.055,
+    bevelSize: 0.045,
+    bevelSegments: 2,
+  });
+  g.center();
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
+// Authentic curved oil-derrick pumpjack horsehead arc (+X -> +Z forward)
+function makeHorseheadGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(-0.1, -0.24);
+  s.lineTo(0.05, -0.26);
+  s.quadraticCurveTo(0.24, -0.04, 0.18, 0.22);
+  s.lineTo(-0.08, 0.2);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.18,
+    bevelEnabled: true,
+    bevelThickness: 0.022,
+    bevelSize: 0.02,
+    bevelSegments: 2,
+  });
+  g.center();
+  g.rotateY(-Math.PI / 2);
+  return g;
+}
+
+// True curved hyperbolic cooling tower (LatheGeometry with thick recessed rim throat)
+function makeCoolingTowerGeo(): THREE.BufferGeometry {
+  const pts: THREE.Vector2[] = [];
+  const steps = 14;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    // Hyperbolic neck pinching smoothly around t = 0.72 and flaring gently at crown
+    const r = 0.52 - 0.19 * Math.sin(t * Math.PI * 0.76) + 0.055 * Math.pow(Math.max(0, t - 0.55) / 0.45, 2);
+    pts.push(new THREE.Vector2(r, t));
+  }
+  // Thick top rim lip & recessed interior cooling throat
+  pts.push(new THREE.Vector2(0.39, 1.015));
+  pts.push(new THREE.Vector2(0.32, 1.0));
+  pts.push(new THREE.Vector2(0.29, 0.76));
+  pts.push(new THREE.Vector2(0.002, 0.74));
+  return new THREE.LatheGeometry(pts, 24);
+}
+
+// Solid double-walled curved concave parabolic dish (LatheGeometry, y=0 at bottom apex)
+function makeParabolicDishGeo(): THREE.BufferGeometry {
+  const pts: THREE.Vector2[] = [
+    new THREE.Vector2(0.002, -0.05),
+    new THREE.Vector2(0.16, -0.03),
+    new THREE.Vector2(0.32, 0.035),
+    new THREE.Vector2(0.46, 0.14),
+    new THREE.Vector2(0.51, 0.22),
+    new THREE.Vector2(0.495, 0.255),
+    new THREE.Vector2(0.455, 0.24),
+    new THREE.Vector2(0.34, 0.125),
+    new THREE.Vector2(0.18, 0.042),
+    new THREE.Vector2(0.002, 0.015),
+  ];
+  return new THREE.LatheGeometry(pts, 28);
+}
+
+// Industrial pressurized refinery / derrick storage silo (LatheGeometry, base y=0, height=1)
+function makeSiloGeo(): THREE.BufferGeometry {
+  const pts: THREE.Vector2[] = [
+    new THREE.Vector2(0.002, 0.0),
+    new THREE.Vector2(0.53, 0.0),
+    new THREE.Vector2(0.52, 0.08),
+    new THREE.Vector2(0.47, 0.14),
+    new THREE.Vector2(0.47, 0.44),
+    new THREE.Vector2(0.5, 0.47),
+    new THREE.Vector2(0.5, 0.51),
+    new THREE.Vector2(0.46, 0.54),
+    new THREE.Vector2(0.46, 0.8),
+    new THREE.Vector2(0.42, 0.88),
+    new THREE.Vector2(0.28, 0.96),
+    new THREE.Vector2(0.12, 0.995),
+    new THREE.Vector2(0.002, 1.0),
+  ];
+  return new THREE.LatheGeometry(pts, 22);
+}
+
+// High-tech mineral enrichment centrifuge vessel (LatheGeometry, base y=0, height=1)
+function makeCentrifugeGeo(): THREE.BufferGeometry {
+  const pts: THREE.Vector2[] = [
+    new THREE.Vector2(0.002, 0.0),
+    new THREE.Vector2(0.52, 0.0),
+    new THREE.Vector2(0.49, 0.1),
+    new THREE.Vector2(0.41, 0.22),
+    new THREE.Vector2(0.45, 0.48),
+    new THREE.Vector2(0.36, 0.68),
+    new THREE.Vector2(0.42, 0.82),
+    new THREE.Vector2(0.32, 0.94),
+    new THREE.Vector2(0.16, 1.0),
+    new THREE.Vector2(0.002, 1.0),
+  ];
+  return new THREE.LatheGeometry(pts, 22);
+}
+
+// Aerodynamic ogive missile warhead cone (LatheGeometry, base y=-0.5, tip y=0.5)
+function makeMissileConeGeo(): THREE.BufferGeometry {
+  const pts: THREE.Vector2[] = [];
+  for (let i = 0; i <= 8; i++) {
+    const t = i / 8;
+    const r = Math.max(0.002, 0.5 * Math.pow(1 - t, 0.72));
+    pts.push(new THREE.Vector2(r, t - 0.5));
+  }
+  return new THREE.LatheGeometry(pts, 12);
+}
+
+// Orbital Ion Uplink curved emitter aperture collar (LatheGeometry)
+function makeIonApertureGeo(): THREE.BufferGeometry {
+  const pts: THREE.Vector2[] = [
+    new THREE.Vector2(0.56, 0.0),
+    new THREE.Vector2(0.52, 0.26),
+    new THREE.Vector2(0.42, 0.62),
+    new THREE.Vector2(0.48, 0.92),
+    new THREE.Vector2(0.44, 1.0),
+    new THREE.Vector2(0.34, 0.96),
+    new THREE.Vector2(0.32, 0.64),
+    new THREE.Vector2(0.002, 0.6),
+  ];
+  return new THREE.LatheGeometry(pts, 24);
+}
+
+// Billowing faction flag anchored at x = 0 so flag.rotation.y waves smoothly from the mast
+function makeFlagGeo(): THREE.BufferGeometry {
+  const g = new THREE.BoxGeometry(0.5, 0.26, 0.026, 8, 2, 1);
+  g.translate(0.25, 0, 0);
+  const pos = g.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const t = x / 0.5;
+    const wave = Math.sin(t * Math.PI * 1.65) * 0.036 * t;
+    // Slight swallowtail taper toward fly end
+    const yScale = 1 - t * 0.08;
+    pos.setY(i, y * yScale);
+    pos.setZ(i, pos.getZ(i) + wave);
+  }
+  g.computeVertexNormals();
+  return g;
+}
+
+// Faceted golden-amber ore crystal mound authored with flat base at y = 0 and peak at y = 0.42
+function makeOreLoadGeo(w: number, h: number, d: number): THREE.BufferGeometry {
+  const base = new THREE.BoxGeometry(w, h, d, 4, 2, 4);
+  base.translate(0, h / 2, 0);
+  const pos = base.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    if (y > 0.02) {
+      const nx = x / (w * 0.5);
+      const nz = z / (d * 0.5);
+      const edge = Math.max(Math.abs(nx), Math.abs(nz));
+      const dome = Math.max(0.28, 1 - edge * edge * 0.52);
+      const crystal = Math.sin(x * 11.3 + z * 7.7) * 0.07 + Math.cos(x * 8.1 - z * 12.9) * 0.055;
+      const topFactor = y / h;
+      pos.setY(i, Math.max(0.05, y * dome + crystal * topFactor));
+      // Taper slightly inward near peak for heaped crystal pile look
+      const shrink = 1 - topFactor * 0.14;
+      pos.setX(i, x * shrink);
+      pos.setZ(i, z * shrink);
+    }
+  }
+  const faceted = base.toNonIndexed();
+  faceted.computeVertexNormals();
+  base.dispose();
+  return faceted;
+}
+
+const geoTankHull = makeSlopedHullGeo(1.78, 0.36, 0.98, 0.042);
+const geoHeavyHull = makeSlopedHullGeo(2.14, 0.44, 1.28, 0.05);
+const geoTankTurret = makeFacetedTurretGeo(0.76, 0.27, 0.98);
+const geoHeavyTurret = makeFacetedTurretGeo(1.02, 0.33, 1.2);
+const geoSentryPod = makeFacetedTurretGeo(0.58, 0.25, 0.78);
+const geoArtyCab = makeSlopedCabGeo(0.62, 0.44, 0.84);
+const geoHarvesterCab = makeSlopedCabGeo(0.74, 0.58, 0.96);
+const geoSpiderCarapace = makeSpiderCarapaceGeo();
+const geoHorsehead = makeHorseheadGeo();
+const geoCoolingTower = makeCoolingTowerGeo();
+const geoParabolicDish = makeParabolicDishGeo();
+const geoSilo = makeSiloGeo();
+const geoCentrifuge = makeCentrifugeGeo();
+const geoMissileCone = makeMissileConeGeo();
+const geoIonAperture = makeIonApertureGeo();
+const geoFlag = makeFlagGeo();
+const geoOreLoad = makeOreLoadGeo(1.02, 0.42, 0.92);
+
+// ---------- Lazily Cached Contact Shadow Material ----------
+let contactShadowMatCache: THREE.MeshBasicMaterial | null = null;
+function getContactShadowMat(): THREE.MeshBasicMaterial {
+  if (!contactShadowMatCache) {
+    contactShadowMatCache = new THREE.MeshBasicMaterial({
+      map: getContactShadowTex(),
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+    });
+  }
+  return contactShadowMatCache;
+}
+
+// ---------- Mesh Helper Primitives ----------
+function meshOf(geo: THREE.BufferGeometry, mat: THREE.Material, cast = true, receive = true): THREE.Mesh {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = cast;
+  m.receiveShadow = receive;
+  return m;
+}
+
+function rbox(w: number, h: number, d: number, mat: THREE.Material, sharp = false): THREE.Mesh {
+  const m = meshOf(sharp ? geoRBoxSharp : geoRBox, mat);
+  m.scale.set(w, h, d);
+  return m;
+}
+
+function softBox(w: number, h: number, d: number, mat: THREE.Material): THREE.Mesh {
+  const m = meshOf(geoRBoxSoft, mat);
+  m.scale.set(w, h, d);
+  return m;
+}
+
+function cyl(d: number, h: number, mat: THREE.Material, style: "round" | "oct" | "taper" = "round"): THREE.Mesh {
+  const g = style === "oct" ? geoCylOct : style === "taper" ? geoCylTaper : geoCyl;
+  const m = meshOf(g, mat);
+  m.scale.set(d, h, d);
+  return m;
+}
+
+function sph(d: number, mat: THREE.Material, isGlow = false): THREE.Mesh {
+  const m = meshOf(geoSph, mat, !isGlow, !isGlow);
+  m.scale.setScalar(d);
+  return m;
+}
+
+function cone(d: number, h: number, mat: THREE.Material, isGlow = false): THREE.Mesh {
+  const m = meshOf(geoCone, mat, !isGlow, !isGlow);
+  m.scale.set(d, h, d);
+  return m;
+}
+
+function torus(d: number, mat: THREE.Material, thin = false): THREE.Mesh {
+  const m = meshOf(thin ? geoTorusThin : geoTorus, mat);
+  m.scale.setScalar(d);
+  return m;
+}
+
+function cap(sx: number, sy: number, sz: number, mat: THREE.Material): THREE.Mesh {
+  const m = meshOf(geoCap, mat);
+  m.scale.set(sx, sy, sz);
+  return m;
+}
+
+function addContactShadow(parent: THREE.Group, rx: number, rz: number): void {
+  const disc = new THREE.Mesh(geoContactDisc, getContactShadowMat());
+  disc.scale.set(rx, 1, rz);
+  disc.position.y = 0.014;
+  disc.renderOrder = 2;
+  disc.userData.isBar = true;
+  parent.add(disc);
+}
+
+// Chamfered armored concrete foundation with recessed dark steel footing, corner bollards & contact AO
+function foundationPad(w: number, d: number, colorHex: string, h = 0.22): THREE.Group {
+  const g = new THREE.Group();
+  const matDark = getChassisMat(GRAPHITE, 0.62, 0.5);
+  const matRim = getChassisMat(CERAMIC_DK, 0.48, 0.55);
+  const matAcc = getAccentMat(colorHex);
+
+  addContactShadow(g, w * 0.62, d * 0.62);
+
+  // Dark recessed anchoring collar
+  const skirt = rbox(w - 0.02, 0.07, d - 0.02, matDark, true);
+  skirt.position.y = 0.035;
+  skirt.castShadow = false;
+  g.add(skirt);
+
+  // Chamfered concrete slab
+  const slab = rbox(w - 0.08, h, d - 0.08, getConcreteMat(), true);
+  slab.position.y = h / 2 + 0.01;
+  g.add(slab);
+
+  // Armored corner anchor bollards
+  const cx = w * 0.5 - 0.14;
+  const cz = d * 0.5 - 0.14;
+  for (const [bx, bz] of [
+    [-cx, -cz],
+    [cx, -cz],
+    [-cx, cz],
+    [cx, cz],
+  ]) {
+    const post = rbox(0.18, h + 0.05, 0.18, matRim, true);
+    post.position.set(bx, (h + 0.05) / 2, bz);
+    g.add(post);
+  }
+
+  // Subtle military faction ID strips along front & rear kerbs
+  const stripLen = Math.max(0.36, w * 0.34);
+  for (const sz of [-1, 1]) {
+    const strip = rbox(stripLen, 0.035, 0.06, matAcc, true);
+    strip.position.set(0, h + 0.012, sz * (d * 0.5 - 0.09));
+    g.add(strip);
+  }
+
+  return g;
+}
+
+function trackPowerGlow(m: THREE.Mesh, list: THREE.Mesh[]): void {
+  const cloned = (m.material as THREE.Material).clone();
+  m.material = cloned;
+  if (cloned instanceof THREE.MeshBasicMaterial) {
+    m.userData.origColor = cloned.color.clone();
+  } else if (cloned instanceof THREE.MeshStandardMaterial) {
+    m.userData.origColor = cloned.color.clone();
+    m.userData.origEmissive = cloned.emissive.clone();
+  }
+  list.push(m);
+}
+
+// ---------- Articulated Futuristic Armored Soldier Builder ----------
+function buildSoldierRig(
+  body: THREE.Group,
+  colorHex: string,
+  role: "infantry" | "engineer" | "rocket",
+  pulse: THREE.Mesh[],
+): Partial<AnimRig> {
+  const matCer = getChassisMat(CERAMIC, 0.44, 0.55);
+  const matLt = getChassisMat(CERAMIC_LT, 0.38, 0.65);
+  const matDk = getChassisMat(CERAMIC_DK, 0.5, 0.52);
+  const matGun = getChassisMat(GUNMETAL, 0.46, 0.66);
+  const matGraph = getChassisMat(GRAPHITE, 0.64, 0.42);
+  const matHaz = getChassisMat(HAZARD, 0.42, 0.35);
+  const matAcc = getAccentMat(colorHex);
+  const matVisor = getGlassMat(role === "rocket" ? "#e89236" : "#44c2f0");
+
+  const scale = role === "engineer" ? 0.98 : role === "rocket" ? 1.06 : 1.04;
+  body.scale.setScalar(scale);
+
+  addContactShadow(body, role === "rocket" ? 0.4 : 0.35, role === "rocket" ? 0.4 : 0.35);
+
+  // Sculpted armored pelvis & tactical utility belt
+  const pelvis = rbox(0.28, 0.1, 0.19, matGun, true);
+  pelvis.position.set(0, 0.34, 0);
+  body.add(pelvis);
+  for (const px of [-0.145, 0.145]) {
+    const pouch = rbox(0.05, 0.08, 0.09, matDk, true);
+    pouch.position.set(px, 0.34, 0.02);
+    body.add(pouch);
+  }
+
+  // Articulated hip-pivoted armored legs (legL, legR) with knee pads & heavy boots
+  const makeLeg = (sx: number) => {
+    const hip = new THREE.Group();
+    hip.position.set(sx, 0.33, 0);
+    // Undersuit thigh + armored thigh plate
+    const thigh = cap(0.22, 0.22, 0.22, matGraph);
+    thigh.position.set(0, -0.1, 0);
+    hip.add(thigh);
+    const thighArmor = softBox(0.115, 0.14, 0.125, matCer);
+    thighArmor.position.set(sx > 0 ? 0.01 : -0.01, -0.09, 0.01);
+    hip.add(thighArmor);
+    // Armored angular knee pad
+    const knee = softBox(0.095, 0.075, 0.085, matLt);
+    knee.position.set(0, -0.175, 0.055);
+    hip.add(knee);
+    // Lower shin greave + heavy armored boot
+    const shin = rbox(0.105, 0.12, 0.115, matDk, true);
+    shin.position.set(0, -0.23, 0.005);
+    hip.add(shin);
+    const boot = rbox(0.118, 0.09, 0.175, matGun, true);
+    boot.position.set(0, -0.285, 0.032);
+    hip.add(boot);
+    body.add(hip);
+    return hip;
+  };
+  const legL = makeLeg(-0.088);
+  const legR = makeLeg(0.088);
+
+  // Armored chest rig + collar + faction chest accent
+  const torsoW = role === "rocket" ? 0.36 : 0.32;
+  const torso = rbox(torsoW, 0.3, 0.22, matDk);
+  torso.position.set(0, 0.53, 0);
+  body.add(torso);
+
+  const cuirass = softBox(torsoW - 0.03, 0.22, 0.25, matCer);
+  cuirass.position.set(0, 0.55, 0.015);
+  body.add(cuirass);
+
+  // 25% faction accent chest armor plate
+  const chestPlate = rbox(torsoW - 0.1, 0.13, 0.06, matAcc, true);
+  chestPlate.position.set(0, 0.57, 0.13);
+  body.add(chestPlate);
+
+  // Armored gorget / neck collar
+  const collar = cyl(0.24, 0.065, matGun);
+  collar.position.set(0, 0.685, -0.01);
+  body.add(collar);
+
+  // Role-specific tactical backpack
+  const pack = rbox(role === "engineer" ? 0.26 : 0.23, 0.26, 0.14, role === "engineer" ? matHaz : matDk);
+  pack.position.set(0, 0.55, -0.16);
+  body.add(pack);
+  const packCore = rbox(0.14, 0.14, 0.05, matGun, true);
+  packCore.position.set(0, 0.56, -0.225);
+  body.add(packCore);
+  if (role === "engineer") {
+    const gauge = rbox(0.07, 0.08, 0.03, getGlowMat(CYAN_GLOW, 0.88), true);
+    gauge.position.set(0, 0.57, -0.245);
+    body.add(gauge);
+    pulse.push(gauge);
+  }
+  const ant = cyl(0.018, 0.24, matLt);
+  ant.position.set(-0.09, 0.76, -0.17);
+  body.add(ant);
+
+  // Sculpted composite helmet head group
+  const head = new THREE.Group();
+  head.position.set(0, 0.765, 0);
+  const cranium = sph(0.225, role === "engineer" ? matHaz : matCer);
+  cranium.scale.multiply(new THREE.Vector3(1.0, 0.96, 1.08));
+  head.add(cranium);
+
+  if (role === "engineer") {
+    // High-vis composite hard-hat brim + armored safety visor + bright headlamp
+    const brim = cyl(0.28, 0.035, matHaz);
+    brim.position.set(0, 0.025, 0.025);
+    head.add(brim);
+    const band = cyl(0.24, 0.04, matAcc);
+    band.position.set(0, 0.05, 0);
+    head.add(band);
+    const visor = softBox(0.16, 0.068, 0.075, matVisor);
+    visor.position.set(0, -0.015, 0.088);
+    head.add(visor);
+    const lampBase = rbox(0.06, 0.05, 0.05, matGun, true);
+    lampBase.position.set(0, 0.08, 0.11);
+    head.add(lampBase);
+    const lamp = sph(0.048, getGlowMat(WHITE_GLOW, 0.96), true);
+    lamp.position.set(0, 0.08, 0.135);
+    head.add(lamp);
+  } else {
+    // Sleek futuristic armored helmet shell + faction crest + recessed glass visor
+    const shell = sph(0.25, matCer);
+    shell.scale.multiply(new THREE.Vector3(1.06, 0.82, 1.14));
+    shell.position.set(0, 0.032, -0.012);
+    head.add(shell);
+    const crest = rbox(0.065, 0.055, 0.22, matAcc, true);
+    crest.position.set(0, 0.12, -0.01);
+    head.add(crest);
+    const visor = softBox(0.165, 0.064, 0.085, matVisor);
+    visor.position.set(0, -0.005, 0.09);
+    head.add(visor);
+    const chin = rbox(0.13, 0.05, 0.08, matGun, true);
+    chin.position.set(0, -0.065, 0.075);
+    head.add(chin);
+  }
+  body.add(head);
+
+  // Articulated shoulder-pivoted arms (armL, armR) with sculpted pauldrons
+  const makeArm = (sx: number) => {
+    const sh = new THREE.Group();
+    sh.position.set(sx, 0.635, 0);
+    // Layered armored shoulder pauldron with faction accent
+    const pauldronBase = softBox(0.14, 0.12, 0.16, matCer);
+    pauldronBase.position.set(sx > 0 ? 0.02 : -0.02, 0.02, 0);
+    sh.add(pauldronBase);
+    const pauldronCap = rbox(0.11, 0.045, 0.14, matAcc, true);
+    pauldronCap.position.set(sx > 0 ? 0.035 : -0.035, 0.07, 0);
+    sh.add(pauldronCap);
+    // Upper arm + armored forearm bracer
+    const upper = cap(0.16, 0.18, 0.16, matGraph);
+    upper.position.set(0, -0.1, 0.02);
+    upper.rotation.x = -0.25;
+    sh.add(upper);
+    const bracer = rbox(0.085, 0.13, 0.095, matCer, true);
+    bracer.position.set(0, -0.18, 0.065);
+    bracer.rotation.x = -0.5;
+    sh.add(bracer);
+    body.add(sh);
+    return sh;
+  };
+  const armOffset = role === "rocket" ? 0.24 : 0.215;
+  const armL = makeArm(-armOffset);
+  const armR = makeArm(armOffset);
+
+  const recoil = new THREE.Group();
+
+  if (role === "infantry") {
+    // Futuristic bullpup pulse rifle with glowing ammo strip & muzzle brake (mounted at z=0.15 per anim.ts)
+    armR.rotation.x = -0.55;
+    armL.rotation.x = -0.45;
+    recoil.position.set(0, -0.16, 0.15);
+    armR.add(recoil);
+
+    const stock = rbox(0.062, 0.088, 0.36, matGun, true);
+    recoil.add(stock);
+    const shroud = rbox(0.07, 0.065, 0.22, matCer, true);
+    shroud.position.set(0, 0.018, 0.12);
+    recoil.add(shroud);
+    const ammoStrip = rbox(0.075, 0.02, 0.13, getGlowMat(CYAN_GLOW, 0.9), true);
+    ammoStrip.position.set(0, 0.015, 0.06);
+    recoil.add(ammoStrip);
+    const barrel = cyl(0.032, 0.24, matLt);
+    barrel.rotation.x = Math.PI / 2;
+    barrel.position.set(0, 0.018, 0.29);
+    recoil.add(barrel);
+    const muzzle = cyl(0.05, 0.065, matGun, "oct");
+    muzzle.rotation.x = Math.PI / 2;
+    muzzle.position.set(0, 0.018, 0.41);
+    recoil.add(muzzle);
+    const optic = rbox(0.036, 0.04, 0.1, matGun, true);
+    optic.position.set(0, 0.068, 0.03);
+    recoil.add(optic);
+    const opticLens = rbox(0.028, 0.022, 0.02, getGlowMat(CYAN_GLOW, 0.92), true);
+    opticLens.position.set(0, 0.068, 0.085);
+    recoil.add(opticLens);
+  } else if (role === "engineer") {
+    // Rugged yellow tactical equipment case in right hand + glowing plasma welder/scanner in left
+    const caseBody = rbox(0.16, 0.13, 0.085, matHaz, true);
+    caseBody.position.set(0.03, -0.27, 0.06);
+    armR.add(caseBody);
+    const caseRim = rbox(0.17, 0.03, 0.095, matGun, true);
+    caseRim.position.set(0.03, -0.27, 0.06);
+    armR.add(caseRim);
+
+    const toolBody = rbox(0.065, 0.07, 0.22, matCer, true);
+    toolBody.position.set(0, -0.21, 0.15);
+    armL.add(toolBody);
+    const nozzle = cyl(0.04, 0.1, matLt);
+    nozzle.rotation.x = Math.PI / 2;
+    nozzle.position.set(0, -0.21, 0.28);
+    armL.add(nozzle);
+    const arcTip = sph(0.052, getGlowMat(CYAN_GLOW, 0.95), true);
+    arcTip.position.set(0, -0.21, 0.34);
+    armL.add(arcTip);
+    pulse.push(arcTip);
+  } else if (role === "rocket") {
+    // Twin quad-cell shoulder missile pods with visible ogive warheads (mounted at z=0 per anim.ts)
+    recoil.position.set(0, 0.74, 0);
+    body.add(recoil);
+    const matWarhead = getGlowMat(HEAT_GLOW, 0.88);
+    const yoke = rbox(0.46, 0.06, 0.14, matGun, true);
+    yoke.position.set(0, -0.02, -0.06);
+    recoil.add(yoke);
+    for (const sx of [-0.24, 0.24]) {
+      const pod = new THREE.Group();
+      pod.position.set(sx, 0.05, 0.02);
+      pod.rotation.x = -0.14;
+      recoil.add(pod);
+
+      const housing = rbox(0.165, 0.165, 0.46, matGun, true);
+      pod.add(housing);
+      const trim = rbox(0.178, 0.178, 0.13, matAcc, true);
+      trim.position.z = 0.08;
+      pod.add(trim);
+      const exhaust = rbox(0.13, 0.13, 0.06, matDk, true);
+      exhaust.position.z = -0.24;
+      pod.add(exhaust);
+
+      // 4 visible mini-missiles in 2x2 quad array
+      for (const [mx, my] of [
+        [-0.038, 0.038],
+        [0.038, 0.038],
+        [-0.038, -0.038],
+        [0.038, -0.038],
+      ]) {
+        const tube = cyl(0.052, 0.08, matLt);
+        tube.rotation.x = Math.PI / 2;
+        tube.position.set(mx, my, 0.23);
+        pod.add(tube);
+        const wh = meshOf(geoMissileCone, matWarhead, false, false);
+        wh.scale.set(0.05, 0.095, 0.05);
+        wh.rotation.x = Math.PI / 2;
+        wh.position.set(mx, my, 0.285);
+        pod.add(wh);
+      }
+    }
+  }
+
+  return { legL, legR, armL, armR, head, recoil };
+}
+
+// ---------- Main Land Model Builder ----------
+
+export function buildLandModel(kind: EntKind, colorHex: string, body: THREE.Group): BuiltModel | null {
+  let turret: THREE.Group | null = null;
+  let topY = 1.0;
+  let spin: THREE.Group | undefined;
+  let spin2: THREE.Group | undefined;
+  let bin: THREE.Mesh | undefined;
+  let flag: THREE.Mesh | undefined;
+  let crane: THREE.Group | undefined;
+  let recoil: THREE.Group | undefined;
+  let spiderLegs: THREE.Group[] | undefined;
+  let smokePos: THREE.Vector3 | undefined;
+  let soldierParts: Partial<AnimRig> = {};
+  const pulse: THREE.Mesh[] = [];
+  const powerGlow: THREE.Mesh[] = [];
+
+  const matCer = getChassisMat(CERAMIC, 0.44, 0.56);
+  const matLt = getChassisMat(CERAMIC_LT, 0.36, 0.68);
+  const matDk = getChassisMat(CERAMIC_DK, 0.48, 0.54);
+  const matGun = getChassisMat(GUNMETAL, 0.46, 0.66);
+  const matGraph = getChassisMat(GRAPHITE, 0.65, 0.42);
+  const matHaz = getChassisMat(HAZARD, 0.44, 0.35);
+  const matCopper = getChassisMat(COPPER, 0.28, 0.82);
+  const matGold = getChassisMat(GOLD_TRIM, 0.34, 0.72);
+  const matAcc = getAccentMat(colorHex);
+  const matGlass = getGlassMat("#48bae8");
+
+  const add = <T extends THREE.Object3D>(m: T, x = 0, y = 0, z = 0, parent: THREE.Object3D = body): T => {
+    parent.add(m);
+    m.position.set(x, y, z);
+    return m;
+  };
+
+  switch (kind) {
+    // =========================================================================
+    // LAND INFANTRY (3)
+    // =========================================================================
+    case "infantry":
+      soldierParts = buildSoldierRig(body, colorHex, "infantry", pulse);
+      recoil = soldierParts.recoil;
+      topY = 1.0;
+      break;
+
+    case "engineer":
+      soldierParts = buildSoldierRig(body, colorHex, "engineer", pulse);
+      topY = 0.94;
+      break;
+
+    case "rocket":
+      soldierParts = buildSoldierRig(body, colorHex, "rocket", pulse);
+      recoil = soldierParts.recoil;
+      topY = 1.08;
+      break;
+
+    // =========================================================================
+    // LAND VEHICLES (5)
+    // =========================================================================
+    case "tank": {
+      // Next-gen Main Battle Tank — sloped reactive-armor composite hull, faceted turret, bore evacuator
+      addContactShadow(body, 0.96, 1.16);
+
+      // Left & right armored track pods with roadwheels & ERA composite skirts
+      for (const sx of [-0.57, 0.57]) {
+        const tread = rbox(0.32, 0.3, 1.84, getTreadMat(), true);
+        add(tread, sx, 0.19, 0);
+        // Sloped front & rear track return guards
+        const fGuard = rbox(0.34, 0.14, 0.28, matDk, true);
+        fGuard.rotation.x = 0.38;
+        add(fGuard, sx, 0.33, 0.82);
+        const rGuard = rbox(0.34, 0.14, 0.26, matDk, true);
+        rGuard.rotation.x = -0.35;
+        add(rGuard, sx, 0.33, -0.82);
+        // Layered composite side skirt + ERA armor panels + faction trim stripe
+        const sideOut = sx + (sx > 0 ? 0.165 : -0.165);
+        add(rbox(0.07, 0.22, 1.66, matCer, true), sideOut, 0.29, 0);
+        add(rbox(0.08, 0.055, 1.48, matAcc, true), sideOut + (sx > 0 ? 0.01 : -0.01), 0.34, 0.02);
+        for (const ez of [-0.54, -0.18, 0.18, 0.54]) {
+          add(rbox(0.035, 0.13, 0.28, matDk, true), sideOut + (sx > 0 ? 0.032 : -0.032), 0.24, ez);
+        }
+        // Roadwheels & metallic hubcaps
+        for (const sz of [-0.66, -0.33, 0, 0.33, 0.66]) {
+          const wh = cyl(0.22, 0.34, matGraph);
+          wh.rotation.z = Math.PI / 2;
+          add(wh, sx, 0.15, sz);
+          const hub = cyl(0.09, 0.355, matLt);
+          hub.rotation.z = Math.PI / 2;
+          add(hub, sx, 0.15, sz);
+        }
+      }
+
+      // Sculpted sloped reactive-armor composite hull
+      add(meshOf(geoTankHull, matCer), 0, 0.44, 0);
+      // Lower front armored glacis bumper + driver periscope glass + headlights
+      const glacis = rbox(0.84, 0.08, 0.38, matDk, true);
+      glacis.rotation.x = 0.36;
+      add(glacis, 0, 0.52, 0.62);
+      add(rbox(0.24, 0.055, 0.07, matGlass, true), 0, 0.62, 0.54);
+      for (const hx of [-0.36, 0.36]) {
+        add(rbox(0.11, 0.065, 0.07, matGun, true), hx, 0.47, 0.86);
+        add(rbox(0.085, 0.04, 0.03, getGlowMat(WHITE_GLOW, 0.88), true), hx, 0.47, 0.895);
+      }
+      // Upper hull deck trim (25% faction accent) & glowing rear engine radiator vents
+      add(rbox(0.74, 0.08, 1.12, matDk, true), 0, 0.62, -0.06);
+      add(rbox(0.54, 0.04, 0.42, matAcc, true), 0, 0.655, 0.22);
+      add(rbox(0.62, 0.06, 0.46, matGun, true), 0, 0.65, -0.54);
+      for (const rx of [-0.2, 0.2]) {
+        add(rbox(0.24, 0.03, 0.3, getGlowMat(HEAT_GLOW, 0.72), true), rx, 0.675, -0.56);
+      }
+      add(rbox(0.66, 0.1, 0.06, getGlowMat(HEAT_GLOW, 0.72), true), 0, 0.44, -0.9);
+
+      // Sculpted angled rotating MBT turret
+      turret = new THREE.Group();
+      turret.position.set(0, 0.73, -0.04);
+      body.add(turret);
+
+      turret.add(meshOf(geoTankTurret, matCer));
+      // Faction-painted angled cheek armor & roof ID trim
+      for (const cx of [-0.34, 0.34]) {
+        const cheek = rbox(0.08, 0.19, 0.52, matAcc, true);
+        cheek.rotation.y = cx > 0 ? 0.22 : -0.22;
+        add(cheek, cx, 0.01, 0.1, turret);
+      }
+      add(rbox(0.44, 0.055, 0.48, matAcc, true), 0, 0.165, -0.06, turret);
+      // Rear turret bustle stowage rack
+      add(rbox(0.66, 0.16, 0.24, matDk, true), 0, 0.04, -0.56, turret);
+      // Commander's cupola + panoramic glass optic + coaxial MG + smoke dischargers + radio whip
+      add(cyl(0.28, 0.09, matDk), -0.14, 0.2, -0.22, turret);
+      add(cyl(0.12, 0.09, matGlass), 0.16, 0.21, -0.08, turret);
+      const coax = cyl(0.036, 0.34, matGun);
+      coax.rotation.x = Math.PI / 2;
+      add(coax, 0.2, 0.05, 0.56, turret);
+      for (const sx of [-0.38, 0.38]) {
+        const smokePod = rbox(0.07, 0.075, 0.14, matGun, true);
+        smokePod.rotation.x = -0.4;
+        smokePod.rotation.y = sx > 0 ? 0.35 : -0.35;
+        add(smokePod, sx, 0.09, 0.26, turret);
+      }
+      add(cyl(0.02, 0.62, matLt), 0.28, 0.39, -0.44, turret);
+
+      // Recoil main cannon assembly (mounted at z=0.35 per anim.ts)
+      recoil = new THREE.Group();
+      recoil.position.set(0, 0.04, 0.35);
+      turret.add(recoil);
+      add(rbox(0.32, 0.2, 0.22, matDk, true), 0, 0, 0, recoil);
+      const barrel = cyl(0.092, 1.12, matGun);
+      barrel.rotation.x = Math.PI / 2;
+      add(barrel, 0, 0, 0.54, recoil);
+      // Bore evacuator & slotted muzzle brake
+      const evac = cyl(0.142, 0.24, matCer);
+      evac.rotation.x = Math.PI / 2;
+      add(evac, 0, 0, 0.48, recoil);
+      const muzzle = cyl(0.148, 0.19, matLt, "oct");
+      muzzle.rotation.x = Math.PI / 2;
+      add(muzzle, 0, 0, 1.09, recoil);
+
+      smokePos = new THREE.Vector3(0, 0.74, -0.74);
+      topY = 1.2;
+      break;
+    }
+
+    case "heavy": {
+      // Mastodon Tank — Colossal Quad-Track Super-Heavy Siege Juggernaut
+      addContactShadow(body, 1.2, 1.42);
+
+      // Quad-pod armored treads (2 front + 2 rear independent track pods!)
+      for (const sx of [-0.76, 0.76]) {
+        for (const sz of [-0.6, 0.6]) {
+          const tread = rbox(0.44, 0.38, 0.96, getTreadMat(), true);
+          add(tread, sx, 0.23, sz);
+          // Heavy beveled armored track pod housing & fender
+          add(rbox(0.48, 0.14, 0.92, matDk, true), sx, 0.44, sz);
+          add(rbox(0.09, 0.24, 0.86, matCer, true), sx + (sx > 0 ? 0.22 : -0.22), 0.35, sz);
+          add(rbox(0.04, 0.075, 0.72, matAcc, true), sx + (sx > 0 ? 0.26 : -0.26), 0.39, sz);
+          for (const wz of [-0.28, 0.28]) {
+            const wh = cyl(0.28, 0.46, matGraph);
+            wh.rotation.z = Math.PI / 2;
+            add(wh, sx, 0.17, sz + wz);
+          }
+        }
+        // Heavy suspension link beam bridging front & rear pods
+        add(rbox(0.26, 0.2, 0.46, matGun, true), sx, 0.32, 0);
+      }
+
+      // Colossal reinforced sloped juggernaut hull
+      add(meshOf(geoHeavyHull, matCer), 0, 0.55, 0);
+      // Massive reinforced glacis ram plate + twin armored headlights
+      const ram = rbox(1.16, 0.16, 0.34, matGun, true);
+      ram.rotation.x = 0.42;
+      add(ram, 0, 0.48, 0.98);
+      for (const hx of [-0.46, 0.46]) {
+        add(rbox(0.16, 0.09, 0.08, matGun, true), hx, 0.56, 1.04);
+        add(rbox(0.12, 0.055, 0.03, getGlowMat(WHITE_GLOW, 0.9), true), hx, 0.56, 1.08);
+      }
+      // Upper hull armor deck + faction shoulder bands + glowing side thermal heat-sinks
+      add(rbox(1.06, 0.14, 1.48, matDk, true), 0, 0.76, -0.06);
+      add(rbox(0.76, 0.05, 0.54, matAcc, true), 0, 0.82, 0.36);
+      for (const sx of [-0.66, 0.66]) {
+        add(rbox(0.1, 0.16, 1.18, matGun, true), sx, 0.64, -0.06);
+        add(rbox(0.03, 0.075, 0.96, getGlowMat(HEAT_GLOW, 0.8), true), sx + (sx > 0 ? 0.05 : -0.05), 0.64, -0.06);
+      }
+
+      // Huge faceted heavy siege turret
+      turret = new THREE.Group();
+      turret.position.set(0, 0.91, -0.06);
+      body.add(turret);
+
+      turret.add(meshOf(geoHeavyTurret, matCer));
+      // Bold faction armor trim on turret brow & roof
+      add(rbox(0.68, 0.065, 0.64, matAcc, true), 0, 0.195, -0.08, turret);
+      add(rbox(0.86, 0.18, 0.28, matDk, true), 0, 0.04, -0.66, turret);
+      // Armored commander cupola + glass sensor dome + comms mast
+      add(cyl(0.36, 0.12, matDk, "oct"), 0, 0.24, -0.32, turret);
+      add(cyl(0.18, 0.08, matGlass), 0, 0.31, -0.32, turret);
+      add(cyl(0.028, 0.58, matLt), 0.38, 0.42, -0.52, turret);
+
+      // Twin turret-mounted mini-rocket cheek pods with visible warheads
+      const matMiniWh = getGlowMat(AMBER_GLOW, 0.88);
+      for (const sx of [-0.58, 0.58]) {
+        const pod = rbox(0.24, 0.24, 0.56, matGun, true);
+        add(pod, sx, 0.07, -0.1, turret);
+        add(rbox(0.26, 0.06, 0.38, matAcc, true), sx, 0.18, -0.1, turret);
+        for (const [rx, ry] of [
+          [-0.055, 0.05],
+          [0.055, 0.05],
+          [-0.055, -0.05],
+          [0.055, -0.05],
+        ]) {
+          const tip = meshOf(geoMissileCone, matMiniWh, false, false);
+          tip.scale.set(0.058, 0.09, 0.058);
+          tip.rotation.x = Math.PI / 2;
+          add(tip, sx + rx, 0.07 + ry, 0.21, turret);
+        }
+      }
+
+      // Twin heavy rail-cannons (mounted at z=0.42 per anim.ts)
+      recoil = new THREE.Group();
+      recoil.position.set(0, 0.04, 0.42);
+      turret.add(recoil);
+      add(rbox(0.68, 0.24, 0.24, matDk, true), 0, 0, 0, recoil);
+      for (const bx of [-0.22, 0.22]) {
+        const brl = cyl(0.11, 1.26, matGun);
+        brl.rotation.x = Math.PI / 2;
+        add(brl, bx, 0, 0.58, recoil);
+        // Electromagnetic rail shroud & subtle glowing accelerator strip
+        add(rbox(0.145, 0.045, 0.84, matLt, true), bx, 0.05, 0.54, recoil);
+        add(rbox(0.035, 0.025, 0.72, getGlowMat(CYAN_GLOW, 0.82), true), bx, 0.074, 0.56, recoil);
+        const muz = cyl(0.165, 0.21, matLt, "oct");
+        muz.rotation.x = Math.PI / 2;
+        add(muz, bx, 0, 1.21, recoil);
+      }
+
+      smokePos = new THREE.Vector3(0, 0.88, -0.96);
+      topY = 1.44;
+      break;
+    }
+
+    case "arty": {
+      // Siege Launcher — Heavy 6x6 Armored Tactical MLRS Truck
+      addContactShadow(body, 0.96, 1.18);
+
+      // 6 rugged heavy armored off-road tires with deep rims & hubcaps
+      for (const [wx, wz] of [
+        [-0.56, 0.62],
+        [0.56, 0.62],
+        [-0.56, -0.04],
+        [0.56, -0.04],
+        [-0.56, -0.66],
+        [0.56, -0.66],
+      ]) {
+        const tire = cyl(0.4, 0.24, matGraph);
+        tire.rotation.z = Math.PI / 2;
+        add(tire, wx, 0.2, wz);
+        const rim = cyl(0.21, 0.255, matLt, "oct");
+        rim.rotation.z = Math.PI / 2;
+        add(rim, wx, 0.2, wz);
+      }
+
+      // Armored 6x6 chassis frame & wheel-well fenders
+      add(rbox(0.98, 0.22, 1.84, matGun, true), 0, 0.36, -0.02);
+      add(rbox(1.12, 0.11, 1.72, matCer, true), 0, 0.49, -0.02);
+      // Heavy front bumper + rear hydraulic stabilizer outriggers
+      add(rbox(1.06, 0.16, 0.14, matDk, true), 0, 0.38, 0.92);
+      for (const sx of [-0.56, 0.56]) {
+        const leg = rbox(0.11, 0.34, 0.12, matLt, true);
+        leg.rotation.z = sx > 0 ? -0.32 : 0.32;
+        add(leg, sx + (sx > 0 ? 0.08 : -0.08), 0.24, -0.9);
+        add(rbox(0.2, 0.055, 0.2, matHaz, true), sx + (sx > 0 ? 0.14 : -0.14), 0.045, -0.9);
+      }
+
+      // Sloped armored forward tactical cab
+      add(meshOf(geoArtyCab, matCer), 0, 0.72, 0.56);
+      // Faction cab roof & door stripe accents
+      add(rbox(0.76, 0.06, 0.44, matAcc, true), 0, 0.96, 0.49);
+      for (const sx of [-0.43, 0.43]) {
+        add(rbox(0.03, 0.12, 0.38, matAcc, true), sx, 0.68, 0.54);
+      }
+      // Sloped armored panoramic windshield & headlights
+      const glass = rbox(0.68, 0.16, 0.06, matGlass, true);
+      glass.rotation.x = -0.34;
+      add(glass, 0, 0.79, 0.85);
+      for (const hx of [-0.34, 0.34]) {
+        add(rbox(0.12, 0.06, 0.03, getGlowMat(WHITE_GLOW, 0.88), true), hx, 0.56, 0.92);
+      }
+      add(cyl(0.022, 0.46, matLt), -0.34, 1.16, 0.36);
+
+      // Turntable cradle & hydraulic elevation rams
+      add(cyl(0.56, 0.14, matDk, "oct"), 0, 0.59, -0.34);
+      for (const px of [-0.22, 0.22]) {
+        const piston = cyl(0.06, 0.42, matLt);
+        piston.rotation.x = 0.28;
+        add(piston, px, 0.76, -0.14);
+      }
+
+      // Elevated multi-tube MLRS rocket launcher pod (mounted at z=-0.26 per anim.ts)
+      recoil = new THREE.Group();
+      recoil.position.set(0, 0.86, -0.26);
+      recoil.rotation.x = -0.48;
+      body.add(recoil);
+
+      add(rbox(0.66, 0.36, 1.48, matGun, true), 0, 0, 0, recoil);
+      // Faction-painted upper launcher cowling & side structural ribs
+      add(rbox(0.68, 0.075, 1.24, matAcc, true), 0, 0.205, -0.04, recoil);
+      for (const rz of [-0.46, 0, 0.46]) {
+        add(rbox(0.71, 0.38, 0.07, matCer, true), 0, 0, rz, recoil);
+      }
+      // 6 visible launch tubes (2x3) packed with red-tipped ogive warheads
+      const matRktWh = getGlowMat(HEAT_GLOW, 0.9);
+      for (const mx of [-0.2, 0, 0.2]) {
+        for (const my of [-0.085, 0.085]) {
+          const tube = cyl(0.145, 0.16, matLt);
+          tube.rotation.x = Math.PI / 2;
+          add(tube, mx, my, 0.72, recoil);
+          const warhead = meshOf(geoMissileCone, matRktWh, false, false);
+          warhead.scale.set(0.135, 0.24, 0.135);
+          warhead.rotation.x = Math.PI / 2;
+          add(warhead, mx, my, 0.84, recoil);
+        }
+      }
+
+      smokePos = new THREE.Vector3(0, 0.66, -0.78);
+      topY = 1.54;
+      break;
+    }
+
+    case "spider": {
+      // Spider Drone — Sleek Stealth Cyber-Arachnid with 4 Multi-Jointed Legs
+      addContactShadow(body, 0.64, 0.64);
+
+      // Faceted angular stealth metallic carapace
+      add(meshOf(geoSpiderCarapace, matDk), 0, 0.44, -0.02);
+      const upperShell = meshOf(geoSpiderCarapace, matCer);
+      upperShell.scale.multiply(new THREE.Vector3(0.84, 0.78, 0.86));
+      add(upperShell, 0, 0.54, -0.04);
+      // Crisp 25% faction dorsal spine chevrons
+      add(rbox(0.24, 0.06, 0.34, matAcc, true), 0, 0.635, -0.06);
+      add(rbox(0.14, 0.05, 0.14, matGun, true), 0, 0.64, -0.26);
+
+      // Glowing cyan optical tri-eye array on brow
+      const eyeMain = sph(0.125, getGlowMat(CYAN_GLOW, 0.96), true);
+      add(eyeMain, 0, 0.48, 0.285);
+      pulse.push(eyeMain);
+      for (const ex of [-0.115, 0.115]) {
+        const subEye = sph(0.06, getGlowMat(CYAN_GLOW, 0.85), true);
+        add(subEye, ex, 0.49, 0.245);
+      }
+
+      // Twin cybernetic front mandibles
+      for (const mx of [-0.12, 0.12]) {
+        const jaw = rbox(0.045, 0.055, 0.24, matLt, true);
+        jaw.rotation.y = mx > 0 ? -0.34 : 0.34;
+        add(jaw, mx, 0.38, 0.36);
+      }
+
+      // 4 multi-jointed armored mechanical legs in exact diagonal order per anim.ts
+      spiderLegs = [];
+      const corners: [number, number][] = [
+        [-1, 1],
+        [1, 1],
+        [-1, -1],
+        [1, -1],
+      ];
+      for (const [lx, lz] of corners) {
+        const legPivot = new THREE.Group();
+        legPivot.position.set(lx * 0.24, 0.4, lz * 0.2);
+
+        // Hip actuator socket
+        add(sph(0.1, matGun), 0, 0, 0, legPivot);
+
+        // Upper armored femur extending outward & slightly upward
+        const femur = rbox(0.072, 0.36, 0.072, matCer, true);
+        femur.rotation.z = lx * -1.04;
+        femur.rotation.x = lz * 0.28;
+        add(femur, lx * 0.15, 0.07, lz * 0.06, legPivot);
+
+        // Faction armor plate on femur top
+        const fPlate = rbox(0.082, 0.16, 0.082, matAcc, true);
+        fPlate.rotation.z = lx * -1.04;
+        fPlate.rotation.x = lz * 0.28;
+        add(fPlate, lx * 0.16, 0.09, lz * 0.06, legPivot);
+
+        // Mechanical knee servo joint
+        add(sph(0.095, matLt), lx * 0.3, 0.14, lz * 0.12, legPivot);
+
+        // Lower armored blade tibia angling sharply down to talon foot
+        const tibia = cone(0.085, 0.56, matGun);
+        tibia.rotation.x = Math.PI + lz * -0.18;
+        tibia.rotation.z = lx * -0.28;
+        add(tibia, lx * 0.38, -0.12, lz * 0.16, legPivot);
+
+        body.add(legPivot);
+        spiderLegs.push(legPivot);
+      }
+
+      topY = 0.84;
+      break;
+    }
+
+    case "harvester": {
+      // Ore Harvester — Massive Industrial Armored Mining Crawler
+      addContactShadow(body, 1.08, 1.42);
+
+      // 6 massive rugged mining crawler wheels with planetary hubs
+      for (const [wx, wz] of [
+        [-0.68, 0.64],
+        [0.68, 0.64],
+        [-0.68, -0.14],
+        [0.68, -0.14],
+        [-0.68, -0.76],
+        [0.68, -0.76],
+      ]) {
+        const wheel = cyl(0.46, 0.28, matGraph);
+        wheel.rotation.z = Math.PI / 2;
+        add(wheel, wx, 0.23, wz);
+        const hub = cyl(0.24, 0.3, matHaz, "oct");
+        hub.rotation.z = Math.PI / 2;
+        add(hub, wx, 0.23, wz);
+      }
+
+      // Heavy armored chassis + reinforced side fenders
+      add(rbox(1.24, 0.34, 2.04, matDk, true), 0, 0.44, -0.02);
+      for (const sx of [-0.66, 0.66]) {
+        add(rbox(0.22, 0.08, 1.9, matCer, true), sx, 0.5, -0.02);
+      }
+
+      // Huge reinforced rear ore hopper with external steel ribs
+      add(rbox(1.32, 0.44, 1.18, matCer, true), 0, 0.76, -0.36);
+      // Recessed dark bed inside hopper
+      add(rbox(1.12, 0.06, 0.98, matGraph, true), 0, 0.72, -0.36);
+      for (const sx of [-0.67, 0.67]) {
+        add(rbox(0.05, 0.12, 1.02, matAcc, true), sx, 0.82, -0.36);
+        for (const rz of [-0.76, -0.36, 0.04]) {
+          add(rbox(0.07, 0.42, 0.08, matDk, true), sx, 0.76, rz);
+        }
+      }
+      // Faceted glowing ore crystal load (scales Y from 0.05 to 1.0 from hopper bed!)
+      bin = meshOf(geoOreLoad, getGlowMat(AMBER_GLOW, 0.86), false, false);
+      bin.position.set(0, 0.72, -0.36);
+      bin.scale.y = 0.05;
+      body.add(bin);
+
+      // Wide panoramic armored forward cab
+      add(meshOf(geoHarvesterCab, matCer), 0, 0.78, 0.62);
+      add(rbox(0.86, 0.08, 0.54, matAcc, true), 0, 1.08, 0.54);
+      // Wraparound panoramic armored glass windshield + roll-cage brow
+      const cabGlass = rbox(0.82, 0.22, 0.06, matGlass, true);
+      cabGlass.rotation.x = -0.28;
+      add(cabGlass, 0, 0.86, 0.96);
+      add(rbox(0.92, 0.06, 0.14, matGun, true), 0, 1.01, 0.94);
+      // Side vertical exhaust stack & work floodlights
+      add(cyl(0.095, 0.66, matGun), 0.54, 0.88, 0.34);
+      for (const lx of [-0.36, 0.36]) {
+        add(rbox(0.14, 0.07, 0.04, getGlowMat(WHITE_GLOW, 0.9), true), lx, 0.62, 1.0);
+      }
+      // Rooftop amber strobe work beacon
+      const beacon = sph(0.12, getGlowMat(AMBER_GLOW, 0.96), true);
+      add(beacon, 0, 1.18, 0.58);
+      pulse.push(beacon);
+
+      // Front heavy hydraulic scoop arms + rotating spiked mining grinder drum (spins around X)
+      for (const sx of [-0.54, 0.54]) {
+        add(rbox(0.14, 0.18, 0.54, matDk, true), sx, 0.32, 1.08);
+        const hyd = cyl(0.06, 0.42, matLt);
+        hyd.rotation.x = Math.PI / 2 - 0.32;
+        add(hyd, sx, 0.46, 1.04);
+        add(rbox(0.06, 0.24, 0.32, matHaz, true), sx + (sx > 0 ? 0.08 : -0.08), 0.28, 1.24);
+      }
+
+      spin = new THREE.Group();
+      spin.position.set(0, 0.28, 1.28);
+      body.add(spin);
+      const drum = cyl(0.24, 0.98, matLt);
+      drum.rotation.z = Math.PI / 2;
+      spin.add(drum);
+      for (let i = 0; i < 4; i++) {
+        const ang = (i * Math.PI) / 2;
+        const blade = rbox(0.94, 0.36, 0.055, matHaz, true);
+        blade.rotation.x = ang;
+        spin.add(blade);
+        // Tungsten mining spikes along each blade edge
+        for (const tx of [-0.34, 0, 0.34]) {
+          const spike = cone(0.07, 0.12, matGun);
+          spike.position.set(tx, Math.cos(ang) * 0.21, Math.sin(ang) * 0.21);
+          spike.rotation.x = ang;
+          spin.add(spike);
+        }
+      }
+
+      smokePos = new THREE.Vector3(0.54, 1.2, 0.34);
+      topY = 1.32;
+      break;
+    }
+
+    // =========================================================================
+    // LAND BUILDINGS (14)
+    // =========================================================================
+    case "conyard": {
+      // Construction Yard (3x3) — Monumental Armored Command Citadel
+      body.add(foundationPad(3, 3, colorHex, 0.24));
+
+      // Lower armored bunker plinth with corner buttresses
+      add(rbox(2.54, 0.54, 2.54, matDk), 0, 0.51, 0);
+      for (const [bx, bz] of [
+        [-1.2, -1.2],
+        [1.2, -1.2],
+        [-1.2, 1.2],
+        [1.2, 1.2],
+      ]) {
+        add(rbox(0.32, 0.62, 0.32, matCer, true), bx, 0.55, bz);
+      }
+
+      // Left-center elevated command citadel tower
+      add(rbox(1.48, 0.74, 1.56, matCer), -0.44, 1.12, -0.08);
+      // Faction-painted command roof parapet & side fascia
+      add(rbox(1.56, 0.12, 1.64, matAcc, true), -0.44, 1.48, -0.08);
+      // Panoramic wraparound glowing bridge glass
+      add(rbox(1.24, 0.2, 0.07, matGlass, true), -0.44, 1.18, 0.71);
+      add(rbox(0.07, 0.2, 0.96, matGlass, true), -1.19, 1.18, 0.06);
+      add(rbox(1.14, 0.045, 0.03, getGlowMat(WHITE_GLOW, 0.78), true), -0.44, 1.07, 0.73);
+
+      // Right armored fabrication bay + rooftop helipad emblem
+      add(rbox(1.06, 0.52, 2.02, matDk), 0.76, 1.02, -0.14);
+      // Front armored fabrication bay shutter
+      add(rbox(0.76, 0.42, 0.08, matGraph, true), 0.76, 0.64, 0.88);
+      add(rbox(0.84, 0.06, 0.08, matHaz, true), 0.76, 0.88, 0.89);
+      // Helipad ring on right deck
+      const heliDeck = cyl(0.84, 0.04, matGun);
+      add(heliDeck, 0.76, 1.3, -0.46);
+      const heliRing = torus(0.74, matAcc, true);
+      heliRing.rotation.x = Math.PI / 2;
+      add(heliRing, 0.76, 1.33, -0.46);
+
+      // Articulated yellow lattice construction crane (rotates gently around Y in anim.ts)
+      crane = new THREE.Group();
+      crane.position.set(-0.42, 1.54, 0.18);
+      body.add(crane);
+      add(cyl(0.46, 0.18, matGun, "oct"), 0, 0.09, 0, crane);
+      add(rbox(0.36, 0.26, 0.46, matHaz, true), 0, 0.28, -0.1, crane);
+      add(rbox(0.28, 0.14, 0.06, matGlass, true), 0, 0.3, 0.14, crane);
+      // Twin-chord lattice jib boom + cross-bracing
+      for (const jx of [-0.075, 0.075]) {
+        const chord = rbox(0.045, 0.06, 2.04, matHaz, true);
+        chord.rotation.x = -0.42;
+        add(chord, jx, 0.58, 0.54, crane);
+      }
+      for (const t of [0.1, 0.42, 0.74, 1.06]) {
+        const brace = rbox(0.18, 0.04, 0.04, matGun, true);
+        add(brace, 0, 0.35 + t * 0.42, 0.08 + t * 0.9, crane);
+      }
+      // Hoist cable & armored grapple hook
+      add(cyl(0.025, 0.72, matLt), 0, 0.62, 1.38, crane);
+      add(rbox(0.12, 0.1, 0.12, matHaz, true), 0, 0.24, 1.38, crane);
+
+      // Parabolic LatheGeometry satellite dish on front-right tower (spins around Y)
+      add(cyl(0.14, 1.06, matGun, "oct"), 0.86, 1.78, 0.74);
+      spin = new THREE.Group();
+      spin.position.set(0.86, 2.34, 0.74);
+      body.add(spin);
+      const dish = meshOf(geoParabolicDish, matLt);
+      dish.scale.set(0.76, 0.76, 0.76);
+      dish.rotation.x = 0.88;
+      spin.add(dish);
+      const dishRim = torus(0.75, matAcc, true);
+      dishRim.rotation.x = Math.PI / 2 + 0.88;
+      dishRim.position.set(0, 0.12, 0.15);
+      spin.add(dishRim);
+      const feed = cyl(0.036, 0.34, matGun);
+      feed.rotation.x = 0.88;
+      add(feed, 0, 0.15, 0.17, spin);
+      add(sph(0.075, getGlowMat(CYAN_GLOW, 0.92), true), 0, 0.26, 0.29, spin);
+
+      // Corner tactical warning beacons
+      const b1 = sph(0.13, getGlowMat(colorHex, 0.9), true);
+      add(b1, -1.04, 1.62, -0.78);
+      pulse.push(b1);
+      const b2 = sph(0.1, getGlowMat(AMBER_GLOW, 0.88), true);
+      add(b2, 1.12, 1.36, -1.02);
+      pulse.push(b2);
+
+      smokePos = new THREE.Vector3(0.55, 1.55, -0.65);
+      topY = 2.75;
+      break;
+    }
+
+    case "power": {
+      // Reactor Plant (2x2) — Twin Hyperbolic Cooling Towers & Recessed Cyan Plasma Core
+      body.add(foundationPad(2, 2, colorHex, 0.22));
+
+      // Armored turbine hall base + heat-exchanger fins
+      add(rbox(1.72, 0.36, 1.72, matDk), 0, 0.4, 0);
+      add(rbox(1.36, 0.14, 0.14, matAcc, true), 0, 0.56, 0.82);
+      add(rbox(1.36, 0.14, 0.14, matAcc, true), 0, 0.56, -0.82);
+      for (const sx of [-0.88, 0.88]) {
+        for (const rz of [-0.4, 0, 0.4]) {
+          add(rbox(0.08, 0.24, 0.16, matGun, true), sx, 0.42, rz);
+        }
+      }
+
+      // Twin true curved LatheGeometry hyperbolic cooling towers
+      for (const [tx, tz] of [
+        [-0.45, -0.43],
+        [0.45, 0.43],
+      ]) {
+        const tower = meshOf(geoCoolingTower, matCer);
+        tower.scale.set(0.78, 1.24, 0.78);
+        add(tower, tx, 0.44, tz);
+        // Crisp faction-colored band collar near upper rim
+        const collar = torus(0.62, matAcc, true);
+        collar.rotation.x = Math.PI / 2;
+        add(collar, tx, 1.52, tz);
+        // Dark interior vent glow hint
+        const throat = cyl(0.46, 0.04, matGraph);
+        add(throat, tx, 1.38, tz);
+      }
+
+      // Central armored plasma containment housing + pulsing cyan plasma core & rings
+      add(cyl(0.52, 0.18, matGun, "oct"), 0, 0.62, 0);
+      const core = cyl(0.28, 0.84, getGlowMat(CYAN_GLOW, 0.94));
+      add(core, 0, 1.0, 0);
+      pulse.push(core);
+      // Glazed containment glass cylinder & 3 external magnetic containment rings
+      const shroud = cyl(0.4, 0.76, matGlass);
+      add(shroud, 0, 1.0, 0);
+      for (const ry of [0.78, 1.0, 1.22]) {
+        const r = torus(0.48, ry === 1.0 ? getGlowMat(CYAN_GLOW, 0.85) : matLt, true);
+        r.rotation.x = Math.PI / 2;
+        add(r, 0, ry, 0);
+        if (ry === 1.0) pulse.push(r);
+      }
+      // Top cap + 3 vertical containment struts
+      add(cyl(0.48, 0.12, matCer, "oct"), 0, 1.44, 0);
+      add(cyl(0.32, 0.06, matAcc, "oct"), 0, 1.52, 0);
+      for (let i = 0; i < 3; i++) {
+        const a = (i * Math.PI * 2) / 3 + 0.4;
+        add(rbox(0.065, 0.86, 0.065, matDk, true), Math.cos(a) * 0.24, 1.02, Math.sin(a) * 0.24);
+      }
+
+      smokePos = new THREE.Vector3(-0.45, 1.72, -0.43);
+      topY = 1.82;
+      break;
+    }
+
+    case "refinery": {
+      // Ore Refinery (3x2) — Smelter Hall, Curved Silo, Molten Vents & Illuminated Docking Ramp
+      body.add(foundationPad(3, 2, colorHex, 0.22));
+
+      // Armored ore furnace & smelter building (right side)
+      add(rbox(1.48, 0.66, 1.56, matDk), 0.62, 0.55, -0.06);
+      add(rbox(1.24, 0.26, 1.32, matCer), 0.62, 0.98, -0.06);
+      add(rbox(1.3, 0.09, 0.22, matAcc, true), 0.62, 1.12, 0.48);
+      add(rbox(1.3, 0.09, 0.22, matAcc, true), 0.62, 1.12, -0.58);
+      // Molten-amber glowing furnace heat vents on side & front
+      for (const vz of [-0.42, 0, 0.42]) {
+        add(rbox(0.05, 0.22, 0.22, getGlowMat(AMBER_GLOW, 0.86), true), 1.37, 0.56, vz);
+      }
+      add(rbox(0.84, 0.24, 0.06, getGlowMat(AMBER_GLOW, 0.88), true), 0.62, 0.54, 0.74);
+
+      // Sloped harvester docking bay ramp with illuminated chevron guides (+Z)
+      const ramp = rbox(1.06, 0.14, 0.58, matLt, true);
+      ramp.rotation.x = 0.14;
+      add(ramp, 0.62, 0.26, 0.88);
+      for (const cx of [0.24, 0.62, 1.0]) {
+        add(rbox(0.18, 0.03, 0.07, getGlowMat(AMBER_GLOW, 0.88), true), cx, 0.34, 0.96);
+      }
+      for (const bx of [0.06, 1.18]) {
+        add(rbox(0.09, 0.34, 0.09, matHaz, true), bx, 0.38, 0.96);
+      }
+
+      // Massive curved LatheGeometry ore storage silo (left side) with glowing fill gauge
+      const silo = meshOf(geoSilo, matCer);
+      silo.scale.set(1.12, 1.56, 1.12);
+      add(silo, -0.82, 0.22, -0.02);
+      const gaugeRing = torus(0.99, getGlowMat(AMBER_GLOW, 0.9), true);
+      gaugeRing.rotation.x = Math.PI / 2;
+      add(gaugeRing, -0.82, 1.36, -0.02);
+      pulse.push(gaugeRing);
+      const siloCap = torus(0.76, matAcc, true);
+      siloCap.rotation.x = Math.PI / 2;
+      add(siloCap, -0.82, 1.58, -0.02);
+
+      // Overhead ore transfer pipe connecting smelter hall to silo
+      const pipe = cyl(0.15, 1.16, matLt);
+      pipe.rotation.z = Math.PI / 2;
+      add(pipe, -0.14, 1.14, -0.14);
+
+      // Tall industrial smokestack with heat flange
+      add(cyl(0.22, 1.72, matGun), 1.18, 1.12, -0.58);
+      add(cyl(0.28, 0.1, matDk), 1.18, 1.78, -0.58);
+      const stackTip = cyl(0.15, 0.06, getGlowMat(HEAT_GLOW, 0.85));
+      add(stackTip, 1.18, 1.98, -0.58);
+      pulse.push(stackTip);
+
+      smokePos = new THREE.Vector3(1.18, 2.02, -0.58);
+      topY = 2.06;
+      break;
+    }
+
+    case "barracks": {
+      // Barracks (2x2) — Fortified Futuristic Garrison Bunker with Animated Flag
+      body.add(foundationPad(2, 2, colorHex, 0.2));
+
+      // Armored sloped bunker walls + heavy corner buttresses
+      add(rbox(1.66, 0.72, 1.58, matDk), 0, 0.56, -0.04);
+      for (const [bx, bz] of [
+        [-0.78, -0.78],
+        [0.78, -0.78],
+        [-0.78, 0.7],
+        [0.78, 0.7],
+      ]) {
+        add(rbox(0.26, 0.78, 0.26, matCer, true), bx, 0.58, bz);
+      }
+
+      // Sloped reinforced ribbed bunker roof
+      const roof = rbox(1.8, 0.2, 1.76, matCer);
+      roof.rotation.x = 0.08;
+      add(roof, 0, 1.0, -0.04);
+      for (const rx of [-0.56, -0.19, 0.19, 0.56]) {
+        const rib = rbox(0.12, 0.09, 1.66, matDk, true);
+        rib.rotation.x = 0.08;
+        add(rib, rx, 1.11, -0.04);
+      }
+      // Faction command crest & front brow bar
+      add(rbox(1.16, 0.09, 0.12, matAcc, true), 0, 0.88, 0.77);
+      add(rbox(0.84, 0.07, 0.56, matAcc, true), 0, 1.14, -0.22);
+
+      // Illuminated troop deployment bay with armored blast door frame
+      add(rbox(0.76, 0.58, 0.14, matGun, true), 0, 0.49, 0.74);
+      add(rbox(0.56, 0.46, 0.05, getGlowMat(WHITE_GLOW, 0.82), true), 0, 0.46, 0.79);
+      // Side garrison glass viewports
+      for (const sx of [-0.84, 0.84]) {
+        add(rbox(0.05, 0.14, 0.78, matGlass, true), sx, 0.66, -0.04);
+      }
+
+      // Rooftop comms mast & animated billowing faction flag (anchored cleanly at pole x=0)
+      add(cyl(0.052, 1.24, matLt), 0.66, 1.46, 0.54);
+      add(sph(0.085, matGold), 0.66, 2.08, 0.54);
+      flag = meshOf(geoFlag, matAcc);
+      add(flag, 0.66, 1.88, 0.54);
+
+      // Secondary roof comms whip on opposite corner
+      add(cyl(0.032, 0.62, matLt), -0.62, 1.38, -0.58);
+      add(rbox(0.32, 0.035, 0.035, matLt, true), -0.62, 1.56, -0.58);
+
+      smokePos = new THREE.Vector3(-0.42, 1.2, -0.4);
+      topY = 2.12;
+      break;
+    }
+
+    case "radar": {
+      // Radar Uplink (2x2) — Armored Telemetry Bunker, Geodesic Dome & Sweeping Parabolic Dish
+      body.add(foundationPad(2, 2, colorHex, 0.2));
+
+      // Armored octagonal telemetry bunker base
+      add(cyl(1.42, 0.56, matDk, "oct"), 0, 0.48, 0);
+      for (let i = 0; i < 4; i++) {
+        const a = (i * Math.PI) / 2 + Math.PI / 4;
+        const fin = rbox(0.24, 0.52, 0.34, matCer, true);
+        fin.rotation.y = -a + Math.PI / 2;
+        add(fin, Math.cos(a) * 0.64, 0.46, Math.sin(a) * 0.64);
+      }
+      add(rbox(0.68, 0.14, 0.07, matGlass, true), 0, 0.52, 0.68);
+      const baseAccent = torus(1.24, matAcc, true);
+      baseAccent.rotation.x = Math.PI / 2;
+      add(baseAccent, 0, 0.74, 0);
+
+      // Sleek geodesic telemetry dome
+      const dome = sph(1.28, matCer);
+      dome.scale.multiply(new THREE.Vector3(1, 0.56, 1));
+      add(dome, 0, 0.82, 0);
+      // Glowing cyan scan ring around pedestal collar
+      const scanRing = torus(0.42, getGlowMat(CYAN_GLOW, 0.88), true);
+      scanRing.rotation.x = Math.PI / 2;
+      add(scanRing, 0, 1.28, 0);
+      pulse.push(scanRing);
+
+      // Heavy pedestal mast & sweeping LatheGeometry parabolic radar dish
+      add(cyl(0.18, 0.78, matGun, "oct"), 0, 1.48, 0);
+      spin = new THREE.Group();
+      spin.position.set(0, 1.9, 0);
+      body.add(spin);
+
+      const yoke = rbox(0.32, 0.22, 0.28, matDk, true);
+      spin.add(yoke);
+      const rdish = meshOf(geoParabolicDish, matLt);
+      rdish.scale.set(1.16, 1.16, 1.16);
+      rdish.rotation.x = 0.92;
+      rdish.position.set(0, 0.04, 0.06);
+      spin.add(rdish);
+      const rRim = torus(1.14, matAcc, true);
+      rRim.rotation.x = Math.PI / 2 + 0.92;
+      rRim.position.set(0, 0.22, 0.28);
+      spin.add(rRim);
+      // Central receiver horn + stabilizer crossbar with glowing scan tips
+      const horn = cyl(0.05, 0.52, matGun);
+      horn.rotation.x = 0.92;
+      add(horn, 0, 0.24, 0.3, spin);
+      const hornOrb = sph(0.105, getGlowMat(CYAN_GLOW, 0.95), true);
+      add(hornOrb, 0, 0.42, 0.5, spin);
+      pulse.push(hornOrb);
+
+      add(rbox(1.26, 0.065, 0.065, matLt, true), 0, 0.34, -0.06, spin);
+      for (const sx of [-0.62, 0.62]) {
+        add(sph(0.08, getGlowMat(CYAN_GLOW, 0.9), true), sx, 0.37, -0.06, spin);
+      }
+
+      smokePos = new THREE.Vector3(0, 1.25, 0);
+      topY = 2.55;
+      break;
+    }
+
+    case "factory":
+    case "factory2": {
+      // War Factory / War Factory II (3x3) — Heavy Armored Vehicle Assembly Plant
+      const mk2 = kind === "factory2";
+      body.add(foundationPad(3, 3, colorHex, 0.22));
+
+      // Colossal armored assembly hall + external structural steel ribs
+      add(rbox(2.62, 0.96, 2.54, matDk), 0, 0.7, -0.04);
+      for (const rz of [-0.88, -0.32, 0.24, 0.8]) {
+        add(rbox(2.74, 0.92, 0.14, matCer, true), 0, 0.69, rz);
+      }
+      // Ribbed industrial clerestory roof monitor with glass skylights
+      add(rbox(2.06, 0.3, 1.84, matCer), 0, 1.3, -0.14);
+      for (const sx of [-1.04, 1.04]) {
+        add(rbox(0.05, 0.14, 1.56, matGlass, true), sx, 1.32, -0.14);
+      }
+
+      // Wide illuminated vehicle exit hangar bay with blast shutters (+Z)
+      add(rbox(1.74, 0.8, 0.12, matGun, true), 0, 0.62, 1.24);
+      add(rbox(1.56, 0.68, 0.06, matGraph, true), 0, 0.56, 1.28);
+      // Partially raised ribbed steel blast shutter at top of bay
+      add(rbox(1.56, 0.18, 0.08, matLt, true), 0, 0.84, 1.29);
+      // Bright hangar bay overhead floodlight strip + faction header fascia
+      add(rbox(1.52, 0.06, 0.04, getGlowMat(WHITE_GLOW, 0.88), true), 0, 0.96, 1.31);
+      add(rbox(1.88, 0.12, 0.12, matAcc, true), 0, 1.07, 1.26);
+
+      // Heavy overhead external gantry beam across roof
+      for (const gx of [-0.94, 0.94]) {
+        add(rbox(0.16, 0.36, 0.16, matGun, true), gx, 1.44, -0.68);
+      }
+      add(rbox(2.08, 0.15, 0.2, matAcc, true), 0, 1.62, -0.68);
+
+      // Left pair of heavy exhaust stacks with glowing heat tips
+      add(cyl(0.24, 1.02, matGun), -0.96, 1.56, 0.74);
+      add(cyl(0.22, 0.82, matGun), -0.6, 1.46, 0.74);
+      add(cyl(0.28, 0.08, matDk), -0.96, 1.92, 0.74);
+      const f1 = sph(0.105, getGlowMat(HEAT_GLOW, 0.92), true);
+      add(f1, -0.96, 2.09, 0.74);
+      pulse.push(f1);
+
+      if (mk2) {
+        // MKII: Symmetrical right pair of heavy exhaust stacks
+        add(cyl(0.24, 1.02, matGun), 0.96, 1.56, 0.74);
+        add(cyl(0.22, 0.82, matGun), 0.6, 1.46, 0.74);
+        add(cyl(0.28, 0.08, matDk), 0.96, 1.92, 0.74);
+        const f2 = sph(0.105, getGlowMat(HEAT_GLOW, 0.92), true);
+        add(f2, 0.96, 2.09, 0.74);
+        pulse.push(f2);
+
+        // MKII gold & faction reinforced armor parapet trim
+        add(rbox(2.56, 0.09, 0.1, matGold, true), 0, 1.21, 1.25);
+        for (const sx of [-1.3, 1.3]) {
+          add(rbox(0.1, 0.09, 2.38, matGold, true), sx, 1.21, -0.04);
+          add(rbox(0.14, 0.18, 1.44, matAcc, true), sx, 1.08, -0.08);
+        }
+        // Glowing roof assembly bay lights
+        for (const rx of [-0.62, 0.62]) {
+          add(rbox(0.38, 0.05, 0.92, getGlowMat(CYAN_GLOW, 0.84), true), rx, 1.46, -0.14);
+        }
+        // Tall command comms & telemetry tower on rear-right
+        add(rbox(0.34, 0.36, 0.34, matCer, true), 1.04, 1.44, -0.94);
+        add(cyl(0.075, 0.96, matLt), 1.04, 2.04, -0.94);
+        add(rbox(0.42, 0.045, 0.045, matGold, true), 1.04, 2.26, -0.94);
+        const b2 = sph(0.115, getGlowMat(CYAN_GLOW, 0.94), true);
+        add(b2, 1.04, 2.55, -0.94);
+        pulse.push(b2);
+      }
+
+      smokePos = new THREE.Vector3(-0.96, 2.12, 0.74);
+      topY = mk2 ? 2.64 : 2.18;
+      break;
+    }
+
+    case "techlab": {
+      // Tech Lab (3x3) — Sleek Titanium/Glass Research Citadel & Twin-Ring Particle Accelerator Spire
+      body.add(foundationPad(3, 3, colorHex, 0.24));
+
+      // Stepped futuristic titanium-and-glass research tiers
+      add(rbox(2.48, 0.66, 2.48, matDk), 0, 0.57, 0);
+      // Curved / wraparound atrium glass windows on lower & mid tiers
+      add(rbox(1.86, 0.24, 0.07, matGlass, true), -0.14, 0.64, 1.25);
+      add(rbox(0.07, 0.24, 1.86, matGlass, true), -1.25, 0.64, -0.1);
+      add(rbox(1.84, 0.64, 1.84, matCer), -0.12, 1.22, -0.14);
+      add(rbox(1.52, 0.16, 0.06, matGlass, true), -0.12, 1.26, 0.79);
+      add(rbox(1.22, 0.42, 1.22, matLt), -0.24, 1.74, -0.26);
+      // Faction architectural accent trim bands
+      add(rbox(1.92, 0.09, 1.92, matAcc, true), -0.12, 1.54, -0.14);
+      add(rbox(1.28, 0.08, 1.28, matAcc, true), -0.24, 1.95, -0.26);
+
+      // Sculpted twin-ring particle accelerator spire (front-right corner)
+      const ax = 0.78;
+      const az = 0.78;
+      add(cyl(0.62, 0.34, matGun, "oct"), ax, 0.72, az);
+      // 3 sleek titanium containment struts rising around plasma column
+      for (let i = 0; i < 3; i++) {
+        const a = (i * Math.PI * 2) / 3 + 0.3;
+        add(rbox(0.07, 1.54, 0.07, matLt, true), ax + Math.cos(a) * 0.22, 1.52, az + Math.sin(a) * 0.22);
+      }
+      // Restrained central cyan plasma column (tasteful glow intensity!)
+      const core = cyl(0.18, 1.48, getGlowMat(CYAN_GLOW, 0.8));
+      add(core, ax, 1.52, az);
+      pulse.push(core);
+
+      // Lower accelerator ring (spin rotates around Y)
+      spin = new THREE.Group();
+      spin.position.set(ax, 1.66, az);
+      body.add(spin);
+      const ring1 = torus(0.92, matAcc);
+      ring1.rotation.x = Math.PI / 2 + 0.34;
+      spin.add(ring1);
+      const ring1Inner = torus(0.84, getGlowMat(CYAN_GLOW, 0.8), true);
+      ring1Inner.rotation.x = Math.PI / 2 + 0.34;
+      spin.add(ring1Inner);
+
+      // Upper counter-rotating accelerator ring (spin2 rotates around -Y)
+      spin2 = new THREE.Group();
+      spin2.position.set(ax, 2.08, az);
+      body.add(spin2);
+      const ring2 = torus(0.7, matLt);
+      ring2.rotation.x = Math.PI / 2 - 0.36;
+      spin2.add(ring2);
+      const ring2Glow = torus(0.64, getGlowMat(CYAN_GLOW, 0.84), true);
+      ring2Glow.rotation.x = Math.PI / 2 - 0.36;
+      spin2.add(ring2Glow);
+
+      // Crown plasma focal orb
+      const orb = sph(0.32, getGlowMat(CYAN_GLOW, 0.9), true);
+      add(orb, ax, 2.46, az);
+      pulse.push(orb);
+
+      // Tall telemetry comms spire on rear-left penthouse
+      add(cyl(0.055, 1.06, matLt), -0.68, 2.38, -0.68);
+      add(sph(0.1, getGlowMat(colorHex, 0.9), true), -0.68, 2.94, -0.68);
+
+      smokePos = new THREE.Vector3(-0.2, 1.98, -0.2);
+      topY = 3.04;
+      break;
+    }
+
+    case "turret": {
+      // Sentry Turret (1x1) — Armored Octagonal Pillbox + Rotating Twin-Autocannon Turret
+      body.add(foundationPad(1, 1, colorHex, 0.16));
+
+      // Armored octagonal pillbox base + sloped armor collar
+      add(cyl(0.84, 0.24, matDk, "oct"), 0, 0.28, 0);
+      add(cyl(0.56, 0.24, matCer, "oct"), 0, 0.48, 0);
+      const pwrRing = torus(0.56, getGlowMat(CYAN_GLOW, 0.85), true);
+      pwrRing.rotation.x = Math.PI / 2;
+      add(pwrRing, 0, 0.42, 0);
+      trackPowerGlow(pwrRing, powerGlow);
+
+      // Sleek rotating twin-autocannon armored turret
+      turret = new THREE.Group();
+      turret.position.set(0, 0.65, 0);
+      body.add(turret);
+
+      turret.add(meshOf(geoSentryPod, matCer));
+      // Faction-painted cheek armor & top stripe
+      add(rbox(0.32, 0.055, 0.46, matAcc, true), 0, 0.155, -0.06, turret);
+      add(rbox(0.42, 0.14, 0.18, matDk, true), 0, 0.02, -0.44, turret);
+
+      // Glowing target-lock optical sensor (tracked by powerGlow)
+      add(rbox(0.18, 0.1, 0.16, matGun, true), 0, 0.2, -0.06, turret);
+      const sight = sph(0.095, getGlowMat(CYAN_GLOW, 0.92), true);
+      add(sight, 0, 0.21, 0.03, turret);
+      trackPowerGlow(sight, powerGlow);
+
+      // Recoil twin autocannons (mounted at z=0.26 per anim.ts)
+      recoil = new THREE.Group();
+      recoil.position.set(0, 0.02, 0.26);
+      turret.add(recoil);
+      add(rbox(0.38, 0.16, 0.18, matDk, true), 0, 0, 0, recoil);
+      for (const bx of [-0.12, 0.12]) {
+        const shroud = cyl(0.095, 0.3, matCer);
+        shroud.rotation.x = Math.PI / 2;
+        add(shroud, bx, 0, 0.16, recoil);
+        const barrel = cyl(0.062, 0.74, matGun);
+        barrel.rotation.x = Math.PI / 2;
+        add(barrel, bx, 0, 0.38, recoil);
+        const flash = cyl(0.088, 0.1, matLt, "oct");
+        flash.rotation.x = Math.PI / 2;
+        add(flash, bx, 0, 0.75, recoil);
+      }
+
+      smokePos = new THREE.Vector3(0, 0.84, 0);
+      topY = 1.06;
+      break;
+    }
+
+    case "arc": {
+      // Arc Coil (1x1) — Iconic Futuristic Tesla/Arc Spire
+      body.add(foundationPad(1, 1, colorHex, 0.16));
+
+      // Armored octagonal insulated pedestal + faction buttress fins
+      add(cyl(0.82, 0.22, matDk, "oct"), 0, 0.26, 0);
+      add(cyl(0.54, 0.32, matCer, "oct"), 0, 0.48, 0);
+      for (let i = 0; i < 3; i++) {
+        const a = (i * Math.PI * 2) / 3;
+        const fin = rbox(0.11, 0.38, 0.26, matAcc, true);
+        fin.rotation.y = -a + Math.PI / 2;
+        add(fin, Math.cos(a) * 0.34, 0.42, Math.sin(a) * 0.34);
+      }
+
+      // Central conductive core mast
+      add(cyl(0.18, 0.86, matGun), 0, 0.96, 0);
+
+      // Stepped copper-chrome induction coils + glowing cyan inner rings (tracked by powerGlow!)
+      for (const [ry, rd] of [
+        [0.72, 0.7],
+        [0.95, 0.56],
+        [1.17, 0.43],
+      ]) {
+        const coil = torus(rd, matCopper);
+        coil.rotation.x = Math.PI / 2;
+        add(coil, 0, ry, 0);
+        trackPowerGlow(coil, powerGlow);
+
+        const arcRing = torus(rd * 0.86, getGlowMat(CYAN_GLOW, 0.82), true);
+        arcRing.rotation.x = Math.PI / 2;
+        add(arcRing, 0, ry + 0.04, 0);
+        trackPowerGlow(arcRing, powerGlow);
+      }
+
+      // Triple lightning-rod stabilizer arms around the coils
+      for (let i = 0; i < 3; i++) {
+        const a = (i * Math.PI * 2) / 3 + Math.PI / 3;
+        const rod = cyl(0.04, 0.78, matLt);
+        rod.position.set(Math.cos(a) * 0.34, 0.94, Math.sin(a) * 0.34);
+        rod.rotation.z = Math.cos(a) * 0.16;
+        rod.rotation.x = -Math.sin(a) * 0.16;
+        body.add(rod);
+        const prong = sph(0.075, matCopper);
+        add(prong, Math.cos(a) * 0.27, 1.34, Math.sin(a) * 0.27);
+      }
+
+      // Crackling glowing cyan plasma crown sphere + tilted plasma hoop
+      const orb = sph(0.36, getGlowMat(CYAN_GLOW, 0.94), true);
+      add(orb, 0, 1.44, 0);
+      trackPowerGlow(orb, powerGlow);
+      pulse.push(orb);
+
+      const halo = torus(0.5, getGlowMat(CYAN_GLOW, 0.8), true);
+      halo.rotation.x = Math.PI / 2 + 0.42;
+      add(halo, 0, 1.44, 0);
+      trackPowerGlow(halo, powerGlow);
+
+      smokePos = new THREE.Vector3(0, 0.96, 0);
+      topY = 1.72;
+      break;
+    }
+
+    case "purifier": {
+      // Ore Purifier (2x2) — Twin Curved Centrifuges, Transfer Manifolds & Glowing Smelting Core
+      body.add(foundationPad(2, 2, colorHex, 0.2));
+
+      // Armored rear smelting & control house
+      add(rbox(1.62, 0.62, 0.88, matDk), 0, 0.51, -0.44);
+      add(rbox(1.38, 0.12, 0.74, matCer, true), 0, 0.84, -0.44);
+      add(rbox(1.16, 0.08, 0.12, matAcc, true), 0, 0.91, -0.1);
+      // Glowing molten-amber smelting core viewport
+      add(rbox(0.76, 0.3, 0.06, getGlowMat(AMBER_GLOW, 0.88), true), 0, 0.54, 0.02);
+      // Exhaust stack
+      add(cyl(0.16, 0.92, matGun), 0.58, 1.24, -0.52);
+
+      // Twin curved LatheGeometry amber-ringed centrifuges
+      for (const sx of [-0.48, 0.48]) {
+        const cent = meshOf(geoCentrifuge, matCer);
+        cent.scale.set(0.68, 1.38, 0.68);
+        add(cent, sx, 0.22, 0.46);
+        const copperBand = torus(0.64, matCopper, true);
+        copperBand.rotation.x = Math.PI / 2;
+        add(copperBand, sx, 0.88, 0.46);
+        const amberBand = torus(0.58, getGlowMat(AMBER_GLOW, 0.88), true);
+        amberBand.rotation.x = Math.PI / 2;
+        add(amberBand, sx, 1.24, 0.46);
+        pulse.push(amberBand);
+        // Feed pipe from centrifuge back into smelting core
+        const feed = cyl(0.09, 0.72, matLt);
+        feed.rotation.x = Math.PI / 2;
+        add(feed, sx, 0.78, 0.08);
+      }
+
+      // Overhead cross-transfer manifold bridging both centrifuges
+      const manifold = cyl(0.11, 1.06, matCopper);
+      manifold.rotation.z = Math.PI / 2;
+      add(manifold, 0, 1.44, 0.46);
+      add(cyl(0.18, 0.14, matAcc, "oct"), 0, 1.44, 0.46);
+
+      smokePos = new THREE.Vector3(0.58, 1.72, -0.52);
+      topY = 1.78;
+      break;
+    }
+
+    case "depot": {
+      // Service Depot (3x2) — Recessed Repair Pad, Twin Heavy Gantry Arches & Sliding Welding Crane
+      body.add(foundationPad(3, 2, colorHex, 0.2));
+
+      // Recessed metallic vehicle repair floor pad + hydraulic lift deck + green status strips
+      add(rbox(2.3, 0.06, 1.24, matGun, true), 0.04, 0.24, 0.14);
+      add(rbox(1.54, 0.04, 0.88, matDk, true), 0.04, 0.27, 0.14);
+      for (const sz of [-0.42, 0.7]) {
+        add(rbox(1.86, 0.03, 0.06, getGlowMat(HEAL_GLOW, 0.84), true), 0.04, 0.28, sz);
+      }
+
+      // Twin heavy gantry arch columns & overhead structural girder rail
+      for (const gx of [-1.14, 1.14]) {
+        add(rbox(0.22, 1.34, 0.24, matCer, true), gx, 0.88, -0.66);
+        const knee = rbox(0.16, 0.36, 0.44, matDk, true);
+        knee.rotation.x = 0.45;
+        add(knee, gx, 1.38, -0.44);
+        // Front low anchor bollard
+        add(rbox(0.2, 0.32, 0.2, matDk, true), gx, 0.38, 0.68);
+      }
+      add(rbox(2.56, 0.18, 0.26, matDk, true), 0, 1.56, -0.66);
+      add(rbox(2.42, 0.08, 0.3, matAcc, true), 0, 1.66, -0.66);
+
+      // Rear diagnostic control kiosk with glass terminal
+      add(rbox(0.68, 0.56, 0.34, matCer, true), -0.62, 0.5, -0.64);
+      add(rbox(0.48, 0.18, 0.05, matGlass, true), -0.62, 0.58, -0.45);
+
+      // Sliding animated overhead welding crane arm (slides along X in anim.ts!)
+      crane = new THREE.Group();
+      crane.position.set(0.0, 1.4, -0.66);
+      body.add(crane);
+      add(rbox(0.42, 0.24, 0.34, matCer, true), 0, 0, 0, crane);
+      add(rbox(0.44, 0.07, 0.36, matHaz, true), 0, -0.1, 0, crane);
+      // Cantilevered articulated welding boom reaching over the service pad
+      add(rbox(0.13, 0.13, 1.14, matLt, true), 0, -0.04, 0.56, crane);
+      add(rbox(0.12, 0.28, 0.12, matGun, true), 0, -0.2, 1.04, crane);
+      const weldHead = sph(0.105, getGlowMat(CYAN_GLOW, 0.94), true);
+      add(weldHead, 0, -0.35, 1.04, crane);
+      pulse.push(weldHead);
+
+      // Corner heal-bay status beacons
+      for (const [bx, bz] of [
+        [-1.14, 0.68],
+        [1.14, 0.68],
+      ]) {
+        const b = sph(0.09, getGlowMat(HEAL_GLOW, 0.88), true);
+        add(b, bx, 0.58, bz);
+        pulse.push(b);
+      }
+
+      smokePos = new THREE.Vector3(-0.82, 1.15, -0.45);
+      topY = 1.82;
+      break;
+    }
+
+    case "superweapon": {
+      // Ion Uplink (3x3) — Breathtaking Orbital Strike Facility
+      body.add(foundationPad(3, 3, colorHex, 0.24));
+
+      // Armored stepped octagonal silo base
+      add(cyl(2.68, 0.48, matDk, "oct"), 0, 0.48, 0);
+      add(cyl(2.16, 0.36, matCer, "oct"), 0, 0.88, 0);
+      add(cyl(1.72, 0.18, matAcc, "oct"), 0, 1.14, 0);
+      // Command viewport slits on cardinal flanks
+      for (const [vx, vz, rotY] of [
+        [0, 1.24, 0],
+        [0, -1.24, 0],
+        [1.24, 0, Math.PI / 2],
+        [-1.24, 0, Math.PI / 2],
+      ]) {
+        const vp = rbox(0.96, 0.14, 0.06, matGlass, true);
+        vp.rotation.y = rotY;
+        add(vp, vx, 0.56, vz);
+      }
+
+      // Sculpted LatheGeometry emitter aperture collar & glowing plasma core
+      const ap = meshOf(geoIonAperture, matGun);
+      ap.scale.set(1.24, 0.54, 1.24);
+      add(ap, 0, 1.18, 0);
+      const skyCore = cyl(0.56, 0.24, getGlowMat(CYAN_GLOW, 0.94));
+      add(skyCore, 0, 1.62, 0);
+      pulse.push(skyCore);
+
+      // Giant curved LatheGeometry orbital emitter dish (spins smoothly around Y)
+      spin = new THREE.Group();
+      spin.position.set(0, 1.98, 0);
+      body.add(spin);
+
+      const gimbal = torus(1.28, matLt);
+      gimbal.rotation.x = Math.PI / 2;
+      spin.add(gimbal);
+      const ionDish = meshOf(geoParabolicDish, matCer);
+      ionDish.scale.set(1.88, 1.72, 1.88);
+      ionDish.rotation.x = 0.52;
+      ionDish.position.set(0, 0.16, -0.14);
+      spin.add(ionDish);
+      const dishRim = torus(1.86, getGlowMat(CYAN_GLOW, 0.88), true);
+      dishRim.rotation.x = Math.PI / 2 + 0.52;
+      dishRim.position.set(0, 0.52, 0.065);
+      spin.add(dishRim);
+      const dishBand = torus(1.56, matAcc, true);
+      dishBand.rotation.x = Math.PI / 2 + 0.52;
+      dishBand.position.set(0, 0.34, -0.04);
+      spin.add(dishBand);
+      // Central focus emitter spire & focal orb
+      const focusRod = cyl(0.11, 0.86, matLt);
+      focusRod.rotation.x = 0.52;
+      add(focusRod, 0, 0.56, 0.08, spin);
+      const focusOrb = sph(0.26, getGlowMat(CYAN_GLOW, 0.98), true);
+      add(focusOrb, 0, 0.92, 0.29, spin);
+      pulse.push(focusOrb);
+
+      // Counter-rotating plasma containment rings (spin2 rotates around -Y)
+      spin2 = new THREE.Group();
+      spin2.position.set(0, 2.32, 0);
+      body.add(spin2);
+      const accel1 = torus(1.74, matLt, true);
+      accel1.rotation.x = Math.PI / 2 + 0.28;
+      spin2.add(accel1);
+      const accel1Glow = torus(1.66, getGlowMat(CYAN_GLOW, 0.84), true);
+      accel1Glow.rotation.x = Math.PI / 2 + 0.28;
+      spin2.add(accel1Glow);
+      const accel2 = torus(1.38, matAcc, true);
+      accel2.rotation.x = Math.PI / 2 - 0.3;
+      spin2.add(accel2);
+
+      // 3 angled titanium focus pylons converging symmetrically toward the orbital emitter
+      for (let i = 0; i < 3; i++) {
+        const ang = (i * Math.PI * 2) / 3 + Math.PI / 6;
+        const px = Math.cos(ang) * 1.1;
+        const pz = Math.sin(ang) * 1.1;
+
+        const pylonGroup = new THREE.Group();
+        pylonGroup.position.set(px, 0.84, pz);
+        pylonGroup.rotation.order = "YXZ";
+        pylonGroup.rotation.y = -ang + Math.PI / 2;
+        pylonGroup.rotation.x = -0.14; // angle symmetrically inward toward the emitter dish
+        body.add(pylonGroup);
+
+        add(cyl(0.26, 1.94, matCer, "taper"), 0, 0.92, 0, pylonGroup);
+        add(rbox(0.12, 1.32, 0.34, matAcc, true), 0, 0.68, 0.16, pylonGroup);
+        for (const ry of [1.1, 1.44, 1.76]) {
+          const coil = torus(0.32, getGlowMat(CYAN_GLOW, 0.85), true);
+          coil.rotation.x = Math.PI / 2;
+          add(coil, 0, ry, 0, pylonGroup);
+        }
+        const tip = sph(0.18, getGlowMat(CYAN_GLOW, 0.96), true);
+        add(tip, 0, 1.96, 0, pylonGroup);
+        pulse.push(tip);
+      }
+
+      smokePos = new THREE.Vector3(-0.78, 1.65, -0.78);
+      topY = 3.28;
+      break;
+    }
+
+    case "derrick": {
+      // Oil Derrick (2x2) — Detailed Industrial Nodding Pumpjack
+      body.add(foundationPad(2, 2, colorHex, 0.2));
+
+      // Bolted steel machinery skid, gearbox housing & wellhead assembly (+Z)
+      add(rbox(1.62, 0.15, 1.62, matDk, true), 0, 0.275, 0);
+      add(rbox(0.54, 0.34, 0.56, matGun, true), 0.18, 0.52, -0.36);
+      // Rotary crank flywheel on side of gearbox
+      const flywheel = cyl(0.36, 0.08, matLt);
+      flywheel.rotation.z = Math.PI / 2;
+      add(flywheel, 0.48, 0.54, -0.38);
+
+      // Wellhead collar & flanged drill pipe at front
+      add(cyl(0.34, 0.42, matGun, "oct"), 0.18, 0.56, 0.56);
+      add(cyl(0.24, 0.12, matAcc, "oct"), 0.18, 0.78, 0.56);
+
+      // Sculpted LatheGeometry crude storage tank + connecting steel piping + faction beacon
+      const tank = meshOf(geoSilo, matCer);
+      tank.scale.set(0.74, 1.12, 0.74);
+      add(tank, -0.48, 0.24, -0.36);
+      const tankBand = torus(0.7, matAcc, true);
+      tankBand.rotation.x = Math.PI / 2;
+      add(tankBand, -0.48, 0.9, -0.36);
+      // Connecting crude transfer pipe from wellhead to tank
+      const pipe = cyl(0.08, 0.82, matLt);
+      pipe.rotation.z = Math.PI / 2;
+      pipe.rotation.y = 0.72;
+      add(pipe, -0.15, 0.44, 0.12);
+      const beacon = sph(0.115, getGlowMat(colorHex, 0.92), true);
+      add(beacon, -0.48, 1.42, -0.36);
+      pulse.push(beacon);
+
+      // Steel lattice A-frame Sampson post rising to the walking-beam saddle pivot
+      const pivotX = 0.18;
+      const pivotY = 1.6;
+      const pivotZ = -0.02;
+      for (const [sx, sz] of [
+        [-0.26, -0.26],
+        [0.26, -0.26],
+        [-0.26, 0.26],
+        [0.26, 0.26],
+      ]) {
+        const strut = rbox(0.075, 1.32, 0.075, matLt, true);
+        strut.position.set(pivotX + sx * 0.55, 0.96, pivotZ + sz * 0.55);
+        strut.rotation.z = sx > 0 ? 0.2 : -0.2;
+        strut.rotation.x = sz > 0 ? -0.2 : 0.2;
+        body.add(strut);
+      }
+      add(rbox(0.46, 0.06, 0.46, matGun, true), pivotX, 0.92, pivotZ);
+      add(rbox(0.32, 0.06, 0.32, matGun, true), pivotX, 1.28, pivotZ);
+      add(rbox(0.26, 0.18, 0.24, matGun, true), pivotX, pivotY, pivotZ);
+
+      // Animated nodding horsehead walking-beam (crane rocks around X in anim.ts!)
+      crane = new THREE.Group();
+      crane.position.set(pivotX, pivotY, pivotZ);
+      body.add(crane);
+      // Heavy I-beam with faction web & dark steel flanges
+      add(rbox(0.14, 0.16, 1.38, matAcc, true), 0, 0, 0, crane);
+      add(rbox(0.2, 0.045, 1.44, matGun, true), 0, 0.095, 0, crane);
+      add(rbox(0.2, 0.045, 1.44, matGun, true), 0, -0.095, 0, crane);
+      // Authentic extruded curved horsehead nose (+Z) with hazard trim
+      add(meshOf(geoHorsehead, matGun), 0, -0.04, 0.66, crane);
+      add(rbox(0.22, 0.09, 0.24, matHaz, true), 0, 0.06, 0.68, crane);
+      // Vertical steel sucker rod descending straight into wellhead
+      add(cyl(0.048, 1.18, matLt), 0, -0.62, 0.58, crane);
+      // Heavy rear counterweight & pitman arm (-Z)
+      add(rbox(0.34, 0.28, 0.36, matDk, true), 0, -0.08, -0.66, crane);
+      add(rbox(0.36, 0.08, 0.24, matHaz, true), 0, -0.08, -0.72, crane);
+      add(cyl(0.055, 0.84, matLt), 0, -0.52, -0.44, crane);
+
+      smokePos = new THREE.Vector3(-0.48, 1.44, -0.36);
+      topY = 2.24;
+      break;
+    }
+
+    default:
+      return null;
+  }
+
+  for (const p of pulse) {
+    p.userData.baseScale = p.scale.clone();
+  }
+
+  const rig: Partial<AnimRig> = {
+    ...soldierParts,
+    turret: turret ?? undefined,
+    recoil,
+    spiderLegs,
+    spin,
+    spin2,
+    pulse: pulse.length ? pulse : undefined,
+    flag,
+    crane,
+    bin,
+    smokePos,
+    powerGlow: powerGlow.length ? powerGlow : undefined,
+  };
+
+  return {
+    topY,
+    turret,
+    rig,
+    powerGlow: powerGlow.length ? powerGlow : undefined,
+  };
+}

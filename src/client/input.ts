@@ -56,7 +56,7 @@ export class Input {
   private panVz = 0;
   private labelTimer: ReturnType<typeof setTimeout> | null = null;
 
-  private placeReason: (tx: number, ty: number, w: number, h: number) => string | null;
+  private placeReason: (tx: number, ty: number, w: number, h: number, kind?: BuildingKind) => string | null;
   private oreAt: (x: number, y: number) => boolean;
 
   constructor(
@@ -64,7 +64,7 @@ export class Input {
     r: Renderer,
     net: Net,
     getSlot: () => number,
-    placeReason: (tx: number, ty: number, w: number, h: number) => string | null,
+    placeReason: (tx: number, ty: number, w: number, h: number, kind?: BuildingKind) => string | null,
     oreAt: (x: number, y: number) => boolean,
   ) {
     this.gs = gs;
@@ -421,7 +421,12 @@ export class Input {
     const prods = [...this.r.tracked.values()].filter(
       (t) =>
         t.last.o === slot &&
-        (t.last.k === "conyard" || t.last.k === "barracks" || t.last.k === "factory" || t.last.k === "factory2"),
+        (t.last.k === "conyard" ||
+          t.last.k === "barracks" ||
+          t.last.k === "factory" ||
+          t.last.k === "factory2" ||
+          t.last.k === "airfield" ||
+          t.last.k === "shipyard"),
     );
     if (!prods.length) return;
     const pick = prods[this.prodCycle++ % prods.length];
@@ -771,7 +776,15 @@ export class Input {
       if (this.selection.size === 1) {
         const singleId = [...this.selection][0];
         const b = this.r.tracked.get(singleId);
-        if (b && b.last.o === slot && (b.last.k === "barracks" || b.last.k === "factory" || b.last.k === "factory2")) {
+        if (
+          b &&
+          b.last.o === slot &&
+          (b.last.k === "barracks" ||
+            b.last.k === "factory" ||
+            b.last.k === "factory2" ||
+            b.last.k === "airfield" ||
+            b.last.k === "shipyard")
+        ) {
           const ground = this.gs.pickGround();
           if (ground) {
             this.net.send({ t: "rally", id: singleId, x: ground.x, y: ground.z });
@@ -953,7 +966,7 @@ export class Input {
     this.ghost.position.set(tx + d.w / 2, 0.02, ty + d.h / 2);
     this.ghost.userData.tx = tx;
     this.ghost.userData.ty = ty;
-    const reason = this.placeReason(tx, ty, d.w, d.h);
+    const reason = this.placeReason(tx, ty, d.w, d.h, this.placing);
     const ok = reason === null;
     this.ghostOk = ok;
     this.ghostReason = reason;
@@ -962,7 +975,9 @@ export class Input {
     if (hint) {
       hint.classList.toggle("invalid", !ok);
       hint.textContent = ok
-        ? "Left-click to place · Right-click or Esc to cancel & refund"
+        ? d.waterOnly
+          ? "Left-click on water to deploy Naval Shipyard · Right-click or Esc to cancel & refund"
+          : "Left-click to place · Right-click or Esc to cancel & refund"
         : `Cannot place: ${reason} · Right-click or Esc to cancel`;
     }
   }

@@ -16,6 +16,8 @@ export type UiSfx =
   | "upgrade"
   | "recon"
   | "hold"
+  | "powerDown"
+  | "powerUp"
   | "win"
   | "lose";
 
@@ -357,11 +359,13 @@ export class AudioEngine {
           ? 0.065
           : weapon === "rocket"
             ? 0.075
-            : weapon === "arty"
+            : weapon === "arty" || weapon === "bomb"
               ? 0.09
-              : weapon === "arc"
-                ? 0.07
-                : 0.065;
+              : weapon === "missile" || weapon === "torpedo"
+                ? 0.085
+                : weapon === "arc"
+                  ? 0.07
+                  : 0.065;
 
     if (!this.allow(`shot:${weapon}`, minGap, ctx.currentTime)) return;
 
@@ -388,6 +392,15 @@ export class AudioEngine {
           break;
         case "melee":
           this.synthMelee(ctx, this.sfxBus, now, jitter, heroic);
+          break;
+        case "missile":
+          this.synthMissile(ctx, this.sfxBus, now, jitter, heroic);
+          break;
+        case "torpedo":
+          this.synthTorpedo(ctx, this.sfxBus, now, jitter, heroic);
+          break;
+        case "bomb":
+          this.synthBomb(ctx, this.sfxBus, now, jitter, heroic);
           break;
       }
       if (heroic) {
@@ -663,19 +676,21 @@ export class AudioEngine {
         ? 0.08
         : kind === "alert"
           ? 0.65
-          : kind === "select"
-            ? 0.04
-            : kind === "move" || kind === "attack"
-              ? 0.045
-              : kind === "deny"
-                ? 0.12
-                : kind === "promote" || kind === "crate"
+          : kind === "powerDown" || kind === "powerUp"
+            ? 0.45
+            : kind === "select"
+              ? 0.04
+              : kind === "move" || kind === "attack"
+                ? 0.045
+                : kind === "deny"
                   ? 0.12
-                  : kind === "recon"
-                    ? 0.35
-                    : kind === "hold"
-                      ? 0.06
-                      : 0.04;
+                  : kind === "promote" || kind === "crate"
+                    ? 0.12
+                    : kind === "recon"
+                      ? 0.35
+                      : kind === "hold"
+                        ? 0.06
+                        : 0.04;
 
     if (!this.allow(`ui:${kind}`, minGap, now)) return;
 
@@ -726,6 +741,12 @@ export class AudioEngine {
           break;
         case "hold":
           this.uiHold(ctx, bus, now);
+          break;
+        case "powerDown":
+          this.uiPowerDown(ctx, bus, now);
+          break;
+        case "powerUp":
+          this.uiPowerUp(ctx, bus, now);
           break;
         case "win":
           this.uiWin(ctx, bus, now);
@@ -1074,6 +1095,135 @@ export class AudioEngine {
     }
   }
 
+  private synthMissile(
+    ctx: AudioContext,
+    bus: AudioNode,
+    now: number,
+    jitter: number,
+    heroic: boolean,
+  ): void {
+    // Heavy VLS / cruise missile ignition thump
+    this.playTone(ctx, bus, "sine", 148 * jitter, 38, now, 0.16, heroic ? 0.44 : 0.36, 0.005);
+    this.playTone(ctx, bus, "triangle", 280 * jitter, 90, now, 0.09, 0.22, 0.004);
+
+    // Sweeping booster roar (heavy whoosh)
+    if (this.pinkNoise) {
+      const roar = this.makeNoiseSource(ctx, this.pinkNoise);
+      const bp = ctx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.Q.value = 1.6;
+      bp.frequency.setValueAtTime(240 * jitter, now);
+      bp.frequency.exponentialRampToValueAtTime(1450 * jitter, now + 0.16);
+      bp.frequency.exponentialRampToValueAtTime(520 * jitter, now + 0.42);
+
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.linearRampToValueAtTime(heroic ? 0.46 : 0.38, now + 0.035);
+      g.gain.exponentialRampToValueAtTime(0.18, now + 0.22);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.44);
+
+      roar.connect(bp);
+      bp.connect(g);
+      g.connect(bus);
+      roar.start(now, Math.random() * 1.2);
+      roar.stop(now + 0.46);
+    }
+
+    // Supersonic jet crackle tail
+    if (this.whiteNoise) {
+      const jet = this.makeNoiseSource(ctx, this.whiteNoise);
+      const hp = ctx.createBiquadFilter();
+      hp.type = "highpass";
+      hp.frequency.setValueAtTime(1400, now);
+
+      const jg = ctx.createGain();
+      jg.gain.setValueAtTime(0.0001, now + 0.015);
+      jg.gain.linearRampToValueAtTime(heroic ? 0.24 : 0.18, now + 0.06);
+      jg.gain.exponentialRampToValueAtTime(0.0001, now + 0.38);
+
+      jet.connect(hp);
+      hp.connect(jg);
+      jg.connect(bus);
+      jet.start(now + 0.015, Math.random() * 1.2);
+      jet.stop(now + 0.4);
+    }
+  }
+
+  private synthTorpedo(
+    ctx: AudioContext,
+    bus: AudioNode,
+    now: number,
+    jitter: number,
+    heroic: boolean,
+  ): void {
+    // Pneumatic underwater tube launch thump
+    this.playTone(ctx, bus, "sine", 132 * jitter, 46, now, 0.13, heroic ? 0.4 : 0.32, 0.004);
+
+    // Subtle submarine sonar lock ping
+    this.playTone(ctx, bus, "sine", 1480 * jitter, 1440 * jitter, now + 0.015, 0.18, 0.085, 0.004);
+
+    // Underwater propeller / cavitation bubble rush
+    if (this.pinkNoise) {
+      const rush = this.makeNoiseSource(ctx, this.pinkNoise);
+      const bp = ctx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.Q.value = 2.4;
+      bp.frequency.setValueAtTime(260 * jitter, now);
+      bp.frequency.exponentialRampToValueAtTime(760 * jitter, now + 0.14);
+      bp.frequency.exponentialRampToValueAtTime(210 * jitter, now + 0.38);
+
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.linearRampToValueAtTime(heroic ? 0.4 : 0.32, now + 0.045);
+      g.gain.exponentialRampToValueAtTime(0.16, now + 0.18);
+      g.gain.linearRampToValueAtTime(0.22, now + 0.24);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.4);
+
+      rush.connect(bp);
+      bp.connect(g);
+      g.connect(bus);
+      rush.start(now, Math.random() * 1.2);
+      rush.stop(now + 0.42);
+    }
+  }
+
+  private synthBomb(
+    ctx: AudioContext,
+    bus: AudioNode,
+    now: number,
+    jitter: number,
+    heroic: boolean,
+  ): void {
+    // Bomb-bay release mechanical clunk
+    this.playTone(ctx, bus, "triangle", 230 * jitter, 78, now, 0.055, 0.22, 0.003);
+
+    // Classic whistling falling bomb Doppler descent
+    const dur = heroic ? 0.38 : 0.34;
+    this.playTone(ctx, bus, "sine", 1680 * jitter, 420 * jitter, now + 0.02, dur, heroic ? 0.2 : 0.16, 0.025);
+    this.playTone(ctx, bus, "triangle", 840 * jitter, 220 * jitter, now + 0.03, dur * 0.9, 0.075, 0.025);
+
+    // Rushing wind turbulence around falling ordnance
+    if (this.whiteNoise) {
+      const wind = this.makeNoiseSource(ctx, this.whiteNoise);
+      const bp = ctx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.Q.value = 2.8;
+      bp.frequency.setValueAtTime(1900 * jitter, now + 0.02);
+      bp.frequency.exponentialRampToValueAtTime(480 * jitter, now + dur);
+
+      const wg = ctx.createGain();
+      wg.gain.setValueAtTime(0.0001, now + 0.02);
+      wg.gain.linearRampToValueAtTime(0.14, now + 0.09);
+      wg.gain.exponentialRampToValueAtTime(0.0001, now + dur + 0.02);
+
+      wind.connect(bp);
+      bp.connect(wg);
+      wg.connect(bus);
+      wind.start(now + 0.02, Math.random() * 1.2);
+      wind.stop(now + dur + 0.04);
+    }
+  }
+
   private synthHeroicOvertone(
     ctx: AudioContext,
     bus: AudioNode,
@@ -1082,7 +1232,7 @@ export class AudioEngine {
     jitter: number,
   ): void {
     // Subtle heroic rank-3 punch & metallic harmonic shimmer
-    const base = weapon === "cannon" || weapon === "arty" ? 82 : 164;
+    const base = weapon === "cannon" || weapon === "arty" || weapon === "missile" || weapon === "bomb" ? 82 : 164;
     this.playTone(ctx, bus, "sine", base * jitter, base * 0.55, now, 0.14, 0.14, 0.003);
     this.playTone(ctx, bus, "triangle", 880 * jitter, 1320 * jitter, now, 0.075, 0.065, 0.004);
   }
@@ -1321,6 +1471,58 @@ export class AudioEngine {
       snap.start(now + 0.016, 0.15);
       snap.stop(now + 0.05);
     }
+  }
+
+  private uiPowerDown(ctx: AudioContext, bus: AudioNode, now: number): void {
+    // Classic RTS brownout: breaker snap + descending turbine/generator power-down hum
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.Q.value = 2.4;
+    lp.frequency.setValueAtTime(1650, now);
+    lp.frequency.exponentialRampToValueAtTime(125, now + 0.68);
+    lp.connect(bus);
+
+    // Dual detuned generator hums winding down
+    this.playTone(ctx, lp, "sawtooth", 220, 48, now, 0.68, 0.24, 0.012);
+    this.playTone(ctx, lp, "triangle", 112, 28, now, 0.72, 0.28, 0.015);
+    // Low warning tone dip
+    this.playTone(ctx, bus, "sine", 440, 290, now + 0.04, 0.26, 0.14, 0.01);
+
+    if (this.whiteNoise) {
+      // Breaker trip snap
+      const snap = this.makeNoiseSource(ctx, this.whiteNoise);
+      const bp = ctx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.frequency.value = 1800;
+      bp.Q.value = 1.6;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.linearRampToValueAtTime(0.22, now + 0.003);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.04);
+      snap.connect(bp);
+      bp.connect(g);
+      g.connect(bus);
+      snap.start(now, 0.3);
+      snap.stop(now + 0.05);
+    }
+  }
+
+  private uiPowerUp(ctx: AudioContext, bus: AudioNode, now: number): void {
+    // Rising generator turbine spin-up resolving into crisp power-online chime
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.Q.value = 2.2;
+    lp.frequency.setValueAtTime(220, now);
+    lp.frequency.exponentialRampToValueAtTime(2400, now + 0.38);
+    lp.connect(bus);
+
+    this.playTone(ctx, lp, "sawtooth", 92, 220, now, 0.36, 0.16, 0.025);
+    this.playTone(ctx, lp, "triangle", 184, 440, now, 0.36, 0.14, 0.025);
+
+    // Clean systems-online 2-note chime
+    this.playTone(ctx, bus, "sine", N.A4, N.A4, now + 0.22, 0.16, 0.16, 0.006);
+    this.playTone(ctx, bus, "sine", N.D5, N.D5, now + 0.32, 0.34, 0.2, 0.006);
+    this.playTone(ctx, bus, "triangle", N.A5, N.A5, now + 0.32, 0.22, 0.08, 0.006);
   }
 
   private uiWin(ctx: AudioContext, bus: AudioNode, now: number): void {
