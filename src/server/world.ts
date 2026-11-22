@@ -28,6 +28,8 @@ import {
   SW_CHARGE_TICKS,
   SW_RADIUS,
   SW_DAMAGE,
+  RECON_CHARGE_TICKS,
+  RECON_RADIUS,
   DERRICK_CAPTURE_BONUS,
   DERRICK_INCOME,
   CRATE_INTERVAL_TICKS,
@@ -60,6 +62,7 @@ interface Order {
   x: number;
   y: number;
   target?: number;
+  patrolFrom?: [number, number];
 }
 
 export interface Ent {
@@ -80,6 +83,7 @@ export interface Ent {
   oreIdx: number;
   repath: number;
   agro: number | null; // enemy id an amove unit is currently chasing (for resume-after-kill)
+  hold: boolean; // unit holding position (fires in range, will not chase)
   holdUntil: number; // suppress harvester auto-resume until this tick (stop/explicit orders)
   xp: number;
   vet: number; // 0..3 veterancy rank
@@ -98,6 +102,7 @@ export interface P {
   pwrUse: number;
   lowPower: boolean;
   swLeft: number; // -1 if no superweapon, else 0..SW_CHARGE_TICKS
+  reconLeft: number; // -1 if no radar, else 0..RECON_CHARGE_TICKS
   unitsBuilt: number;
   unitsLost: number;
   bldDestroyed: number;
@@ -201,6 +206,7 @@ export class World {
         pwrUse: 0,
         lowPower: false,
         swLeft: -1,
+        reconLeft: -1,
         unitsBuilt: 0,
         unitsLost: 0,
         bldDestroyed: 0,
@@ -274,6 +280,9 @@ export class World {
       blob(cx, cy, 3);
     }
     blob(MAP_W / 2, MAP_H / 2, 4); // contested center field
+    for (const [cx, cy, r] of getMapLayout(this.map).extraOre ?? []) {
+      blob(cx, cy, r);
+    }
   }
 
   oreSnapshot(): [number, number, number][] {
@@ -315,6 +324,7 @@ export class World {
       oreIdx: -1,
       repath: 0,
       agro: null,
+      hold: false,
       holdUntil: 0,
       xp: 0,
       vet: 0,
@@ -348,6 +358,7 @@ export class World {
       oreIdx: -1,
       repath: 0,
       agro: null,
+      hold: false,
       holdUntil: 0,
       xp: 0,
       vet: 0,
@@ -414,7 +425,7 @@ export class World {
 
   cmdOrder(slot: number, ids: number[], kind: OrderKind, x: number, y: number, target?: number, queue = false): string | null {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return "bad order";
-    if (kind !== "move" && kind !== "amove" && kind !== "attack" && kind !== "harvest") return "bad order";
+    if (kind !== "move" && kind !== "amove" && kind !== "attack" && kind !== "harvest" && kind !== "patrol") return "bad order";
     if (!inBounds(Math.floor(x), Math.floor(y))) return "off map";
     const cols = Math.max(1, Math.ceil(Math.sqrt(ids.length)));
     const rows = Math.max(1, Math.ceil(ids.length / cols));
@@ -422,8 +433,8 @@ export class World {
     for (const [i, id] of ids.entries()) {
       const e = this.ents.get(id);
       if (!e || e.o !== slot || isBuilding(e.k)) continue;
-      // unarmed units can't take attack orders (a harvester told to attack would just chase forever)
-      if ((kind === "attack" || kind === "amove") && weaponOf(e).dmg <= 0 && e.k !== "engineer") continue;
+      // unarmed units can't take attack/amove/patrol orders (a harvester told to attack would just chase forever)
+      if ((kind === "attack" || kind === "amove" || kind === "patrol") && weaponOf(e).dmg <= 0 && e.k !== "engineer") continue;
       // spread group destinations on a dynamic grid so large groups don't stack on one tile
       const ox = kind === "attack" || kind === "harvest" ? 0 : ((i % cols) - (cols - 1) / 2) * 1.15;
       const oy = kind === "attack" || kind === "harvest" ? 0 : (Math.floor(i / cols) - (rows - 1) / 2) * 1.15;
@@ -455,11 +466,14 @@ export class World {
           ord = { kind, x, y };
           hstate = "toRef";
         }
+      } else if (kind === "patrol") {
+        ord = { kind, x: gx, y: gy, patrolFrom: [e.x, e.y] };
       } else {
         ord = { kind, x: gx, y: gy };
       }
 
       if (!ord) continue;
+      e.hold = false;
       if (queue && e.order) {
         if (e.orderQueue.length < MAX_WAYPOINTS) e.orderQueue.push(ord);
         n++;
@@ -526,6 +540,30 @@ export class World {
       e.hstate = null;
       e.agro = null;
       e.holdUntil = this.tick + 150; // don't auto-resume hauling right after a stop
+    }
+  }
+
+  cmdHold(slot: number, ids: number[]) {
+    const valid: Ent[] = [];
+    for (const id of ids) {
+      const e = this.ents.get(id);
+      if (!e || e.o !== slot || isBuilding(e.k)) continue;
+      valid.push(e);
+    }
+    if (!valid.length) return;
+    const enable = valid.some((e) => !e.hold);
+    for (const e of valid) {
+      e.hold = enable;
+      if (enable) {
+        e.order = null;
+        e.orderQueue = [];
+        e.path = null;
+        e.agro = null;
+        if (e.k === "harvester") {
+          e.hstate = null;
+          e.holdUntil = this.tick + 150;
+        }
+      }
     }
   }
 
@@ -640,6 +678,19 @@ export class World {
     return null;
   }
 
+  cmdRecon(slot: number, x: number, y: number): string | null {
+    const p = this.players.get(slot);
+    if (!p || p.eliminated) return "dead";
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return "bad coords";
+    if (!inBounds(Math.floor(x), Math.floor(y))) return "off map";
+    if (!this.hasBuilding(slot, "radar")) return "need a radar";
+    if (p.lowPower) return "low power";
+    if (p.reconLeft > 0 || p.reconLeft < 0) return "recon charging";
+    p.reconLeft = RECON_CHARGE_TICKS;
+    this.events.push({ e: "recon", x, y, slot, r: RECON_RADIUS });
+    return null;
+  }
+
   cmdResign(slot: number) {
     const p = this.players.get(slot);
     if (!p || p.eliminated) return;
@@ -660,6 +711,8 @@ export class World {
       if (this.spawnNearBuilding(slot, "harvester", b)) p.unitsBuilt++;
     } else if (kind === "superweapon" && p.swLeft < 0) {
       p.swLeft = SW_CHARGE_TICKS;
+    } else if (kind === "radar" && p.reconLeft < 0) {
+      p.reconLeft = 150;
     }
     return null;
   }
@@ -730,6 +783,11 @@ export class World {
     for (const e of this.ents.values())
       if (e.o === slot && (e.k === kind || (kind === "factory" && e.k === "factory2"))) out.push(e);
     return out;
+  }
+
+  private prodBoostOf(slot: number, cat: "barracks" | "factory"): number {
+    const cnt = this.buildingsOf(slot, cat).length;
+    return Math.min(2.0, 1 + Math.max(0, cnt - 1) * 0.25);
   }
 
   private recomputePower(slot: number) {
@@ -955,10 +1013,18 @@ export class World {
       } else {
         p.swLeft = -1;
       }
+      if (this.hasBuilding(p.slot, "radar")) {
+        if (p.reconLeft < 0) p.reconLeft = 150;
+        else if (p.reconLeft > 0 && !p.lowPower) p.reconLeft = Math.max(0, p.reconLeft - rate);
+      } else {
+        p.reconLeft = -1;
+      }
       for (const cat of ["barracks", "factory"] as const) {
         const q = p.queues[cat];
         if (!q) continue;
-        q.left -= rate;
+        const blds = this.buildingsOf(p.slot, cat);
+        const boost = Math.min(2.0, 1 + Math.max(0, blds.length - 1) * 0.25);
+        q.left -= rate * boost;
         if (q.left <= 0) {
           // losing the tech prerequisite mid-queue halts production with a refund
           const ud = UNITS[q.unit];
@@ -967,7 +1033,7 @@ export class World {
             delete p.queues[cat];
             continue;
           }
-          const b = this.buildingsOf(p.slot, cat)[0];
+          const b = blds[0];
           const spawned = b ? this.spawnNearBuilding(p.slot, q.unit, b) : null;
           if (!spawned) {
             // nowhere to deploy — refund instead of eating the unit
@@ -1020,8 +1086,9 @@ export class World {
           this.stepAlong(e);
         }
       }
-    } else if (o?.kind === "amove") {
-      const enemy = this.nearestEnemy(e, Math.max(w.range + 2, e.k === "engineer" ? 5 : 3));
+    } else if (o?.kind === "amove" || o?.kind === "patrol") {
+      const scanR = o.kind === "patrol" ? Math.max(w.range + 2, 4) : Math.max(w.range + 2, e.k === "engineer" ? 5 : 3);
+      const enemy = this.nearestEnemy(e, scanR);
       if (enemy) {
         if (e.k === "engineer" && isBuilding(enemy.k)) {
           // attack-moving engineers capture buildings they reach
@@ -1053,7 +1120,22 @@ export class World {
           e.agro = null;
           e.path = null;
         }
-        if (this.stepAlong(e)) this.advanceOrder(e);
+        if (this.stepAlong(e)) {
+          if (
+            o.kind === "patrol" &&
+            e.orderQueue.length === 0 &&
+            o.patrolFrom &&
+            dist(o.x, o.y, o.patrolFrom[0], o.patrolFrom[1]) >= 0.5
+          ) {
+            const [fx, fy] = o.patrolFrom;
+            o.patrolFrom = [o.x, o.y];
+            o.x = fx;
+            o.y = fy;
+            e.path = null;
+          } else {
+            this.advanceOrder(e);
+          }
+        }
       }
     } else if (o?.kind === "move") {
       if (this.stepAlong(e)) this.advanceOrder(e);
@@ -1191,8 +1273,8 @@ export class World {
     }
 
     // idle harvester: auto-start harvesting nearby ore, or return cargo —
-    // but stay put while holdUntil suppresses auto-resume (stop/explicit orders)
-    if (!e.order && !e.hstate && this.tick >= e.holdUntil) {
+    // but stay put while hold or holdUntil suppresses auto-resume (stop/explicit orders)
+    if (!e.order && !e.hstate && !e.hold && this.tick >= e.holdUntil) {
       if (e.cargo > 0) {
         if (this.nearestRefinery(e)) e.hstate = "toRef"; // no refinery → wait with cargo
       } else {
@@ -1432,13 +1514,15 @@ export class World {
         const push = ((minSep - d) / d) * 0.5 * 0.35;
         const px = dx * push,
           py = dy * push;
-        if (this.passable((a.x - px) | 0, (a.y - py) | 0)) {
-          a.x -= px;
-          a.y -= py;
+        const aMult = a.hold ? 0.15 : 1;
+        const bMult = b.hold ? 0.15 : 1;
+        if (this.passable((a.x - px * aMult) | 0, (a.y - py * aMult) | 0)) {
+          a.x -= px * aMult;
+          a.y -= py * aMult;
         }
-        if (this.passable((b.x + px) | 0, (b.y + py) | 0)) {
-          b.x += px;
-          b.y += py;
+        if (this.passable((b.x + px * bMult) | 0, (b.y + py * bMult) | 0)) {
+          b.x += px * bMult;
+          b.y += py * bMult;
         }
       }
     }
@@ -1489,6 +1573,7 @@ export class World {
       };
       if (e.k === "harvester") s.cargo = e.cargo;
       if (e.vet > 0) s.vet = e.vet;
+      if (e.hold) s.hold = true;
       if (e.rally) s.rally = [e.rally[0], e.rally[1]];
       if (!isBuilding(e.k) && (e.order || e.orderQueue.length)) {
         const wp: [number, number, OrderKind][] = [];
@@ -1529,6 +1614,15 @@ export class World {
         ps.swLeft = Math.ceil(p.swLeft);
         ps.swTotal = SW_CHARGE_TICKS;
       }
+      if (p.reconLeft >= 0) {
+        ps.reconReady = p.reconLeft <= 0 && !p.lowPower;
+        ps.reconLeft = Math.ceil(p.reconLeft);
+        ps.reconTotal = RECON_CHARGE_TICKS;
+      }
+      ps.prodBoost = {
+        barracks: this.prodBoostOf(p.slot, "barracks"),
+        factory: this.prodBoostOf(p.slot, "factory"),
+      };
       players[p.slot] = ps;
     }
     const events = this.events;

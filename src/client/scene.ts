@@ -47,6 +47,7 @@ export class GameScene {
   engine: EngineShim;
   camTarget = new THREE.Vector3(MAP_W / 2, 0, MAP_H / 2);
   camHeight = 26;
+  camYaw = 0; // radians around Y axis (0 = North-Up)
   ground!: THREE.Mesh;
   raycaster = new THREE.Raycaster();
   pickables: THREE.Object3D[] = []; // entity roots — raycast for pickEntity
@@ -77,6 +78,9 @@ export class GameScene {
   private fogData = new Uint8Array(MAP_W * MAP_H * 4);
   private fogExplored = new Uint8Array(MAP_W * MAP_H);
   private fogVisBuf = new Float32Array(MAP_W * MAP_H);
+  private reconReveals: { x: number; y: number; r: number; expiresAt: number }[] = [];
+  private lastFogSlot = -1;
+  private lastFogSources: { x: number; y: number; r: number }[] = [];
 
   // Build-zone perimeter overlay
   private buildZoneGroup = new THREE.Group();
@@ -249,15 +253,23 @@ export class GameScene {
     prevMap?.dispose();
     prevBump?.dispose();
 
-    // Biome atmosphere tuning
-    const atm: Record<MapId, { bg: number; skirt: number }> = {
-      crossroads: { bg: 0x0d1520, skirt: 0x1e2524 },
-      canyon: { bg: 0x1d1310, skirt: 0x2f1e17 },
-      basin: { bg: 0x0b121b, skirt: 0x181f27 },
+    // Biome atmosphere tuning across all 8 theaters
+    const atm: Record<MapId, { bg: number; skirt: number; fogDensity: number }> = {
+      crossroads: { bg: 0x0d1520, skirt: 0x1e2524, fogDensity: 0.0042 },
+      canyon: { bg: 0x1d1310, skirt: 0x2f1e17, fogDensity: 0.0045 },
+      basin: { bg: 0x0b121b, skirt: 0x181f27, fogDensity: 0.0046 },
+      tundra: { bg: 0x142233, skirt: 0x3a4d5f, fogDensity: 0.0048 },
+      fortress: { bg: 0x1c1711, skirt: 0x362b1f, fogDensity: 0.004 },
+      jungle: { bg: 0x0a1a13, skirt: 0x172b1d, fogDensity: 0.0048 },
+      islands: { bg: 0x0a1c26, skirt: 0x113142, fogDensity: 0.0042 },
+      oasis: { bg: 0x221810, skirt: 0x422f1d, fogDensity: 0.0044 },
     };
     const a = atm[mapId] ?? atm.crossroads;
     (this.scene.background as THREE.Color).setHex(a.bg);
-    if (this.scene.fog instanceof THREE.FogExp2) this.scene.fog.color.setHex(a.bg);
+    if (this.scene.fog instanceof THREE.FogExp2) {
+      this.scene.fog.color.setHex(a.bg);
+      this.scene.fog.density = a.fogDensity;
+    }
     this.skirtMat.color.setHex(a.skirt);
 
     // Clear previous 3D cliff mesas & props
@@ -284,29 +296,50 @@ export class GameScene {
       const hasCliff = (tx: number, ty: number) =>
         tx >= 0 && ty >= 0 && tx < MAP_W && ty < MAP_H && this.cliffSet.has(ty * MAP_W + tx);
 
-      // 1) Tapered rocky cliff base wall blocks (rotated 4-sided pyramid frustum so adjacent tiles fuse cleanly)
-      const wallGeo = new THREE.CylinderGeometry(0.67, 0.82, 1, 4);
-      wallGeo.rotateY(Math.PI / 4);
+      const isIslands = mapId === "islands";
+      const isFortress = mapId === "fortress";
+      const isTundra = mapId === "tundra";
+      const isJungle = mapId === "jungle";
+      const isOasis = mapId === "oasis";
+
+      // 1) Tapered rocky/glacial/citadel base wall blocks
+      const wallGeo = isFortress
+        ? new THREE.BoxGeometry(1.02, 1, 1.02)
+        : new THREE.CylinderGeometry(isIslands ? 0.56 : 0.67, isIslands ? 0.78 : 0.82, 1, 4);
+      if (!isFortress) wallGeo.rotateY(Math.PI / 4);
       const wallInst = new THREE.InstancedMesh(wallGeo, mats.wall, cliffs.length);
       wallInst.castShadow = true;
       wallInst.receiveShadow = true;
 
       // 2) Sunlit terraced weathered cap plateau
-      const capGeo = new THREE.CylinderGeometry(0.58, 0.7, 1, 4);
-      capGeo.rotateY(Math.PI / 4);
+      const capGeo = isFortress
+        ? new THREE.BoxGeometry(1.06, 1, 1.06)
+        : new THREE.CylinderGeometry(isIslands ? 0.44 : 0.58, isIslands ? 0.6 : 0.7, 1, 4);
+      if (!isFortress) capGeo.rotateY(Math.PI / 4);
       const capInst = new THREE.InstancedMesh(capGeo, mats.cap, cliffs.length);
       capInst.castShadow = true;
       capInst.receiveShadow = true;
 
       // 3) Interior mesa bridge slabs so multi-tile mesas have a solid unified terrace deck
-      const deckGeo = new THREE.BoxGeometry(1.06, 0.36, 1.06);
+      const deckGeo = new THREE.BoxGeometry(1.06, isFortress ? 0.42 : 0.36, 1.06);
       const deckInst = new THREE.InstancedMesh(deckGeo, mats.cap, cliffs.length);
       deckInst.castShadow = true;
       deckInst.receiveShadow = true;
 
+      // Optional river-gorge water slab across impassable channels on Islands
+      let waterInst: THREE.InstancedMesh | null = null;
+      if (isIslands && mats.water) {
+        const waterGeo = new THREE.BoxGeometry(1.06, 0.14, 1.06);
+        waterInst = new THREE.InstancedMesh(waterGeo, mats.water, cliffs.length);
+        waterInst.receiveShadow = true;
+      }
+
       const boulderTransforms: { x: number; y: number; z: number; sx: number; sy: number; sz: number; ry: number }[] = [];
       const treeTransforms: { x: number; y: number; z: number; s: number; ry: number }[] = [];
+      const accentTransforms: { x: number; y: number; z: number; sx: number; sy: number; sz: number; ry: number }[] = [];
 
+      let wallCount = 0;
+      let capCount = 0;
       let deckCount = 0;
       const d = this.dummy;
       for (let i = 0; i < cliffs.length; i++) {
@@ -320,27 +353,48 @@ export class GameScene {
         const nE = hasCliff(tx + 1, ty);
         const neighbors = (nN ? 1 : 0) + (nS ? 1 : 0) + (nW ? 1 : 0) + (nE ? 1 : 0);
 
-        const baseH = (mapId === "canyon" ? 1.85 : 1.48) + h1 * 0.34 + (neighbors >= 3 ? 0.2 : 0);
         const cx = tx + 0.5;
         const cz = ty + 0.5;
 
-        // Lower cliff wall block
-        d.position.set(cx, baseH * 0.5 - 0.04, cz);
-        d.rotation.set(0, 0, 0);
-        d.scale.set(1.04 + (nW || nE ? 0.06 : 0), baseH, 1.04 + (nN || nS ? 0.06 : 0));
-        d.updateMatrix();
-        wallInst.setMatrixAt(i, d.matrix);
+        if (waterInst) {
+          d.position.set(cx, 0.08, cz);
+          d.rotation.set(0, 0, 0);
+          d.scale.set(1, 1, 1);
+          d.updateMatrix();
+          waterInst.setMatrixAt(i, d.matrix);
+        }
 
-        // Upper terraced cap stone
-        const capH = 0.28 + h2 * 0.16;
-        d.position.set(cx + (h2 - 0.5) * 0.05, baseH + capH * 0.42, cz + (h3 - 0.5) * 0.05);
-        d.rotation.set(0, (h1 - 0.5) * 0.08, 0);
-        d.scale.set(0.98, capH, 0.98);
-        d.updateMatrix();
-        capInst.setMatrixAt(i, d.matrix);
+        // Biome-appropriate cliff elevation
+        let baseH = 1.48 + h1 * 0.34 + (neighbors >= 3 ? 0.2 : 0);
+        if (mapId === "canyon") baseH = 1.85 + h1 * 0.34 + (neighbors >= 3 ? 0.2 : 0);
+        else if (isTundra) baseH = 1.64 + h1 * 0.44 + (neighbors >= 3 ? 0.24 : 0);
+        else if (isFortress) baseH = 1.56 + (neighbors >= 2 ? 0.1 : 0) + h1 * 0.09;
+        else if (isJungle) baseH = 1.6 + h1 * 0.36 + (neighbors >= 3 ? 0.22 : 0);
+        else if (isOasis) baseH = 1.5 + h1 * 0.34 + (neighbors >= 3 ? 0.18 : 0);
+        else if (isIslands) baseH = 0.46 + h1 * 0.46 + (neighbors < 4 ? 0.18 : 0);
 
-        // Unified mesa deck on tiles connected to >= 2 cliff neighbors
-        if (neighbors >= 2) {
+        const capH = isFortress ? 0.24 : isIslands ? 0.18 + h2 * 0.14 : 0.28 + h2 * 0.16;
+
+        // On Islands, leave sleek deep water channels in interior tiles while raising jagged wet-slate crags along banks & islets
+        const buildCrag = !isIslands || neighbors < 4 || h2 > 0.52;
+        if (buildCrag) {
+          d.position.set(cx, baseH * 0.5 - 0.04, cz);
+          d.rotation.set(0, isIslands ? (h1 - 0.5) * 0.28 : 0, 0);
+          const sx = isIslands ? 0.78 + h2 * 0.28 : 1.04 + (nW || nE ? 0.06 : 0);
+          const sz = isIslands ? 0.78 + h3 * 0.28 : 1.04 + (nN || nS ? 0.06 : 0);
+          d.scale.set(sx, baseH, sz);
+          d.updateMatrix();
+          wallInst.setMatrixAt(wallCount++, d.matrix);
+
+          d.position.set(cx + (h2 - 0.5) * (isFortress ? 0.01 : 0.05), baseH + capH * 0.42, cz + (h3 - 0.5) * (isFortress ? 0.01 : 0.05));
+          d.rotation.set(0, isFortress ? 0 : (h1 - 0.5) * 0.1, 0);
+          d.scale.set(isIslands ? sx * 0.85 : 0.98, capH, isIslands ? sz * 0.85 : 0.98);
+          d.updateMatrix();
+          capInst.setMatrixAt(capCount++, d.matrix);
+        }
+
+        // Unified mesa deck on tiles connected to >= 2 cliff neighbors (skipped on open river channels)
+        if (!isIslands && neighbors >= 2) {
           d.position.set(cx, baseH - 0.06, cz);
           d.rotation.set(0, 0, 0);
           d.scale.set(1, 1, 1);
@@ -356,7 +410,8 @@ export class GameScene {
         if (!nE) edgeDirs.push([1, 0]);
         for (let ei = 0; ei < edgeDirs.length; ei++) {
           const rh = tileHash(tx + ei * 17, ty, 7);
-          if (rh > 0.54) {
+          const boulderThresh = isFortress ? 0.76 : isIslands ? 0.46 : 0.54;
+          if (rh > boulderThresh) {
             const [ex, ez] = edgeDirs[ei];
             const tang = (tileHash(tx, ty + ei * 13, 11) - 0.5) * 0.58;
             const bx = cx + ex * 0.56 + (ez !== 0 ? tang : 0);
@@ -372,15 +427,53 @@ export class GameScene {
               ry: rh * Math.PI * 2,
             });
           }
+
+          // Fortified dark-stone citadel parapet merlons along exposed Fortress wall tops
+          if (isFortress && (tx + ty) % 2 === 0) {
+            const [ex, ez] = edgeDirs[ei];
+            accentTransforms.push({
+              x: cx + ex * 0.36,
+              y: baseH + capH + 0.12,
+              z: cz + ez * 0.36,
+              sx: ez !== 0 ? 0.46 : 0.24,
+              sy: 0.28,
+              sz: ex !== 0 ? 0.46 : 0.24,
+              ry: 0,
+            });
+          }
         }
 
-        // Decorative stylized pine / alpine conifer clusters on mesa tops & rocky ledges
-        if (h3 > 0.56) {
-          const count = h1 > 0.65 ? 2 : 1;
+        // Glacier ice spires on Tundra ledges
+        if (isTundra && h2 > 0.62) {
+          accentTransforms.push({
+            x: cx + (h1 - 0.5) * 0.36,
+            y: baseH + capH * 0.8 + 0.28,
+            z: cz + (h3 - 0.5) * 0.36,
+            sx: 0.22 + h1 * 0.16,
+            sy: 0.55 + h2 * 0.6,
+            sz: 0.22 + h3 * 0.16,
+            ry: h1 * Math.PI * 2,
+          });
+        }
+
+        // Biome-specific trees / palms / jungle canopy / scrub placement
+        const treeThresh = isJungle ? 0.28 : isFortress ? 0.82 : isIslands ? 0.64 : isOasis ? 0.52 : 0.56;
+        if (buildCrag && h3 > treeThresh) {
+          const count = isJungle ? (h1 > 0.45 ? 2 : 1) : h1 > 0.65 ? 2 : 1;
           for (let ti = 0; ti < count; ti++) {
             const ox = (tileHash(tx, ty, 31 + ti) - 0.5) * 0.52;
             const oz = (tileHash(tx, ty, 47 + ti) - 0.5) * 0.52;
-            const sc = (mapId === "canyon" ? 0.52 : 0.72) + tileHash(tx, ty, 59 + ti) * 0.42;
+            const scBase =
+              mapId === "canyon" || isFortress
+                ? 0.52
+                : isJungle
+                  ? 0.92
+                  : isOasis
+                    ? 0.86
+                    : isIslands
+                      ? 0.66
+                      : 0.72;
+            const sc = scBase + tileHash(tx, ty, 59 + ti) * 0.42;
             treeTransforms.push({
               x: cx + ox,
               y: baseH + capH * 0.78,
@@ -391,11 +484,17 @@ export class GameScene {
           }
         }
       }
+      wallInst.count = wallCount;
       wallInst.instanceMatrix.needsUpdate = true;
+      capInst.count = capCount;
       capInst.instanceMatrix.needsUpdate = true;
       deckInst.count = deckCount;
       deckInst.instanceMatrix.needsUpdate = true;
       group.add(wallInst, capInst, deckInst);
+      if (waterInst) {
+        waterInst.instanceMatrix.needsUpdate = true;
+        group.add(waterInst);
+      }
 
       // Scree boulders around cliff bases
       if (boulderTransforms.length > 0) {
@@ -414,15 +513,34 @@ export class GameScene {
         group.add(bInst);
       }
 
-      // Stylized multi-tier conifer pine / canyon scrub clusters
+      // Biome accent architecture / glacier crystal spires
+      if (accentTransforms.length > 0 && mats.accent) {
+        const accGeo = isTundra ? new THREE.ConeGeometry(0.55, 1, 5) : new THREE.BoxGeometry(1, 1, 1);
+        const accInst = new THREE.InstancedMesh(accGeo, mats.accent, accentTransforms.length);
+        accInst.castShadow = true;
+        accInst.receiveShadow = true;
+        accentTransforms.forEach((aTr, idx) => {
+          d.position.set(aTr.x, aTr.y, aTr.z);
+          d.rotation.set(0, aTr.ry, 0);
+          d.scale.set(aTr.sx, aTr.sy, aTr.sz);
+          d.updateMatrix();
+          accInst.setMatrixAt(idx, d.matrix);
+        });
+        accInst.instanceMatrix.needsUpdate = true;
+        group.add(accInst);
+      }
+
+      // Stylized biome foliage: conifer pines, snow-frosted spruce, desert palms, lush jungle canopies, or canyon scrub
       if (treeTransforms.length > 0) {
-        const trunkGeo = new THREE.CylinderGeometry(0.055, 0.085, 0.34, 6);
-        trunkGeo.translate(0, 0.17, 0);
+        const trunkH = isOasis ? 0.88 : isJungle ? 0.56 : 0.34;
+        const trunkGeo = new THREE.CylinderGeometry(isOasis ? 0.042 : 0.055, isOasis ? 0.078 : 0.085, trunkH, 6);
+        trunkGeo.translate(0, trunkH * 0.5, 0);
         const trunkInst = new THREE.InstancedMesh(trunkGeo, mats.trunk, treeTransforms.length);
         trunkInst.castShadow = true;
 
         let canopyGeo: THREE.BufferGeometry;
-        if (mapId === "canyon") {
+        let snowCapGeo: THREE.BufferGeometry | null = null;
+        if (mapId === "canyon" || isFortress) {
           // Hardy desert scrub cluster
           const s1 = new THREE.DodecahedronGeometry(0.28, 0);
           s1.scale(1.15, 0.68, 1.15);
@@ -432,8 +550,40 @@ export class GameScene {
           canopyGeo = mergeGeometries([s1, s2])!;
           s1.dispose();
           s2.dispose();
+        } else if (isOasis) {
+          // Iconic Sahara palm crown (radiating arched fronds)
+          const fronds: THREE.BufferGeometry[] = [];
+          for (let fi = 0; fi < 6; fi++) {
+            const ang = (fi / 6) * Math.PI * 2;
+            const f = new THREE.BoxGeometry(0.12, 0.03, 0.52);
+            f.rotateX(0.32);
+            f.translate(0, 0, 0.24);
+            f.rotateY(ang);
+            f.translate(0, trunkH + 0.02, 0);
+            fronds.push(f);
+          }
+          const crown = new THREE.DodecahedronGeometry(0.12, 0);
+          crown.translate(0, trunkH + 0.05, 0);
+          fronds.push(crown);
+          canopyGeo = mergeGeometries(fronds)!;
+          fronds.forEach((g) => g.dispose());
+        } else if (isJungle) {
+          // Rich dense multi-layered tropical broadleaf umbrella canopy
+          const b1 = new THREE.DodecahedronGeometry(0.42, 0);
+          b1.scale(1.25, 0.58, 1.25);
+          b1.translate(0, trunkH + 0.16, 0);
+          const b2 = new THREE.DodecahedronGeometry(0.32, 0);
+          b2.scale(1.15, 0.62, 1.15);
+          b2.translate(0.22, trunkH + 0.05, 0.14);
+          const b3 = new THREE.DodecahedronGeometry(0.28, 0);
+          b3.scale(1.1, 0.65, 1.1);
+          b3.translate(-0.2, trunkH + 0.22, -0.14);
+          canopyGeo = mergeGeometries([b1, b2, b3])!;
+          b1.dispose();
+          b2.dispose();
+          b3.dispose();
         } else {
-          // Layered tactical pine conifer (3 stacked faceted cones)
+          // Layered tactical pine / arctic spruce conifer (3 stacked faceted cones)
           const c1 = new THREE.ConeGeometry(0.36, 0.56, 7);
           c1.translate(0, 0.52, 0);
           const c2 = new THREE.ConeGeometry(0.28, 0.5, 7);
@@ -444,10 +594,21 @@ export class GameScene {
           c1.dispose();
           c2.dispose();
           c3.dispose();
+          if (isTundra && mats.accent) {
+            // Crisp snow-frosted crown dusting on top of arctic spruce
+            const sc1 = new THREE.ConeGeometry(0.2, 0.28, 7);
+            sc1.translate(0, 1.22, 0);
+            const sc2 = new THREE.ConeGeometry(0.3, 0.16, 7);
+            sc2.translate(0, 0.94, 0);
+            snowCapGeo = mergeGeometries([sc1, sc2])!;
+            sc1.dispose();
+            sc2.dispose();
+          }
         }
         const canopyInst = new THREE.InstancedMesh(canopyGeo, mats.foliage, treeTransforms.length);
         canopyInst.castShadow = true;
         canopyInst.receiveShadow = true;
+        const snowInst = snowCapGeo && mats.accent ? new THREE.InstancedMesh(snowCapGeo, mats.accent, treeTransforms.length) : null;
 
         treeTransforms.forEach((tr, idx) => {
           d.position.set(tr.x, tr.y, tr.z);
@@ -456,10 +617,15 @@ export class GameScene {
           d.updateMatrix();
           trunkInst.setMatrixAt(idx, d.matrix);
           canopyInst.setMatrixAt(idx, d.matrix);
+          snowInst?.setMatrixAt(idx, d.matrix);
         });
         trunkInst.instanceMatrix.needsUpdate = true;
         canopyInst.instanceMatrix.needsUpdate = true;
         group.add(trunkInst, canopyInst);
+        if (snowInst) {
+          snowInst.instanceMatrix.needsUpdate = true;
+          group.add(snowInst);
+        }
       }
     }
 
@@ -503,6 +669,9 @@ export class GameScene {
   }
 
   resetFog(): void {
+    this.reconReveals = [];
+    this.lastFogSlot = -1;
+    this.lastFogSources = [];
     this.fogExplored.fill(0);
     const d = this.fogData;
     for (let i = 0; i < MAP_W * MAP_H; i++) {
@@ -515,7 +684,30 @@ export class GameScene {
     this.fogTex.needsUpdate = true;
   }
 
+  addReconReveal(x: number, y: number, r: number, durationMs = 10000): void {
+    this.reconReveals.push({ x, y, r, expiresAt: performance.now() + durationMs });
+    if (this.lastFogSlot >= 0) {
+      this.updateFog(this.lastFogSlot, this.lastFogSources);
+    }
+  }
+
+  getActiveReconReveals(): { x: number; y: number; r: number }[] {
+    const now = performance.now();
+    if (this.reconReveals.length > 0) {
+      let write = 0;
+      for (let i = 0; i < this.reconReveals.length; i++) {
+        if (this.reconReveals[i].expiresAt > now) {
+          this.reconReveals[write++] = this.reconReveals[i];
+        }
+      }
+      this.reconReveals.length = write;
+    }
+    return this.reconReveals;
+  }
+
   updateFog(mySlot: number, visionSources: { x: number; y: number; r: number }[]): void {
+    this.lastFogSlot = mySlot;
+    this.lastFogSources = visionSources;
     if (mySlot < 0) {
       this.fogMesh.visible = false;
       return;
@@ -526,8 +718,10 @@ export class GameScene {
     const exp = this.fogExplored;
     vis.fill(0);
 
-    for (let i = 0; i < visionSources.length; i++) {
-      const s = visionSources[i];
+    const recon = this.getActiveReconReveals();
+    const totalSources = visionSources.length + recon.length;
+    for (let i = 0; i < totalSources; i++) {
+      const s = i < visionSources.length ? visionSources[i] : recon[i - visionSources.length];
       const rOut = s.r + 1.15;
       const rIn = Math.max(0.5, s.r - 1.5);
       const span = Math.max(0.1, rOut - rIn);
@@ -798,14 +992,17 @@ export class GameScene {
     this.shakeAmp = Math.min(2.4, Math.max(this.shakeAmp, intensity));
   }
 
-  // Standard North-Up isometric RTS camera: -Z is UP (North), +X is RIGHT (East),
-  // matching the minimap (0,0 top-left -> 64,64 bottom-right).
+  // Standard North-Up isometric RTS camera (camYaw === 0: -Z is UP/North, +X is RIGHT/East),
+  // supporting smooth orbital yaw rotation around camTarget.
   updateCamera() {
     const h = this.camHeight;
+    const dist = h * 0.68;
+    const offX = this.camYaw === 0 ? 0 : Math.sin(this.camYaw) * dist;
+    const offZ = this.camYaw === 0 ? dist : Math.cos(this.camYaw) * dist;
     this.camera.position.set(
-      this.camTarget.x + this.shakeOffset.x,
+      this.camTarget.x + offX + this.shakeOffset.x,
       h + this.shakeOffset.y,
-      this.camTarget.z + h * 0.68 + this.shakeOffset.z,
+      this.camTarget.z + offZ + this.shakeOffset.z,
     );
     this.lookVec.set(
       this.camTarget.x + this.shakeOffset.x * 0.35,
@@ -815,10 +1012,32 @@ export class GameScene {
     this.camera.lookAt(this.lookVec);
   }
 
+  rotateYaw(deltaRad: number): void {
+    let next = this.camYaw + deltaRad;
+    next = ((((next + Math.PI) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) - Math.PI;
+    if (next <= -Math.PI) next += Math.PI * 2;
+    this.camYaw = next;
+    this.updateCamera();
+  }
+
+  resetYaw(): void {
+    this.camYaw = 0;
+    this.updateCamera();
+  }
+
   pan(dx: number, dz: number) {
     const s = this.camHeight / 26;
-    this.camTarget.x = Math.max(-2, Math.min(MAP_W + 2, this.camTarget.x + dx * s));
-    this.camTarget.z = Math.max(-2, Math.min(MAP_H + 2, this.camTarget.z + dz * s));
+    let wx = dx;
+    let wz = dz;
+    if (this.camYaw !== 0) {
+      const cosY = Math.cos(this.camYaw);
+      const sinY = Math.sin(this.camYaw);
+      // Screen-right (+dx) = (cosY, -sinY), Screen-down (+dz) = (sinY, cosY)
+      wx = dx * cosY + dz * sinY;
+      wz = -dx * sinY + dz * cosY;
+    }
+    this.camTarget.x = Math.max(-2, Math.min(MAP_W + 2, this.camTarget.x + wx * s));
+    this.camTarget.z = Math.max(-2, Math.min(MAP_H + 2, this.camTarget.z + wz * s));
     this.updateCamera();
   }
 

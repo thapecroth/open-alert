@@ -7,6 +7,8 @@ export type C2S =
   | { t: "start" }
   | { t: "order"; ids: number[]; kind: OrderKind; x: number; y: number; target?: number; queue?: boolean }
   | { t: "stop"; ids: number[] }
+  | { t: "hold"; ids: number[] } // toggle Hold Position stance on selected units
+  | { t: "recon"; x: number; y: number } // fire Radar Uplink Recon Scan (reveals fog)
   | { t: "build"; kind: BuildingKind } // start building production
   | { t: "buildCancel" }
   | { t: "place"; tx: number; ty: number } // place the finished (awaiting) building
@@ -29,7 +31,7 @@ export type C2S =
   | { t: "setName"; name: string } // change callsign in lobby
   | { t: "rematch" };
 
-export type OrderKind = "move" | "amove" | "attack" | "harvest";
+export type OrderKind = "move" | "amove" | "attack" | "harvest" | "patrol";
 export type WeaponFx = "bullet" | "cannon" | "rocket" | "arty" | "arc" | "melee";
 
 // ---------- server -> client ----------
@@ -59,6 +61,7 @@ export interface EntSnap {
   d: number; // facing, radians * 10 quantized
   cargo?: number;
   vet?: number; // 0..3 veterancy rank
+  hold?: boolean; // unit holding position (fires in range, will not chase)
   rally?: [number, number]; // rally point on production buildings
   wp?: [number, number, OrderKind][]; // active + queued waypoints
 }
@@ -91,6 +94,10 @@ export interface PlayerState {
   swReady?: boolean;
   swLeft?: number; // ticks remaining on Ion Uplink
   swTotal?: number;
+  reconReady?: boolean;
+  reconLeft?: number; // ticks remaining on Radar Recon Scan
+  reconTotal?: number;
+  prodBoost?: { barracks: number; factory: number }; // speed multiplier (1.0 .. 2.0)
 }
 
 export interface MatchStats {
@@ -112,6 +119,7 @@ export type GameEvent =
   | { e: "cap"; x: number; y: number; slot: number } // building captured, slot = new owner
   | { e: "elim"; slot: number }
   | { e: "superweapon"; x: number; y: number; slot: number }
+  | { e: "recon"; x: number; y: number; slot: number; r: number }
   | { e: "promote"; id: number; vet: number; x: number; y: number; slot: number }
   | { e: "crate"; x: number; y: number; kind: CrateKind; slot: number; text: string }
   | { e: "income"; x: number; y: number; amt: number; slot: number }

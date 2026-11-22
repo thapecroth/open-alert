@@ -20,7 +20,7 @@ const hasOwn = (o: object, k: unknown): boolean =>
 const isB = (k: EntKind): k is BuildingKind => k in BUILDINGS;
 const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 // Mirrors worker.ts ORDER_KINDS.
-const ORDER_KINDS = new Set<string>(["move", "amove", "attack", "harvest"]);
+const ORDER_KINDS = new Set<string>(["move", "amove", "attack", "harvest", "patrol"]);
 
 export interface GymObs {
   tick: number;

@@ -25,6 +25,7 @@
       <div class="tb-left">
         <span id="room-code"></span>
         <button id="copy-link" title="Copy invite link">COPY LINK</button>
+        <span id="game-clock" title="Match elapsed time">00:00</span>
         <span id="conn-status"></span>
       </div>
       <div class="tb-right">
@@ -41,6 +42,8 @@
 
     <div id="verbbar" class="hidden">
       <button id="verb-amove" title="Attack-move (A): fight everything on the way">ATTACK-MOVE <kbd>A</kbd></button>
+      <button id="verb-patrol" title="Patrol (P): march back and forth along a route">PATROL <kbd>P</kbd></button>
+      <button id="verb-hold" title="Hold Position (G): fire at enemies in range without chasing">HOLD <kbd>G</kbd></button>
       <button id="verb-stop" title="Stop (S): halt selected units & clear waypoints">STOP <kbd>S</kbd></button>
       <button id="verb-sell" title="Sell ($ or V): click your building for a 50% refund">SELL <kbd>$</kbd></button>
       <button id="verb-repair" title="Repair (R): click your damaged building to fix it">REPAIR <kbd>R</kbd></button>
@@ -49,12 +52,16 @@
     <div id="sidebar" class="hidden">
       <div class="side-title">STRUCTURES</div>
       <div id="build-list"></div>
-      <div class="side-title">ARMY</div>
+      <div class="side-title side-title-row"><span>ARMY</span><span id="prod-boost" class="prod-boost hidden"></span></div>
       <div id="train-list"></div>
     </div>
 
     <div id="selinfo" class="hidden"></div>
     <div id="left-stack">
+      <button id="recon-hud" class="hidden" title="Radar Recon Scan — temporarily reveals fog of war">
+        <span class="recon-prog"></span>
+        <span class="recon-txt"></span>
+      </button>
       <button id="sw-hud" class="hidden" title="Orbital Ion Cannon">
         <span class="sw-prog"></span>
         <span class="sw-txt"></span>
@@ -64,6 +71,7 @@
     <div id="toasts"></div>
     <canvas id="minimap" width="160" height="160" class="hidden"></canvas>
     <div id="order-label" class="hidden"></div>
+    <div id="hover-tip" class="hidden"></div>
 
     <div id="chat-box" class="hidden">
       <div id="chat-lines"></div>
@@ -80,11 +88,13 @@
           <tr><td><kbd>Shift</kbd> + Right-click · Minimap R-click</td><td>queue waypoints · issue map orders (<kbd>Alt</kbd>+R-click = ping)</td></tr>
           <tr><td><kbd>Shift</kbd> + Click unit icon</td><td>queue ×5 units in production</td></tr>
           <tr><td><kbd>Ctrl</kbd>+<kbd>1</kbd>–<kbd>9</kbd> / <kbd>1</kbd>–<kbd>9</kbd></td><td>assign / recall control groups (2× tap = center)</td></tr>
-          <tr><td><kbd>A</kbd> + click / right-click</td><td>attack-move (fight en route)</td></tr>
-          <tr><td><kbd>S</kbd> / <kbd>X</kbd></td><td>stop & clear waypoints · scatter units</td></tr>
+          <tr><td><kbd>A</kbd> / <kbd>P</kbd> + click / right-click</td><td>attack-move (fight en route) · patrol route</td></tr>
+          <tr><td><kbd>G</kbd> / <kbd>S</kbd> / <kbd>X</kbd></td><td>hold position · stop & clear waypoints · scatter</td></tr>
           <tr><td><kbd>Q</kbd> / <kbd>F1</kbd> / <kbd>Tab</kbd></td><td>all combat · next harvester · cycle bases</td></tr>
           <tr><td><kbd>$</kbd> (<kbd>V</kbd>) / <kbd>R</kbd></td><td>sell / repair mode — click your building</td></tr>
+          <tr><td>Recon Scan / Ion Uplink</td><td>click left support pill + left-click map target</td></tr>
           <tr><td>Arrows · Wheel · <kbd>+</kbd>/<kbd>-</kbd> · Mid-drag</td><td>pan & zoom camera (toggle WASD in top bar)</td></tr>
+          <tr><td><kbd>[</kbd> / <kbd>]</kbd> · <kbd>\</kbd> · <kbd>Alt</kbd>+Drag</td><td>rotate camera CCW / CW · reset North-Up</td></tr>
           <tr><td><kbd>H</kbd> · <kbd>Space</kbd> · <kbd>C</kbd></td><td>jump to base · last alert · center selection</td></tr>
           <tr><td><kbd>Enter</kbd> / <kbd>Esc</kbd></td><td>open chat · cancel mode / deselect</td></tr>
         </table>
@@ -101,14 +111,20 @@
           ROOM <span id="lobby-room">----</span>
           <button id="copy-link2">COPY INVITE LINK</button>
         </div>
+        <div class="lobby-map-row">
+          <canvas id="map-preview" width="112" height="112" title="Tactical map preview"></canvas>
+          <div class="lobby-map-info">
+            <div class="cfg-field">
+              <label for="map-select">MAP</label>
+              <select id="map-select" title="Battlefield map"></select>
+            </div>
+            <p id="map-desc" class="map-desc"></p>
+          </div>
+        </div>
         <div class="lobby-config">
           <div class="cfg-field">
             <label for="name-input">CALLSIGN</label>
             <input id="name-input" maxlength="20" placeholder="Commander" autocomplete="off" />
-          </div>
-          <div class="cfg-field">
-            <label for="map-select">MAP</label>
-            <select id="map-select" title="Battlefield map"></select>
           </div>
           <div class="cfg-field">
             <label for="cfg-credits">STARTING CREDITS</label>
@@ -135,7 +151,6 @@
           <label class="cfg-toggle"><input id="cfg-derricks" type="checkbox" checked /><span>Oil Derricks</span></label>
           <label class="cfg-toggle"><input id="cfg-fog" type="checkbox" checked /><span>Fog of War</span></label>
         </div>
-        <p id="map-desc" class="map-desc"></p>
         <ul id="player-list"></ul>
         <div class="row lobby-actions">
           <button id="ready-btn">READY</button>

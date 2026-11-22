@@ -15,6 +15,7 @@ export class Input {
   placePending = false;
   verb: "sell" | "repair" | null = null;
   swArmed = false;
+  reconArmed = false;
   wasdPan = localStorage.getItem("oa-wasd") === "1";
 
   onSelectionChange: (ids: Set<number>) => void = () => {};
@@ -23,7 +24,8 @@ export class Input {
   onOpenChat: () => void = () => {};
   onWasdChange: (on: boolean) => void = () => {};
   onSuperweaponArmedChange: (armed: boolean) => void = () => {};
-  onUiSound: (kind: "select" | "move" | "attack" | "place" | "deny") => void = () => {};
+  onReconArmedChange: (armed: boolean) => void = () => {};
+  onUiSound: (kind: "select" | "move" | "attack" | "place" | "deny" | "recon" | "hold") => void = () => {};
   isAlly: (slot: number) => boolean = () => false;
 
   private gs: GameScene;
@@ -34,6 +36,7 @@ export class Input {
   private dragStart: { x: number; y: number; shift: boolean } | null = null;
   private selBox: HTMLDivElement | null = null;
   private middleDrag: { x: number; y: number } | null = null;
+  private yawDrag: { x: number } | null = null;
   private pointerInside = false;
   private px = -1;
   private py = -1;
@@ -42,6 +45,7 @@ export class Input {
   private ghostReason: string | null = null;
   private placePendingTimer: ReturnType<typeof setTimeout> | null = null;
   private amoveNext = false;
+  private patrolNext = false;
   private lastClickTime = 0;
   private lastClickId = -1;
   private lastGroupTap = { num: -1, time: 0 };
@@ -92,9 +96,25 @@ export class Input {
     window.addEventListener("blur", () => {
       this.keys.clear();
       this.middleDrag = null;
+      this.yawDrag = null;
     });
     window.addEventListener("keydown", (e) => this.onKeyDown(e));
     window.addEventListener("keyup", (e) => this.keys.delete(e.code));
+  }
+
+  get hoverPointer(): { x: number; y: number } | null {
+    if (
+      !this.pointerInside ||
+      this.placing ||
+      this.dragStart ||
+      this.middleDrag ||
+      this.yawDrag ||
+      this.px < 0 ||
+      this.py < 0
+    ) {
+      return null;
+    }
+    return { x: this.px, y: this.py };
   }
 
   reset() {
@@ -102,8 +122,11 @@ export class Input {
     this.clearPlacePending();
     this.placingCancelled = false;
     this.disarmSuperweapon();
+    this.disarmRecon();
     this.setAmove(false);
+    this.setPatrol(false);
     this.armVerb(null);
+    this.yawDrag = null;
     this.selection = new Set();
     this.groups.clear();
     this.lastAlertPos = null;
@@ -184,6 +207,8 @@ export class Input {
       if (e.code === "KeyX") this.scatterSelected();
     }
 
+    if (e.code === "KeyP") this.armPatrol();
+    if (e.code === "KeyG") this.holdSelected();
     if (e.code === "KeyV") this.armVerb("sell");
     if (e.code === "KeyR") this.armVerb("repair");
     if (e.code === "KeyH" || e.code === "Home") this.jumpToBase();
@@ -197,6 +222,18 @@ export class Input {
     if (e.code === "Tab") this.cycleProductionBuilding();
     if (e.code === "Equal" || e.code === "NumpadAdd") this.gs.zoom(-3);
     if (e.code === "Minus" || e.code === "NumpadSubtract") this.gs.zoom(3);
+    if (e.code === "BracketLeft") {
+      this.rotateCamYaw(-0.18);
+      this.flashLabel("CAMERA CCW", 600);
+    }
+    if (e.code === "BracketRight") {
+      this.rotateCamYaw(0.18);
+      this.flashLabel("CAMERA CW", 600);
+    }
+    if (e.code === "Backslash") {
+      this.resetCamYaw();
+      this.flashLabel("CAMERA NORTH-UP", 700);
+    }
 
     if (e.code === "Escape") {
       const help = document.getElementById("help");
@@ -208,7 +245,12 @@ export class Input {
         this.disarmSuperweapon();
         return;
       }
+      if (this.reconArmed) {
+        this.disarmRecon();
+        return;
+      }
       this.setAmove(false);
+      this.setPatrol(false);
       this.armVerb(null);
       if (this.placing) {
         this.cancelPlacing();
@@ -218,14 +260,28 @@ export class Input {
     }
   }
 
+  private rotateCamYaw(deltaRad: number) {
+    this.gs.rotateYaw(deltaRad);
+  }
+
+  private resetCamYaw() {
+    this.gs.resetYaw();
+  }
+
   private setAmove(on: boolean) {
     this.amoveNext = on;
     document.getElementById("verb-amove")?.classList.toggle("armed", on);
   }
 
+  private setPatrol(on: boolean) {
+    this.patrolNext = on;
+    document.getElementById("verb-patrol")?.classList.toggle("armed", on);
+  }
+
   private setSelection(sel: Set<number>) {
     this.selection = sel;
     if (this.amoveNext) this.setAmove(false);
+    if (this.patrolNext) this.setPatrol(false);
     this.r.setSelected(this.selection);
     this.onSelectionChange(this.selection);
     if (sel.size > 0) this.onUiSound("select");
@@ -241,7 +297,9 @@ export class Input {
       this.disarmSuperweapon();
       return;
     }
+    this.disarmRecon();
     this.setAmove(false);
+    this.setPatrol(false);
     this.armVerb(null);
     this.swArmed = true;
     if (this.labelTimer) clearTimeout(this.labelTimer);
@@ -260,6 +318,35 @@ export class Input {
     if (this.labelTimer) clearTimeout(this.labelTimer);
     this.onOrderLabel(null);
     this.onSuperweaponArmedChange(false);
+  }
+
+  armRecon() {
+    if (this.placing) return;
+    if (this.reconArmed) {
+      this.disarmRecon();
+      return;
+    }
+    this.disarmSuperweapon();
+    this.setAmove(false);
+    this.setPatrol(false);
+    this.armVerb(null);
+    this.reconArmed = true;
+    if (this.labelTimer) clearTimeout(this.labelTimer);
+    this.onOrderLabel(
+      "RECON SCAN ARMED — LEFT-CLICK TARGET (RIGHT-CLICK / ESC TO CANCEL)",
+      Math.max(20, this.px + 12),
+      Math.max(50, this.py - 12),
+    );
+    this.onReconArmedChange(true);
+    this.onUiSound("select");
+  }
+
+  disarmRecon() {
+    if (!this.reconArmed) return;
+    this.reconArmed = false;
+    if (this.labelTimer) clearTimeout(this.labelTimer);
+    this.onOrderLabel(null);
+    this.onReconArmedChange(false);
   }
 
   private myUnits(): number[] {
@@ -424,6 +511,11 @@ export class Input {
     this.py = e.clientY;
     this.gs.syncPointer(e.clientX, e.clientY);
 
+    if (e.altKey && (e.button === 0 || e.button === 1) && !this.placing && !this.swArmed && !this.reconArmed && !this.verb) {
+      this.yawDrag = { x: e.clientX };
+      e.preventDefault();
+      return;
+    }
     if (e.button === 1) {
       this.middleDrag = { x: e.clientX, y: e.clientY };
       e.preventDefault();
@@ -444,6 +536,21 @@ export class Input {
       }
       return;
     }
+    if (this.reconArmed) {
+      if (e.button === 0) {
+        const ground = this.gs.pickGround();
+        if (ground) {
+          this.net.send({ t: "recon", x: ground.x, y: ground.z });
+          this.disarmRecon();
+          this.orderMarker(ground, "move", false, 0x4ad8ff);
+          this.flashLabel("RECON SCAN DEPLOYED", 1300);
+          this.onUiSound("recon");
+        }
+      } else {
+        this.disarmRecon();
+      }
+      return;
+    }
     if (this.placing) {
       if (e.button === 0) this.tryPlace();
       else this.cancelPlacing();
@@ -454,8 +561,8 @@ export class Input {
         this.useVerb();
         return;
       }
-      if (this.amoveNext && this.myUnits().length) {
-        // Classic RTS: A + Left-Click executes Attack-Move!
+      if ((this.amoveNext || this.patrolNext) && this.myUnits().length) {
+        // Classic RTS: A/P + Left-Click executes Attack-Move / Patrol!
         this.issueOrder(e.shiftKey);
         return;
       }
@@ -472,12 +579,38 @@ export class Input {
   armAmove() {
     if (this.placing) return;
     this.disarmSuperweapon();
+    this.disarmRecon();
+    this.setPatrol(false);
     if (!this.myUnits().length) {
       this.flashLabel("select units first", 800);
       return;
     }
     this.setAmove(true);
     this.flashLabel("ATTACK-MOVE — click or right-click destination (Shift to queue)", 1400);
+  }
+
+  armPatrol() {
+    if (this.placing) return;
+    if (this.patrolNext) {
+      this.setPatrol(false);
+      if (this.labelTimer) clearTimeout(this.labelTimer);
+      this.onOrderLabel(null);
+      return;
+    }
+    this.disarmSuperweapon();
+    this.disarmRecon();
+    this.setAmove(false);
+    this.armVerb(null);
+    if (!this.myUnits().length) {
+      this.flashLabel("select units first", 800);
+      return;
+    }
+    this.setPatrol(true);
+    this.flashLabel("PATROL — click or right-click destination (Shift to queue)", 1400);
+  }
+
+  holdNow() {
+    this.holdSelected();
   }
 
   stopNow() {
@@ -488,7 +621,9 @@ export class Input {
     if (v && this.placing) return;
     if (v) {
       this.disarmSuperweapon();
+      this.disarmRecon();
       this.setAmove(false);
+      this.setPatrol(false);
     }
     this.verb = this.verb === v ? null : v;
     if (this.labelTimer) clearTimeout(this.labelTimer);
@@ -511,6 +646,12 @@ export class Input {
   }
 
   private onMove(e: PointerEvent) {
+    if (this.yawDrag) {
+      const dx = e.clientX - this.yawDrag.x;
+      this.yawDrag = { x: e.clientX };
+      this.rotateCamYaw(dx * 0.008);
+      return;
+    }
     if (this.middleDrag) {
       const dx = e.clientX - this.middleDrag.x;
       const dy = e.clientY - this.middleDrag.y;
@@ -540,6 +681,10 @@ export class Input {
   }
 
   private onUp(e: PointerEvent) {
+    if (this.yawDrag && (e.button === 0 || e.button === 1)) {
+      this.yawDrag = null;
+      return;
+    }
     if (e.button === 1) {
       this.middleDrag = null;
       return;
@@ -606,10 +751,13 @@ export class Input {
     if (this.amoveNext) {
       kind = "amove";
       this.setAmove(false);
+    } else if (this.patrolNext) {
+      kind = "patrol";
+      this.setPatrol(false);
     }
     this.net.send({ t: "order", ids, kind, x, y, ...(queue ? { queue: true } : {}) });
     this.orderMarker(new THREE.Vector3(x, 0, y), kind, queue);
-    const base = kind === "amove" ? "ATTACK-MOVE" : "MOVE";
+    const base = kind === "amove" ? "ATTACK-MOVE" : kind === "patrol" ? "PATROL" : "MOVE";
     this.flashLabel(queue ? `+ ${base} (MAP)` : `${base} (MAP)`, 750);
     this.onUiSound(kind === "amove" ? "attack" : "move");
     return true;
@@ -645,6 +793,9 @@ export class Input {
     if (this.amoveNext) {
       kind = "amove";
       this.setAmove(false);
+    } else if (this.patrolNext) {
+      kind = "patrol";
+      this.setPatrol(false);
     } else if (t && t.last.o !== slot && t.last.o >= 0 && !this.isAlly(t.last.o)) {
       kind = "attack";
       target = entId!;
@@ -673,7 +824,15 @@ export class Input {
   private orderMarker(p: THREE.Vector3, kind: OrderKind, queue = false, colorOverride?: number) {
     const c =
       colorOverride ??
-      (kind === "attack" ? 0xff3026 : kind === "amove" ? 0xff6a3c : kind === "harvest" ? 0xffcc33 : 0x4dff70);
+      (kind === "attack"
+        ? 0xff3026
+        : kind === "amove"
+          ? 0xff6a3c
+          : kind === "patrol"
+            ? 0x4ad8ff
+            : kind === "harvest"
+              ? 0xffcc33
+              : 0x4dff70);
     const disc = new THREE.Mesh(
       new THREE.RingGeometry(queue ? 0.22 : 0.3, queue ? 0.34 : 0.44, 24),
       new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }),
@@ -695,6 +854,18 @@ export class Input {
       requestAnimationFrame(anim);
     };
     requestAnimationFrame(anim);
+  }
+
+  private holdSelected() {
+    const ids = this.myUnits();
+    if (!ids.length) {
+      this.flashLabel("select units first", 800);
+      return;
+    }
+    const allHeld = ids.every((id) => this.r.tracked.get(id)?.last.hold);
+    this.net.send({ t: "hold", ids });
+    this.flashLabel(allHeld ? "HOLD POSITION OFF" : "HOLD POSITION", 800);
+    this.onUiSound("hold");
   }
 
   private stopSelected() {
@@ -732,6 +903,9 @@ export class Input {
   enterPlacing(kind: BuildingKind) {
     if (this.ghost) this.exitPlacing();
     this.disarmSuperweapon();
+    this.disarmRecon();
+    this.setAmove(false);
+    this.setPatrol(false);
     this.placing = kind;
     this.ghost = makePlacementGhost(kind);
     this.gs.scene.add(this.ghost);
