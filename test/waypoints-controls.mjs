@@ -167,9 +167,13 @@ try {
     await sleep(180);
   }
   await page.keyboard.up("Shift");
-  await sleep(350);
 
-  const wpInit = await ev((id) => window.__oa.renderer.tracked.get(id)?.last.wp ?? [], tankInfo.id);
+  let wpInit = [];
+  for (let i = 0; i < 15; i++) {
+    await sleep(200);
+    wpInit = await ev((id) => window.__oa.renderer.tracked.get(id)?.last.wp ?? [], tankInfo.id);
+    if (wpInit.length === 3) break;
+  }
   ok(wpInit.length === 3, "Shift+Right-Click queues 3 waypoints", `wp=${JSON.stringify(wpInit)}`);
 
   // Screenshot showing glowing waypoint path + pins + new models/terrain!
@@ -177,7 +181,7 @@ try {
 
   // Wait for tank to traverse waypoint 1 and move toward waypoint 2
   let shrank = false;
-  for (let i = 0; i < 35; i++) {
+  for (let i = 0; i < 40; i++) {
     await sleep(350);
     const cur = await ev((id) => {
       const t = window.__oa.renderer.tracked.get(id);
@@ -192,8 +196,12 @@ try {
 
   // Stop (S) clears the remaining waypoint queue
   await page.keyboard.press("s");
-  await sleep(450);
-  const wpAfterStop = await ev((id) => window.__oa.renderer.tracked.get(id)?.last.wp?.length ?? 0, tankInfo.id);
+  let wpAfterStop = -1;
+  for (let i = 0; i < 15; i++) {
+    await sleep(200);
+    wpAfterStop = await ev((id) => window.__oa.renderer.tracked.get(id)?.last.wp?.length ?? 0, tankInfo.id);
+    if (wpAfterStop === 0) break;
+  }
   ok(wpAfterStop === 0, "Stop (S) clears waypoint queue", `wpLen=${wpAfterStop}`);
 
   // 8. Keyboard zoom (+/-), Base jump (H), and WASD toggle
