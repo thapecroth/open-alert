@@ -149,13 +149,19 @@ export class Input {
   reset() {
     this.exitPlacing();
     this.clearPlacePending();
-    this.placingCancelled = false;
     this.disarmSuperweapon();
     this.disarmRecon();
-    this.setAmove(false);
-    this.setPatrol(false);
+    this.disarmOrders();
     this.armVerb(null);
+    this.dragStart = null;
+    this.middleDrag = null;
     this.yawDrag = null;
+    this.panVx = 0;
+    this.panVz = 0;
+    if (this.selBox) {
+      this.selBox.remove();
+      this.selBox = null;
+    }
     this.selection = new Set();
     this.groups.clear();
     this.lastAlertPos = null;
@@ -163,6 +169,11 @@ export class Input {
     this.r.setSelected(this.selection);
     this.onSelectionChange(this.selection);
     this.onGroupsChange(this.groups);
+  }
+
+  disarmOrders() {
+    this.setAmove(false);
+    this.setPatrol(false);
   }
 
   setLastAlert(x: number, y: number) {
@@ -242,6 +253,34 @@ export class Input {
       e.preventDefault();
     }
 
+    // Repeatable camera zoom & rotation keys
+    if (e.code === "Equal" || e.code === "NumpadAdd") {
+      this.gs.zoom(-3);
+      return;
+    }
+    if (e.code === "Minus" || e.code === "NumpadSubtract") {
+      this.gs.zoom(3);
+      return;
+    }
+    if (e.code === "BracketLeft") {
+      this.rotateCamYaw(-0.18);
+      this.flashLabel("CAMERA CCW", 600);
+      return;
+    }
+    if (e.code === "BracketRight") {
+      this.rotateCamYaw(0.18);
+      this.flashLabel("CAMERA CW", 600);
+      return;
+    }
+    if (e.code === "Backslash") {
+      this.resetCamYaw();
+      this.flashLabel("CAMERA NORTH-UP", 700);
+      return;
+    }
+
+    // All command/toggle hotkeys below must ignore OS key auto-repeat so holding a key never flickers state or spams server
+    if (e.repeat) return;
+
     // Control groups: Ctrl+1..9 assign, 1..9 recall (double-tap centers), Shift+4 ($) = Sell
     if (/^Digit[1-9]$/.test(e.code)) {
       const n = Number(e.code.slice(5));
@@ -268,7 +307,7 @@ export class Input {
       if (e.code === "KeyX") this.scatterSelected();
     }
 
-    if (e.code === "KeyB" && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (e.code === "KeyB" && !e.ctrlKey && !e.metaKey && !e.altKey) {
       this.onPlaceReadyHotkey();
       return;
     }
@@ -286,20 +325,6 @@ export class Input {
       this.selectNextHarvester();
     }
     if (e.code === "Tab") this.cycleProductionBuilding();
-    if (e.code === "Equal" || e.code === "NumpadAdd") this.gs.zoom(-3);
-    if (e.code === "Minus" || e.code === "NumpadSubtract") this.gs.zoom(3);
-    if (e.code === "BracketLeft") {
-      this.rotateCamYaw(-0.18);
-      this.flashLabel("CAMERA CCW", 600);
-    }
-    if (e.code === "BracketRight") {
-      this.rotateCamYaw(0.18);
-      this.flashLabel("CAMERA CW", 600);
-    }
-    if (e.code === "Backslash") {
-      this.resetCamYaw();
-      this.flashLabel("CAMERA NORTH-UP", 700);
-    }
 
     if (e.code === "Escape") {
       const help = document.getElementById("help");
@@ -991,8 +1016,8 @@ export class Input {
     if (this.ghost) this.exitPlacing();
     this.disarmSuperweapon();
     this.disarmRecon();
-    this.setAmove(false);
-    this.setPatrol(false);
+    this.disarmOrders();
+    this.armVerb(null);
     this.placing = kind;
     this.ghost = makePlacementGhost(kind);
     this.gs.scene.add(this.ghost);

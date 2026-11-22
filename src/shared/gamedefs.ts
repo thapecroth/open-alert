@@ -253,7 +253,7 @@ export const PURIFIER_BONUS = 0.25; // +25% credits per harvester deposit
 export const DEPOT_RANGE = 6; // service depot heal aura radius (tiles)
 export const DEPOT_HEAL = 4; // hp restored per vehicle per second
 export const CAPTURE_RANGE = 1.9; // engineer must be this close to capture
-export const SHIPYARD_BUILD_DIST = 9; // max gap from own base to place Naval Shipyard on water
+export const SHIPYARD_BUILD_DIST = 13; // max gap from own base to place Naval Shipyard on water
 
 // Veterancy (0=Rookie, 1=Veteran ★, 2=Elite ★★, 3=Heroic ★★★)
 export const VET_XP = [0, 260, 750, 1600] as const;
@@ -434,7 +434,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [44, 32, 3],
     ];
   } else if (id === "islands") {
-    // Navigable wide river channels forming a coastal cross + 4 wide land bridges + corner coves for Shipyards!
+    // Navigable wide river channels forming a coastal cross + 4 outer bridges + 4 center bridges + corner coves
     addRect(waterSet, 26, 0, 12, 12);
     addRect(waterSet, 26, 17, 12, 9);
     addRect(waterSet, 26, 38, 12, 9);
@@ -443,7 +443,12 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     addRect(waterSet, 17, 26, 9, 12);
     addRect(waterSet, 38, 26, 9, 12);
     addRect(waterSet, 52, 26, 12, 12);
-    // Coastal coves reaching within 7 tiles of each spawn so Shipyards can be deployed easily
+    // 4 land causeways connecting the outer quadrants straight into the central ore island
+    clearRect(waterSet, 30, 17, 4, 9);
+    clearRect(waterSet, 30, 38, 4, 9);
+    clearRect(waterSet, 17, 30, 9, 4);
+    clearRect(waterSet, 38, 30, 9, 4);
+    // Coastal coves reaching within range of each spawn so Shipyards can be deployed easily
     addRect(waterSet, 13, 0, 13, 6);
     addRect(waterSet, 38, 0, 13, 6);
     addRect(waterSet, 13, 58, 13, 6);
@@ -474,10 +479,15 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     clearRect(waterSet, 0, 46, 18, 18);
     clearRect(waterSet, 46, 46, 18, 18);
     clearRect(waterSet, 25, 25, 14, 14);
+    // 4 shallow coastal sandbar bridges linking the 4 corner islands & central volcanic atoll
     clearRect(waterSet, 30, 14, 4, 12);
     clearRect(waterSet, 30, 38, 4, 12);
     clearRect(waterSet, 14, 30, 12, 4);
     clearRect(waterSet, 38, 30, 12, 4);
+    clearRect(waterSet, 13, 17, 4, 14);
+    clearRect(waterSet, 47, 17, 4, 14);
+    clearRect(waterSet, 13, 33, 4, 14);
+    clearRect(waterSet, 47, 33, 4, 14);
     clearRect(waterSet, 29, 7, 6, 7);
     clearRect(waterSet, 29, 50, 6, 7);
     clearRect(waterSet, 7, 29, 7, 6);
@@ -585,10 +595,14 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     clearRect(waterSet, 46, 0, 18, 18);
     clearRect(waterSet, 0, 46, 18, 18);
     clearRect(waterSet, 46, 46, 18, 18);
-    // Salvage sandbar cross & central wreck shoal
+    // Salvage sandbar cross & central wreck shoal + corner connectors
     clearRect(waterSet, 25, 25, 14, 14);
     clearRect(waterSet, 15, 29, 34, 6);
     clearRect(waterSet, 29, 15, 6, 34);
+    clearRect(waterSet, 14, 17, 4, 14);
+    clearRect(waterSet, 46, 17, 4, 14);
+    clearRect(waterSet, 14, 33, 4, 14);
+    clearRect(waterSet, 46, 33, 4, 14);
     // Reef rocks beside wrecks
     addRect(cliffSet, 22, 20, 3, 2);
     addRect(cliffSet, 39, 42, 3, 2);

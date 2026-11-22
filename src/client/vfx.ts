@@ -850,8 +850,8 @@ export class VfxSystem {
           Math.max(0.08, 0.5 + vy * s - 5.4 * s * s),
           y + Math.sin(ang) * spd * s,
         );
-        o.rotation.x += 0.24;
-        o.rotation.y += 0.18;
+        o.rotation.x = s * 14.4;
+        o.rotation.y = s * 10.8;
         dMat.opacity = 1 - t * t;
       });
     }
@@ -994,8 +994,8 @@ export class VfxSystem {
               Math.max(0.1, 0.7 + vy * s - 6.4 * s * s),
               y + Math.sin(ang) * spd * s,
             );
-            doObj.rotation.x += 0.24;
-            doObj.rotation.y += 0.19;
+            doObj.rotation.x = s * 14.4;
+            doObj.rotation.y = s * 11.4;
             dMat.opacity = 1 - dt0;
           });
         }

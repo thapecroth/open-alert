@@ -841,7 +841,7 @@ button.tbadge.own:hover { border-color: var(--text); color: #fff; }
   #verbbar { gap: 4px; }
   #verbbar button { padding: 4px 8px; font-size: 11px; }
   #chat-box { width: 220px; }
-  #selinfo { left: calc(50% + 12px); max-width: 380px; }
+  #selinfo { left: calc(50% - 20px); max-width: min(360px, calc(100vw - 455px)); }
 }
 @media (max-width: 600px) {
   .gfx-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
