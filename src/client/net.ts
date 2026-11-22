@@ -1,4 +1,5 @@
 import PartySocket from "partysocket";
+import type { MapId } from "../shared/gamedefs";
 import type { C2S, S2C } from "../shared/protocol";
 import { partyName } from "../shared/protocol";
 import { LocalRoom } from "./localnet";
@@ -10,6 +11,7 @@ export class Net {
   onLocalFallback?: (reason: string) => void;
   lastRecvAt = Date.now();
   localMode = false;
+  quotaExceeded = false;
   private room: string;
   private local: LocalRoom | null = null;
   private hbTimer: ReturnType<typeof setInterval>;
@@ -60,6 +62,7 @@ export class Net {
       // If initial Cloudflare Durable Object handshake fails twice (e.g. free-tier daily quota reached),
       // seamlessly fall back to Local Solo Skirmish so the player can play immediately at 0ms ping!
       if (!this.everConnected && this.failCount >= 2) {
+        this.quotaExceeded = true;
         this.switchToLocal("Cloudflare free-tier room quota reached — switched to Local Solo mode (0ms ping)");
       }
     });
@@ -77,12 +80,16 @@ export class Net {
   }
 
   switchToLocal(reason = "Switched to Local Solo Skirmish (0ms ping, zero server quota)") {
-    if (this.localMode) return;
+    if (/quota/i.test(reason)) this.quotaExceeded = true;
+    if (this.localMode && this.local && !this.local.isSpectate()) return;
     this.localMode = true;
     try {
       this.socket.close();
     } catch {
       /* ignore */
+    }
+    if (this.local) {
+      this.local.close();
     }
     this.local = new LocalRoom(this.room);
     this.local.onMsg = (m) => {
@@ -96,6 +103,35 @@ export class Net {
     this.onStatus("LOCAL SOLO");
     this.onLocalFallback?.(reason);
     this.local.send({ t: "join", name: this.joinName, token: this.joinToken });
+  }
+
+  startAiSpectate(map: MapId = "archipelago", botCount = 3) {
+    if (!this.localMode) {
+      this.localMode = true;
+      try {
+        this.socket.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (this.local) {
+      this.local.close();
+    }
+    this.local = new LocalRoom(this.room);
+    this.local.onMsg = (m) => {
+      this.lastRecvAt = Date.now();
+      try {
+        this.onMsg(m);
+      } catch (err) {
+        console.error("local message handler error:", err);
+      }
+    };
+    this.onStatus("AI SPECTATE");
+    this.local.startAiSpectate(map, botCount);
+  }
+
+  retryOnline() {
+    location.reload();
   }
 
   send(m: C2S) {

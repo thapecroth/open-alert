@@ -12,6 +12,7 @@
     "test:ws": "node test/regress.mjs && node test/bugfix.mjs && node test/features.mjs && node test/techtree.mjs && node test/orderfuzz.mjs",
     "test:browser": "node test/interact.mjs && node test/waypoints-controls.mjs && node test/techvisual.mjs",
     "test:all": "npm run test && npm run test:ws && npm run test:browser",
+    "mcp": "node mcp/open-alert-mcp.mjs",
     "deploy": "vite build && wrangler deploy"
   },
   "dependencies": {

@@ -29,17 +29,21 @@ import type { S2C, PlayerState, WeaponFx } from "../shared/protocol";
 // ---------- identity & room ----------
 
 const params = new URLSearchParams(location.search);
+const spectateParam = params.get("spectate") === "1";
+const watchParam = params.get("watch") === "1";
 let room = params.get("room") ?? "";
 if (!/^[a-z0-9-]{2,32}$/i.test(room)) {
   room = Math.random().toString(36).slice(2, 8);
 }
-history.replaceState(null, "", `?room=${room}`);
+history.replaceState(null, "", spectateParam ? `?room=${room}&spectate=1` : `?room=${room}`);
 
 let token = localStorage.getItem("oa-token");
 if (!token) {
   token = crypto.randomUUID();
   localStorage.setItem("oa-token", token);
 }
+// Use an ephemeral token when joining as a spectator so opening a spectator tab never steals our player slot
+const joinToken = spectateParam ? crypto.randomUUID() : token;
 let name =
   params.get("name") ??
   localStorage.getItem("oa-name") ??
@@ -54,7 +58,7 @@ const renderer = new Renderer(gs);
 const hud = new Hud();
 const audio = new AudioEngine();
 const net = new Net(room);
-net.setIdentity(name, token);
+net.setIdentity(name, joinToken);
 
 const unlockAudio = () => {
   audio.unlock();
@@ -76,6 +80,184 @@ let prevLowPower = false;
 let iconColor = "";
 let lastTrainSfx = 0;
 let lastHoverMs = 0;
+let matchPlayers: { id: string; slot: number; name: string; team: number }[] = [];
+let pendingAiSpectate = false;
+let autoCam = false;
+let autoCamGoal = { x: MAP_W / 2, z: MAP_H / 2 };
+let autoCamNextEval = 0;
+let autoCamCycleIdx = 0;
+let lastCamX = MAP_W / 2;
+let lastCamZ = MAP_H / 2;
+const combatEvents: { x: number; y: number; w: number; t: number }[] = [];
+
+function setAutoCam(on: boolean) {
+  autoCam = on;
+  hud.setAutoCamState(on);
+  if (on) {
+    autoCamNextEval = 0;
+    lastCamX = gs.camTarget.x;
+    lastCamZ = gs.camTarget.z;
+  }
+}
+
+function focusCommander(slot: number) {
+  if (autoCam) setAutoCam(false);
+  let sx = 0,
+    sz = 0,
+    n = 0;
+  let bsx = 0,
+    bsz = 0,
+    bn = 0;
+  let conyardPos: { x: number; z: number } | null = null;
+  for (const t of renderer.tracked.values()) {
+    const e = t.last;
+    if (e.o !== slot) continue;
+    if (!isBuildingKind(e.k) && e.k !== "harvester") {
+      sx += e.x;
+      sz += e.y;
+      n++;
+    } else {
+      bsx += e.x;
+      bsz += e.y;
+      bn++;
+      if (e.k === "conyard") conyardPos = { x: e.x, z: e.y };
+    }
+  }
+  let tx: number, tz: number;
+  if (n > 0) {
+    tx = sx / n;
+    tz = sz / n;
+  } else if (conyardPos) {
+    tx = conyardPos.x;
+    tz = conyardPos.z;
+  } else if (bn > 0) {
+    tx = bsx / bn;
+    tz = bsz / bn;
+  } else {
+    const sp = SPAWNS[slot] ?? { x: MAP_W / 2, y: MAP_H / 2 };
+    tx = sp.x + 1.5;
+    tz = sp.y + 1.5;
+  }
+  gs.camTarget.x = Math.max(4, Math.min(MAP_W - 4, tx));
+  gs.camTarget.z = Math.max(4, Math.min(MAP_H - 4, tz));
+  gs.updateCamera();
+  lastCamX = gs.camTarget.x;
+  lastCamZ = gs.camTarget.z;
+}
+
+function pickAutoCamTarget(now: number): { x: number; z: number } | null {
+  // Prune stale combat events older than 3.8s
+  while (combatEvents.length && now - combatEvents[0].t > 3800) combatEvents.shift();
+
+  const mobile: { x: number; y: number; o: number; combat: boolean }[] = [];
+  for (const t of renderer.tracked.values()) {
+    const e = t.last;
+    if (e.o < 0 || isBuildingKind(e.k)) continue;
+    mobile.push({ x: e.x, y: e.y, o: e.o, combat: e.k !== "harvester" });
+  }
+
+  let bestScore = 0;
+  let bestX = MAP_W / 2;
+  let bestZ = MAP_H / 2;
+
+  // 1. Score recent combat event clusters (shots, explosions, ion strikes, captures)
+  for (let i = 0; i < combatEvents.length; i++) {
+    const ev = combatEvents[i];
+    let score = 0;
+    let wx = 0;
+    let wz = 0;
+    for (let j = 0; j < combatEvents.length; j++) {
+      const o = combatEvents[j];
+      const dx = o.x - ev.x;
+      const dy = o.y - ev.y;
+      if (dx * dx + dy * dy <= 100) {
+        const decay = Math.max(0.2, 1 - (now - o.t) / 3800);
+        const w = o.w * decay;
+        score += w;
+        wx += o.x * w;
+        wz += o.y * w;
+      }
+    }
+    // Bonus when multiple factions have units engaged near this hotspot
+    const owners = new Set<number>();
+    for (let k = 0; k < mobile.length; k++) {
+      const u = mobile[k];
+      const dx = u.x - ev.x;
+      const dy = u.y - ev.y;
+      if (dx * dx + dy * dy <= 144) owners.add(u.o);
+    }
+    if (owners.size >= 2) score *= 1.65;
+    if (score > bestScore && score > 0) {
+      bestScore = score;
+      bestX = wx / score;
+      bestZ = wz / score;
+    }
+  }
+
+  // 2. Score live multi-faction unit clashes (even between volleys)
+  for (let i = 0; i < mobile.length; i++) {
+    const u = mobile[i];
+    if (!u.combat) continue;
+    let enemies = 0;
+    let friends = 0;
+    let sx = u.x;
+    let sz = u.y;
+    let cnt = 1;
+    for (let j = 0; j < mobile.length; j++) {
+      if (i === j) continue;
+      const v = mobile[j];
+      const dx = v.x - u.x;
+      const dy = v.y - u.y;
+      if (dx * dx + dy * dy <= 121) {
+        if (v.o !== u.o) enemies++;
+        else friends++;
+        sx += v.x;
+        sz += v.y;
+        cnt++;
+      }
+    }
+    if (enemies > 0) {
+      const score = 3 + enemies * 2.4 + Math.min(friends, 6) * 0.7;
+      if (score > bestScore) {
+        bestScore = score;
+        bestX = sx / cnt;
+        bestZ = sz / cnt;
+      }
+    }
+  }
+
+  if (bestScore > 0) {
+    return {
+      x: Math.max(6, Math.min(MAP_W - 6, bestX)),
+      z: Math.max(6, Math.min(MAP_H - 6, bestZ)),
+    };
+  }
+
+  // 3. Early-game fallback: follow active mobile unit clusters or cycle smoothly between commanders
+  if (mobile.length > 0) {
+    const activeSlots = [...new Set(mobile.map((u) => u.o))].sort((a, b) => a - b);
+    if (activeSlots.length) {
+      const slot = activeSlots[autoCamCycleIdx++ % activeSlots.length];
+      let sx = 0,
+        sz = 0,
+        cnt = 0;
+      for (const u of mobile) {
+        if (u.o !== slot) continue;
+        sx += u.x;
+        sz += u.y;
+        cnt++;
+      }
+      if (cnt > 0) {
+        return {
+          x: Math.max(6, Math.min(MAP_W - 6, sx / cnt)),
+          z: Math.max(6, Math.min(MAP_H - 6, sz / cnt)),
+        };
+      }
+    }
+  }
+
+  return null;
+}
 
 hud.setRoom(room);
 hud.setStatus("connecting…");
@@ -274,9 +456,12 @@ hud.onMinimapPing = (x, y) => net.send({ t: "ping", x, y });
 hud.onMinimapOrder = (x, y, shift) => (fpv.active ? false : input.issueMinimapOrder(x, y, shift));
 hud.onMinimapNav = (x, y) => {
   if (fpv.active) return;
+  if (autoCam) setAutoCam(false);
   gs.camTarget.x = Math.max(-2, Math.min(MAP_W + 2, x));
   gs.camTarget.z = Math.max(-2, Math.min(MAP_H + 2, y));
   gs.updateCamera();
+  lastCamX = gs.camTarget.x;
+  lastCamZ = gs.camTarget.z;
 };
 hud.onGroupClick = (n, dbl) => {
   input.recallGroup(n, false);
@@ -327,11 +512,33 @@ hud.onSwitchLocal = () => {
   net.switchToLocal("Local Solo Skirmish active — 0ms ping, plays offline with bots!");
   document.getElementById("solo-local-btn")?.classList.add("hidden");
 };
+hud.onRetryOnline = () => {
+  hud.toast("Retrying online multiplayer connection…", true);
+  net.retryOnline();
+};
+hud.onWatchAiBattle = (map) => {
+  pendingAiSpectate = true;
+  hud.closeWatchPanel();
+  document.getElementById("solo-local-btn")?.classList.add("hidden");
+  net.startAiSpectate(map);
+};
+hud.onToggleAutoCam = () => setAutoCam(!autoCam);
+hud.onFocusCommander = (slot) => focusCommander(slot);
 net.onLocalFallback = (reason) => {
   document.getElementById("solo-local-btn")?.classList.add("hidden");
+  if (net.quotaExceeded || /quota|limit|free-tier/i.test(reason)) {
+    hud.setQuotaExceeded(true);
+  }
   hud.toast(reason, true);
 };
-net.onStatus = (s) => hud.setStatus(s);
+net.onStatus = (s) => {
+  hud.setStatus(s);
+  if (s === "" && !net.localMode) {
+    hud.setQuotaExceeded(false);
+    document.getElementById("solo-local-btn")?.classList.remove("hidden");
+  }
+};
+if (watchParam) hud.openWatchPanel();
 net.onMsg = (m: S2C) => {
   switch (m.t) {
     case "lobby": {
@@ -347,6 +554,7 @@ net.onMsg = (m: S2C) => {
         phase = "lobby";
         mySlot = -1;
         latestState = null;
+        setAutoCam(false);
         renderer.reset();
         input.reset();
         hud.resetMatch();
@@ -360,6 +568,8 @@ net.onMsg = (m: S2C) => {
       if (fpv.active) fpv.exit("dead");
       myId = m.you;
       mySlot = m.slot;
+      matchPlayers = m.players;
+      combatEvents.length = 0;
       currentMap = m.map ?? "crossroads";
       currentConfig = m.config ? { ...DEFAULT_CONFIG, ...m.config } : { ...DEFAULT_CONFIG };
       phase = "playing";
@@ -384,6 +594,9 @@ net.onMsg = (m: S2C) => {
       hud.clearChat();
       hud.hideLobby(mySlot < 0);
       hud.hideEnd();
+      hud.updateSpecCommanders(matchPlayers);
+      const startAutoCam = mySlot < 0 && pendingAiSpectate;
+      pendingAiSpectate = false;
       renderer.slotColors.clear();
       for (const p of m.players) renderer.slotColors.set(p.slot, PLAYER_COLORS[p.slot]);
       oreCells.clear();
@@ -397,6 +610,10 @@ net.onMsg = (m: S2C) => {
         gs.camTarget.set(MAP_W / 2, 0, MAP_H / 2);
         gs.updateCamera();
       }
+      lastCamX = gs.camTarget.x;
+      lastCamZ = gs.camTarget.z;
+      autoCamGoal = { x: gs.camTarget.x, z: gs.camTarget.z };
+      setAutoCam(startAutoCam);
       // Render real 3D model thumbnails for sidebar + selection panel (incl. conyard, factory2 & derrick)
       const color = mySlot >= 0 ? PLAYER_COLORS[mySlot] : "#45d6ff";
       if (iconColor !== color) {
@@ -416,6 +633,12 @@ net.onMsg = (m: S2C) => {
       renderer.applyEvents(m.events, mySlot);
       let shotSfx = 0;
       let boomSfx = 0;
+      const evNow = performance.now();
+      const noteCombatPos = (x: number, y: number, w: number) => {
+        if (mySlot >= 0) return;
+        combatEvents.push({ x, y, w, t: evNow });
+        if (combatEvents.length > 80) combatEvents.splice(0, combatEvents.length - 80);
+      };
       for (const ev of m.events) {
         if (ev.e === "ore") {
           for (const [x, y, a] of ev.cells) {
@@ -425,15 +648,18 @@ net.onMsg = (m: S2C) => {
         } else if (ev.e === "shot") {
           const isFpvShot = fpv.active && ev.src != null && ev.src === fpv.entId;
           if (ev.src != null) fpv.onShotEvent(ev.src);
+          noteCombatPos((ev.fx + ev.tx) * 0.5, (ev.fy + ev.ty) * 0.5, 1.2);
           const vis = mySlot < 0 || ev.src == null || renderer.isVisible(ev.src);
           if (vis) {
             if (!isFpvShot && shotSfx++ < 3) audio.playShot(ev.w, ev.vet);
             audio.noteCombat(0.25);
           }
         } else if (ev.e === "boom") {
+          noteCombatPos(ev.x, ev.y, 3.0);
           if (boomSfx++ < 2) audio.playBoom(ev.r);
           audio.noteCombat(0.5);
         } else if (ev.e === "superweapon") {
+          noteCombatPos(ev.x, ev.y, 8.0);
           audio.playSuperweapon();
           audio.noteCombat(1.0);
           hud.toast("⚡ ORBITAL ION CANNON FIRED!", ev.slot === mySlot);
@@ -464,6 +690,7 @@ net.onMsg = (m: S2C) => {
           hud.ping(ev.x, ev.y);
           input.setLastAlert(ev.x, ev.y);
         } else if (ev.e === "cap") {
+          noteCombatPos(ev.x, ev.y, 5.0);
           audio.playUi("cap");
           hud.toast(ev.slot === mySlot ? "BUILDING CAPTURED!" : "a building was captured!", ev.slot !== mySlot);
           hud.ping(ev.x, ev.y);
@@ -496,6 +723,7 @@ net.onMsg = (m: S2C) => {
       if ((!latestState?.reconReady || latestState?.lowPower) && input.reconArmed) input.disarmRecon();
       hud.updateClock(m.tick);
       hud.updateTop(latestState, mySlot < 0 ? m.players : undefined);
+      if (mySlot < 0) hud.updateSpecCommanders(matchPlayers, m.players);
       hud.updateRecon(latestState, input.reconArmed);
       hud.updateSuperweapon(latestState, input.swArmed);
       hud.updateSidebar(latestState, has, countOf, currentConfig, gs.hasWater());
@@ -520,6 +748,7 @@ net.onMsg = (m: S2C) => {
     case "end": {
       if (fpv.active) fpv.exit("dead");
       phase = "ended";
+      setAutoCam(false);
       const mine =
         mySlot >= 0 &&
         (m.winner === mySlot || (m.winnerTeam != null && m.winnerTeam > 0 && m.winnerTeam === myTeam));
@@ -546,7 +775,10 @@ net.onMsg = (m: S2C) => {
 };
 
 net.socket.addEventListener("open", () => {
-  net.send({ t: "join", name, token });
+  if (net.localMode) return;
+  hud.setQuotaExceeded(false);
+  document.getElementById("solo-local-btn")?.classList.remove("hidden");
+  net.send({ t: "join", name, token: joinToken, ...(spectateParam ? { spectate: true } : {}) });
 });
 
 // debug/e2e hook
@@ -585,7 +817,36 @@ document.addEventListener("visibilitychange", () => {
 
 gs.engine.runRenderLoop(() => {
   const dt = gs.engine.getDeltaTime() / 1000;
+  const preCamX = gs.camTarget.x;
+  const preCamZ = gs.camTarget.z;
   input.update(dt);
+  if (phase === "playing" && mySlot < 0 && !fpv.active && autoCam) {
+    const manualDrag = Math.hypot(preCamX - lastCamX, preCamZ - lastCamZ) > 0.04;
+    const manualPan = Math.hypot(gs.camTarget.x - preCamX, gs.camTarget.z - preCamZ) > 0.015;
+    if (manualDrag || manualPan) {
+      setAutoCam(false);
+    } else {
+      const watchPanel = document.getElementById("watch-panel");
+      const watchOpen = watchPanel && !watchPanel.classList.contains("hidden");
+      if (!watchOpen) {
+        const now = performance.now();
+        if (now >= autoCamNextEval) {
+          autoCamNextEval = now + 2000;
+          const next = pickAutoCamTarget(now);
+          if (next) autoCamGoal = next;
+        }
+        const lerp = 1 - Math.exp(-Math.min(0.1, dt) * 2.4);
+        gs.camTarget.x += (autoCamGoal.x - gs.camTarget.x) * lerp;
+        gs.camTarget.z += (autoCamGoal.z - gs.camTarget.z) * lerp;
+        gs.updateCamera();
+      }
+      lastCamX = gs.camTarget.x;
+      lastCamZ = gs.camTarget.z;
+    }
+  } else {
+    lastCamX = gs.camTarget.x;
+    lastCamZ = gs.camTarget.z;
+  }
   renderer.update(dt);
   if (fpv.active) {
     const tel = fpv.update(dt);

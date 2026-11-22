@@ -2,7 +2,7 @@ import type { BuildingKind, UnitKind, EntKind, MapId, BotDiff, BotProfile, Crate
 
 // ---------- client -> server ----------
 export type C2S =
-  | { t: "join"; name: string; token?: string }
+  | { t: "join"; name: string; token?: string; spectate?: boolean }
   | { t: "ready"; ready: boolean }
   | { t: "start" }
   | { t: "order"; ids: number[]; kind: OrderKind; x: number; y: number; target?: number; queue?: boolean }
@@ -48,6 +48,20 @@ export type OrderKind = "move" | "amove" | "attack" | "harvest" | "patrol";
 export type WeaponFx = "bullet" | "cannon" | "rocket" | "arty" | "arc" | "melee" | "missile" | "torpedo" | "bomb";
 
 // ---------- server -> client ----------
+export interface RoomSummary {
+  room: string;
+  phase: "lobby" | "playing" | "ended";
+  map: MapId;
+  players: number;
+  humans: number;
+  bots: number;
+  spectators: number;
+  tick: number;
+  ents: number;
+  names: string[];
+  updatedAt: number;
+}
+
 export interface LobbyPlayer {
   id: string;
   name: string;
