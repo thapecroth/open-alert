@@ -7,8 +7,11 @@ import { VfxSystem, WaypointOverlay } from "./vfx";
 import { isBuildingKind } from "./util";
 import { GameScene } from "./scene";
 
-const INTERP_MS = 220; // crisp snapshot interpolation window
+const INTERP_MS = 250; // 50ms WAN jitter cushion above 200ms (5 Hz) snapshot interval
 const SNAP_KEEP = 8;
+const MAX_EXTRAP_T = 1.38;
+const EXTRAP_DAMP = 0.72;
+const SNAP_JUMP_DIST_SQ = 16; // snap visual filter if jump > 4 tiles
 
 const CRATE_POPUP_COLORS: Record<CrateKind, string> = {
   cash: "#ffd84d",
@@ -26,6 +29,9 @@ interface Tracked {
   vis: EntVis;
   last: EntSnap;
   anim: AnimState;
+  visX: number;
+  visY: number;
+  visYaw: number;
   holdInd?: THREE.Group;
   isBuilding: boolean;
   isStaticBld: boolean;
@@ -150,6 +156,7 @@ export class Renderer {
   private readonly emitContrail: (x: number, y: number, z: number, scale?: number) => void;
   private readonly scratchVec = new THREE.Vector3();
   private readonly scratchPos = { x: 0, y: 0, d: 0 };
+  private readonly scratchWin: { a: Snap | null; b: Snap | null; t: number } = { a: null, b: null, t: 0 };
   private readonly wpEntries: { x: number; y: number; wp: [number, number, OrderKind][] }[] = [];
   private readonly wpEntryPool: { x: number; y: number; wp: [number, number, OrderKind][] }[] = [];
   private readonly rallyEntries: { x: number; y: number; rx: number; ry: number }[] = [];
@@ -257,6 +264,9 @@ export class Renderer {
         vis,
         last: e,
         anim,
+        visX: e.x,
+        visY: e.y,
+        visYaw: e.d / 10,
         isBuilding,
         isStaticBld,
         staticFrozen: false,
@@ -383,11 +393,49 @@ export class Renderer {
   }
 
   getEntityWorldPos(id: number): { x: number; y: number; d: number } | null {
-    const p = this.framePos(id);
-    if (p) return p;
     const t = this.tracked.get(id);
-    if (!t) return null;
-    return { x: t.last.x, y: t.last.y, d: t.last.d / 10 };
+    if (t) return { x: t.visX, y: t.visY, d: t.visYaw };
+    return this.framePos(id);
+  }
+
+  private resolveInterpWindow(nowMs: number): boolean {
+    const n = this.snaps.length;
+    if (n === 0) return false;
+    const win = this.scratchWin;
+    if (n === 1) {
+      win.a = this.snaps[0];
+      win.b = this.snaps[0];
+      win.t = 0;
+      return true;
+    }
+    const rt = nowMs - INTERP_MS;
+    if (rt <= this.snaps[0].recv) {
+      win.a = this.snaps[0];
+      win.b = this.snaps[1];
+      win.t = 0;
+      return true;
+    }
+    let a = this.snaps[0];
+    let b = this.snaps[1];
+    for (let i = n - 1; i > 0; i--) {
+      if (this.snaps[i - 1].recv <= rt) {
+        a = this.snaps[i - 1];
+        b = this.snaps[i];
+        break;
+      }
+    }
+    const span = Math.max(1, b.recv - a.recv);
+    const rawT = (rt - a.recv) / span;
+    win.a = a;
+    win.b = b;
+    // Smoothly extrapolate with velocity damping if the latest snapshot is slightly late over WAN
+    win.t =
+      rawT <= 0
+        ? 0
+        : rawT <= 1
+          ? rawT
+          : Math.min(MAX_EXTRAP_T, 1 + (rawT - 1) * EXTRAP_DAMP);
+    return true;
   }
 
   private framePosInto(
@@ -412,32 +460,24 @@ export class Renderer {
       out.d = ea.d / 10;
       return true;
     }
+    const dx = eb.x - ea.x;
+    const dy = eb.y - ea.y;
+    const moveT = interpT > 1 && dx * dx + dy * dy > SNAP_JUMP_DIST_SQ ? 1 : interpT;
+    const dirT = Math.min(1, interpT);
     let dd = eb.d - ea.d;
     if (dd > Math.PI * 10) dd -= Math.PI * 20;
     if (dd < -Math.PI * 10) dd += Math.PI * 20;
-    out.x = ea.x + (eb.x - ea.x) * interpT;
-    out.y = ea.y + (eb.y - ea.y) * interpT;
-    out.d = (ea.d + dd * interpT) / 10;
+    out.x = ea.x + dx * moveT;
+    out.y = ea.y + dy * moveT;
+    out.d = (ea.d + dd * dirT) / 10;
     return true;
   }
 
   private framePos(id: number): { x: number; y: number; d: number } | null {
-    const n = this.snaps.length;
-    if (!n) return null;
-    const rt = performance.now() - INTERP_MS;
-    let a = this.snaps[0],
-      b = this.snaps[n - 1];
-    for (let i = n - 1; i > 0; i--) {
-      if (this.snaps[i - 1].recv <= rt) {
-        a = this.snaps[i - 1];
-        b = this.snaps[i];
-        break;
-      }
-    }
-    const span = Math.max(1, b.recv - a.recv);
-    const interpT = Math.max(0, Math.min(1, (rt - a.recv) / span));
+    if (!this.resolveInterpWindow(performance.now())) return null;
+    const win = this.scratchWin;
     const out = { x: 0, y: 0, d: 0 };
-    return this.framePosInto(id, a, b, interpT, out) ? out : null;
+    return this.framePosInto(id, win.a!, win.b!, win.t, out) ? out : null;
   }
 
   update(dt = 0.016) {
@@ -448,25 +488,15 @@ export class Renderer {
     this.wpEntries.length = 0;
     this.rallyEntries.length = 0;
 
-    // Resolve snapshot interpolation pair ONCE per frame instead of per entity
-    const snapCount = this.snaps.length;
-    let snapA: Snap | null = null;
-    let snapB: Snap | null = null;
-    let interpT = 0;
-    if (snapCount > 0) {
-      const rt = nowMs - INTERP_MS;
-      snapA = this.snaps[0];
-      snapB = this.snaps[snapCount - 1];
-      for (let i = snapCount - 1; i > 0; i--) {
-        if (this.snaps[i - 1].recv <= rt) {
-          snapA = this.snaps[i - 1];
-          snapB = this.snaps[i];
-          break;
-        }
-      }
-      const span = Math.max(1, snapB.recv - snapA.recv);
-      interpT = Math.max(0, Math.min(1, (rt - snapA.recv) / span));
-    }
+    // Resolve snapshot interpolation/extrapolation window ONCE per frame instead of per entity
+    const hasWindow = this.resolveInterpWindow(nowMs);
+    const snapA = hasWindow ? this.scratchWin.a : null;
+    const snapB = hasWindow ? this.scratchWin.b : null;
+    const interpT = hasWindow ? this.scratchWin.t : 0;
+
+    // Frame-rate independent exponential visual smoothing gains
+    const posAlpha = 1 - Math.exp(-22 * safeDt);
+    const yawAlpha = 1 - Math.exp(-16 * safeDt);
 
     const pos = this.scratchPos;
 
@@ -485,6 +515,9 @@ export class Renderer {
         ) {
           px = t.last.x;
           py = t.last.y;
+          t.visX = px;
+          t.visY = py;
+          t.visYaw = t.last.d / 10;
           if (!t.staticFrozen) {
             t.vis.root.position.set(px, 0, py);
             freezeStaticBuilding(t.vis);
@@ -503,7 +536,7 @@ export class Renderer {
               t.last,
               px,
               py,
-              t.last.d / 10,
+              t.visYaw,
               dt,
               nowSec,
               this.emitSmoke,
@@ -536,8 +569,24 @@ export class Renderer {
           t.lastLowPower = lowPwr;
         } else {
           if (!this.framePosInto(id, snapA, snapB, interpT, pos)) continue;
-          px = pos.x;
-          py = pos.y;
+          const dxVis = pos.x - t.visX;
+          const dyVis = pos.y - t.visY;
+          if (dxVis * dxVis + dyVis * dyVis > SNAP_JUMP_DIST_SQ) {
+            t.visX = pos.x;
+            t.visY = pos.y;
+          } else {
+            t.visX += dxVis * posAlpha;
+            t.visY += dyVis * posAlpha;
+          }
+          let dYaw = pos.d - t.visYaw;
+          while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+          while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+          t.visYaw += dYaw * yawAlpha;
+          if (t.visYaw > Math.PI) t.visYaw -= Math.PI * 2;
+          else if (t.visYaw < -Math.PI) t.visYaw += Math.PI * 2;
+
+          px = t.visX;
+          py = t.visY;
           if (t.staticFrozen) {
             if (t.vis.root.position.x !== px || t.vis.root.position.z !== py) {
               t.vis.root.position.set(px, 0, py);
@@ -549,7 +598,7 @@ export class Renderer {
             t.vis.root.position.z = py;
           }
           if (!t.isBuilding) {
-            applyFacing(t.vis.root, pos.d);
+            applyFacing(t.vis.root, t.visYaw);
           }
           stepEntityAnim(
             t.vis,
@@ -557,7 +606,7 @@ export class Renderer {
             t.last,
             px,
             py,
-            pos.d,
+            t.visYaw,
             dt,
             nowSec,
             this.emitSmoke,

@@ -41,7 +41,8 @@ export type C2S =
   | { t: "setConfig"; config: Partial<GameConfig> } // host: adjust match rules in lobby
   | { t: "setTeam"; team: number; id?: string } // 0 = FFA, 1..4 = Team (host may pass bot id)
   | { t: "setName"; name: string } // change callsign in lobby
-  | { t: "rematch" };
+  | { t: "rematch" }
+  | { t: "hb" }; // lightweight keepalive heartbeat
 
 export type OrderKind = "move" | "amove" | "attack" | "harvest" | "patrol";
 export type WeaponFx = "bullet" | "cannon" | "rocket" | "arty" | "arc" | "melee" | "missile" | "torpedo" | "bomb";
