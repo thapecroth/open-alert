@@ -25,7 +25,7 @@ const ent = (s, id) => lastSnap(s).ents.find((e) => e.id === id);
 const mine = (s, k) => lastSnap(s).ents.filter((e) => e.o === s.slot && (!k || e.k === k));
 
 const a = conn("Alice", "bf-A");
-await sleep(600);
+for (let i = 0; i < 40 && !a.lobby; i++) await sleep(100);
 send(a, { t: "addbot" });
 await sleep(400);
 send(a, { t: "start" });

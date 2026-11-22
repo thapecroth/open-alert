@@ -51,49 +51,48 @@ let phase: "lobby" | "playing" | "ended" = "lobby";
 let latestState: PlayerState | null = null;
 const oreCells = new Set<number>();
 let prevAwaiting: string | null = null;
-let iconsRequested = false;
+let iconColor = "";
 
 hud.setRoom(room);
 hud.setStatus("connecting…");
 
-// ---------- placement validity (client-side approximation of server rules) ----------
+// ---------- placement validity (exact client parity with server canPlace) ----------
 
-function occCheck(tx: number, ty: number, w: number, h: number): boolean {
-  if (tx < 0 || ty < 0 || tx + w > MAP_W || ty + h > MAP_H) return false;
+function placeReason(tx: number, ty: number, w: number, h: number): string | null {
+  if (tx < 0 || ty < 0 || tx + w > MAP_W || ty + h > MAP_H) return "off map";
   for (let y = ty; y < ty + h; y++)
-    for (let x = tx; x < tx + w; x++) if (oreCells.has(y * MAP_W + x)) return false;
+    for (let x = tx; x < tx + w; x++) if (oreCells.has(y * MAP_W + x)) return "can't build on ore";
+  let adj = false;
   for (const t of renderer.tracked.values()) {
     if (!isBuildingKind(t.last.k)) {
-      // units block placement too — same check the server runs ("units in the way")
       const ux = Math.floor(t.last.x),
         uy = Math.floor(t.last.y);
-      if (ux >= tx && ux < tx + w && uy >= ty && uy < ty + h) return false;
+      if (ux >= tx && ux < tx + w && uy >= ty && uy < ty + h) return "units in the way";
       continue;
     }
     const d = BUILDINGS[t.last.k];
     const bx = Math.round(t.last.x - d.w / 2),
       by = Math.round(t.last.y - d.h / 2);
-    if (tx < bx + d.w && tx + w > bx && ty < by + d.h && ty + h > by) return false;
+    if (tx < bx + d.w && tx + w > bx && ty < by + d.h && ty + h > by) return "blocked by structure";
+    if (t.last.o === mySlot) {
+      const gapX = Math.max(bx - (tx + w), tx - (bx + d.w));
+      const gapY = Math.max(by - (ty + h), ty - (by + d.h));
+      if (Math.max(gapX, gapY) <= 2) adj = true;
+    }
   }
-  return true;
-}
-
-function adjCheck(tx: number, ty: number, w: number, h: number): boolean {
-  for (const t of renderer.tracked.values()) {
-    if (t.last.o !== mySlot || !isBuildingKind(t.last.k)) continue;
-    const d = BUILDINGS[t.last.k];
-    const bx = Math.round(t.last.x - d.w / 2),
-      by = Math.round(t.last.y - d.h / 2);
-    const gapX = Math.max(bx - (tx + w), tx - (bx + d.w));
-    const gapY = Math.max(by - (ty + h), ty - (by + d.h));
-    if (Math.max(gapX, gapY) <= 2) return true;
-  }
-  return false;
+  return adj ? null : "too far from your base";
 }
 
 const oreAt = (x: number, y: number) => oreCells.has(y * MAP_W + x);
 
-const input = new Input(gs, renderer, net, () => mySlot, occCheck, adjCheck, oreAt);
+const input = new Input(gs, renderer, net, () => mySlot, placeReason, oreAt);
+hud.setWasdLabel(input.wasdPan);
+
+function has(kind: string) {
+  for (const t of renderer.tracked.values())
+    if (t.last.o === mySlot && (t.last.k === kind || (kind === "factory" && t.last.k === "factory2"))) return true;
+  return false;
+}
 
 // ---------- hud wiring ----------
 
@@ -123,7 +122,16 @@ hud.onMinimapNav = (x, y) => {
   gs.camTarget.z = Math.max(-2, Math.min(MAP_H + 2, y));
   gs.updateCamera();
 };
-input.onSelectionChange = (sel) => hud.updateSelInfo(sel, renderer.tracked, mySlot);
+hud.onGroupClick = (n, dbl) => {
+  input.recallGroup(n, false);
+  if (dbl) input.centerOnSelection();
+};
+hud.onToggleWasd = () => input.setWasdPan(!input.wasdPan);
+
+input.onOpenChat = () => hud.focusChat();
+input.onWasdChange = (on) => hud.setWasdLabel(on);
+input.onSelectionChange = (sel) => hud.updateSelInfo(sel, renderer.tracked, mySlot, latestState, has);
+input.onGroupsChange = (g) => hud.updateGroups(g, renderer.tracked, mySlot);
 input.onOrderLabel = (text, x, y) => {
   const l = el("order-label");
   if (!text) {
@@ -135,12 +143,11 @@ input.onOrderLabel = (text, x, y) => {
   l.style.top = (y ?? 0) + "px";
   l.classList.remove("hidden");
 };
-
-function has(kind: string) {
-  for (const t of renderer.tracked.values())
-    if (t.last.o === mySlot && (t.last.k === kind || (kind === "factory" && t.last.k === "factory2"))) return true;
-  return false;
-}
+renderer.onOwnerLost = (id) => {
+  if (input.selection.delete(id)) {
+    hud.updateSelInfo(input.selection, renderer.tracked, mySlot, latestState, has);
+  }
+};
 
 // ---------- network ----------
 
@@ -160,21 +167,30 @@ net.onMsg = (m: S2C) => {
       myId = m.you;
       mySlot = m.slot;
       phase = "playing";
+      prevAwaiting = null;
+      latestState = null;
+      renderer.reset();
+      input.reset();
+      gs.clearOre();
       hud.hideLobby();
       hud.hideEnd();
+      renderer.slotColors.clear();
       for (const p of m.players) renderer.slotColors.set(p.slot, PLAYER_COLORS[p.slot]);
       oreCells.clear();
       gs.setOreCells(m.ore);
       for (const [x, y, a] of m.ore) if (a > 0) oreCells.add(y * MAP_W + x);
       if (mySlot >= 0) {
         const s = SPAWNS[mySlot];
-        gs.camTarget.set(s.x + 2, 0, s.y + 4);
+        gs.camTarget.set(s.x + 2, 0, s.y + 3);
+        gs.updateCamera();
+      } else {
+        gs.camTarget.set(MAP_W / 2, 0, MAP_H / 2);
         gs.updateCamera();
       }
-      // sidebar icons — render real models to thumbnails once
-      if (!iconsRequested) {
-        iconsRequested = true;
-        const color = mySlot >= 0 ? PLAYER_COLORS[mySlot] : "#45d6ff";
+      // Render real 3D model thumbnails for the sidebar (regenerates if slot color changed)
+      const color = mySlot >= 0 ? PLAYER_COLORS[mySlot] : "#45d6ff";
+      if (iconColor !== color) {
+        iconColor = color;
         generateIcons(gs, [...BUILD_ORDER, ...TRAIN_ORDER.map((t) => t.unit)], color).then((icons) =>
           hud.setIcons(icons),
         );
@@ -196,30 +212,32 @@ net.onMsg = (m: S2C) => {
         } else if (ev.e === "elim") {
           const mine = ev.slot === mySlot;
           if (mine) {
-            mySlot = -1; // defeated — watch the rest of the match with full vision
+            mySlot = -1;
             if (input.placing) input.exitPlacing();
           }
           hud.toast(mine ? "you were eliminated!" : `player ${ev.slot} eliminated`, !mine);
         } else if (ev.e === "alert" && ev.slot === mySlot) {
           hud.toast("UNDER ATTACK!");
           hud.ping(ev.x, ev.y);
+          input.setLastAlert(ev.x, ev.y);
         } else if (ev.e === "cap") {
           hud.toast(ev.slot === mySlot ? "BUILDING CAPTURED!" : "a building was captured!", ev.slot !== mySlot);
           hud.ping(ev.x, ev.y);
+          input.setLastAlert(ev.x, ev.y);
         }
       }
       latestState = mySlot >= 0 ? m.players[mySlot] ?? null : null;
       hud.updateTop(latestState, mySlot < 0 ? m.players : undefined);
       hud.updateSidebar(latestState, has);
-      hud.updateSelInfo(input.selection, renderer.tracked, mySlot);
-      // auto placement mode when a building finishes
+      hud.updateSelInfo(input.selection, renderer.tracked, mySlot, latestState, has);
+      hud.updateGroups(input.groups, renderer.tracked, mySlot);
       if (mySlot >= 0) {
         const awaiting = latestState?.awaiting ?? null;
-        if (awaiting !== prevAwaiting) input.placingCancelled = false;
+        if (awaiting !== prevAwaiting) {
+          input.placingCancelled = false;
+          input.clearPlacePending();
+        }
         prevAwaiting = awaiting;
-        // server resolved the last place cmd (denied → awaiting still set) —
-        // allow the next click through
-        if (awaiting) input.placePending = false;
         if (awaiting && !input.placing && !input.placingCancelled) input.enterPlacing(awaiting);
         if (!awaiting && input.placing) input.exitPlacing();
       }
@@ -237,8 +255,10 @@ net.onMsg = (m: S2C) => {
       break;
     case "ping":
       hud.ping(m.x, m.y);
+      input.setLastAlert(m.x, m.y);
       break;
     case "deny":
+      input.clearPlacePending();
       hud.toast(m.msg);
       break;
   }
@@ -265,7 +285,6 @@ net.socket.addEventListener("open", () => {
     return latestState;
   },
   projectTile(x: number, y: number) {
-    // tile coords -> screen coords for synthetic input
     const v = new THREE.Vector3(x + 0.5, 0, y + 0.5).project(gs.camera);
     return {
       x: (v.x * 0.5 + 0.5) * canvas.clientWidth,
@@ -279,7 +298,7 @@ net.socket.addEventListener("open", () => {
 gs.engine.runRenderLoop(() => {
   const dt = gs.engine.getDeltaTime() / 1000;
   input.update(dt);
-  renderer.update();
+  renderer.update(dt);
   if (phase === "playing")
     hud.drawMinimap(renderer, oreCells, gs.camTarget.x, gs.camTarget.z, gs.camHeight, mySlot, has("radar"));
   gs.render();

@@ -19,8 +19,10 @@ import {
   CAPTURE_RANGE,
   SPAWNS,
 } from "../shared/gamedefs";
-import type { OrderKind, EntSnap, PlayerState, ProdQueue, GameEvent } from "../shared/protocol";
+import type { OrderKind, EntSnap, PlayerState, ProdQueue, GameEvent, WeaponFx } from "../shared/protocol";
 import { findPath, nearestPassable } from "./path";
+
+const MAX_WAYPOINTS = 16;
 
 const hasOwn = (o: object, k: unknown): boolean =>
   typeof k === "string" && Object.prototype.hasOwnProperty.call(o, k);
@@ -42,6 +44,7 @@ export interface Ent {
   mhp: number;
   d: number; // facing radians
   order: Order | null;
+  orderQueue: Order[];
   path: { x: number; y: number }[] | null;
   cd: number;
   cargo: number;
@@ -68,6 +71,22 @@ const idx = (x: number, y: number) => y * MAP_W + x;
 const inBounds = (x: number, y: number) => x >= 0 && y >= 0 && x < MAP_W && y < MAP_H;
 const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);
 const isBuilding = (k: EntKind): k is BuildingKind => k in BUILDINGS;
+const entityDist = (a: Ent, b: Ent) => {
+  if (!isBuilding(b.k)) return dist(a.x, a.y, b.x, b.y);
+  const bd = BUILDINGS[b.k];
+  return Math.hypot(
+    Math.max(0, Math.abs(a.x - b.x) - bd.w / 2),
+    Math.max(0, Math.abs(a.y - b.y) - bd.h / 2),
+  );
+};
+const weaponFxOf = (k: EntKind): WeaponFx => {
+  if (k === "tank" || k === "heavy") return "cannon";
+  if (k === "rocket") return "rocket";
+  if (k === "arty") return "arty";
+  if (k === "arc") return "arc";
+  if (k === "spider") return "melee";
+  return "bullet";
+};
 const weaponOf = (e: Ent) =>
   isBuilding(e.k) ? { range: BUILDINGS[e.k].range ?? 0, dmg: BUILDINGS[e.k].dmg ?? 0, rof: BUILDINGS[e.k].rof ?? 0 } : { range: UNITS[e.k as UnitKind].range, dmg: UNITS[e.k as UnitKind].dmg, rof: UNITS[e.k as UnitKind].rof };
 
@@ -163,6 +182,7 @@ export class World {
       mhp: d.hp,
       d: Math.PI / 2,
       order: null,
+      orderQueue: [],
       path: null,
       cd: 0,
       cargo: 0,
@@ -193,6 +213,7 @@ export class World {
       mhp: d.hp,
       d: Math.PI / 2,
       order: null,
+      orderQueue: [],
       path: null,
       cd: 0,
       cargo: 0,
@@ -261,48 +282,67 @@ export class World {
     return "must build next to your base";
   }
 
-  cmdOrder(slot: number, ids: number[], kind: OrderKind, x: number, y: number, target?: number): string | null {
+  cmdOrder(slot: number, ids: number[], kind: OrderKind, x: number, y: number, target?: number, queue = false): string | null {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return "bad order";
     if (kind !== "move" && kind !== "amove" && kind !== "attack" && kind !== "harvest") return "bad order";
     if (!inBounds(Math.floor(x), Math.floor(y))) return "off map";
+    const cols = Math.max(1, Math.ceil(Math.sqrt(ids.length)));
+    const rows = Math.max(1, Math.ceil(ids.length / cols));
     let n = 0;
     for (const [i, id] of ids.entries()) {
       const e = this.ents.get(id);
       if (!e || e.o !== slot || isBuilding(e.k)) continue;
       // unarmed units can't take attack orders (a harvester told to attack would just chase forever)
       if ((kind === "attack" || kind === "amove") && weaponOf(e).dmg <= 0 && e.k !== "engineer") continue;
-      // spread group destinations on a small grid so units don't fight for one tile
-      const ox = kind === "attack" || kind === "harvest" ? 0 : ((i % 3) - 1) * 1.15;
-      const oy = kind === "attack" || kind === "harvest" ? 0 : (((i / 3) | 0) % 3 - 1) * 1.15;
+      // spread group destinations on a dynamic grid so large groups don't stack on one tile
+      const ox = kind === "attack" || kind === "harvest" ? 0 : ((i % cols) - (cols - 1) / 2) * 1.15;
+      const oy = kind === "attack" || kind === "harvest" ? 0 : (Math.floor(i / cols) - (rows - 1) / 2) * 1.15;
+      const gx = Math.max(0.5, Math.min(MAP_W - 0.5, x + ox));
+      const gy = Math.max(0.5, Math.min(MAP_H - 0.5, y + oy));
+
+      let ord: Order | null = null;
+      let hstate: Ent["hstate"] = null;
+      let oreIdx = -1;
+
       if (kind === "harvest" && e.k !== "harvester") {
         // escorting units in a mixed group follow along as a plain move
-        e.order = { kind: "move", x: x + ox, y: y + oy };
-        e.path = null;
-        e.repath = 0;
-        n++;
-        continue;
-      }
-      if (kind === "attack") {
+        ord = { kind: "move", x: gx, y: gy };
+      } else if (kind === "attack") {
         const tgt = Number.isFinite(target) ? this.ents.get(target as number) : null;
         if (!tgt || tgt.o === slot) continue;
-        e.order = { kind, x: tgt.x, y: tgt.y, target };
+        ord = { kind, x: tgt.x, y: tgt.y, target };
       } else if (kind === "harvest") {
         const t = Math.floor(x) + Math.floor(y) * MAP_W;
         if (this.ore[t] > 0) {
-          e.order = { kind, x, y };
-          e.hstate = "toOre";
-          e.oreIdx = t;
+          ord = { kind, x, y };
+          hstate = "toOre";
+          oreIdx = t;
         } else {
           // right-clicked own refinery with cargo
           const bid = this.bld[idx(Math.floor(x), Math.floor(y))];
           const b = bid >= 0 ? this.ents.get(bid) : null;
           if (!b || b.o !== slot || b.k !== "refinery") continue;
-          e.order = { kind, x, y };
-          e.hstate = "toRef";
+          ord = { kind, x, y };
+          hstate = "toRef";
         }
       } else {
-        e.order = { kind, x: x + ox, y: y + oy };
-        if (e.k === "harvester") {
+        ord = { kind, x: gx, y: gy };
+      }
+
+      if (!ord) continue;
+      if (queue && e.order) {
+        if (e.orderQueue.length < MAX_WAYPOINTS) e.orderQueue.push(ord);
+        n++;
+        continue;
+      }
+      e.orderQueue = [];
+      e.order = ord;
+      e.agro = null;
+      if (e.k === "harvester") {
+        if (ord.kind === "harvest") {
+          e.hstate = hstate;
+          if (oreIdx >= 0) e.oreIdx = oreIdx;
+        } else {
           // explicit order beats hauling — pause auto-harvest so the move is honored
           e.hstate = null;
           e.holdUntil = this.tick + 150;
@@ -315,11 +355,43 @@ export class World {
     return n ? null : "nothing to order";
   }
 
+  private advanceOrder(e: Ent) {
+    e.order = null;
+    e.path = null;
+    e.repath = 0;
+    e.agro = null;
+    while (e.orderQueue.length) {
+      const next = e.orderQueue.shift()!;
+      if (next.kind === "attack" && next.target != null) {
+        const tgt = this.ents.get(next.target);
+        if (!tgt || tgt.o === e.o) continue;
+      }
+      if (next.kind === "harvest" && e.k === "harvester") {
+        const t = Math.floor(next.x) + Math.floor(next.y) * MAP_W;
+        if (this.ore[t] > 0) {
+          e.hstate = "toOre";
+          e.oreIdx = t;
+        } else {
+          const bid = this.bld[idx(Math.floor(next.x), Math.floor(next.y))];
+          const b = bid >= 0 ? this.ents.get(bid) : null;
+          if (!b || b.o !== e.o || b.k !== "refinery") continue;
+          e.hstate = "toRef";
+        }
+      } else if (e.k === "harvester") {
+        e.hstate = null;
+        e.holdUntil = this.tick + 150;
+      }
+      e.order = next;
+      return;
+    }
+  }
+
   cmdStop(slot: number, ids: number[]) {
     for (const id of ids) {
       const e = this.ents.get(id);
       if (!e || e.o !== slot || isBuilding(e.k)) continue;
       e.order = null;
+      e.orderQueue = [];
       e.path = null;
       e.hstate = null;
       e.agro = null;
@@ -587,7 +659,7 @@ export class World {
     if (o?.kind === "attack" && o.target != null) {
       const tgt = this.ents.get(o.target);
       if (!tgt || tgt.o === e.o) {
-        e.order = null;
+        this.advanceOrder(e);
       } else if (e.k === "engineer" && isBuilding(tgt.k)) {
         // engineers don't shoot — they walk in and take the building
         if (!this.tryCapture(e, tgt)) {
@@ -598,7 +670,7 @@ export class World {
           this.stepAlong(e);
         }
       } else {
-        const d = dist(e.x, e.y, tgt.x, tgt.y);
+        const d = entityDist(e, tgt);
         if (d <= w.range) {
           this.face(e, tgt.x, tgt.y);
           this.tryFire(e, tgt);
@@ -611,7 +683,7 @@ export class World {
         }
       }
     } else if (o?.kind === "amove") {
-      const enemy = this.nearestEnemy(e, w.range + 2);
+      const enemy = this.nearestEnemy(e, Math.max(w.range + 2, e.k === "engineer" ? 5 : 3));
       if (enemy) {
         if (e.k === "engineer" && isBuilding(enemy.k)) {
           // attack-moving engineers capture buildings they reach
@@ -624,7 +696,7 @@ export class World {
             this.stepAlong(e);
           }
         } else {
-          const d = dist(e.x, e.y, enemy.x, enemy.y);
+          const d = entityDist(e, enemy);
           if (d <= w.range) {
             this.face(e, enemy.x, enemy.y);
             this.tryFire(e, enemy);
@@ -643,10 +715,10 @@ export class World {
           e.agro = null;
           e.path = null;
         }
-        if (this.stepAlong(e)) e.order = null;
+        if (this.stepAlong(e)) this.advanceOrder(e);
       }
     } else if (o?.kind === "move") {
-      if (this.stepAlong(e)) e.order = null;
+      if (this.stepAlong(e)) this.advanceOrder(e);
     } else if (w.range > 0) {
       // idle: hold position, auto-fire within weapon range (no pursuit)
       if (!isBuilding(e.k) || ((BUILDINGS[e.k].range ?? 0) > 0 && !this.players.get(e.o)?.lowPower)) {
@@ -664,7 +736,7 @@ export class World {
     // explicit move orders run through the generic mover — tickEnt returns
     // early for harvesters, so this is the only place they get stepped
     if (o?.kind === "move") {
-      if (this.stepAlong(e)) e.order = null;
+      if (this.stepAlong(e)) this.advanceOrder(e);
       return;
     }
     if (o?.kind === "harvest" && e.hstate) {
@@ -840,7 +912,7 @@ export class World {
       if (t.o === e.o || t.o < 0) continue;
       const tp = this.players.get(t.o);
       if (!tp || tp.eliminated) continue;
-      const d = dist(e.x, e.y, t.x, t.y);
+      const d = entityDist(e, t);
       if (d <= bd) {
         bd = d;
         best = t;
@@ -860,7 +932,7 @@ export class World {
     if (isBuilding(e.k) && this.players.get(e.o)?.lowPower) return; // powered defenses offline
     e.cd = w.rof;
     tgt.hp -= w.dmg;
-    this.events.push({ e: "shot", fx: e.x, fy: e.y, tx: tgt.x, ty: tgt.y });
+    this.events.push({ e: "shot", fx: e.x, fy: e.y, tx: tgt.x, ty: tgt.y, w: weaponFxOf(e.k), src: e.id });
     // rate-limited "under attack" alert for the victim
     if (tgt.o >= 0) {
       const last = this.lastAlert.get(tgt.o) ?? -999;
@@ -873,6 +945,7 @@ export class World {
   }
 
   private destroy(e: Ent) {
+    if (!this.ents.has(e.id)) return;
     const wasBuilding = isBuilding(e.k);
     if (wasBuilding) {
       const d = BUILDINGS[e.k as BuildingKind];
@@ -940,10 +1013,12 @@ export class World {
   private separate() {
     // soft separation between units so they don't stack; tanks crush enemy infantry on contact
     const units = [...this.ents.values()].filter((e) => !isBuilding(e.k));
-    for (let i = 0; i < units.length; i++)
+    for (let i = 0; i < units.length; i++) {
+      const a = units[i];
+      if (!this.ents.has(a.id)) continue;
       for (let j = i + 1; j < units.length; j++) {
-        const a = units[i],
-          b = units[j];
+        const b = units[j];
+        if (!this.ents.has(b.id)) continue;
         let dx = b.x - a.x,
           dy = b.y - a.y;
         let d2 = dx * dx + dy * dy;
@@ -962,7 +1037,7 @@ export class World {
         }
         if ((b.k === "tank" || b.k === "heavy") && crushable(a.k) && a.o !== b.o) {
           this.destroy(a);
-          continue;
+          break;
         }
         const d = Math.sqrt(d2) || 0.01;
         const push = ((0.75 - d) / d) * 0.5 * 0.35;
@@ -977,6 +1052,7 @@ export class World {
           b.y += py;
         }
       }
+    }
   }
 
   private checkEnd() {
@@ -1013,6 +1089,24 @@ export class World {
         d: Math.round(e.d * 10),
       };
       if (e.k === "harvester") s.cargo = e.cargo;
+      if (!isBuilding(e.k) && (e.order || e.orderQueue.length)) {
+        const wp: [number, number, OrderKind][] = [];
+        const pushOrd = (ord: Order) => {
+          let ox = ord.x,
+            oy = ord.y;
+          if (ord.kind === "attack" && ord.target != null) {
+            const t = this.ents.get(ord.target);
+            if (t) {
+              ox = t.x;
+              oy = t.y;
+            }
+          }
+          wp.push([Math.round(ox * 10) / 10, Math.round(oy * 10) / 10, ord.kind]);
+        };
+        if (e.order) pushOrd(e.order);
+        for (const q of e.orderQueue) pushOrd(q);
+        if (wp.length) s.wp = wp;
+      }
       ents.push(s);
     }
     const players: Record<number, PlayerState> = {};
