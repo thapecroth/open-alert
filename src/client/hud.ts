@@ -970,9 +970,11 @@ export class Hud {
 
     const spdEl = document.getElementById("fpv-spd");
     if (spdEl) {
-      const spdVal = Math.round(Math.abs(tel.speed) * 10);
-      const unitSuffix = domain === "sea" ? "kt" : "m/s";
-      spdEl.textContent = `SPD ${spdVal} ${unitSuffix}`;
+      const s = Math.abs(tel.speed);
+      if (domain === "air") spdEl.textContent = `SPD ${Math.round(s * 85)} kt`;
+      else if (domain === "sea") spdEl.textContent = `SPD ${Math.round(s * 14)} kt`;
+      else if (isInf) spdEl.textContent = `SPD ${(s * 4.5).toFixed(1)} m/s`;
+      else spdEl.textContent = `SPD ${Math.round(s * 24)} km/h`;
     }
 
     const hdgEl = document.getElementById("fpv-hdg");
