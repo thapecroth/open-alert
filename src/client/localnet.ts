@@ -3,7 +3,9 @@
 
 import {
   DEFAULT_CONFIG,
+  MAP_H,
   MAP_LIST,
+  MAP_W,
   MAX_PLAYERS,
   PLAYER_COLORS,
   SNAP_EVERY,
@@ -60,6 +62,7 @@ export class LocalRoom {
       slot: p.slot,
       ready: p.ready,
       connected: true,
+      spectator: false,
       host: p.id === this.myId,
       bot: p.bot,
       diff: p.diff,
@@ -232,7 +235,7 @@ export class LocalRoom {
         err = w.cmdTrain(slot, m.unit);
         break;
       case "trainCancel":
-        w.cmdCancelTrain(slot, m.unit);
+        w.cmdTrainCancel(slot, m.unit);
         break;
       case "sell":
         err = w.cmdSell(slot, m.id);
@@ -258,7 +261,6 @@ export class LocalRoom {
       case "chat":
         this.emit({
           t: "chat",
-          from: me.id,
           name: me.name,
           color: PLAYER_COLORS[slot] ?? "#45d6ff",
           text: String(m.text || "").slice(0, 200),
@@ -284,7 +286,7 @@ export class LocalRoom {
     this.world = w;
     this.bots.clear();
     for (const p of actives) {
-      if (p.bot) this.bots.set(p.id, new RtsBot(w, p.slot, p.diff ?? "normal", p.profile ?? "balanced"));
+      if (p.bot) this.bots.set(p.id, new RtsBot(w, p.slot, { diff: p.diff ?? "normal", profile: p.profile ?? "balanced" }));
     }
     this.phase = "playing";
     this.endSent = false;
@@ -292,13 +294,14 @@ export class LocalRoom {
       t: "init",
       you: this.myId,
       slot: 0,
+      w: MAP_W,
+      h: MAP_H,
       map: this.map,
       config: this.config,
       players: actives.map((p) => ({
         id: p.id,
         name: p.name,
         slot: p.slot,
-        color: PLAYER_COLORS[p.slot] ?? "#888",
         team: p.team,
       })),
       ore: w.oreSnapshot(),
