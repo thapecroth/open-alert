@@ -2,6 +2,13 @@ import { routePartykitRequest, Server } from "partyserver";
 import type { Connection } from "partyserver";
 import { World } from "./server/world";
 import { AIBot } from "./server/bot";
+import {
+  extractGymObs,
+  extractGymFeatureMaps,
+  extractGymRgbFrame,
+  getGymActionSchema,
+  bytesToBase64,
+} from "./server/gym";
 import type { C2S, S2C, LobbyPlayer, RoomSummary, OrderKind } from "./shared/protocol";
 import {
   MAX_PLAYERS,
@@ -97,12 +104,20 @@ const MCP_TOOLS = [
   {
     name: "get_game_state",
     description:
-      "Get concise tactical game state for your commander: phase, tick, credits, power, awaiting placement, production queues, own buildings & units, visible enemies, neutral oil derricks, supply crates, and nearest ore.",
+      "Get full RL Gym parity state (`gym_obs`) plus concise tactical summary for your commander: tick, done, winner, watch_url, credits, power, awaiting placement, production queues, own buildings & units, visible enemies, neutral oil derricks, supply crates, and nearest ore. Optionally include 6x64x64 float32 `feature_maps` and/or 64x64x3 uint8 `rgb_frame`.",
     inputSchema: {
       type: "object",
       properties: {
         room: { type: "string", description: "Room slug." },
-        token: { type: "string", description: "Your commander token returned by join_game." },
+        token: { type: "string", description: "Your commander token returned by join_game or create_ai_arena." },
+        include_feature_maps: {
+          type: "boolean",
+          description: "If true, include base64-encoded 6x64x64 float32 feature planes (ore, own_units, own_buildings, foe_units, foe_buildings, all_hp).",
+        },
+        include_rgb_frame: {
+          type: "boolean",
+          description: "If true, include base64-encoded 64x64x3 uint8 RGB minimap frame.",
+        },
       },
       required: ["room", "token"],
     },
@@ -197,7 +212,75 @@ const MCP_TOOLS = [
       required: ["room", "token", "action"],
     },
   },
+  {
+    name: "create_ai_arena",
+    description:
+      "Create a live AI-vs-AI arena match with two external MCP agent seats (agent_a in slot 0, agent_b in slot 1). Registers live on the Spectator Dashboard (/?watch=1) so humans can watch models compete in 3D, and returns both tokens plus watch_url and dashboard_url.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        room: { type: "string", description: "Room slug (2-32 lowercase alphanumeric/hyphen chars). Auto-generated if omitted." },
+        map: { type: "string", enum: MAP_LIST.map((m) => m.id), description: "Map id (default 'crossroads')." },
+        agent_a: { type: "string", description: "Callsign for slot 0 agent (max 16 chars, default 'Agent-A')." },
+        agent_b: { type: "string", description: "Callsign for slot 1 agent (max 16 chars, default 'Agent-B')." },
+        start: { type: "boolean", description: "Start the match immediately (default true)." },
+        start_credits: { type: "integer", enum: [3000, 5000, 10000, 20000], description: "Starting credits per agent (default 5000)." },
+        game_speed: { type: "number", enum: [0.75, 1, 1.5, 2], description: "Simulation speed multiplier (default 1)." },
+      },
+    },
+  },
+  {
+    name: "get_gym_schema",
+    description:
+      "Return the exact RL Gym observation contract (gym_obs), 6x64x64 float32 feature_maps contract, 64x64x3 uint8 rgb_frame contract, and rts_action JSON schema shared 1:1 between src/server/gym.ts and live MCP matches for training & finetuning models.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
 ] as const;
+
+const FEATURE_MAP_CHANNELS = ["ore", "own_units", "own_buildings", "foe_units", "foe_buildings", "all_hp"] as const;
+
+function buildGymSchemaResponse() {
+  return {
+    gym_obs_contract: {
+      description:
+        "Exact structured RL Gym observation contract shared 1:1 between src/server/gym.ts (GymEnv / extractGymObs) and MCP get_game_state.gym_obs.",
+      fields: {
+        tick: "integer — authoritative simulation tick (10 ticks = 1s at 1x speed)",
+        you: {
+          slot: "integer — your player slot index (0..3)",
+          credits: "integer — current floored credits",
+          pwrHave: "integer — total power generated",
+          pwrUse: "integer — total power consumed",
+          lowPower: "boolean — true when pwrUse > pwrHave (halves production & disables defenses)",
+          eliminated: "boolean — true if your faction has been eliminated",
+          bq: "{ kind: BuildingKind, left: number, total: number } | null — active building construction queue",
+          awaiting: "BuildingKind | null — finished building waiting to be placed",
+          queues: "Partial<Record<'barracks'|'factory'|'airfield'|'shipyard', { unit: UnitKind, left: number, total: number, count: number }>>",
+        },
+        ents: "Array<{ id: number, o: number, k: EntKind, x: number, y: number, hp: number, mhp: number, cargo?: number }>",
+        ore: "Array<[x: number, y: number, amount: number]>",
+      },
+    },
+    feature_maps_contract: {
+      shape: [6, MAP_H, MAP_W],
+      dtype: "float32",
+      channels: [...FEATURE_MAP_CHANNELS],
+      encoding: "base64 (little-endian IEEE-754 Float32Array, C-contiguous [channel, y, x])",
+    },
+    rgb_frame_contract: {
+      w: MAP_W,
+      h: MAP_H,
+      c: 3,
+      dtype: "uint8",
+      encoding: "base64 (row-major RGB Uint8Array of w*h*3 bytes)",
+    },
+    action_schema: getGymActionSchema(),
+  };
+}
 
 export class GameRoom extends Server<Env> {
   phase: "lobby" | "playing" | "ended" = "lobby";
@@ -918,6 +1001,90 @@ export class GameRoom extends Server<Env> {
   }
 
   private handleMcpAction(op: string, args: Record<string, unknown>): Record<string, unknown> {
+    const origin =
+      typeof args.origin === "string" && args.origin ? args.origin : "https://open-alert.thapecroth.workers.dev";
+
+    if (op === "create_ai_arena") {
+      if (this.resetTimer) {
+        clearTimeout(this.resetTimer);
+        this.resetTimer = null;
+      }
+      if (this.phase === "playing") {
+        return {
+          ok: false,
+          error: "room already has an active match; specify another room or omit room to auto-create",
+        };
+      }
+      this.alarmActive = false;
+      void this.ctx.storage.deleteAlarm().catch(() => {});
+      this.world = null;
+      this.lastTickAt = 0;
+      this.endSent = false;
+      this.phase = "lobby";
+      this.bots.clear();
+      // Preserve any connected spectators while clearing prior player seats
+      for (const [k, rec] of this.players) {
+        if (!rec.spectator) this.players.delete(k);
+      }
+
+      this.map =
+        typeof args.map === "string" && VALID_MAPS.has(args.map as MapId) ? (args.map as MapId) : "crossroads";
+      this.config = { ...DEFAULT_CONFIG };
+      if (typeof args.start_credits === "number" && VALID_CREDITS.has(args.start_credits)) {
+        this.config.startCredits = args.start_credits;
+      }
+      if (typeof args.game_speed === "number" && VALID_SPEEDS.has(args.game_speed)) {
+        this.config.gameSpeed = args.game_speed;
+      }
+
+      const nameA = String(args.agent_a || "Agent-A").slice(0, 16).trim() || "Agent-A";
+      const nameB = String(args.agent_b || "Agent-B").slice(0, 16).trim() || "Agent-B";
+      const tokenA = `mcp-${crypto.randomUUID().slice(0, 12)}`;
+      const tokenB = `mcp-${crypto.randomUUID().slice(0, 12)}`;
+
+      this.players.set(tokenA, {
+        id: tokenA,
+        connId: null,
+        name: nameA,
+        slot: 0,
+        ready: true,
+        spectator: false,
+        connected: true,
+        team: 0,
+        mcp: true,
+      });
+      this.players.set(tokenB, {
+        id: tokenB,
+        connId: null,
+        name: nameB,
+        slot: 1,
+        ready: true,
+        spectator: false,
+        connected: true,
+        team: 0,
+        mcp: true,
+      });
+
+      const shouldStart = args.start !== false;
+      if (shouldStart) {
+        this.startGame();
+      } else {
+        this.broadcastLobby();
+      }
+
+      return {
+        ok: true,
+        room: this.name,
+        map: this.map,
+        phase: this.phase,
+        config: this.config,
+        agent_a: { name: nameA, slot: 0, token: tokenA },
+        agent_b: { name: nameB, slot: 1, token: tokenB },
+        watch_url: `${origin}/?room=${encodeURIComponent(this.name)}&spectate=1`,
+        dashboard_url: `${origin}/?watch=1`,
+      };
+    }
+
     if (op === "join_game") {
       if (this.resetTimer) {
         clearTimeout(this.resetTimer);
@@ -1004,8 +1171,6 @@ export class GameRoom extends Server<Env> {
         this.ensureLoop();
       }
 
-      const origin =
-        typeof args.origin === "string" && args.origin ? args.origin : "https://open-alert.thapecroth.workers.dev";
       return {
         ok: true,
         room: this.name,
@@ -1023,18 +1188,40 @@ export class GameRoom extends Server<Env> {
     if (!p) return { ok: false, error: "invalid or missing player token — call join_game first" };
 
     if (op === "get_game_state") {
-      if (this.phase !== "playing" || !this.world) {
+      const watchUrl = `${origin}/?room=${encodeURIComponent(this.name)}&spectate=1`;
+      if (!this.world || this.phase === "lobby") {
         return {
           ok: true,
           room: this.name,
           phase: this.phase,
           map: this.map,
           slot: p.slot,
+          done: false,
+          winner: null,
+          watch_url: watchUrl,
+          summary: `lobby | map=${this.map} | players=${this.players.size}`,
           players: this.lobbyList(),
-          winner: this.world?.winner ?? null,
+          gym_obs: {
+            tick: 0,
+            you: {
+              slot: p.slot,
+              credits: 0,
+              pwrHave: 0,
+              pwrUse: 0,
+              lowPower: false,
+              eliminated: false,
+              bq: null,
+              awaiting: null,
+              queues: {},
+            },
+            ents: [],
+            ore: [],
+          },
         };
       }
-      if (!this.alarmActive || Date.now() - this.lastTickAt > 2000) this.ensureLoop();
+      if (this.phase === "playing" && (!this.alarmActive || Date.now() - this.lastTickAt > 2000)) {
+        this.ensureLoop();
+      }
       const w = this.world;
       const wp = w.players.get(p.slot);
       if (!wp) return { ok: false, error: "player slot not in active world" };
@@ -1132,13 +1319,25 @@ export class GameRoom extends Server<Env> {
         .filter((other) => other.slot !== p.slot && !w.isAlly(p.slot, other.slot) && !other.eliminated)
         .map((other) => ({ slot: other.slot, x: SPAWNS[other.slot]?.x ?? 0, y: SPAWNS[other.slot]?.y ?? 0 }));
 
-      return {
+      const gymObs = extractGymObs(w, p.slot);
+      const summary =
+        `t=${w.tick} | $${Math.floor(wp.credits)} | pwr ${wp.pwrHave}/${wp.pwrUse}${wp.lowPower ? " LOW" : ""}` +
+        ` | bld=${ownBuildings.length} units=${ownUnits.length} enemies_seen=${visibleEnemies.length}` +
+        (wp.awaiting ? ` | awaiting=${wp.awaiting}` : "") +
+        (w.winner !== null ? ` | winner=${w.winner}` : "");
+
+      const state: Record<string, unknown> = {
         ok: true,
         room: this.name,
         phase: this.phase,
         map: this.map,
         tick: w.tick,
         slot: p.slot,
+        done: w.winner !== null,
+        winner: w.winner,
+        watch_url: watchUrl,
+        summary,
+        gym_obs: gymObs,
         credits: Math.floor(wp.credits),
         power: { have: wp.pwrHave, use: wp.pwrUse, low: wp.lowPower },
         eliminated: wp.eliminated,
@@ -1155,8 +1354,30 @@ export class GameRoom extends Server<Env> {
         nearest_ore: nearestOre,
         ore_tiles: oreSnap.length,
         enemy_spawns: enemySpawns,
-        winner: w.winner,
       };
+
+      if (args.include_feature_maps === true) {
+        const fm = extractGymFeatureMaps(w, p.slot);
+        state.feature_maps = {
+          shape: [fm.c, fm.h, fm.w],
+          dtype: "float32",
+          channels: [...FEATURE_MAP_CHANNELS],
+          base64: bytesToBase64(new Uint8Array(fm.data.buffer, fm.data.byteOffset, fm.data.byteLength)),
+        };
+      }
+
+      if (args.include_rgb_frame === true) {
+        const rgb = extractGymRgbFrame(w, p.slot, 1);
+        state.rgb_frame = {
+          w: rgb.w,
+          h: rgb.h,
+          c: 3,
+          dtype: "uint8",
+          base64: bytesToBase64(rgb.data),
+        };
+      }
+
+      return state;
     }
 
     if (this.phase !== "playing" || !this.world) {
@@ -1466,8 +1687,13 @@ async function handleMcpRequest(request: Request, env: Env, url: URL): Promise<R
       return toolRes(data);
     }
 
+    if (toolName === "get_gym_schema") {
+      return toolRes(buildGymSchemaResponse());
+    }
+
     const roomTools = new Set([
       "join_game",
+      "create_ai_arena",
       "get_game_state",
       "build_structure",
       "place_structure",
@@ -1480,8 +1706,9 @@ async function handleMcpRequest(request: Request, env: Env, url: URL): Promise<R
     }
 
     let room = typeof toolArgs.room === "string" ? toolArgs.room.trim().toLowerCase() : "";
-    if (!room && toolName === "join_game") {
-      room = `mcp-${crypto.randomUUID().slice(0, 6)}`;
+    if (!room && (toolName === "join_game" || toolName === "create_ai_arena")) {
+      const prefix = toolName === "create_ai_arena" ? "arena" : "mcp";
+      room = `${prefix}-${crypto.randomUUID().slice(0, 6)}`;
     }
     if (!/^[a-z0-9-]{2,32}$/.test(room) || room === "__directory") {
       return toolRes({ ok: false, error: "room must be 2-32 lowercase alphanumeric/hyphen characters" }, true);

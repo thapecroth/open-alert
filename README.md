@@ -20,8 +20,8 @@ A real-time, multiplayer, browser-based strategy game — harvest ore, build you
 - **12 buildings, 8 units** — riflemen, rocket troopers, sappers that *capture* enemy buildings, tanks, siege launchers, spider drones, and the twin-barreled Mastodon
 - **Combat** — attack-move orders, formation moves, tank-crushes-infantry, veterancy-free but brutal
 - **CABAL AI opponent** — phase-aware server bot (early/mid/late game) that plays through the same command API as humans
-- **RL gym** (`src/server/gym.ts`) — `GymEnv` with structured obs + **visual obs** (`featureMaps()` 6×64×64 channels, `rgbFrame()` rendered minimap), action schema incl. factory upgrade, shaped rewards, scripted/idle/mirror opponents
-- **LLM player** (`test/llmbot.mjs`) — plug any OpenAI-compatible model endpoint in to play against you
+- **RL gym** (`src/server/gym.ts`) — `GymEnv` with structured obs + **visual obs** (`featureMaps()` 6×64×64 channels, `rgbFrame()` rendered minimap), action schema incl. factory upgrade, shaped rewards, scripted/idle/mirror opponents — **1:1 state parity with live MCP** so models finetuned in `GymEnv` can drop straight into live AI-vs-AI matches
+- **LLM player & AI-vs-AI MCP Arena** (`test/llmbot.mjs`, `/mcp`) — pit any MCP-connected AI or finetuned model against another live while spectators watch in 3D on `/?watch=1`
 - **3D renderer** — Three.js with ACES tone mapping, bloom, shadows, HDR environment, PBR terrain, and generated art
 
 ## Quick start
@@ -53,14 +53,18 @@ claude mcp add open-alert -- node /path/to/open-alert/mcp/open-alert-mcp.mjs
 npm run mcp
 ```
 
-**Available MCP Commander Tools:**
+**Available MCP Commander Tools (10 tools — HTTP `/mcp` & local stdio):**
 - `list_live_games` — discover active rooms, players, maps, and spectator links
 - `join_game` — join or host a room (`room`, `name`, `map`, `add_bot`, `diff`, `start`, `spectate`) and get a `watch_url`
-- `get_game_state` — LLM-optimized tactical snapshot (credits, power, queues, own/enemy forces, derricks, crates, valid build tiles)
+- `create_ai_arena` — spin up a live **AI-vs-AI arena** with two external MCP agent seats (`agent_a` slot 0 + `agent_b` slot 1), configurable map/credits/speed, instant live listing on the Spectator Dashboard (`/?watch=1`), and both commander tokens + `watch_url`
+- `get_gym_schema` — fetch the exact RL Gym observation contract (`gym_obs`), `6×64×64` float32 `feature_maps` contract, `64×64×3` uint8 `rgb_frame` contract, and `rts_action` schema for training & finetuning models
+- `get_game_state` — returns **exact RL Gym state parity** (`gym_obs`, plus optional base64 `feature_maps` & `rgb_frame` tensors) alongside LLM-optimized tactical summaries (credits, power, queues, own/enemy forces, derricks, crates, valid build tiles, `done`, `winner`, `watch_url`)
 - `build_structure` / `place_structure` — construct and deploy base buildings
 - `train_unit` — queue land, air, and naval units
 - `command_units` — issue `move`, `amove`, `attack`, `harvest`, `patrol`, `stop`, `hold` by unit IDs or group (`all_combat`, `infantry`, `tanks`, `air`, `sea`, `harvesters`)
 - `special_action` — fire Orbital Ion Cannon (`superweapon`), `recon` scan, `upgrade` War Factory, `sell`, `repair`, `rally`, `chat`, `resign`
+
+Models trained or finetuned against `src/server/gym.ts` (`GymEnv`) receive the **exact same `gym_obs` / `feature_maps` / `rgb_frame` representation** over MCP, so you can drop any fine-tuned checkpoint straight into a live `create_ai_arena` match and spectate it in 3D!
 
 Then tell Claude Code: *"Join an Open Alert room against a brutal bot, give me the watch URL, and win the match!"*
 

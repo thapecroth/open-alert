@@ -203,7 +203,14 @@ export class Input {
   private modalOpen(): boolean {
     const gfx = document.getElementById("gfx-panel");
     const help = document.getElementById("help");
-    return Boolean((gfx && !gfx.classList.contains("hidden")) || (help && !help.classList.contains("hidden")));
+    const watch = document.getElementById("watch-panel");
+    const mcp = document.getElementById("mcp-panel");
+    return Boolean(
+      (gfx && !gfx.classList.contains("hidden")) ||
+        (help && !help.classList.contains("hidden")) ||
+        (watch && !watch.classList.contains("hidden")) ||
+        (mcp && !mcp.classList.contains("hidden")),
+    );
   }
 
   private syncCursor() {

@@ -34,6 +34,7 @@
         <span id="power"></span>
         <span id="fps-pill" title="Live frame rate">-- FPS</span>
         <button id="topbar-watch-btn" type="button" title="Live Spectator Dashboard — watch live games &amp; AI battles">LIVE</button>
+        <button id="topbar-mcp-btn" type="button" title="Connect AI Agent (Claude Code / MCP / RL Gym)">MCP</button>
         <button id="mute-btn" class="on" title="Toggle sound effects">SFX</button>
         <button id="music-btn" class="on" title="Toggle tactical soundtrack">BGM</button>
         <button id="gfx-btn" type="button" title="Graphics, Raytracing &amp; GPU Settings">GFX</button>
@@ -343,6 +344,67 @@
       </div>
     </div>
 
+    <div id="mcp-panel" class="hidden" role="dialog" aria-modal="true" aria-labelledby="mcp-title">
+      <div class="panel mcp-card">
+        <div class="mcp-head">
+          <div class="mcp-title-wrap">
+            <h2 id="mcp-title">CONNECT AI AGENT (MCP &amp; RL GYM)</h2>
+            <p class="mcp-sub">Let Claude Code, Cursor, or your fine-tuned RL model play live — and watch AI vs AI battles in 3D</p>
+          </div>
+          <button id="mcp-close" type="button" title="Close AI Agent connect dialog (Esc)">CLOSE</button>
+        </div>
+
+        <div class="mcp-steps">
+          <div class="mcp-step">
+            <div class="mcp-step-head">
+              <span class="mcp-step-num">STEP 1</span>
+              <span class="mcp-step-title">Add MCP Server (Claude Code CLI)</span>
+              <button id="mcp-copy-cli" class="mcp-copy-btn" type="button" title="Copy Claude Code CLI command">COPY</button>
+            </div>
+            <pre class="mcp-code mcp-code-line"><code id="mcp-cli-cmd">claude mcp add --transport http open-alert https://open-alert.thapecroth.workers.dev/mcp</code></pre>
+          </div>
+
+          <div class="mcp-step">
+            <div class="mcp-step-head">
+              <span class="mcp-step-num">STEP 2</span>
+              <span class="mcp-step-title">Invite Claude Code to Play in This Room</span>
+              <span id="mcp-room-badge" class="mcp-room-badge">ROOM ----</span>
+              <button id="mcp-copy-room" class="mcp-copy-btn" type="button" title="Copy live room prompt">COPY PROMPT</button>
+            </div>
+            <pre class="mcp-code"><code id="mcp-room-prompt">Join Open Alert room "----" as "Claude" using the open-alert MCP tools (get_game_state returns the exact RL Gym gym_obs), build a base and army, and play to win!</code></pre>
+          </div>
+
+          <div class="mcp-step">
+            <div class="mcp-step-head">
+              <span class="mcp-step-num">STEP 3</span>
+              <span class="mcp-step-title">Pit Two AI Agents Against Each Other &amp; Spectate Live</span>
+              <div class="mcp-step-actions">
+                <button id="mcp-copy-arena" class="mcp-copy-btn" type="button" title="Copy AI-vs-AI arena prompt">COPY ARENA PROMPT</button>
+                <button id="mcp-open-watch" type="button" title="Open Live Spectator Dashboard">▶ OPEN SPECTATOR DASHBOARD</button>
+              </div>
+            </div>
+            <pre class="mcp-code"><code id="mcp-arena-prompt">Use create_ai_arena on the open-alert MCP server to launch an AI-vs-AI match, give me the watch_url so I can spectate in 3D, and play using gym_obs &amp; feature_maps!</code></pre>
+          </div>
+
+          <div class="mcp-step">
+            <div class="mcp-step-head">
+              <span class="mcp-step-num">STEP 4</span>
+              <span class="mcp-step-title">Cursor / Claude Desktop / Fine-Tuned Model Config</span>
+              <button id="mcp-copy-json" class="mcp-copy-btn" type="button" title="Copy mcpServers JSON config">COPY JSON</button>
+            </div>
+            <pre class="mcp-code mcp-code-line"><code id="mcp-json-cfg">{ "mcpServers": { "open-alert": { "type": "http", "url": "https://open-alert.thapecroth.workers.dev/mcp" } } }</code></pre>
+            <div class="mcp-badges" aria-label="RL Gym &amp; MCP observation space">
+              <span class="mcp-badge acc">gym_obs</span>
+              <span class="mcp-badge">64×64×6 feature_maps</span>
+              <span class="mcp-badge">64×64 RGB</span>
+              <span class="mcp-badge">get_gym_schema</span>
+              <span class="mcp-badge ok">10 MCP Tools</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div id="lobby">
       <div class="panel lobby-panel">
         <h1 class="title-row"><img class="emblem" src="/favicon.svg" alt="" />OPEN ALERT</h1>
@@ -351,6 +413,7 @@
           ROOM <span id="lobby-room">----</span>
           <button id="copy-link2">COPY INVITE LINK</button>
           <button id="lobby-watch-btn" type="button" title="Watch live online matches &amp; AI battles">WATCH LIVE</button>
+          <button id="lobby-mcp-btn" type="button" title="Connect Claude Code, Cursor, or your fine-tuned RL model via MCP">AI AGENT (MCP)</button>
           <button id="solo-local-btn" type="button" title="Play solo vs AI bots locally in browser (0ms ping, zero server quota)">SOLO OFFLINE</button>
           <button id="lobby-gfx-btn" type="button" title="Graphics, Raytracing &amp; GPU Settings">⚙ GRAPHICS</button>
         </div>

@@ -259,11 +259,14 @@ function roomUrls(room) {
 // ---------- Live Room WebSocket Session Manager ----------
 
 class RoomSession {
-  constructor(room, name = "Claude", spectate = false) {
+  constructor(room, name = "Claude", spectate = false, token = null) {
     this.room = room;
     this.name = String(name || "Claude").slice(0, 16).trim() || "Claude";
     this.spectate = !!spectate;
-    this.token = `mcp-${crypto.randomUUID().slice(0, 10)}`;
+    this.token =
+      typeof token === "string" && token.length > 0 && token.length <= 64
+        ? token
+        : `mcp-${crypto.randomUUID().slice(0, 10)}`;
 
     this.ws = null;
     this.hbTimer = null;
@@ -708,8 +711,57 @@ class RoomSession {
     return clusters.slice(0, limit);
   }
 
+  /**
+   * Reconstruct the exact RL Gym `GymObs` struct from the live WebSocket snapshot
+   * (1:1 schema parity with `src/server/gym.ts` `extractGymObs`).
+   */
+  buildGymObs() {
+    const me = this.myPlayerState();
+    const ents = [];
+    for (const e of this.ents.values()) {
+      const item = {
+        id: e.id,
+        o: e.o,
+        k: e.k,
+        x: Math.round(e.x * 100) / 100,
+        y: Math.round(e.y * 100) / 100,
+        hp: Math.max(0, Math.round(e.hp)),
+        mhp: e.mhp,
+      };
+      if (e.k === "harvester") item.cargo = e.cargo ?? 0;
+      ents.push(item);
+    }
+    const queues = {};
+    if (me?.queues) {
+      for (const cat of ["barracks", "factory", "airfield", "shipyard"]) {
+        if (me.queues[cat]) queues[cat] = { ...me.queues[cat] };
+      }
+    }
+    const ore = [];
+    for (const [k, amt] of this.ore.entries()) {
+      if (amt > 0) ore.push([k % MAP_W, (k / MAP_W) | 0, amt]);
+    }
+    return {
+      tick: this.tick,
+      you: {
+        slot: this.slot,
+        credits: me ? Math.floor(me.credits) : 0,
+        pwrHave: me ? me.pwrHave : 0,
+        pwrUse: me ? me.pwrUse : 0,
+        lowPower: me ? !!me.lowPower : false,
+        eliminated: me ? !!me.eliminated : false,
+        bq: me?.bq ? { ...me.bq } : null,
+        awaiting: me?.awaiting ?? null,
+        queues,
+      },
+      ents,
+      ore,
+    };
+  }
+
   buildSummary() {
     const urls = roomUrls(this.room);
+    const gymObs = this.buildGymObs();
     const base = {
       room: this.room,
       phase: this.phase,
@@ -718,6 +770,8 @@ class RoomSession {
       tick: this.tick,
       elapsed_sec: r1((this.tick * TICK_MS) / 1000),
       slot: this.slot,
+      done: this.phase === "ended",
+      winner: this.endInfo?.winner ?? null,
       spectator: this.spectator,
       connected: this.isOpen(),
       ...urls,
@@ -730,6 +784,7 @@ class RoomSession {
         config: this.config,
         lobby_players: this.lobbyPlayers,
         recent_denies: this.denies.slice(-5),
+        gym_obs: gymObs,
       };
     }
 
@@ -872,6 +927,7 @@ class RoomSession {
     return {
       ...base,
       ...(this.endInfo ? { end: this.endInfo } : {}),
+      gym_obs: gymObs,
       players: [...this.playersMeta.values()],
       economy,
       ...(allPlayersEconomy ? { all_players_economy: allPlayersEconomy } : {}),
@@ -976,6 +1032,10 @@ const TOOLS = [
           type: "boolean",
           description: "If true, join as a read-only spectator instead of taking a player slot.",
         },
+        token: {
+          type: "string",
+          description: "Optional commander token (e.g. from create_ai_arena or a previous session) to attach/reconnect.",
+        },
       },
       required: ["room"],
     },
@@ -983,7 +1043,7 @@ const TOOLS = [
   {
     name: "get_game_state",
     description:
-      "Get a real-time LLM-optimized tactical summary of the match: tick, credits, power, awaiting placement, production queues, own buildings & units, visible enemy buildings & units, neutral Oil Derricks, supply crates, nearest ore clusters, recent combat/alert events, and valid build placement coordinates.",
+      "Get full RL Gym parity state (`gym_obs`) plus a real-time LLM-optimized tactical summary of the match: tick, done, winner, credits, power, awaiting placement, production queues, own buildings & units, visible enemy buildings & units, neutral Oil Derricks, supply crates, nearest ore clusters, recent combat/alert events, and valid build placement coordinates.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1099,6 +1159,57 @@ const TOOLS = [
       required: ["room", "action"],
     },
   },
+  {
+    name: "create_ai_arena",
+    description:
+      "Create a live AI-vs-AI arena match with two external MCP commander seats (agent_a in slot 0, agent_b in slot 1). Registers live on the Spectator Dashboard (/?watch=1) so humans can watch AI models compete in 3D, and returns both commander tokens plus watch_url and dashboard_url.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        room: {
+          type: "string",
+          description: "Room ID (2-32 lowercase alphanumeric/hyphen chars). Auto-generated if omitted.",
+        },
+        map: {
+          type: "string",
+          enum: MAP_IDS,
+          description: "Map ID (default 'crossroads').",
+        },
+        agent_a: {
+          type: "string",
+          description: "Commander callsign for slot 0 (max 16 chars, default 'Agent-A').",
+        },
+        agent_b: {
+          type: "string",
+          description: "Commander callsign for slot 1 (max 16 chars, default 'Agent-B').",
+        },
+        start: {
+          type: "boolean",
+          description: "Start the match immediately (default true).",
+        },
+        start_credits: {
+          type: "integer",
+          enum: [3000, 5000, 10000, 20000],
+          description: "Starting credits per agent (default 5000).",
+        },
+        game_speed: {
+          type: "number",
+          enum: [0.75, 1, 1.5, 2],
+          description: "Simulation speed multiplier (default 1).",
+        },
+      },
+    },
+  },
+  {
+    name: "get_gym_schema",
+    description:
+      "Return the exact RL Gym observation contract (gym_obs), 6x64x64 float32 feature_maps contract, 64x64x3 uint8 rgb_frame contract, and rts_action JSON schema shared 1:1 between src/server/gym.ts and live MCP matches for training & finetuning models.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
 ];
 
 // ---------- Tool Handlers ----------
@@ -1156,15 +1267,17 @@ async function handleJoinGame(args) {
   const room = sanitizeRoom(args.room);
   const name = typeof args.name === "string" && args.name.trim() ? args.name.trim().slice(0, 16) : "Claude";
   const spectate = !!args.spectate;
+  const reqToken =
+    typeof args.token === "string" && args.token.length > 0 && args.token.length <= 64 ? args.token : null;
 
   let session = sessions.get(room);
-  if (session && session.spectate !== spectate) {
+  if (session && (session.spectate !== spectate || (reqToken && session.token !== reqToken))) {
     session.closeSocketOnly();
     sessions.delete(room);
     session = null;
   }
   if (!session) {
-    session = new RoomSession(room, name, spectate);
+    session = new RoomSession(room, name, spectate, reqToken);
     sessions.set(room, session);
   } else {
     session.name = name;
@@ -1475,12 +1588,227 @@ async function handleSpecialAction(args) {
   };
 }
 
+function handleGetGymSchema() {
+  return {
+    gym_obs_contract: {
+      description:
+        "Exact structured RL Gym observation contract shared 1:1 between src/server/gym.ts (GymEnv / extractGymObs) and MCP get_game_state.gym_obs.",
+      fields: {
+        tick: "integer — authoritative simulation tick (10 ticks = 1s at 1x speed)",
+        you: {
+          slot: "integer — your player slot index (0..3)",
+          credits: "integer — current floored credits",
+          pwrHave: "integer — total power generated",
+          pwrUse: "integer — total power consumed",
+          lowPower: "boolean — true when pwrUse > pwrHave (halves production & disables defenses)",
+          eliminated: "boolean — true if your faction has been eliminated",
+          bq: "{ kind: BuildingKind, left: number, total: number } | null — active building construction queue",
+          awaiting: "BuildingKind | null — finished building waiting to be placed",
+          queues:
+            "Partial<Record<'barracks'|'factory'|'airfield'|'shipyard', { unit: UnitKind, left: number, total: number, count: number }>>",
+        },
+        ents: "Array<{ id: number, o: number, k: EntKind, x: number, y: number, hp: number, mhp: number, cargo?: number }>",
+        ore: "Array<[x: number, y: number, amount: number]>",
+      },
+    },
+    feature_maps_contract: {
+      shape: [6, MAP_H, MAP_W],
+      dtype: "float32",
+      channels: ["ore", "own_units", "own_buildings", "foe_units", "foe_buildings", "all_hp"],
+      encoding: "base64 (little-endian IEEE-754 Float32Array, C-contiguous [channel, y, x])",
+    },
+    rgb_frame_contract: {
+      w: MAP_W,
+      h: MAP_H,
+      c: 3,
+      dtype: "uint8",
+      encoding: "base64 (row-major RGB Uint8Array of w*h*3 bytes)",
+    },
+    action_schema: {
+      name: "rts_action",
+      description:
+        "One bundle of commands applied to your faction, then the sim advances `ticks` ticks (10 ticks = 1s). Every field is optional; omit or set null to skip. Malformed fields invalidate the whole action.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          build: {
+            anyOf: [{ type: "string", enum: Object.keys(BUILDINGS) }, { type: "null" }],
+            description:
+              "start constructing a building (needs conyard + credits); finish with `place` once `you.awaiting` is set",
+          },
+          place: {
+            anyOf: [
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["tx", "ty"],
+                properties: { tx: { type: "integer" }, ty: { type: "integer" } },
+              },
+              { type: "null" },
+            ],
+            description:
+              "top-left tile for the awaiting building; must sit within 2 tiles of your buildings on clear non-ore ground",
+          },
+          train: {
+            anyOf: [{ type: "string", enum: Object.keys(UNITS) }, { type: "null" }],
+            description: "queue one unit: land→barracks/factory, air→airfield, sea→shipyard",
+          },
+          cancelTrain: {
+            anyOf: [{ type: "string", enum: Object.keys(UNITS) }, { type: "null" }],
+            description: "refund one queued unit of this kind",
+          },
+          order: {
+            anyOf: [
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["ids", "kind", "x", "y"],
+                properties: {
+                  ids: {
+                    type: "array",
+                    items: { type: "integer" },
+                    description: "your mobile unit ids (filtered to owned units)",
+                  },
+                  kind: { type: "string", enum: ["move", "amove", "attack", "harvest", "patrol"] },
+                  x: { type: "number" },
+                  y: { type: "number" },
+                  target: { type: ["integer", "null"], description: "enemy ent id, only for kind=attack" },
+                },
+              },
+              { type: "null" },
+            ],
+            description: "amove = attack-move; harvest targets an ore tile (harvesters also auto-mine when idle)",
+          },
+          stop: {
+            anyOf: [{ type: "array", items: { type: "integer" } }, { type: "null" }],
+            description: "clear orders on these own unit ids",
+          },
+          upgrade: {
+            anyOf: [{ type: "integer" }, { type: "null" }],
+            description: "upgrade your war factory ent id to MKII (needs techlab + $1500) — unlocks heavy/spider",
+          },
+          superweapon: {
+            anyOf: [
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["x", "y"],
+                properties: { x: { type: "number" }, y: { type: "number" } },
+              },
+              { type: "null" },
+            ],
+            description: "fire charged Orbital Ion Cannon at map coords (needs superweapon building + full charge)",
+          },
+        },
+      },
+    },
+  };
+}
+
+async function handleCreateAiArena(args = {}) {
+  // Primary path: proxy directly to the server's HTTP /mcp create_ai_arena tool
+  const mcpUrl = `${BASE_URL}/mcp`;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    if (typeof timer.unref === "function") timer.unref();
+    const res = await fetch(mcpUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: `arena-${crypto.randomUUID().slice(0, 8)}`,
+        method: "tools/call",
+        params: { name: "create_ai_arena", arguments: args },
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (res.ok) {
+      const rpc = await res.json();
+      const text = rpc?.result?.content?.[0]?.text;
+      if (typeof text === "string") {
+        const parsed = JSON.parse(text);
+        if (rpc?.result?.isError || parsed?.ok === false) {
+          throw new Error(parsed?.error || "create_ai_arena failed on remote server");
+        }
+        return parsed;
+      }
+      if (rpc?.error?.message) {
+        throw new Error(rpc.error.message);
+      }
+    }
+  } catch (err) {
+    // If remote explicitly rejected with a room/validation error, surface it; otherwise fall back to local WS setup
+    if (err instanceof Error && /already has an active match|room must be/i.test(err.message)) {
+      throw err;
+    }
+    log(`HTTP /mcp create_ai_arena fallback (${err instanceof Error ? err.message : String(err)})`);
+  }
+
+  // Fallback path: open 2 WebSocket sessions directly so local/older servers still support AI-vs-AI arenas
+  const room =
+    typeof args.room === "string" && args.room.trim()
+      ? sanitizeRoom(args.room.trim().toLowerCase())
+      : `arena-${crypto.randomUUID().slice(0, 6)}`;
+  const nameA = typeof args.agent_a === "string" && args.agent_a.trim() ? args.agent_a.trim().slice(0, 16) : "Agent-A";
+  const nameB = typeof args.agent_b === "string" && args.agent_b.trim() ? args.agent_b.trim().slice(0, 16) : "Agent-B";
+
+  const sessA = new RoomSession(room, nameA, false);
+  const sessB = new RoomSession(room, nameB, false);
+  await sessA.connect();
+  await sessB.connect();
+
+  if (typeof args.map === "string" && MAP_IDS.includes(args.map)) {
+    sessA.send({ t: "setMap", map: args.map });
+    await sessA.waitFor((m) => m.t === "lobby" && m.map === args.map, 1000).catch(() => null);
+  }
+  const cfgPatch = {};
+  if ([3000, 5000, 10000, 20000].includes(args.start_credits)) cfgPatch.startCredits = args.start_credits;
+  if ([0.75, 1, 1.5, 2].includes(args.game_speed)) cfgPatch.gameSpeed = args.game_speed;
+  if (Object.keys(cfgPatch).length) {
+    sessA.send({ t: "setConfig", config: cfgPatch });
+    await sessA.waitFor((m) => m.t === "lobby", 1000).catch(() => null);
+  }
+
+  sessA.send({ t: "ready", ready: true });
+  sessB.send({ t: "ready", ready: true });
+  await sleep(120);
+
+  if (args.start !== false) {
+    sessA.send({ t: "start" });
+    await sessA.waitFor((m) => m.t === "snap" || m.t === "init", 3500).catch(() => null);
+  }
+
+  // Keep slot 0 session tracked under room so get_game_state works immediately if desired
+  sessions.set(room, sessA);
+  sessions.set(`${room}#slot1`, sessB);
+
+  const urls = roomUrls(room);
+  return {
+    ok: true,
+    room,
+    map: sessA.map,
+    phase: sessA.phase,
+    config: sessA.config,
+    agent_a: { name: nameA, slot: sessA.slot >= 0 ? sessA.slot : 0, token: sessA.token },
+    agent_b: { name: nameB, slot: sessB.slot >= 0 ? sessB.slot : 1, token: sessB.token },
+    watch_url: urls.watch_url,
+    dashboard_url: urls.dashboard_url,
+  };
+}
+
 async function dispatchTool(name, args = {}) {
   switch (name) {
     case "list_live_games":
       return handleListLiveGames(args);
     case "join_game":
       return handleJoinGame(args);
+    case "create_ai_arena":
+      return handleCreateAiArena(args);
+    case "get_gym_schema":
+      return handleGetGymSchema();
     case "get_game_state":
       return handleGetGameState(args);
     case "build_structure":

@@ -66,6 +66,243 @@ export interface GymStepResult {
   info: Record<string, unknown>;
 }
 
+/**
+ * Worker/Node-safe Uint8Array -> base64 encoder (uses chunked `btoa`, zero Node `Buffer` dependency).
+ */
+export function bytesToBase64(bytes: Uint8Array): string {
+  const CHUNK = 0x8000;
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    const end = Math.min(i + CHUNK, bytes.length);
+    let part = "";
+    for (let j = i; j < end; j++) part += String.fromCharCode(bytes[j]);
+    bin += part;
+  }
+  return btoa(bin);
+}
+
+/**
+ * Structured RL Gym action schema shared between GymEnv and MCP `get_gym_schema`.
+ */
+export function getGymActionSchema(): Record<string, unknown> {
+  return {
+    name: "rts_action",
+    description:
+      "One bundle of commands applied to your faction, then the sim advances `ticks` ticks (10 ticks = 1s). Every field is optional; omit or set null to skip. Malformed fields invalidate the whole action.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        build: {
+          anyOf: [{ type: "string", enum: Object.keys(BUILDINGS) }, { type: "null" }],
+          description: "start constructing a building (needs conyard + credits); finish with `place` once `you.awaiting` is set",
+        },
+        place: {
+          anyOf: [
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["tx", "ty"],
+              properties: { tx: { type: "integer" }, ty: { type: "integer" } },
+            },
+            { type: "null" },
+          ],
+          description: "top-left tile for the awaiting building; must sit within 2 tiles of your buildings on clear non-ore ground",
+        },
+        train: {
+          anyOf: [{ type: "string", enum: Object.keys(UNITS) }, { type: "null" }],
+          description: "queue one unit: land→barracks/factory, air→airfield, sea→shipyard",
+        },
+        cancelTrain: {
+          anyOf: [{ type: "string", enum: Object.keys(UNITS) }, { type: "null" }],
+          description: "refund one queued unit of this kind",
+        },
+        order: {
+          anyOf: [
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["ids", "kind", "x", "y"],
+              properties: {
+                ids: { type: "array", items: { type: "integer" }, description: "your mobile unit ids (filtered to owned units)" },
+                kind: { type: "string", enum: [...ORDER_KINDS] },
+                x: { type: "number" },
+                y: { type: "number" },
+                target: { type: ["integer", "null"], description: "enemy ent id, only for kind=attack" },
+              },
+            },
+            { type: "null" },
+          ],
+          description: "amove = attack-move; harvest targets an ore tile (harvesters also auto-mine when idle)",
+        },
+        stop: {
+          anyOf: [{ type: "array", items: { type: "integer" } }, { type: "null" }],
+          description: "clear orders on these own unit ids",
+        },
+        upgrade: {
+          anyOf: [{ type: "integer" }, { type: "null" }],
+          description: "upgrade your war factory ent id to MKII (needs techlab + $1500) — unlocks heavy/spider",
+        },
+        superweapon: {
+          anyOf: [
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["x", "y"],
+              properties: { x: { type: "number" }, y: { type: "number" } },
+            },
+            { type: "null" },
+          ],
+          description: "fire charged Orbital Ion Cannon at map coords (needs superweapon building + full charge)",
+        },
+      },
+    },
+  };
+}
+
+/**
+ * Pure structured RL Gym observation extractor shared 1:1 between GymEnv and live MCP matches.
+ */
+export function extractGymObs(w: World, slot: number): GymObs {
+  const p = w.players.get(slot);
+  const ents: GymObs["ents"] = [];
+  for (const e of w.ents.values()) {
+    const s: GymObs["ents"][number] = {
+      id: e.id,
+      o: e.o,
+      k: e.k,
+      x: Math.round(e.x * 100) / 100,
+      y: Math.round(e.y * 100) / 100,
+      hp: Math.max(0, Math.round(e.hp)),
+      mhp: e.mhp,
+    };
+    if (e.k === "harvester") s.cargo = e.cargo;
+    ents.push(s);
+  }
+  const queues: Partial<Record<ProdCat, ProdQueue>> = {};
+  if (p) {
+    for (const cat of ["barracks", "factory", "airfield", "shipyard"] as const) {
+      if (p.queues[cat]) queues[cat] = { ...p.queues[cat]! };
+    }
+  }
+  return {
+    tick: w.tick,
+    you: {
+      slot,
+      credits: p ? Math.floor(p.credits) : 0,
+      pwrHave: p ? p.pwrHave : 0,
+      pwrUse: p ? p.pwrUse : 0,
+      lowPower: p ? p.lowPower : false,
+      eliminated: p ? p.eliminated : true,
+      bq: p?.bq ? { ...p.bq } : null,
+      awaiting: p ? p.awaiting : null,
+      queues,
+    },
+    ents,
+    ore: w.oreSnapshot(),
+  };
+}
+
+/**
+ * pysc2-style feature planes, 6 channels of MAP_W*MAP_H each:
+ *   [0] ore density 0..1   [1] own units (hp frac)   [2] own buildings (1)
+ *   [3] foe units (hp frac)[4] foe buildings (1)     [5] all-ent hp frac
+ */
+export function extractGymFeatureMaps(w: World, slot: number): { w: number; h: number; c: number; data: Float32Array } {
+  const S = MAP_W * MAP_H;
+  const out = new Float32Array(6 * S);
+  for (const [x, y, amt] of w.oreSnapshot()) out[y * MAP_W + x] = Math.min(1, amt / ORE_CELL_MAX);
+  for (const e of w.ents.values()) {
+    const mine = e.o === slot;
+    const foe = e.o >= 0 && !mine;
+    const frac = Math.max(0, Math.min(1, e.hp / e.mhp));
+    if (isB(e.k)) {
+      if (mine || foe) {
+        const d = BUILDINGS[e.k];
+        const ch = mine ? 2 : 4;
+        const x0 = Math.round(e.x - d.w / 2), y0 = Math.round(e.y - d.h / 2);
+        for (let dy = 0; dy < d.h; dy++)
+          for (let dx = 0; dx < d.w; dx++) {
+            const x = x0 + dx, y = y0 + dy;
+            if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H) out[ch * S + y * MAP_W + x] = 1;
+          }
+      }
+    } else if (mine || foe) {
+      const ch = mine ? 1 : 3;
+      const x = Math.round(e.x), y = Math.round(e.y);
+      if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H)
+        out[ch * S + y * MAP_W + x] = Math.max(out[ch * S + y * MAP_W + x], frac);
+    }
+    const x = Math.round(e.x), y = Math.round(e.y);
+    if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H)
+      out[5 * S + y * MAP_W + x] = Math.max(out[5 * S + y * MAP_W + x], frac);
+  }
+  return { w: MAP_W, h: MAP_H, c: 6, data: out };
+}
+
+/**
+ * Minimap-style RGB rasterization of the world — Uint8Array of w*h*3 bytes,
+ * `scale` pixels per tile (default 3 => 192x192). Terrain is dark noise,
+ * ore is amber by density, ents are slot-colored (dim = low hp).
+ */
+export function extractGymRgbFrame(w: World, slot: number, scale = 3): { w: number; h: number; data: Uint8Array } {
+  void slot;
+  const W = MAP_W * scale, H = MAP_H * scale;
+  const img = new Uint8Array(W * H * 3);
+  const put = (px: number, py: number, r: number, g: number, b: number) => {
+    const i = (py * W + px) * 3;
+    img[i] = r; img[i + 1] = g; img[i + 2] = b;
+  };
+  // terrain: dark slate (or ocean blue for water tiles) with a deterministic per-tile hash for texture
+  for (let y = 0; y < MAP_H; y++)
+    for (let x = 0; x < MAP_W; x++) {
+      const v = 12 + (((x * 73856093) ^ (y * 19349663)) >>> 0) % 10;
+      const isW = w.isWater(x, y);
+      const r = isW ? 8 : v,
+        g = isW ? 28 + (v % 6) : v + 3,
+        b = isW ? 58 + (v % 10) : v + 2;
+      for (let dy = 0; dy < scale; dy++) for (let dx = 0; dx < scale; dx++) put(x * scale + dx, y * scale + dy, r, g, b);
+    }
+  // ore: amber, brightness by density
+  for (const [x, y, amt] of w.oreSnapshot()) {
+    const f = 0.45 + 0.55 * Math.min(1, amt / ORE_CELL_MAX);
+    for (let dy = 0; dy < scale; dy++)
+      for (let dx = 0; dx < scale; dx++) put(x * scale + dx, y * scale + dy, Math.round(255 * f), Math.round(170 * f), Math.round(50 * f));
+  }
+  const slotRgb = (o: number): [number, number, number] => {
+    if (o < 0 || o >= PLAYER_COLORS.length) return [140, 140, 140];
+    const h = PLAYER_COLORS[o];
+    return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  };
+  // buildings: dimmed slot color across the footprint
+  for (const e of w.ents.values()) {
+    if (!isB(e.k)) continue;
+    const [r, g, b] = slotRgb(e.o);
+    const f = 0.35 + 0.35 * Math.max(0, Math.min(1, e.hp / e.mhp));
+    const d = BUILDINGS[e.k];
+    const x0 = Math.round(e.x - d.w / 2), y0 = Math.round(e.y - d.h / 2);
+    for (let dy = 0; dy < d.h; dy++)
+      for (let dx = 0; dx < d.w; dx++) {
+        const x = x0 + dx, y = y0 + dy;
+        if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) continue;
+        for (let py = 0; py < scale; py++)
+          for (let px = 0; px < scale; px++) put(x * scale + px, y * scale + py, Math.round(r * f), Math.round(g * f), Math.round(b * f));
+      }
+  }
+  // units: bright slot color square at position
+  for (const e of w.ents.values()) {
+    if (isB(e.k)) continue;
+    const x = Math.round(e.x), y = Math.round(e.y);
+    if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) continue;
+    const [r, g, b] = slotRgb(e.o);
+    const f = 0.55 + 0.45 * Math.max(0, Math.min(1, e.hp / e.mhp));
+    const inset = scale >= 3 ? 1 : 0;
+    for (let py = inset; py < scale - inset + 1; py++)
+      for (let px = inset; px < scale - inset + 1; px++) put(x * scale + px, y * scale + py, Math.round(r * f), Math.round(g * f), Math.round(b * f));
+  }
+  return { w: W, h: H, data: img };
+}
+
 type OpponentKind = "scripted" | "idle" | "mirror";
 
 // Reward shaping constants.
@@ -111,80 +348,8 @@ export class GymEnv {
     return this.w;
   }
 
-  actionSchema(): object {
-    return {
-      name: "rts_action",
-      description:
-        "One bundle of commands applied to your faction, then the sim advances `ticks` ticks (10 ticks = 1s). Every field is optional; omit or set null to skip. Malformed fields invalidate the whole action.",
-      parameters: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          build: {
-            anyOf: [{ type: "string", enum: Object.keys(BUILDINGS) }, { type: "null" }],
-            description: "start constructing a building (needs conyard + credits); finish with `place` once `you.awaiting` is set",
-          },
-          place: {
-            anyOf: [
-              {
-                type: "object",
-                additionalProperties: false,
-                required: ["tx", "ty"],
-                properties: { tx: { type: "integer" }, ty: { type: "integer" } },
-              },
-              { type: "null" },
-            ],
-            description: "top-left tile for the awaiting building; must sit within 2 tiles of your buildings on clear non-ore ground",
-          },
-          train: {
-            anyOf: [{ type: "string", enum: Object.keys(UNITS) }, { type: "null" }],
-            description: "queue one unit: land→barracks/factory, air→airfield, sea→shipyard",
-          },
-          cancelTrain: {
-            anyOf: [{ type: "string", enum: Object.keys(UNITS) }, { type: "null" }],
-            description: "refund one queued unit of this kind",
-          },
-          order: {
-            anyOf: [
-              {
-                type: "object",
-                additionalProperties: false,
-                required: ["ids", "kind", "x", "y"],
-                properties: {
-                  ids: { type: "array", items: { type: "integer" }, description: "your mobile unit ids (filtered to owned units)" },
-                  kind: { type: "string", enum: [...ORDER_KINDS] },
-                  x: { type: "number" },
-                  y: { type: "number" },
-                  target: { type: ["integer", "null"], description: "enemy ent id, only for kind=attack" },
-                },
-              },
-              { type: "null" },
-            ],
-            description: "amove = attack-move; harvest targets an ore tile (harvesters also auto-mine when idle)",
-          },
-          stop: {
-            anyOf: [{ type: "array", items: { type: "integer" } }, { type: "null" }],
-            description: "clear orders on these own unit ids",
-          },
-          upgrade: {
-            anyOf: [{ type: "integer" }, { type: "null" }],
-            description: "upgrade your war factory ent id to MKII (needs techlab + $1500) — unlocks heavy/spider",
-          },
-          superweapon: {
-            anyOf: [
-              {
-                type: "object",
-                additionalProperties: false,
-                required: ["x", "y"],
-                properties: { x: { type: "number" }, y: { type: "number" } },
-              },
-              { type: "null" },
-            ],
-            description: "fire charged Orbital Ion Cannon at map coords (needs superweapon building + full charge)",
-          },
-        },
-      },
-    };
+  actionSchema(): Record<string, unknown> {
+    return getGymActionSchema();
   }
 
   step(action: GymAction, ticks = 10): GymStepResult {
@@ -305,41 +470,7 @@ export class GymEnv {
   }
 
   private obs(): GymObs {
-    const p = this.me();
-    const ents: GymObs["ents"] = [];
-    for (const e of this.w.ents.values()) {
-      const s: GymObs["ents"][number] = {
-        id: e.id,
-        o: e.o,
-        k: e.k,
-        x: Math.round(e.x * 100) / 100,
-        y: Math.round(e.y * 100) / 100,
-        hp: Math.max(0, Math.round(e.hp)),
-        mhp: e.mhp,
-      };
-      if (e.k === "harvester") s.cargo = e.cargo;
-      ents.push(s);
-    }
-    const queues: Partial<Record<ProdCat, ProdQueue>> = {};
-    for (const cat of ["barracks", "factory", "airfield", "shipyard"] as const) {
-      if (p.queues[cat]) queues[cat] = { ...p.queues[cat]! };
-    }
-    return {
-      tick: this.w.tick,
-      you: {
-        slot: this.slot,
-        credits: Math.floor(p.credits),
-        pwrHave: p.pwrHave,
-        pwrUse: p.pwrUse,
-        lowPower: p.lowPower,
-        eliminated: p.eliminated,
-        bq: p.bq ? { ...p.bq } : null,
-        awaiting: p.awaiting,
-        queues,
-      },
-      ents,
-      ore: this.w.oreSnapshot(),
-    };
+    return extractGymObs(this.w, this.slot);
   }
 
   // ---------- visual observations (for pixel/state-hybrid agents) ----------
@@ -350,35 +481,7 @@ export class GymEnv {
    *   [3] foe units (hp frac)[4] foe buildings (1)     [5] all-ent hp frac
    */
   featureMaps(): { w: number; h: number; c: number; data: Float32Array } {
-    const S = MAP_W * MAP_H;
-    const out = new Float32Array(6 * S);
-    for (const [x, y, amt] of this.w.oreSnapshot()) out[y * MAP_W + x] = Math.min(1, amt / ORE_CELL_MAX);
-    for (const e of this.w.ents.values()) {
-      const mine = e.o === this.slot;
-      const foe = e.o >= 0 && !mine;
-      const frac = Math.max(0, Math.min(1, e.hp / e.mhp));
-      if (isB(e.k)) {
-        if (mine || foe) {
-          const d = BUILDINGS[e.k];
-          const ch = mine ? 2 : 4;
-          const x0 = Math.round(e.x - d.w / 2), y0 = Math.round(e.y - d.h / 2);
-          for (let dy = 0; dy < d.h; dy++)
-            for (let dx = 0; dx < d.w; dx++) {
-              const x = x0 + dx, y = y0 + dy;
-              if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H) out[ch * S + y * MAP_W + x] = 1;
-            }
-        }
-      } else if (mine || foe) {
-        const ch = mine ? 1 : 3;
-        const x = Math.round(e.x), y = Math.round(e.y);
-        if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H)
-          out[ch * S + y * MAP_W + x] = Math.max(out[ch * S + y * MAP_W + x], frac);
-      }
-      const x = Math.round(e.x), y = Math.round(e.y);
-      if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H)
-        out[5 * S + y * MAP_W + x] = Math.max(out[5 * S + y * MAP_W + x], frac);
-    }
-    return { w: MAP_W, h: MAP_H, c: 6, data: out };
+    return extractGymFeatureMaps(this.w, this.slot);
   }
 
   /**
@@ -387,60 +490,7 @@ export class GymEnv {
    * ore is amber by density, ents are slot-colored (dim = low hp).
    */
   rgbFrame(scale = 3): { w: number; h: number; data: Uint8Array } {
-    const W = MAP_W * scale, H = MAP_H * scale;
-    const img = new Uint8Array(W * H * 3);
-    const put = (px: number, py: number, r: number, g: number, b: number) => {
-      const i = (py * W + px) * 3;
-      img[i] = r; img[i + 1] = g; img[i + 2] = b;
-    };
-    // terrain: dark slate (or ocean blue for water tiles) with a deterministic per-tile hash for texture
-    for (let y = 0; y < MAP_H; y++)
-      for (let x = 0; x < MAP_W; x++) {
-        const v = 12 + (((x * 73856093) ^ (y * 19349663)) >>> 0) % 10;
-        const isW = this.w.isWater(x, y);
-        const r = isW ? 8 : v,
-          g = isW ? 28 + (v % 6) : v + 3,
-          b = isW ? 58 + (v % 10) : v + 2;
-        for (let dy = 0; dy < scale; dy++) for (let dx = 0; dx < scale; dx++) put(x * scale + dx, y * scale + dy, r, g, b);
-      }
-    // ore: amber, brightness by density
-    for (const [x, y, amt] of this.w.oreSnapshot()) {
-      const f = 0.45 + 0.55 * Math.min(1, amt / ORE_CELL_MAX);
-      for (let dy = 0; dy < scale; dy++)
-        for (let dx = 0; dx < scale; dx++) put(x * scale + dx, y * scale + dy, Math.round(255 * f), Math.round(170 * f), Math.round(50 * f));
-    }
-    const slotRgb = (o: number): [number, number, number] => {
-      if (o < 0 || o >= PLAYER_COLORS.length) return [140, 140, 140];
-      const h = PLAYER_COLORS[o];
-      return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
-    };
-    // buildings: dimmed slot color across the footprint
-    for (const e of this.w.ents.values()) {
-      if (!isB(e.k)) continue;
-      const [r, g, b] = slotRgb(e.o);
-      const f = 0.35 + 0.35 * Math.max(0, Math.min(1, e.hp / e.mhp));
-      const d = BUILDINGS[e.k];
-      const x0 = Math.round(e.x - d.w / 2), y0 = Math.round(e.y - d.h / 2);
-      for (let dy = 0; dy < d.h; dy++)
-        for (let dx = 0; dx < d.w; dx++) {
-          const x = x0 + dx, y = y0 + dy;
-          if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) continue;
-          for (let py = 0; py < scale; py++)
-            for (let px = 0; px < scale; px++) put(x * scale + px, y * scale + py, Math.round(r * f), Math.round(g * f), Math.round(b * f));
-        }
-    }
-    // units: bright slot color square at position
-    for (const e of this.w.ents.values()) {
-      if (isB(e.k)) continue;
-      const x = Math.round(e.x), y = Math.round(e.y);
-      if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) continue;
-      const [r, g, b] = slotRgb(e.o);
-      const f = 0.55 + 0.45 * Math.max(0, Math.min(1, e.hp / e.mhp));
-      const inset = scale >= 3 ? 1 : 0;
-      for (let py = inset; py < scale - inset + 1; py++)
-        for (let px = inset; px < scale - inset + 1; px++) put(x * scale + px, y * scale + py, Math.round(r * f), Math.round(g * f), Math.round(b * f));
-    }
-    return { w: W, h: H, data: img };
+    return extractGymRgbFrame(this.w, this.slot, scale);
   }
 
   private idsOf(slot: number): Set<number> {
