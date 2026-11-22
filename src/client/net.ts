@@ -6,6 +6,7 @@ export class Net {
   socket: PartySocket;
   onMsg: (m: S2C) => void = () => {};
   onStatus: (s: string) => void = () => {};
+  lastRecvAt = Date.now();
   private hbTimer: ReturnType<typeof setInterval>;
 
   constructor(room: string) {
@@ -16,13 +17,17 @@ export class Net {
       room,
     });
     this.socket.addEventListener("message", (ev) => {
+      this.lastRecvAt = Date.now();
       try {
         this.onMsg(JSON.parse(ev.data as string));
-      } catch {
-        /* ignore malformed */
+      } catch (err) {
+        console.error("ws message handler error:", err);
       }
     });
-    this.socket.addEventListener("open", () => this.onStatus(""));
+    this.socket.addEventListener("open", () => {
+      this.lastRecvAt = Date.now();
+      this.onStatus("");
+    });
     this.socket.addEventListener("close", () => this.onStatus("reconnecting…"));
     this.socket.addEventListener("error", () => this.onStatus("connection error"));
     // Keep NAT / Cloudflare edge WebSocket idle timers alive during passive spectating/watching
@@ -38,7 +43,21 @@ export class Net {
   }
 
   send(m: C2S) {
-    this.socket.send(JSON.stringify(m));
+    try {
+      this.socket.send(JSON.stringify(m));
+    } catch {
+      /* PartySocket queues or reconnects */
+    }
+  }
+
+  reconnect() {
+    this.lastRecvAt = Date.now();
+    this.onStatus("reconnecting…");
+    try {
+      this.socket.reconnect();
+    } catch {
+      /* ignore */
+    }
   }
 
   close() {

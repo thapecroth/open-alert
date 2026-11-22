@@ -542,6 +542,10 @@ gs.engine.runRenderLoop(() => {
   hud.tick(dt);
   audio.update(dt);
   if (phase === "playing") {
+    // Auto-recover half-open / silent zombie WebSockets during a live 5 Hz match
+    if (!document.hidden && Date.now() - net.lastRecvAt > 6500) {
+      net.reconnect();
+    }
     hud.drawMinimap(
       renderer,
       oreCells,
