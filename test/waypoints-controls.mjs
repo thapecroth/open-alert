@@ -245,9 +245,10 @@ try {
     const s = document.getElementById("selinfo").getBoundingClientRect();
     const overlap = !(c.right <= s.left || s.right <= c.left || c.bottom <= s.top || s.bottom <= c.top);
     const imgsInsideSpans = [...document.querySelectorAll("#selinfo .si-icon")].every((img) => img.parentElement?.tagName === "SPAN");
-    return { w: window.__oa.gs.renderer.domElement.width, h: window.__oa.gs.renderer.domElement.height, cw: window.__oa.gs.canvas.clientWidth, overlap, imgsInsideSpans };
+    const dpr = window.__oa.gs.renderer.getPixelRatio();
+    return { w: window.__oa.gs.renderer.domElement.width, h: window.__oa.gs.renderer.domElement.height, cw: window.__oa.gs.canvas.clientWidth, dpr, overlap, imgsInsideSpans };
   });
-  ok(resized.cw === 1024 && resized.w >= 1024 && !resized.overlap && resized.imgsInsideSpans, "Resize 1024x680: renderer + zero HUD overlap + inline icons", JSON.stringify(resized));
+  ok(resized.cw === 1024 && Math.abs(resized.w - Math.round(1024 * resized.dpr)) <= 2 && !resized.overlap && resized.imgsInsideSpans, "Resize 1024x680: renderer + zero HUD overlap + inline icons", JSON.stringify(resized));
 
   // 9b. Pressing A with empty selection does NOT leave attack-move armed
   await page.keyboard.press("Escape");

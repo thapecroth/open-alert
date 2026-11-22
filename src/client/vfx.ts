@@ -70,12 +70,228 @@ const ORDER_COLORS: Record<OrderKind, number> = {
   patrol: 0x4ad8ff,
 };
 
+const ORDER_KINDS: readonly OrderKind[] = ["move", "amove", "attack", "harvest", "patrol"];
+const ORDER_KIND_INDEX: Record<OrderKind, number> = {
+  move: 0,
+  amove: 1,
+  attack: 2,
+  harvest: 3,
+  patrol: 4,
+};
+const ORDER_COLOR_OBJS: Record<OrderKind, THREE.Color> = {
+  move: new THREE.Color(ORDER_COLORS.move),
+  amove: new THREE.Color(ORDER_COLORS.amove),
+  attack: new THREE.Color(ORDER_COLORS.attack),
+  harvest: new THREE.Color(ORDER_COLORS.harvest),
+  patrol: new THREE.Color(ORDER_COLORS.patrol),
+};
+
+const WHITE_COL = new THREE.Color(0xffffff);
+const SMOKE_DARK_COL = new THREE.Color(0x26292e);
+const SMOKE_LIGHT_COL = new THREE.Color(0x8ea0ad);
+const WAKE_COL = new THREE.Color(0xdcf8ff);
+const CONTRAIL_COL = new THREE.Color(0xe6f9ff);
+const DUST_COLOR_OBJS = DUST_TINTS.map((hex) => new THREE.Color(hex));
+
+const RALLY_COL = 0x44f0ff;
+const RALLY_COLOR_OBJ = new THREE.Color(RALLY_COL);
+const RALLY_POST_COLOR_OBJ = new THREE.Color(0xbef9ff);
+
+const SMOKE_CAP = 128;
+const WAKE_CAP = 96;
+const PUFF_CAP = 128;
+
+// Reusable scratch transforms (zero per-frame heap allocations)
+const _mat4 = new THREE.Matrix4();
+const _pos = new THREE.Vector3();
+const _quat = new THREE.Quaternion();
+const _scale = new THREE.Vector3();
+
+interface SmokeSlot {
+  born: number;
+  life: number;
+  sx: number;
+  sy: number;
+  sz: number;
+  driftX: number;
+  driftZ: number;
+  riseY: number;
+  baseScale: number;
+  baseAlpha: number;
+  dark: boolean;
+}
+
+interface WakeSlot {
+  born: number;
+  life: number;
+  x: number;
+  z: number;
+  scale: number;
+}
+
+interface PuffSlot {
+  born: number;
+  life: number;
+  isDust: boolean;
+  sx: number;
+  sy: number;
+  sz: number;
+  driftX: number;
+  driftZ: number;
+  scale: number;
+  color: THREE.Color;
+}
+
+function initInstancedPool(inst: THREE.InstancedMesh, cap: number, defaultColor: THREE.Color) {
+  const arr = new Float32Array(cap * 3);
+  for (let i = 0; i < cap; i++) {
+    arr[i * 3] = defaultColor.r;
+    arr[i * 3 + 1] = defaultColor.g;
+    arr[i * 3 + 2] = defaultColor.b;
+  }
+  inst.instanceColor = new THREE.InstancedBufferAttribute(arr, 3);
+  inst.instanceColor.setUsage(THREE.DynamicDrawUsage);
+  inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  inst.frustumCulled = false;
+  inst.count = 0;
+  inst.visible = false;
+}
+
+function attachPerInstanceAlpha(mat: THREE.MeshBasicMaterial, billboard: boolean) {
+  mat.customProgramCacheKey = () => (billboard ? "vfx-inst-billboard-alpha" : "vfx-inst-alpha");
+  mat.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nattribute float aAlpha;\nvarying float vInstAlpha;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvInstAlpha = aAlpha;");
+    if (billboard) {
+      shader.vertexShader = shader.vertexShader.replace(
+        "#include <project_vertex>",
+        `#ifdef USE_INSTANCING
+vec4 mvPosition = modelViewMatrix * vec4( instanceMatrix[3].xyz, 1.0 );
+mvPosition.xy += transformed.xy * vec2( length( instanceMatrix[0].xyz ), length( instanceMatrix[1].xyz ) );
+gl_Position = projectionMatrix * mvPosition;
+#else
+#include <project_vertex>
+#endif`,
+      );
+    }
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", "#include <common>\nvarying float vInstAlpha;")
+      .replace("#include <color_fragment>", "#include <color_fragment>\ndiffuseColor.a *= vInstAlpha;");
+  };
+}
+
 export class VfxSystem {
   private fxs: FxItem[] = [];
   private craters: CraterItem[] = [];
   private lastNow = performance.now();
 
-  constructor(private scene: THREE.Scene) {}
+  // Fixed-capacity GPU InstancedMesh particle pools (zero per-particle Mesh/Material GC)
+  private smokeInst: THREE.InstancedMesh;
+  private smokeAlphaArr: Float32Array;
+  private smokeAlphaAttr: THREE.InstancedBufferAttribute;
+  private smokeSlots: SmokeSlot[];
+  private smokeCount = 0;
+
+  private wakeInst: THREE.InstancedMesh;
+  private wakeAlphaArr: Float32Array;
+  private wakeAlphaAttr: THREE.InstancedBufferAttribute;
+  private wakeSlots: WakeSlot[];
+  private wakeCount = 0;
+
+  private puffInst: THREE.InstancedMesh;
+  private puffAlphaArr: Float32Array;
+  private puffAlphaAttr: THREE.InstancedBufferAttribute;
+  private puffSlots: PuffSlot[];
+  private puffCount = 0;
+
+  constructor(private scene: THREE.Scene) {
+    // 1. Smoke pool (dark battle smoke & light industrial exhaust)
+    const smokeGeo = sharedSmoke.clone();
+    this.smokeAlphaArr = new Float32Array(SMOKE_CAP);
+    this.smokeAlphaAttr = new THREE.InstancedBufferAttribute(this.smokeAlphaArr, 1);
+    this.smokeAlphaAttr.setUsage(THREE.DynamicDrawUsage);
+    smokeGeo.setAttribute("aAlpha", this.smokeAlphaAttr);
+    const smokeMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+    });
+    attachPerInstanceAlpha(smokeMat, false);
+    this.smokeInst = new THREE.InstancedMesh(smokeGeo, smokeMat, SMOKE_CAP);
+    initInstancedPool(this.smokeInst, SMOKE_CAP, SMOKE_LIGHT_COL);
+    this.scene.add(this.smokeInst);
+    this.smokeSlots = Array.from({ length: SMOKE_CAP }, () => ({
+      born: 0,
+      life: 1,
+      sx: 0,
+      sy: 0,
+      sz: 0,
+      driftX: 0,
+      driftZ: 0,
+      riseY: 2,
+      baseScale: 0.5,
+      baseAlpha: 0.3,
+      dark: false,
+    }));
+
+    // 2. Water wake ring pool (warships & torpedoes)
+    const wakeGeo = sharedWakeRing.clone();
+    this.wakeAlphaArr = new Float32Array(WAKE_CAP);
+    this.wakeAlphaAttr = new THREE.InstancedBufferAttribute(this.wakeAlphaArr, 1);
+    this.wakeAlphaAttr.setUsage(THREE.DynamicDrawUsage);
+    wakeGeo.setAttribute("aAlpha", this.wakeAlphaAttr);
+    const wakeMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 1,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    attachPerInstanceAlpha(wakeMat, false);
+    this.wakeInst = new THREE.InstancedMesh(wakeGeo, wakeMat, WAKE_CAP);
+    initInstancedPool(this.wakeInst, WAKE_CAP, WAKE_COL);
+    this.wakeInst.renderOrder = 4;
+    this.scene.add(this.wakeInst);
+    this.wakeSlots = Array.from({ length: WAKE_CAP }, () => ({
+      born: 0,
+      life: 1,
+      x: 0,
+      z: 0,
+      scale: 1,
+    }));
+
+    // 3. Soft camera-facing puff billboard pool (tank dust plumes + jet wingtip contrails)
+    const puffGeo = new THREE.PlaneGeometry(1, 1);
+    this.puffAlphaArr = new Float32Array(PUFF_CAP);
+    this.puffAlphaAttr = new THREE.InstancedBufferAttribute(this.puffAlphaArr, 1);
+    this.puffAlphaAttr.setUsage(THREE.DynamicDrawUsage);
+    puffGeo.setAttribute("aAlpha", this.puffAlphaAttr);
+    const puffMat = new THREE.MeshBasicMaterial({
+      map: getSoftPuffTex(),
+      color: 0xffffff,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+    });
+    attachPerInstanceAlpha(puffMat, true);
+    this.puffInst = new THREE.InstancedMesh(puffGeo, puffMat, PUFF_CAP);
+    initInstancedPool(this.puffInst, PUFF_CAP, WHITE_COL);
+    this.scene.add(this.puffInst);
+    this.puffSlots = Array.from({ length: PUFF_CAP }, () => ({
+      born: 0,
+      life: 1,
+      isDust: true,
+      sx: 0,
+      sy: 0,
+      sz: 0,
+      driftX: 0,
+      driftZ: 0,
+      scale: 1,
+      color: DUST_COLOR_OBJS[0],
+    }));
+  }
 
   private add(
     obj: THREE.Object3D,
@@ -89,93 +305,59 @@ export class VfxSystem {
   }
 
   spawnSmoke(x: number, y: number, z: number, dark: boolean) {
-    if (this.fxs.length > 160) return; // cap particle count under heavy battles
-    const col = dark ? 0x26292e : 0x8ea0ad;
-    const mat = new THREE.MeshBasicMaterial({
-      color: col,
-      transparent: true,
-      opacity: dark ? 0.52 : 0.26,
-      depthWrite: false,
-    });
-    const m = new THREE.Mesh(sharedSmoke, mat);
-    m.position.set(x + (Math.random() - 0.5) * 0.18, y, z + (Math.random() - 0.5) * 0.18);
-    const driftX = (Math.random() - 0.5) * 0.45;
-    const driftZ = (Math.random() - 0.5) * 0.45;
-    const baseScale = dark ? 0.65 : 0.48;
-    const startY = y;
-    const startX = m.position.x;
-    const startZ = m.position.z;
-    this.add(m, dark ? 1150 : 1400, (o, t) => {
-      o.position.set(startX + driftX * t, startY + t * (dark ? 1.8 : 2.2), startZ + driftZ * t);
-      o.scale.setScalar(baseScale + t * 1.4);
-      o.rotation.y = t * 1.4;
-      mat.opacity = (dark ? 0.52 : 0.26) * (1 - t);
-    });
+    if (this.smokeCount >= SMOKE_CAP) return;
+    const s = this.smokeSlots[this.smokeCount++];
+    s.born = performance.now();
+    s.life = dark ? 1150 : 1400;
+    s.sx = x + (Math.random() - 0.5) * 0.18;
+    s.sy = y;
+    s.sz = z + (Math.random() - 0.5) * 0.18;
+    s.driftX = (Math.random() - 0.5) * 0.45;
+    s.driftZ = (Math.random() - 0.5) * 0.45;
+    s.riseY = dark ? 1.8 : 2.2;
+    s.baseScale = dark ? 0.65 : 0.48;
+    s.baseAlpha = dark ? 0.52 : 0.26;
+    s.dark = dark;
   }
 
   spawnWake(x: number, z: number, scale = 1.0) {
-    if (this.fxs.length > 190) return;
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0xdcf8ff,
-      transparent: true,
-      opacity: 0.48,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
-    const ring = new THREE.Mesh(sharedWakeRing, mat);
-    ring.position.set(x, 0.052, z);
-    ring.scale.setScalar(0.22 * scale);
-    ring.renderOrder = 4;
-    this.add(ring, 880, (o, t) => {
-      const sc = (0.22 + t * 0.96) * scale;
-      o.scale.setScalar(sc);
-      mat.opacity = 0.48 * (1 - t) * (1 - t);
-    });
+    if (this.wakeCount >= WAKE_CAP) return;
+    const w = this.wakeSlots[this.wakeCount++];
+    w.born = performance.now();
+    w.life = 880;
+    w.x = x;
+    w.z = z;
+    w.scale = scale;
   }
 
   spawnDust(x: number, z: number, scale = 1.0) {
-    if (this.fxs.length > 220) return;
-    const tint = DUST_TINTS[(Math.random() * DUST_TINTS.length) | 0];
-    const startOp = 0.34;
-    const mat = new THREE.SpriteMaterial({
-      map: getSoftPuffTex(),
-      color: tint,
-      transparent: true,
-      opacity: startOp,
-      depthWrite: false,
-    });
-    const sp = new THREE.Sprite(mat);
-    const sx = x + (Math.random() - 0.5) * 0.16;
-    const sz = z + (Math.random() - 0.5) * 0.16;
-    const driftX = (Math.random() - 0.5) * 0.38;
-    const driftZ = (Math.random() - 0.5) * 0.38;
-    sp.position.set(sx, 0.1, sz);
-    sp.scale.setScalar(0.24 * scale);
-    this.add(sp, 720, (o, t) => {
-      const ease = 1 - Math.pow(1 - t, 1.8);
-      o.position.set(sx + driftX * ease, 0.1 + ease * 0.42 * scale, sz + driftZ * ease);
-      o.scale.setScalar((0.24 + ease * 0.78) * scale);
-      mat.opacity = startOp * (1 - t) * (1 - t);
-    });
+    if (this.puffCount >= PUFF_CAP) return;
+    const p = this.puffSlots[this.puffCount++];
+    p.born = performance.now();
+    p.life = 720;
+    p.isDust = true;
+    p.sx = x + (Math.random() - 0.5) * 0.16;
+    p.sy = 0.1;
+    p.sz = z + (Math.random() - 0.5) * 0.16;
+    p.driftX = (Math.random() - 0.5) * 0.38;
+    p.driftZ = (Math.random() - 0.5) * 0.38;
+    p.scale = scale;
+    p.color = DUST_COLOR_OBJS[(Math.random() * DUST_COLOR_OBJS.length) | 0];
   }
 
   spawnContrail(x: number, y: number, z: number, scale = 1.0) {
-    if (this.fxs.length > 240) return;
-    const startOp = 0.36;
-    const mat = new THREE.SpriteMaterial({
-      map: getSoftPuffTex(),
-      color: 0xe6f9ff,
-      transparent: true,
-      opacity: startOp,
-      depthWrite: false,
-    });
-    const sp = new THREE.Sprite(mat);
-    sp.position.set(x, y, z);
-    sp.scale.setScalar(0.16 * scale);
-    this.add(sp, 760, (o, t) => {
-      o.scale.setScalar((0.16 + t * 0.48) * scale);
-      mat.opacity = startOp * Math.pow(1 - t, 1.65);
-    });
+    if (this.puffCount >= PUFF_CAP) return;
+    const p = this.puffSlots[this.puffCount++];
+    p.born = performance.now();
+    p.life = 760;
+    p.isDust = false;
+    p.sx = x;
+    p.sy = y;
+    p.sz = z;
+    p.driftX = 0;
+    p.driftZ = 0;
+    p.scale = scale;
+    p.color = CONTRAIL_COL;
   }
 
   spawnShot(
@@ -1041,6 +1223,13 @@ export class VfxSystem {
       }
     }
 
+    // Update GPU-instanced smoke pool in-place (zero GC)
+    this.updateSmokePool(now);
+    // Update GPU-instanced wake pool in-place (zero GC)
+    this.updateWakePool(now);
+    // Update GPU-instanced dust + contrail billboard pool in-place (zero GC)
+    this.updatePuffPool(now);
+
     // Fade out overflow craters cleanly
     for (let i = this.craters.length - 1; i >= 0; i--) {
       const c = this.craters[i];
@@ -1051,6 +1240,132 @@ export class VfxSystem {
         c.mat.dispose();
         this.craters.splice(i, 1);
       }
+    }
+  }
+
+  private updateSmokePool(now: number) {
+    if (this.smokeCount === 0) {
+      if (this.smokeInst.visible) {
+        this.smokeInst.count = 0;
+        this.smokeInst.visible = false;
+      }
+      return;
+    }
+    let i = 0;
+    while (i < this.smokeCount) {
+      const s = this.smokeSlots[i];
+      const t = (now - s.born) / s.life;
+      if (t >= 1) {
+        const last = --this.smokeCount;
+        this.smokeSlots[i] = this.smokeSlots[last];
+        this.smokeSlots[last] = s;
+        continue;
+      }
+      const tc = t < 0 ? 0 : t;
+      const sc = s.baseScale + tc * 1.4;
+      _pos.set(s.sx + s.driftX * tc, s.sy + tc * s.riseY, s.sz + s.driftZ * tc);
+      _quat.setFromAxisAngle(UP, tc * 1.4);
+      _scale.set(sc, sc, sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.smokeInst.setMatrixAt(i, _mat4);
+      this.smokeInst.setColorAt(i, s.dark ? SMOKE_DARK_COL : SMOKE_LIGHT_COL);
+      this.smokeAlphaArr[i] = s.baseAlpha * (1 - tc);
+      i++;
+    }
+    this.smokeInst.count = this.smokeCount;
+    if (this.smokeCount > 0) {
+      this.smokeInst.visible = true;
+      this.smokeInst.instanceMatrix.needsUpdate = true;
+      if (this.smokeInst.instanceColor) this.smokeInst.instanceColor.needsUpdate = true;
+      this.smokeAlphaAttr.needsUpdate = true;
+    } else {
+      this.smokeInst.visible = false;
+    }
+  }
+
+  private updateWakePool(now: number) {
+    if (this.wakeCount === 0) {
+      if (this.wakeInst.visible) {
+        this.wakeInst.count = 0;
+        this.wakeInst.visible = false;
+      }
+      return;
+    }
+    let i = 0;
+    while (i < this.wakeCount) {
+      const w = this.wakeSlots[i];
+      const t = (now - w.born) / w.life;
+      if (t >= 1) {
+        const last = --this.wakeCount;
+        this.wakeSlots[i] = this.wakeSlots[last];
+        this.wakeSlots[last] = w;
+        continue;
+      }
+      const tc = t < 0 ? 0 : t;
+      const sc = (0.22 + tc * 0.96) * w.scale;
+      _mat4.makeScale(sc, sc, sc);
+      _mat4.setPosition(w.x, 0.052, w.z);
+      this.wakeInst.setMatrixAt(i, _mat4);
+      this.wakeInst.setColorAt(i, WAKE_COL);
+      const inv = 1 - tc;
+      this.wakeAlphaArr[i] = 0.48 * inv * inv;
+      i++;
+    }
+    this.wakeInst.count = this.wakeCount;
+    if (this.wakeCount > 0) {
+      this.wakeInst.visible = true;
+      this.wakeInst.instanceMatrix.needsUpdate = true;
+      if (this.wakeInst.instanceColor) this.wakeInst.instanceColor.needsUpdate = true;
+      this.wakeAlphaAttr.needsUpdate = true;
+    } else {
+      this.wakeInst.visible = false;
+    }
+  }
+
+  private updatePuffPool(now: number) {
+    if (this.puffCount === 0) {
+      if (this.puffInst.visible) {
+        this.puffInst.count = 0;
+        this.puffInst.visible = false;
+      }
+      return;
+    }
+    let i = 0;
+    while (i < this.puffCount) {
+      const p = this.puffSlots[i];
+      const t = (now - p.born) / p.life;
+      if (t >= 1) {
+        const last = --this.puffCount;
+        this.puffSlots[i] = this.puffSlots[last];
+        this.puffSlots[last] = p;
+        continue;
+      }
+      const tc = t < 0 ? 0 : t;
+      const inv = 1 - tc;
+      if (p.isDust) {
+        const ease = 1 - Math.pow(inv, 1.8);
+        const sc = (0.24 + ease * 0.78) * p.scale;
+        _mat4.makeScale(sc, sc, sc);
+        _mat4.setPosition(p.sx + p.driftX * ease, p.sy + ease * 0.42 * p.scale, p.sz + p.driftZ * ease);
+        this.puffAlphaArr[i] = 0.34 * inv * inv;
+      } else {
+        const sc = (0.16 + tc * 0.48) * p.scale;
+        _mat4.makeScale(sc, sc, sc);
+        _mat4.setPosition(p.sx, p.sy, p.sz);
+        this.puffAlphaArr[i] = 0.36 * Math.pow(inv, 1.65);
+      }
+      this.puffInst.setMatrixAt(i, _mat4);
+      this.puffInst.setColorAt(i, p.color);
+      i++;
+    }
+    this.puffInst.count = this.puffCount;
+    if (this.puffCount > 0) {
+      this.puffInst.visible = true;
+      this.puffInst.instanceMatrix.needsUpdate = true;
+      if (this.puffInst.instanceColor) this.puffInst.instanceColor.needsUpdate = true;
+      this.puffAlphaAttr.needsUpdate = true;
+    } else {
+      this.puffInst.visible = false;
     }
   }
 
@@ -1065,6 +1380,15 @@ export class VfxSystem {
       c.mat.dispose();
     }
     this.craters = [];
+    this.smokeCount = 0;
+    this.smokeInst.count = 0;
+    this.smokeInst.visible = false;
+    this.wakeCount = 0;
+    this.wakeInst.count = 0;
+    this.wakeInst.visible = false;
+    this.puffCount = 0;
+    this.puffInst.count = 0;
+    this.puffInst.visible = false;
   }
 }
 
@@ -1083,15 +1407,165 @@ function disposeFxObj(o: THREE.Object3D, disposeGeo: boolean, disposeTex = false
   });
 }
 
-// ---------- Selected-Unit Waypoint & Building Rally Line Renderer ----------
+// ---------- Selected-Unit Waypoint & Building Rally Line Renderer (Zero-Alloc Pooled) ----------
+
+const MAX_WP_SEGS_PER_KIND = 512;
+const MAX_RALLY_SEGS = 128;
+const WP_RING_CAP = 256;
+const WP_POST_CAP = 256;
+const WP_HEAD_CAP = 256;
+const RALLY_FLAG_CAP = 128;
+
+interface LinePool {
+  lines: THREE.LineSegments;
+  geo: THREE.BufferGeometry;
+  posArr: Float32Array;
+  posAttr: THREE.BufferAttribute;
+  maxSegs: number;
+  count: number;
+}
+
+function makeLinePool(color: number, opacity: number, maxSegs: number): LinePool {
+  const posArr = new Float32Array(maxSegs * 2 * 3);
+  const posAttr = new THREE.BufferAttribute(posArr, 3);
+  posAttr.setUsage(THREE.DynamicDrawUsage);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", posAttr);
+  geo.setDrawRange(0, 0);
+  const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity });
+  const lines = new THREE.LineSegments(geo, mat);
+  lines.frustumCulled = false;
+  lines.renderOrder = 15;
+  lines.visible = false;
+  return { lines, geo, posArr, posAttr, maxSegs, count: 0 };
+}
+
+function pushLineSeg(
+  pool: LinePool,
+  x0: number,
+  y0: number,
+  z0: number,
+  x1: number,
+  y1: number,
+  z1: number,
+) {
+  if (pool.count >= pool.maxSegs) return;
+  const off = pool.count * 6;
+  const arr = pool.posArr;
+  arr[off] = x0;
+  arr[off + 1] = y0;
+  arr[off + 2] = z0;
+  arr[off + 3] = x1;
+  arr[off + 4] = y1;
+  arr[off + 5] = z1;
+  pool.count++;
+}
+
+function commitLinePool(pool: LinePool) {
+  if (pool.count > 0) {
+    pool.geo.setDrawRange(0, pool.count * 2);
+    pool.posAttr.needsUpdate = true;
+    pool.lines.visible = true;
+  } else if (pool.lines.visible) {
+    pool.geo.setDrawRange(0, 0);
+    pool.lines.visible = false;
+  }
+}
 
 export class WaypointOverlay {
   private group = new THREE.Group();
-  private objs: THREE.Object3D[] = [];
+  private wpLines: LinePool[];
+  private rallyLines: LinePool;
+  private ringInst: THREE.InstancedMesh;
+  private postInst: THREE.InstancedMesh;
+  private headInst: THREE.InstancedMesh;
+  private flagInst: THREE.InstancedMesh;
+  private seenNodes = new Set<number>();
+  private hasActive = false;
 
   constructor(private scene: THREE.Scene) {
     this.group.renderOrder = 15;
+
+    // 5 pre-allocated reusable LineSegments pools (one per OrderKind)
+    this.wpLines = ORDER_KINDS.map((kind) => {
+      const lp = makeLinePool(ORDER_COLORS[kind], 0.78, MAX_WP_SEGS_PER_KIND);
+      this.group.add(lp.lines);
+      return lp;
+    });
+
+    // 1 pre-allocated reusable LineSegments pool for building rally lines
+    this.rallyLines = makeLinePool(RALLY_COL, 0.88, MAX_RALLY_SEGS);
+    this.group.add(this.rallyLines.lines);
+
+    // Pre-allocated InstancedMesh pools for rings, posts, diamond heads, and rally flags
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.86,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    this.ringInst = new THREE.InstancedMesh(sharedPinRing, ringMat, WP_RING_CAP);
+    initInstancedPool(this.ringInst, WP_RING_CAP, WHITE_COL);
+    this.ringInst.renderOrder = 15;
+    this.group.add(this.ringInst);
+
+    const postMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.8,
+    });
+    this.postInst = new THREE.InstancedMesh(sharedPinPost, postMat, WP_POST_CAP);
+    initInstancedPool(this.postInst, WP_POST_CAP, WHITE_COL);
+    this.postInst.renderOrder = 15;
+    this.group.add(this.postInst);
+
+    const headMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.95,
+    });
+    this.headInst = new THREE.InstancedMesh(sharedPinHead, headMat, WP_HEAD_CAP);
+    initInstancedPool(this.headInst, WP_HEAD_CAP, WHITE_COL);
+    this.headInst.renderOrder = 15;
+    this.group.add(this.headInst);
+
+    const flagMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.95,
+    });
+    this.flagInst = new THREE.InstancedMesh(sharedRallyFlag, flagMat, RALLY_FLAG_CAP);
+    initInstancedPool(this.flagInst, RALLY_FLAG_CAP, RALLY_COLOR_OBJ);
+    this.flagInst.renderOrder = 15;
+    this.group.add(this.flagInst);
+
     this.scene.add(this.group);
+  }
+
+  private hideAll() {
+    for (let i = 0; i < this.wpLines.length; i++) {
+      const lp = this.wpLines[i];
+      lp.count = 0;
+      if (lp.lines.visible) {
+        lp.geo.setDrawRange(0, 0);
+        lp.lines.visible = false;
+      }
+    }
+    this.rallyLines.count = 0;
+    if (this.rallyLines.lines.visible) {
+      this.rallyLines.geo.setDrawRange(0, 0);
+      this.rallyLines.lines.visible = false;
+    }
+    this.ringInst.count = 0;
+    this.ringInst.visible = false;
+    this.postInst.count = 0;
+    this.postInst.visible = false;
+    this.headInst.count = 0;
+    this.headInst.visible = false;
+    this.flagInst.count = 0;
+    this.flagInst.visible = false;
+    this.hasActive = false;
   }
 
   update(
@@ -1099,64 +1573,72 @@ export class WaypointOverlay {
     nowSec: number,
     rallies: { x: number; y: number; rx: number; ry: number }[] = [],
   ) {
-    // Clear previous frame's waypoint & rally segments cleanly
-    for (const o of this.objs) {
-      this.group.remove(o);
-      if (o instanceof THREE.Line) {
-        o.geometry.dispose();
-        (o.material as THREE.Material).dispose();
-      } else if (o instanceof THREE.Mesh) {
-        (o.material as THREE.Material).dispose();
-      }
+    if (!entries.length && !rallies.length) {
+      if (this.hasActive) this.hideAll();
+      return;
     }
-    this.objs = [];
-    if (!entries.length && !rallies.length) return;
+    this.hasActive = true;
+
+    for (let i = 0; i < this.wpLines.length; i++) this.wpLines[i].count = 0;
+    this.rallyLines.count = 0;
+    this.seenNodes.clear();
 
     const pulse = 0.85 + 0.2 * Math.sin(nowSec * 6);
-    const seenNodes = new Set<string>();
+    const headY = 0.74 + Math.sin(nowSec * 5) * 0.06;
+    const headYaw = nowSec * 2.5;
+    const flagYaw = Math.sin(nowSec * 4.5) * 0.24;
 
-    for (const ent of entries) {
+    let ringCount = 0;
+    let postCount = 0;
+    let headCount = 0;
+    let flagCount = 0;
+
+    for (let eIdx = 0; eIdx < entries.length; eIdx++) {
+      const ent = entries[eIdx];
       let px = ent.x;
       let py = ent.y;
-      for (const [wx, wy, kind] of ent.wp) {
-        const col = ORDER_COLORS[kind] ?? 0x4dff70;
-        const pts = [new THREE.Vector3(px, 0.08, py), new THREE.Vector3(wx, 0.08, wy)];
-        const line = new THREE.Line(
-          new THREE.BufferGeometry().setFromPoints(pts),
-          new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.78 }),
-        );
-        this.group.add(line);
-        this.objs.push(line);
+      const wpList = ent.wp;
+      for (let wIdx = 0; wIdx < wpList.length; wIdx++) {
+        const wp = wpList[wIdx];
+        const wx = wp[0];
+        const wy = wp[1];
+        const kind = wp[2];
+        const kindIdx = ORDER_KIND_INDEX[kind] ?? 0;
+        const colObj = ORDER_COLOR_OBJS[kind] ?? ORDER_COLOR_OBJS.move;
 
-        // Deduplicate pins at identical group waypoint coordinates (rounded to 0.6 tiles)
-        const key = `${Math.round(wx * 1.5)}:${Math.round(wy * 1.5)}:${kind}`;
-        if (!seenNodes.has(key)) {
-          seenNodes.add(key);
-          const ringMat = new THREE.MeshBasicMaterial({
-            color: col,
-            transparent: true,
-            opacity: 0.85,
-            side: THREE.DoubleSide,
-            depthWrite: false,
-          });
-          const ring = new THREE.Mesh(sharedPinRing, ringMat);
-          ring.position.set(wx, 0.07, wy);
-          ring.scale.setScalar(pulse);
-          this.group.add(ring);
-          this.objs.push(ring);
+        pushLineSeg(this.wpLines[kindIdx], px, 0.08, py, wx, 0.08, wy);
 
-          const postMat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.75 });
-          const post = new THREE.Mesh(sharedPinPost, postMat);
-          post.position.set(wx, 0.36, wy);
-          this.group.add(post);
-          this.objs.push(post);
+        // Deduplicate pins at identical group waypoint coordinates (rounded to 0.6 tiles) using zero-alloc integer key
+        const gx = Math.round(wx * 1.5) + 32768;
+        const gy = Math.round(wy * 1.5) + 32768;
+        const key = (gx * 65536 + gy) * 8 + kindIdx;
+        if (!this.seenNodes.has(key)) {
+          this.seenNodes.add(key);
 
-          const headMat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.95 });
-          const head = new THREE.Mesh(sharedPinHead, headMat);
-          head.position.set(wx, 0.74 + Math.sin(nowSec * 5) * 0.06, wy);
-          head.rotation.y = nowSec * 2.5;
-          this.group.add(head);
-          this.objs.push(head);
+          if (ringCount < WP_RING_CAP) {
+            _mat4.makeScale(pulse, pulse, pulse);
+            _mat4.setPosition(wx, 0.07, wy);
+            this.ringInst.setMatrixAt(ringCount, _mat4);
+            this.ringInst.setColorAt(ringCount, colObj);
+            ringCount++;
+          }
+
+          if (postCount < WP_POST_CAP) {
+            _mat4.makeTranslation(wx, 0.36, wy);
+            this.postInst.setMatrixAt(postCount, _mat4);
+            this.postInst.setColorAt(postCount, colObj);
+            postCount++;
+          }
+
+          if (headCount < WP_HEAD_CAP) {
+            _pos.set(wx, headY, wy);
+            _quat.setFromAxisAngle(UP, headYaw);
+            _scale.set(1, 1, 1);
+            _mat4.compose(_pos, _quat, _scale);
+            this.headInst.setMatrixAt(headCount, _mat4);
+            this.headInst.setColorAt(headCount, colObj);
+            headCount++;
+          }
         }
 
         px = wx;
@@ -1165,52 +1647,61 @@ export class WaypointOverlay {
     }
 
     // Crisp cyan rally lines & animated flag pins for selected production buildings
-    const RALLY_COL = 0x44f0ff;
-    for (const r of rallies) {
-      const pts = [new THREE.Vector3(r.x, 0.14, r.y), new THREE.Vector3(r.rx, 0.09, r.ry)];
-      const line = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints(pts),
-        new THREE.LineBasicMaterial({ color: RALLY_COL, transparent: true, opacity: 0.88 }),
-      );
-      this.group.add(line);
-      this.objs.push(line);
+    const rallyPulse = pulse * 1.15;
+    for (let rIdx = 0; rIdx < rallies.length; rIdx++) {
+      const r = rallies[rIdx];
+      pushLineSeg(this.rallyLines, r.x, 0.14, r.y, r.rx, 0.09, r.ry);
 
-      const ring = new THREE.Mesh(
-        sharedPinRing,
-        new THREE.MeshBasicMaterial({
-          color: RALLY_COL,
-          transparent: true,
-          opacity: 0.88,
-          side: THREE.DoubleSide,
-          depthWrite: false,
-        }),
-      );
-      ring.position.set(r.rx, 0.07, r.ry);
-      ring.scale.setScalar(pulse * 1.15);
-      this.group.add(ring);
-      this.objs.push(ring);
+      if (ringCount < WP_RING_CAP) {
+        _mat4.makeScale(rallyPulse, rallyPulse, rallyPulse);
+        _mat4.setPosition(r.rx, 0.07, r.ry);
+        this.ringInst.setMatrixAt(ringCount, _mat4);
+        this.ringInst.setColorAt(ringCount, RALLY_COLOR_OBJ);
+        ringCount++;
+      }
 
-      const post = new THREE.Mesh(
-        sharedPinPost,
-        new THREE.MeshBasicMaterial({ color: 0xbef9ff, transparent: true, opacity: 0.9 }),
-      );
-      post.position.set(r.rx, 0.45, r.ry);
-      post.scale.set(1, 1.35, 1);
-      this.group.add(post);
-      this.objs.push(post);
+      if (postCount < WP_POST_CAP) {
+        _mat4.makeScale(1, 1.35, 1);
+        _mat4.setPosition(r.rx, 0.45, r.ry);
+        this.postInst.setMatrixAt(postCount, _mat4);
+        this.postInst.setColorAt(postCount, RALLY_POST_COLOR_OBJ);
+        postCount++;
+      }
 
-      const flag = new THREE.Mesh(
-        sharedRallyFlag,
-        new THREE.MeshBasicMaterial({ color: RALLY_COL, transparent: true, opacity: 0.95 }),
-      );
-      flag.position.set(r.rx + 0.23, 0.76, r.ry);
-      flag.rotation.y = Math.sin(nowSec * 4.5) * 0.24;
-      this.group.add(flag);
-      this.objs.push(flag);
+      if (flagCount < RALLY_FLAG_CAP) {
+        _pos.set(r.rx + 0.23, 0.76, r.ry);
+        _quat.setFromAxisAngle(UP, flagYaw);
+        _scale.set(1, 1, 1);
+        _mat4.compose(_pos, _quat, _scale);
+        this.flagInst.setMatrixAt(flagCount, _mat4);
+        this.flagInst.setColorAt(flagCount, RALLY_COLOR_OBJ);
+        flagCount++;
+      }
+    }
+
+    // Commit line pools
+    for (let i = 0; i < this.wpLines.length; i++) commitLinePool(this.wpLines[i]);
+    commitLinePool(this.rallyLines);
+
+    // Commit instanced marker pools
+    this.commitInst(this.ringInst, ringCount);
+    this.commitInst(this.postInst, postCount);
+    this.commitInst(this.headInst, headCount);
+    this.commitInst(this.flagInst, flagCount);
+  }
+
+  private commitInst(inst: THREE.InstancedMesh, count: number) {
+    inst.count = count;
+    if (count > 0) {
+      inst.visible = true;
+      inst.instanceMatrix.needsUpdate = true;
+      if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+    } else if (inst.visible) {
+      inst.visible = false;
     }
   }
 
   clear() {
-    this.update([], 0, []);
+    if (this.hasActive) this.hideAll();
   }
 }

@@ -32,8 +32,10 @@
         <span id="spec-board"></span>
         <span id="credits">$0</span>
         <span id="power"></span>
+        <span id="fps-pill" title="Live frame rate">-- FPS</span>
         <button id="mute-btn" class="on" title="Toggle sound effects">SFX</button>
         <button id="music-btn" class="on" title="Toggle tactical soundtrack">BGM</button>
+        <button id="gfx-btn" type="button" title="Graphics, Raytracing &amp; GPU Settings">GFX</button>
         <button id="wasd-btn" title="Toggle WASD camera pan vs Classic RTS hotkeys">KEYS: RTS</button>
         <button id="resign-btn" title="Self-destruct your base and leave the game">RESIGN</button>
         <button id="help-btn" title="Controls & hotkeys">?</button>
@@ -186,6 +188,114 @@
       </div>
     </div>
 
+    <div id="gfx-panel" class="hidden" role="dialog" aria-modal="true" aria-labelledby="gfx-title">
+      <div class="panel gfx-card">
+        <div class="gfx-head">
+          <div>
+            <h2 id="gfx-title">GRAPHICS &amp; RAYTRACING</h2>
+            <p class="gfx-sub">Hardware telemetry &amp; live shader pipeline controls</p>
+          </div>
+          <button id="gfx-close" type="button" title="Close graphics settings (Esc)">CLOSE</button>
+        </div>
+
+        <div class="gfx-hw">
+          <div class="gfx-hw-top">
+            <div class="gfx-gpu-block">
+              <span class="gfx-label">GPU RENDERER</span>
+              <span id="gfx-gpu-name" class="gfx-gpu-name">Detecting GPU…</span>
+            </div>
+            <div class="gfx-badges">
+              <span id="gfx-badge-gl" class="gfx-badge">WebGL2 GPU</span>
+              <span id="gfx-badge-wgpu" class="gfx-badge">WebGL2 Only</span>
+              <span id="gfx-badge-cores" class="gfx-badge">--T</span>
+            </div>
+          </div>
+          <div class="gfx-metrics">
+            <div class="gfx-metric">
+              <span class="gfx-m-lbl">FPS</span>
+              <span id="gfx-m-fps" class="gfx-m-val">--</span>
+            </div>
+            <div class="gfx-metric">
+              <span class="gfx-m-lbl">FRAME MS</span>
+              <span id="gfx-m-ms" class="gfx-m-val">--</span>
+            </div>
+            <div class="gfx-metric">
+              <span class="gfx-m-lbl">DRAW CALLS</span>
+              <span id="gfx-m-calls" class="gfx-m-val">--</span>
+            </div>
+            <div class="gfx-metric">
+              <span class="gfx-m-lbl">TRIANGLES</span>
+              <span id="gfx-m-tris" class="gfx-m-val">--</span>
+            </div>
+            <div class="gfx-metric">
+              <span class="gfx-m-lbl">RENDER SCALE</span>
+              <span id="gfx-m-dpr" class="gfx-m-val">--</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="gfx-section">
+          <div class="gfx-sec-head">
+            <span class="gfx-label">QUALITY PRESETS</span>
+            <span id="gfx-rec-note" class="gfx-rec-note"></span>
+          </div>
+          <div class="gfx-presets" role="group" aria-label="Graphics quality preset">
+            <button type="button" class="gfx-preset" data-preset="low">
+              <span class="gp-name">LOW</span>
+              <span class="gp-tag">Laptop Fast</span>
+            </button>
+            <button type="button" class="gfx-preset" data-preset="medium">
+              <span class="gp-name">MEDIUM</span>
+              <span class="gp-tag">Balanced</span>
+            </button>
+            <button type="button" class="gfx-preset" data-preset="high">
+              <span class="gp-name">HIGH</span>
+              <span class="gp-tag">Dedicated GPU</span>
+            </button>
+            <button type="button" class="gfx-preset" data-preset="ultra">
+              <span class="gp-name">ULTRA RT</span>
+              <span class="gp-tag">Full Raytracing</span>
+            </button>
+          </div>
+          <p id="gfx-preset-desc" class="gfx-preset-desc"></p>
+        </div>
+
+        <div class="gfx-section">
+          <span class="gfx-label">LIVE PIPELINE OPTIONS</span>
+          <div class="gfx-options">
+            <label class="gfx-opt">
+              <input id="gfx-rt" type="checkbox" />
+              <span class="gfx-opt-copy">
+                <span class="gfx-opt-title">Screen-Space Raytracing (SSR)</span>
+                <span class="gfx-opt-desc">Real-time reflections across ocean channels, steel decks &amp; armor</span>
+              </span>
+            </label>
+            <label class="gfx-opt">
+              <input id="gfx-ao" type="checkbox" />
+              <span class="gfx-opt-copy">
+                <span class="gfx-opt-title">Ray-Marched Contact Shadows &amp; AO</span>
+                <span class="gfx-opt-desc">Screen-space crevice occlusion &amp; crisp ground contact shadows</span>
+              </span>
+            </label>
+            <label class="gfx-opt">
+              <input id="gfx-bloom" type="checkbox" />
+              <span class="gfx-opt-copy">
+                <span class="gfx-opt-title">HDR Bloom &amp; Weapon Glow</span>
+                <span class="gfx-opt-desc">High-dynamic-range explosions, ion beams, arc bolts &amp; emissives</span>
+              </span>
+            </label>
+            <label class="gfx-opt">
+              <input id="gfx-dyn" type="checkbox" />
+              <span class="gfx-opt-copy">
+                <span class="gfx-opt-title">Auto-60fps Laptop Resolution Scaling</span>
+                <span class="gfx-opt-desc">Adapts internal render DPR dynamically to maintain smooth 60 FPS</span>
+              </span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div id="lobby">
       <div class="panel lobby-panel">
         <h1 class="title-row"><img class="emblem" src="/favicon.svg" alt="" />OPEN ALERT</h1>
@@ -193,6 +303,7 @@
         <div class="room-row">
           ROOM <span id="lobby-room">----</span>
           <button id="copy-link2">COPY INVITE LINK</button>
+          <button id="lobby-gfx-btn" type="button" title="Graphics, Raytracing &amp; GPU Settings">⚙ GRAPHICS</button>
         </div>
         <div class="lobby-map-row">
           <canvas id="map-preview" width="112" height="112" title="Tactical map preview"></canvas>

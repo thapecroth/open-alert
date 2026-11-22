@@ -4,8 +4,10 @@ import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import { MAP_W, MAP_H, MapId, getMapLayout } from "../shared/gamedefs";
-import { createBattlefieldTextures, createOceanWaterMaterial, getCliffRockMaterials } from "./textures";
+import { MAP_W, MAP_H, MapId, MapArtifact, getMapLayout } from "../shared/gamedefs";
+import { createBattlefieldTextures, createOceanWaterMaterial, getCliffRockMaterials, getChassisMat } from "./textures";
+import { GraphicsManager } from "./graphics";
+import { RaytracePass } from "./raytrace";
 
 interface BiomeAtmosphere {
   zenith: number;
@@ -250,6 +252,116 @@ const BIOME_ATMOSPHERE: Record<MapId, BiomeAtmosphere> = {
     groundRoughness: 0.86,
     groundEnv: 0.54,
   },
+  atlantis: {
+    // Mythic Sea: sunlit azure sky & luminous turquoise tropical reef
+    zenith: 0x1068b8,
+    midSky: 0x3ec2ee,
+    horizon: 0xd0f6fc,
+    groundBounce: 0x24828c,
+    sunColor: 0xfff8e2,
+    sunIntensity: 2.55,
+    sunOffset: [-34, 64, 24],
+    hemiSky: 0x9cecff,
+    hemiGround: 0x308280,
+    hemiIntensity: 1.12,
+    rimColor: 0x70ecff,
+    rimIntensity: 0.6,
+    skirt: 0x14788c,
+    fogColor: 0x86d6e6,
+    fogDensity: 0.0023,
+    cloudTint: 0xffffff,
+    cloudOpacity: 0.22,
+    groundRoughness: 0.78,
+    groundEnv: 0.62,
+  },
+  shipwreck: {
+    // Abyssal: dramatic silver-blue storm sky over deep teal-slate ocean
+    zenith: 0x1a2c42,
+    midSky: 0x42607a,
+    horizon: 0x94b2c4,
+    groundBounce: 0x20343c,
+    sunColor: 0xe2f0ff,
+    sunIntensity: 2.28,
+    sunOffset: [-46, 48, 30],
+    hemiSky: 0x8eb0cc,
+    hemiGround: 0x243840,
+    hemiIntensity: 0.98,
+    rimColor: 0x60a8d8,
+    rimIntensity: 0.66,
+    skirt: 0x123242,
+    fogColor: 0x607c8e,
+    fogDensity: 0.0035,
+    cloudTint: 0xc2d6e4,
+    cloudOpacity: 0.44,
+    groundRoughness: 0.82,
+    groundEnv: 0.58,
+  },
+  volcano: {
+    // Volcanic: dramatic fiery dusk sky over smoldering basalt caldera
+    zenith: 0x22182c,
+    midSky: 0x6e363c,
+    horizon: 0xef7e3e,
+    groundBounce: 0x522618,
+    sunColor: 0xffb878,
+    sunIntensity: 2.42,
+    sunOffset: [-48, 42, 26],
+    hemiSky: 0xc28a7c,
+    hemiGround: 0x662c18,
+    hemiIntensity: 0.96,
+    rimColor: 0xff8040,
+    rimIntensity: 0.66,
+    skirt: 0x1c2832,
+    fogColor: 0x844e3c,
+    fogDensity: 0.0033,
+    cloudTint: 0xffaa74,
+    cloudOpacity: 0.36,
+    groundRoughness: 0.85,
+    groundEnv: 0.52,
+  },
+  oilrig: {
+    // Deep Sea: crisp North Atlantic maritime sky over deep sapphire ocean
+    zenith: 0x184c88,
+    midSky: 0x4c8cc2,
+    horizon: 0xc4e0f2,
+    groundBounce: 0x1a3c62,
+    sunColor: 0xf8fbff,
+    sunIntensity: 2.48,
+    sunOffset: [-38, 60, 26],
+    hemiSky: 0xaad4f8,
+    hemiGround: 0x264462,
+    hemiIntensity: 1.06,
+    rimColor: 0x70bcf0,
+    rimIntensity: 0.58,
+    skirt: 0x0e345c,
+    fogColor: 0x7ea6c4,
+    fogDensity: 0.0026,
+    cloudTint: 0xf4faff,
+    cloudOpacity: 0.28,
+    groundRoughness: 0.72,
+    groundEnv: 0.72,
+  },
+  cybergrid: {
+    // Orbital: sleek deep twilight sky with luminous cyan horizon
+    zenith: 0x0a1026,
+    midSky: 0x182b52,
+    horizon: 0x3686a8,
+    groundBounce: 0x142638,
+    sunColor: 0xd8f4ff,
+    sunIntensity: 2.38,
+    sunOffset: [-40, 56, 28],
+    hemiSky: 0x76b8e8,
+    hemiGround: 0x1c3248,
+    hemiIntensity: 1.02,
+    rimColor: 0x32dcff,
+    rimIntensity: 0.78,
+    skirt: 0x141c28,
+    fogColor: 0x223850,
+    fogDensity: 0.0028,
+    cloudTint: 0x62c0e6,
+    cloudOpacity: 0.2,
+    groundRoughness: 0.42,
+    groundEnv: 0.95,
+  },
 };
 
 const SKY_VERT = /* glsl */ `
@@ -356,6 +468,7 @@ function tileHash(x: number, y: number, salt: number): number {
 export class GameScene {
   canvas: HTMLCanvasElement;
   renderer: THREE.WebGLRenderer;
+  public graphics: GraphicsManager;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   composer: EffectComposer;
@@ -372,6 +485,11 @@ export class GameScene {
   pointerInside = false;
   dtMs = 16;
   envReady = false;
+
+  private raytracePass: RaytracePass;
+  private bloomPass: UnrealBloomPass;
+  private contextLost = false;
+  private frameCount = 0;
 
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private groundMat!: THREE.MeshStandardMaterial;
@@ -393,7 +511,7 @@ export class GameScene {
   private pmrem!: THREE.PMREMGenerator;
   private envRT: THREE.WebGLRenderTarget | null = null;
 
-  // Map cliffs, navigable water & biome terrain
+  // Map cliffs, navigable water, biome terrain & sculpted 3D world artifacts
   private mapId: MapId = "crossroads";
   private cliffSet = new Set<number>();
   private waterSet = new Set<number>();
@@ -402,6 +520,8 @@ export class GameScene {
   private foamMat: THREE.MeshBasicMaterial | null = null;
   private waterTime = 0;
   private waterBaseEmissive = 0.28;
+  private artifactAnims: ((t: number, dt: number) => void)[] = [];
+  private artifactMats: THREE.Material[] = [];
 
   // Live 64x64 Fog of War shroud plane
   private fogMesh!: THREE.Mesh;
@@ -426,12 +546,32 @@ export class GameScene {
     this.canvas = canvas;
     this.engine = new EngineShim(this);
 
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    this.renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      powerPreference: "high-performance",
+      stencil: false,
+      preserveDrawingBuffer: false,
+    });
+    this.graphics = new GraphicsManager(this.renderer);
+    this.renderer.setPixelRatio(this.graphics.getTargetDpr());
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.autoUpdate = false;
+    this.renderer.shadowMap.needsUpdate = true;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.18;
+
+    // WebGL context-loss resilience (e.g. laptop sleep/resume or GPU driver reset)
+    canvas.addEventListener("webglcontextlost", (e) => {
+      e.preventDefault();
+      this.contextLost = true;
+    });
+    canvas.addEventListener("webglcontextrestored", () => {
+      this.contextLost = false;
+      this.applyGraphicsSettings();
+      this.loadMap(this.mapId);
+    });
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x9fb2c2);
@@ -445,11 +585,12 @@ export class GameScene {
     this.hemiLight = new THREE.HemisphereLight(0xaad2f5, 0x544a38, 1.0);
     this.scene.add(this.hemiLight);
 
+    const initShadowSize = this.graphics.getShadowSize();
     this.sunLight = new THREE.DirectionalLight(0xfff0d4, 2.45);
     this.sunLight.position.set(MAP_W / 2 - 42, 58, MAP_H / 2 + 28);
     this.sunLight.target.position.set(MAP_W / 2, 0, MAP_H / 2);
     this.sunLight.castShadow = true;
-    this.sunLight.shadow.mapSize.set(2048, 2048);
+    this.sunLight.shadow.mapSize.set(initShadowSize, initShadowSize);
     this.sunLight.shadow.camera.left = -45;
     this.sunLight.shadow.camera.right = 45;
     this.sunLight.shadow.camera.top = 45;
@@ -469,12 +610,30 @@ export class GameScene {
     this.pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environmentIntensity = 0.78;
 
-    // Restrained filmic bloom: silhouettes stay razor-sharp while afterburners, beams & explosions pop
-    this.composer = new EffectComposer(this.renderer);
+    // Hardware DepthTexture EffectComposer: RenderPass -> RaytracePass -> UnrealBloomPass -> OutputPass
+    const initW = Math.max(1, Math.floor((canvas.clientWidth || innerWidth) * this.graphics.getTargetDpr()));
+    const initH = Math.max(1, Math.floor((canvas.clientHeight || innerHeight) * this.graphics.getTargetDpr()));
+    const depthTex1 = new THREE.DepthTexture(initW, initH, THREE.UnsignedIntType);
+    const rt = new THREE.WebGLRenderTarget(initW, initH, {
+      type: THREE.HalfFloatType,
+      depthTexture: depthTex1,
+    });
+    this.composer = new EffectComposer(this.renderer, rt);
+    // Give renderTarget2 its own DepthTexture so ping-ponging never creates a WebGL2 feedback loop
+    this.composer.renderTarget2.depthTexture = new THREE.DepthTexture(initW, initH, THREE.UnsignedIntType);
+
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(1024, 1024), 0.28, 0.4, 0.96);
-    this.composer.addPass(bloom);
+
+    this.raytracePass = new RaytracePass(this.scene, this.camera, initW, initH);
+    this.raytracePass.setDepthTexture(this.composer.readBuffer.depthTexture ?? depthTex1);
+    this.composer.addPass(this.raytracePass);
+
+    // Restrained filmic bloom: silhouettes stay razor-sharp while afterburners, beams & explosions pop
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(initW, initH), 0.28, 0.4, 0.96);
+    this.composer.addPass(this.bloomPass);
     this.composer.addPass(new OutputPass());
+
+    this.graphics.onChange = () => this.applyGraphicsSettings();
 
     // Pointer tracking — synced on move AND down so clicks never use stale coordinates
     canvas.addEventListener("pointermove", (e) => this.syncPointer(e.clientX, e.clientY));
@@ -489,6 +648,28 @@ export class GameScene {
     this.buildZoneGroup.visible = false;
     this.scene.add(this.buildZoneGroup);
     this.loadMap("crossroads");
+    this.applyGraphicsSettings();
+  }
+
+  public applyGraphicsSettings(): void {
+    const s = this.graphics.settings;
+    const targetDpr = this.graphics.getTargetDpr();
+    this.renderer.setPixelRatio(targetDpr);
+
+    const shadowSize = this.graphics.getShadowSize();
+    if (this.sunLight.shadow.mapSize.x !== shadowSize || this.sunLight.shadow.mapSize.y !== shadowSize) {
+      this.sunLight.shadow.mapSize.set(shadowSize, shadowSize);
+      if (this.sunLight.shadow.map) {
+        this.sunLight.shadow.map.dispose();
+        this.sunLight.shadow.map = null;
+      }
+    }
+    this.renderer.shadowMap.needsUpdate = true;
+
+    this.raytracePass.enabled = s.raytracing || s.contactShadows;
+    this.raytracePass.setQuality(s.preset, s.raytracing, s.contactShadows);
+    this.bloomPass.enabled = s.bloom;
+
     this.resize();
   }
 
@@ -551,8 +732,9 @@ export class GameScene {
     this.rimLight.intensity = atm.rimIntensity;
     this.rimLight.position.set(MAP_W / 2 - sx * 1.15, Math.max(22, sy * 0.48), MAP_H / 2 - sz * 1.25);
 
-    // Update sky shader uniforms & matching PMREM radiance map
+    // Update sky shader uniforms, RaytracePass sun direction & matching PMREM radiance map
     const sunDir = new THREE.Vector3(sx, sy, sz).normalize();
+    this.raytracePass.setSunDirection(sunDir);
     for (const mat of [this.skyMat, this.envSkyMat]) {
       mat.uniforms.uZenith.value.setHex(atm.zenith);
       mat.uniforms.uMidSky.value.setHex(atm.midSky);
@@ -655,7 +837,7 @@ export class GameScene {
 
     this.applyBiomeAtmosphere(atm);
 
-    // Clear previous 3D cliff mesas, water surfaces & props
+    // Clear previous 3D cliff mesas, water surfaces, artifacts & props
     if (this.mapGroup) {
       this.scene.remove(this.mapGroup);
       this.mapGroup.traverse((o) => {
@@ -665,6 +847,9 @@ export class GameScene {
       });
       this.mapGroup = null;
     }
+    this.artifactAnims = [];
+    for (const m of this.artifactMats) m.dispose();
+    this.artifactMats = [];
     if (this.waterMat) {
       this.waterMat.normalMap?.dispose();
       this.waterMat.bumpMap?.dispose();
@@ -700,27 +885,32 @@ export class GameScene {
       const isOasis = mapId === "oasis";
       const isArchipelago = mapId === "archipelago";
       const isCoastline = mapId === "coastline";
+      const isAtlantis = mapId === "atlantis";
+      const isShipwreck = mapId === "shipwreck";
+      const isVolcano = mapId === "volcano";
+      const isCyber = mapId === "cybergrid";
+      const isArchitectural = isFortress || isAtlantis || isCyber;
 
-      // 1) Tapered rocky/glacial/citadel base wall blocks
-      const wallGeo = isFortress
+      // 1) Tapered rocky/glacial/citadel/monolith base wall blocks
+      const wallGeo = isArchitectural
         ? new THREE.BoxGeometry(1.02, 1, 1.02)
         : new THREE.CylinderGeometry(isIslands ? 0.56 : 0.67, isIslands ? 0.78 : 0.82, 1, 4);
-      if (!isFortress) wallGeo.rotateY(Math.PI / 4);
+      if (!isArchitectural) wallGeo.rotateY(Math.PI / 4);
       const wallInst = new THREE.InstancedMesh(wallGeo, mats.wall, cliffs.length);
       wallInst.castShadow = true;
       wallInst.receiveShadow = true;
 
       // 2) Sunlit terraced weathered cap plateau
-      const capGeo = isFortress
+      const capGeo = isArchitectural
         ? new THREE.BoxGeometry(1.06, 1, 1.06)
         : new THREE.CylinderGeometry(isIslands ? 0.44 : 0.58, isIslands ? 0.6 : 0.7, 1, 4);
-      if (!isFortress) capGeo.rotateY(Math.PI / 4);
+      if (!isArchitectural) capGeo.rotateY(Math.PI / 4);
       const capInst = new THREE.InstancedMesh(capGeo, mats.cap, cliffs.length);
       capInst.castShadow = true;
       capInst.receiveShadow = true;
 
       // 3) Interior mesa bridge slabs so multi-tile mesas have a solid unified terrace deck
-      const deckGeo = new THREE.BoxGeometry(1.06, isFortress ? 0.42 : 0.36, 1.06);
+      const deckGeo = new THREE.BoxGeometry(1.06, isArchitectural ? 0.42 : 0.36, 1.06);
       const deckInst = new THREE.InstancedMesh(deckGeo, mats.cap, cliffs.length);
       deckInst.castShadow = true;
       deckInst.receiveShadow = true;
@@ -768,11 +958,15 @@ export class GameScene {
         if (mapId === "canyon") baseH = 1.85 + h1 * 0.34 + (neighbors >= 3 ? 0.2 : 0);
         else if (isTundra) baseH = 1.64 + h1 * 0.44 + (neighbors >= 3 ? 0.24 : 0);
         else if (isFortress) baseH = 1.56 + (neighbors >= 2 ? 0.1 : 0) + h1 * 0.09;
+        else if (isAtlantis) baseH = 1.38 + (neighbors >= 2 ? 0.14 : 0) + h1 * 0.1;
+        else if (isCyber) baseH = 1.58 + (neighbors >= 2 ? 0.16 : 0) + h1 * 0.06;
+        else if (isVolcano) baseH = 1.76 + h1 * 0.46 + (neighbors >= 3 ? 0.28 : 0);
+        else if (isShipwreck) baseH = 1.25 + h1 * 0.42 + (neighbors >= 3 ? 0.16 : 0);
         else if (isJungle) baseH = 1.6 + h1 * 0.36 + (neighbors >= 3 ? 0.22 : 0);
         else if (isOasis) baseH = 1.5 + h1 * 0.34 + (neighbors >= 3 ? 0.18 : 0);
         else if (isIslands) baseH = 0.46 + h1 * 0.46 + (neighbors < 4 ? 0.18 : 0);
 
-        const capH = isFortress ? 0.24 : isIslands ? 0.18 + h2 * 0.14 : 0.28 + h2 * 0.16;
+        const capH = isArchitectural ? 0.24 : isIslands ? 0.18 + h2 * 0.14 : 0.28 + h2 * 0.16;
 
         // On Islands, leave sleek deep water channels in interior tiles while raising jagged wet-slate crags along banks & islets
         const buildCrag = !isIslands || neighbors < 4 || h2 > 0.52;
@@ -785,8 +979,12 @@ export class GameScene {
           d.updateMatrix();
           wallInst.setMatrixAt(wallCount++, d.matrix);
 
-          d.position.set(cx + (h2 - 0.5) * (isFortress ? 0.01 : 0.05), baseH + capH * 0.42, cz + (h3 - 0.5) * (isFortress ? 0.01 : 0.05));
-          d.rotation.set(0, isFortress ? 0 : (h1 - 0.5) * 0.1, 0);
+          d.position.set(
+            cx + (h2 - 0.5) * (isArchitectural ? 0.01 : 0.05),
+            baseH + capH * 0.42,
+            cz + (h3 - 0.5) * (isArchitectural ? 0.01 : 0.05),
+          );
+          d.rotation.set(0, isArchitectural ? 0 : (h1 - 0.5) * 0.1, 0);
           d.scale.set(isIslands ? sx * 0.85 : 0.98, capH, isIslands ? sz * 0.85 : 0.98);
           d.updateMatrix();
           capInst.setMatrixAt(capCount++, d.matrix);
@@ -809,7 +1007,7 @@ export class GameScene {
         if (!nE) edgeDirs.push([1, 0]);
         for (let ei = 0; ei < edgeDirs.length; ei++) {
           const rh = tileHash(tx + ei * 17, ty, 7);
-          const boulderThresh = isFortress ? 0.76 : isIslands ? 0.46 : 0.54;
+          const boulderThresh = isCyber ? 1.1 : isFortress || isAtlantis ? 0.78 : isIslands ? 0.46 : 0.54;
           if (rh > boulderThresh) {
             const [ex, ez] = edgeDirs[ei];
             const tang = (tileHash(tx, ty + ei * 13, 11) - 0.5) * 0.58;
@@ -827,7 +1025,7 @@ export class GameScene {
             });
           }
 
-          // Fortified dark-stone citadel parapet merlons along exposed Fortress wall tops
+          // Fortified parapet merlons (Fortress), golden temple cornices (Atlantis), or glowing cyan energy trim (Cybergrid)
           if (isFortress && (tx + ty) % 2 === 0) {
             const [ex, ez] = edgeDirs[ei];
             accentTransforms.push({
@@ -838,6 +1036,40 @@ export class GameScene {
               sy: 0.28,
               sz: ex !== 0 ? 0.46 : 0.24,
               ry: 0,
+            });
+          } else if (isAtlantis) {
+            const [ex, ez] = edgeDirs[ei];
+            accentTransforms.push({
+              x: cx + ex * 0.42,
+              y: baseH + capH + 0.08,
+              z: cz + ez * 0.42,
+              sx: ez !== 0 ? 0.92 : 0.16,
+              sy: 0.16,
+              sz: ex !== 0 ? 0.92 : 0.16,
+              ry: 0,
+            });
+          } else if (isCyber) {
+            const [ex, ez] = edgeDirs[ei];
+            accentTransforms.push({
+              x: cx + ex * 0.48,
+              y: baseH + capH * 0.35,
+              z: cz + ez * 0.48,
+              sx: ez !== 0 ? 0.96 : 0.08,
+              sy: 0.12,
+              sz: ex !== 0 ? 0.96 : 0.08,
+              ry: 0,
+            });
+          } else if (isVolcano && rh > 0.56) {
+            // Glowing molten lava fissure seams protruding from volcanic caldera flanks
+            const [ex, ez] = edgeDirs[ei];
+            accentTransforms.push({
+              x: cx + ex * 0.46,
+              y: baseH * (0.38 + h2 * 0.35),
+              z: cz + ez * 0.46,
+              sx: ez !== 0 ? 0.58 : 0.16,
+              sy: 0.18 + h1 * 0.22,
+              sz: ex !== 0 ? 0.58 : 0.16,
+              ry: (h2 - 0.5) * 0.25,
             });
           }
         }
@@ -855,20 +1087,22 @@ export class GameScene {
           });
         }
 
-        // Biome-specific trees / palms / jungle canopy / scrub placement
-        const treeThresh = isJungle
-          ? 0.28
-          : isArchipelago
-            ? 0.36
-            : isFortress
-              ? 0.82
-              : isIslands
-                ? 0.64
-                : isCoastline
-                  ? 0.48
-                  : isOasis
-                    ? 0.52
-                    : 0.56;
+        // Biome-specific trees / palms / jungle canopy / scrub placement (skip trees on Cybergrid, Volcano & Atlantis pylons)
+        const treeThresh = isCyber || isVolcano || isAtlantis
+          ? 2.0
+          : isJungle
+            ? 0.28
+            : isArchipelago
+              ? 0.36
+              : isFortress || isShipwreck
+                ? 0.82
+                : isIslands
+                  ? 0.64
+                  : isCoastline
+                    ? 0.48
+                    : isOasis
+                      ? 0.52
+                      : 0.56;
         if (buildCrag && h3 > treeThresh) {
           const count = isJungle || isArchipelago ? (h1 > 0.45 ? 2 : 1) : h1 > 0.65 ? 2 : 1;
           for (let ti = 0; ti < count; ti++) {
@@ -881,7 +1115,7 @@ export class GameScene {
                   ? 0.92
                   : isOasis || isArchipelago
                     ? 0.88
-                    : isIslands || isCoastline
+                    : isIslands || isCoastline || isShipwreck
                       ? 0.72
                       : 0.72;
             const sc = scBase + tileHash(tx, ty, 59 + ti) * 0.42;
@@ -1131,8 +1365,22 @@ export class GameScene {
       if (foamEdges.length > 0) {
         const foamGeo = new THREE.PlaneGeometry(1.06, 0.22);
         foamGeo.rotateX(-Math.PI / 2);
+        const foamColor =
+          mapId === "atlantis"
+            ? 0xe2ffff
+            : mapId === "archipelago"
+              ? 0xd8fcff
+              : mapId === "shipwreck"
+                ? 0xa4c8d2
+                : mapId === "volcano"
+                  ? 0xc0d4dc
+                  : mapId === "oilrig"
+                    ? 0xc2e6f6
+                    : mapId === "coastline"
+                      ? 0xb4dce8
+                      : 0xc8f0f8;
         this.foamMat = new THREE.MeshBasicMaterial({
-          color: mapId === "archipelago" ? 0xd8fcff : mapId === "coastline" ? 0xb4dce8 : 0xc8f0f8,
+          color: foamColor,
           transparent: true,
           opacity: 0.42,
           depthWrite: false,
@@ -1153,10 +1401,518 @@ export class GameScene {
       }
     }
 
+    // Sculpted 3D Ocean & World Artifacts (static parts frozen with matrixAutoUpdate = false)
+    if (layout.artifacts && layout.artifacts.length > 0) {
+      this.buildArtifacts(group, layout.artifacts, mapId);
+    }
+
     // Never add mapGroup to this.pickables so terrain & water never block unit selection!
     this.mapGroup = group;
     this.scene.add(group);
+    this.raytracePass.setWaterLevel(0.03, this.hasWater());
+    this.renderer.shadowMap.needsUpdate = true;
     this.resetFog();
+  }
+
+  // ---------- Sculpted 3D Ocean & World Artifacts ----------
+
+  private buildArtifacts(group: THREE.Group, artifacts: MapArtifact[], mapId: MapId): void {
+    const trackMat = <T extends THREE.Material>(m: T): T => {
+      this.artifactMats.push(m);
+      return m;
+    };
+    const freezeStatic = (obj: THREE.Object3D): void => {
+      obj.updateMatrix();
+      obj.matrixAutoUpdate = false;
+    };
+    const addStatic = (
+      parent: THREE.Object3D,
+      geo: THREE.BufferGeometry,
+      mat: THREE.Material,
+      px = 0,
+      py = 0,
+      pz = 0,
+      rx = 0,
+      ry = 0,
+      rz = 0,
+      castShadow = true,
+      receiveShadow = true,
+    ): THREE.Mesh => {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(px, py, pz);
+      m.rotation.set(rx, ry, rz);
+      m.castShadow = castShadow;
+      m.receiveShadow = receiveShadow;
+      freezeStatic(m);
+      parent.add(m);
+      return m;
+    };
+
+    // Per-map shared artifact materials (auto-disposed on next loadMap)
+    const foamRingMat = trackMat(
+      new THREE.MeshBasicMaterial({
+        color: mapId === "atlantis" ? 0xe4ffff : 0xd6f4fc,
+        transparent: true,
+        opacity: 0.48,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+    );
+    const rustHullMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x5c3628,
+        roughness: 0.8,
+        metalness: 0.52,
+        envMapIntensity: 0.75,
+      }),
+    );
+    const darkHullMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x2c343c,
+        roughness: 0.7,
+        metalness: 0.62,
+        envMapIntensity: 0.85,
+      }),
+    );
+    const rustedDeckMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x4b4038,
+        roughness: 0.85,
+        metalness: 0.38,
+      }),
+    );
+    const whitePaintMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xe8edf0,
+        roughness: 0.56,
+        metalness: 0.12,
+      }),
+    );
+    const redPaintMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xc82c24,
+        roughness: 0.52,
+        metalness: 0.18,
+      }),
+    );
+    const pierStoneMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x626b72,
+        roughness: 0.86,
+        metalness: 0.1,
+      }),
+    );
+    const lanternGlowMat = trackMat(new THREE.MeshBasicMaterial({ color: new THREE.Color(0xffeaa0).multiplyScalar(1.55) }));
+    const beamConeMat = trackMat(
+      new THREE.MeshBasicMaterial({
+        color: 0xfff2b8,
+        transparent: true,
+        opacity: 0.16,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+      }),
+    );
+    const marbleMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xe2dac4,
+        roughness: 0.36,
+        metalness: 0.18,
+        envMapIntensity: 0.95,
+      }),
+    );
+    const coralStoneMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x3b8694,
+        roughness: 0.48,
+        metalness: 0.16,
+        envMapIntensity: 0.9,
+      }),
+    );
+    const goldMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xeec452,
+        roughness: 0.24,
+        metalness: 0.84,
+        envMapIntensity: 1.35,
+      }),
+    );
+    const cyanGlowMat = trackMat(new THREE.MeshBasicMaterial({ color: new THREE.Color(0x2cf2ff).multiplyScalar(1.45) }));
+    const hazardYellowMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xe6ae22,
+        roughness: 0.42,
+        metalness: 0.48,
+        envMapIntensity: 1.0,
+      }),
+    );
+    const steelMat = getChassisMat("#3c4854", 0.42, 0.68);
+    const obsidianMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x1e1a1c,
+        roughness: 0.58,
+        metalness: 0.28,
+        flatShading: true,
+      }),
+    );
+    const lavaGlowMat = trackMat(new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff5e12).multiplyScalar(1.65) }));
+    const titanMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x161e2c,
+        roughness: 0.22,
+        metalness: 0.88,
+        envMapIntensity: 1.4,
+      }),
+    );
+    const cliffMats = getCliffRockMaterials(mapId);
+
+    for (let idx = 0; idx < artifacts.length; idx++) {
+      const art = artifacts[idx];
+      const sc = art.scale ?? 1;
+      const rot = art.rot ?? 0;
+      const phase = idx * 1.37 + art.x * 0.23 + art.y * 0.17;
+      const root = new THREE.Group();
+      root.position.set(art.x, 0, art.y);
+      root.rotation.y = rot;
+      root.scale.setScalar(sc);
+
+      if (art.kind === "shipwreck") {
+        // Half-sunk colossal rusted armored dreadnought hull tilted dramatically at ~22 deg out of the waves
+        const hullTilt = new THREE.Group();
+        hullTilt.position.set(0, 0.28, 0);
+        hullTilt.rotation.set(0.16, 0, 0.38); // ~22 deg list + bow pitched skyward
+
+        // Armored main hull & dark lower belt
+        addStatic(hullTilt, new THREE.BoxGeometry(1.55, 0.72, 3.6), rustHullMat, 0, 0.1, 0);
+        addStatic(hullTilt, new THREE.BoxGeometry(1.62, 0.24, 3.68), darkHullMat, 0, -0.18, 0);
+        addStatic(hullTilt, new THREE.BoxGeometry(1.36, 0.1, 3.35), rustedDeckMat, 0, 0.48, 0.05);
+
+        // Tapered armored dreadnought prow jutting dramatically from the waves
+        const prowGeo = new THREE.ConeGeometry(0.96, 1.85, 4);
+        prowGeo.rotateY(Math.PI / 4);
+        prowGeo.rotateX(Math.PI / 2);
+        prowGeo.scale(0.86, 0.62, 1);
+        addStatic(hullTilt, prowGeo, rustHullMat, 0, 0.14, 2.55);
+
+        // Broken superstructure conning tower & bent mast
+        addStatic(hullTilt, new THREE.BoxGeometry(0.95, 0.92, 1.15), darkHullMat, 0.04, 0.92, -0.25, 0, 0, -0.06);
+        addStatic(hullTilt, new THREE.BoxGeometry(0.72, 0.46, 0.75), rustHullMat, 0.06, 1.52, -0.22, 0.04, 0, -0.1);
+        addStatic(hullTilt, new THREE.CylinderGeometry(0.035, 0.055, 1.3, 6), darkHullMat, 0.1, 2.1, -0.2, 0.22, 0, -0.24);
+        addStatic(hullTilt, new THREE.BoxGeometry(0.65, 0.04, 0.05), darkHullMat, 0.2, 2.35, -0.12, 0, 0.2, -0.22);
+
+        // Tilted heavy naval gun turret with twin long barrels
+        addStatic(hullTilt, new THREE.CylinderGeometry(0.38, 0.46, 0.34, 6), darkHullMat, 0, 0.66, 1.05, 0, 0.42, 0);
+        addStatic(hullTilt, new THREE.CylinderGeometry(0.055, 0.065, 1.35, 6), rustHullMat, 0.12, 0.84, 1.58, 1.24, 0.42, 0);
+        addStatic(hullTilt, new THREE.CylinderGeometry(0.055, 0.065, 1.35, 6), rustHullMat, -0.06, 0.84, 1.65, 1.24, 0.42, 0);
+
+        // Angled rusted smokestack funnel
+        addStatic(hullTilt, new THREE.CylinderGeometry(0.24, 0.29, 1.05, 8), rustHullMat, -0.04, 1.12, -1.12, -0.16, 0, -0.08);
+        addStatic(hullTilt, new THREE.CylinderGeometry(0.26, 0.26, 0.16, 8), darkHullMat, -0.06, 1.64, -1.2, -0.16, 0, -0.08);
+
+        freezeStatic(hullTilt);
+        root.add(hullTilt);
+
+        // Waterline white splash foam ring surrounding the sunken dreadnought
+        const foamRing = new THREE.Mesh(new THREE.RingGeometry(1.35, 2.15, 24), foamRingMat);
+        foamRing.rotation.x = -Math.PI / 2;
+        foamRing.scale.set(0.76, 1.55, 1);
+        foamRing.position.y = 0.045;
+        foamRing.renderOrder = 1;
+        root.add(foamRing);
+        this.artifactAnims.push((t) => {
+          const pulse = 1 + Math.sin(t * 2.1 + phase) * 0.045;
+          foamRing.scale.set(0.76 * pulse, 1.55 * pulse, 1);
+        });
+      } else if (art.kind === "lighthouse") {
+        // Octagonal rocky/concrete pier base
+        addStatic(root, new THREE.CylinderGeometry(1.05, 1.28, 0.56, 8), pierStoneMat, 0, 0.28, 0);
+        addStatic(root, new THREE.CylinderGeometry(0.9, 1.04, 0.18, 8), darkHullMat, 0, 0.62, 0);
+
+        // Striped tapered red & white coastal lighthouse tower
+        addStatic(root, new THREE.CylinderGeometry(0.54, 0.66, 0.72, 12), whitePaintMat, 0, 1.06, 0);
+        addStatic(root, new THREE.CylinderGeometry(0.45, 0.54, 0.72, 12), redPaintMat, 0, 1.78, 0);
+        addStatic(root, new THREE.CylinderGeometry(0.37, 0.45, 0.72, 12), whitePaintMat, 0, 2.5, 0);
+        addStatic(root, new THREE.CylinderGeometry(0.31, 0.37, 0.62, 12), redPaintMat, 0, 3.17, 0);
+
+        // Iron gallery balcony & glowing lantern room + conical cupola
+        addStatic(root, new THREE.CylinderGeometry(0.52, 0.44, 0.14, 12), darkHullMat, 0, 3.52, 0);
+        addStatic(root, new THREE.CylinderGeometry(0.27, 0.27, 0.46, 10), lanternGlowMat, 0, 3.82, 0, 0, 0, 0, false, false);
+        addStatic(root, new THREE.ConeGeometry(0.36, 0.42, 10), redPaintMat, 0, 4.24, 0);
+        addStatic(root, new THREE.CylinderGeometry(0.02, 0.03, 0.38, 6), darkHullMat, 0, 4.6, 0);
+
+        // Slowly rotating dual volumetric translucent light beam cones!
+        const beamPivot = new THREE.Group();
+        beamPivot.position.set(0, 3.82, 0);
+        const beamGeo1 = new THREE.ConeGeometry(1.35, 9.5, 14, 1, true);
+        beamGeo1.rotateX(Math.PI / 2);
+        beamGeo1.translate(0, 0, 4.85);
+        const b1 = new THREE.Mesh(beamGeo1, beamConeMat);
+        b1.rotation.x = 0.24;
+        b1.renderOrder = 3;
+        freezeStatic(b1);
+        const beamGeo2 = new THREE.ConeGeometry(1.35, 9.5, 14, 1, true);
+        beamGeo2.rotateX(-Math.PI / 2);
+        beamGeo2.translate(0, 0, -4.85);
+        const b2 = new THREE.Mesh(beamGeo2, beamConeMat);
+        b2.rotation.x = -0.24;
+        b2.renderOrder = 3;
+        freezeStatic(b2);
+        beamPivot.add(b1, b2);
+        root.add(beamPivot);
+
+        this.artifactAnims.push((t) => {
+          beamPivot.rotation.y = t * 0.72 + phase;
+        });
+      } else if (art.kind === "buoy") {
+        // Floating maritime navigation buoy with lattice tower & blinking beacon
+        const floater = new THREE.Group();
+        floater.position.set(0, 0.08, 0);
+
+        addStatic(floater, new THREE.CylinderGeometry(0.46, 0.52, 0.28, 10), redPaintMat, 0, 0.08, 0);
+        addStatic(floater, new THREE.CylinderGeometry(0.42, 0.46, 0.12, 10), whitePaintMat, 0, 0.26, 0);
+
+        // 4-leg steel lattice frame
+        for (let si = 0; si < 4; si++) {
+          const ang = (si / 4) * Math.PI * 2 + Math.PI / 4;
+          const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.032, 0.88, 5), redPaintMat);
+          strut.position.set(Math.cos(ang) * 0.2, 0.68, Math.sin(ang) * 0.2);
+          strut.rotation.set(Math.sin(ang) * 0.24, 0, -Math.cos(ang) * 0.24);
+          strut.castShadow = true;
+          freezeStatic(strut);
+          floater.add(strut);
+        }
+        addStatic(floater, new THREE.CylinderGeometry(0.18, 0.2, 0.08, 8), whitePaintMat, 0, 1.1, 0);
+
+        const beaconMat = trackMat(new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff5518).multiplyScalar(1.8) }));
+        const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 8), beaconMat);
+        beacon.position.set(0, 1.24, 0);
+        floater.add(beacon);
+        root.add(floater);
+
+        // Subtle waterline ripple ring
+        addStatic(root, new THREE.RingGeometry(0.5, 0.78, 16), foamRingMat, 0, 0.04, 0, -Math.PI / 2, 0, 0, false, false);
+
+        this.artifactAnims.push((t) => {
+          floater.position.y = 0.07 + Math.sin(t * 2.2 + phase) * 0.055;
+          floater.rotation.z = Math.sin(t * 1.7 + phase) * 0.1;
+          floater.rotation.x = Math.cos(t * 1.45 + phase) * 0.08;
+          const blink = Math.sin(t * 3.4 + phase) > 0.18;
+          beacon.visible = blink;
+        });
+      } else if (art.kind === "obelisk") {
+        // Tall sculpted glowing Atlantean crystal-marble obelisk with floating golden halo ring & cyan runes
+        addStatic(root, new THREE.BoxGeometry(1.55, 0.32, 1.55), coralStoneMat, 0, 0.16, 0);
+        addStatic(root, new THREE.BoxGeometry(1.18, 0.28, 1.18), marbleMat, 0, 0.44, 0);
+
+        const shaftGeo = new THREE.CylinderGeometry(0.32, 0.56, 3.2, 4);
+        shaftGeo.rotateY(Math.PI / 4);
+        addStatic(root, shaftGeo, marbleMat, 0, 2.15, 0);
+
+        // Gleaming golden pyramidion tip
+        const tipGeo = new THREE.ConeGeometry(0.33, 0.68, 4);
+        tipGeo.rotateY(Math.PI / 4);
+        addStatic(root, tipGeo, goldMat, 0, 4.08, 0);
+
+        // Glowing cyan Atlantean runes inlaid along all 4 obelisk faces
+        for (let fi = 0; fi < 4; fi++) {
+          const ang = (fi / 4) * Math.PI * 2;
+          const rx = Math.sin(ang) * 0.34;
+          const rz = Math.cos(ang) * 0.34;
+          addStatic(root, new THREE.BoxGeometry(0.08, 2.15, 0.05), cyanGlowMat, rx, 2.08, rz, 0, ang, 0, false, false);
+        }
+
+        // Animated floating golden halo ring orbiting upper spire
+        const halo = new THREE.Mesh(new THREE.TorusGeometry(0.68, 0.055, 8, 20), goldMat);
+        halo.position.set(0, 3.45, 0);
+        halo.rotation.x = Math.PI / 2 + 0.24;
+        halo.castShadow = true;
+        root.add(halo);
+
+        this.artifactAnims.push((t) => {
+          halo.position.y = 3.45 + Math.sin(t * 1.9 + phase) * 0.16;
+          halo.rotation.z = t * 0.9 + phase;
+          halo.rotation.x = Math.PI / 2 + Math.sin(t * 1.2 + phase) * 0.22;
+        });
+      } else if (art.kind === "seagate") {
+        // Monumental half-submerged ancient Atlantean stone & glowing-crystal archway rising from the ocean
+        for (const side of [-1, 1]) {
+          const px = side * 2.1;
+          addStatic(root, new THREE.BoxGeometry(1.5, 0.72, 1.5), coralStoneMat, px, 0.32, 0);
+          addStatic(root, new THREE.BoxGeometry(1.12, 3.6, 1.12), marbleMat, px, 2.35, 0);
+          addStatic(root, new THREE.BoxGeometry(1.32, 0.34, 1.32), goldMat, px, 4.2, 0);
+          // Vertical glowing cyan crystal inlays on inner & outer arch pillars
+          addStatic(root, new THREE.BoxGeometry(0.14, 2.8, 0.26), cyanGlowMat, px - side * 0.54, 2.35, 0, 0, 0, 0, false, false);
+          // Waterline foam collar around each submerged pylon base
+          addStatic(root, new THREE.RingGeometry(0.95, 1.48, 18), foamRingMat, px, 0.042, 0, -Math.PI / 2, 0, 0, false, false);
+        }
+
+        // Monumental carved marble & gold archway lintel + stepped crown
+        addStatic(root, new THREE.BoxGeometry(5.6, 0.62, 1.24), marbleMat, 0, 4.55, 0);
+        addStatic(root, new THREE.BoxGeometry(4.4, 0.44, 1.05), coralStoneMat, 0, 5.02, 0);
+        addStatic(root, new THREE.BoxGeometry(5.8, 0.16, 1.36), goldMat, 0, 4.28, 0);
+        addStatic(root, new THREE.BoxGeometry(3.2, 0.14, 0.28), cyanGlowMat, 0, 4.56, 0.56, 0, 0, 0, false, false);
+        addStatic(root, new THREE.BoxGeometry(3.2, 0.14, 0.28), cyanGlowMat, 0, 4.56, -0.56, 0, 0, 0, false, false);
+
+        // Hovering glowing Atlantean crystal keystone under the arch apex
+        const keystone = new THREE.Mesh(new THREE.OctahedronGeometry(0.48, 0), cyanGlowMat);
+        keystone.position.set(0, 3.25, 0);
+        root.add(keystone);
+
+        this.artifactAnims.push((t) => {
+          keystone.position.y = 3.25 + Math.sin(t * 2.0 + phase) * 0.18;
+          keystone.rotation.y = t * 1.1 + phase;
+        });
+      } else if (art.kind === "oilrig_tower") {
+        // Towering yellow/steel offshore drilling derrick with helipad ring, exhaust flare flame & massive steel support legs
+        const legOffsets: [number, number][] = [
+          [-0.95, -0.95],
+          [0.95, -0.95],
+          [-0.95, 0.95],
+          [0.95, 0.95],
+        ];
+        for (const [lx, lz] of legOffsets) {
+          addStatic(root, new THREE.CylinderGeometry(0.2, 0.26, 2.0, 8), steelMat, lx, 0.45, lz);
+          addStatic(root, new THREE.RingGeometry(0.28, 0.52, 12), foamRingMat, lx, 0.042, lz, -Math.PI / 2, 0, 0, false, false);
+        }
+        // Heavy steel platform deck + yellow hazard safety rim + control cabin
+        addStatic(root, new THREE.BoxGeometry(2.55, 0.26, 2.55), steelMat, 0, 1.4, 0);
+        addStatic(root, new THREE.BoxGeometry(2.64, 0.1, 2.64), hazardYellowMat, 0, 1.54, 0);
+        addStatic(root, new THREE.BoxGeometry(0.85, 0.65, 1.15), whitePaintMat, -0.68, 1.88, -0.42);
+        addStatic(root, new THREE.BoxGeometry(0.88, 0.16, 1.18), steelMat, -0.68, 2.24, -0.42);
+
+        // Towering yellow steel lattice drilling derrick pyramid
+        for (const [lx, lz] of legOffsets) {
+          const sx = lx * 0.64;
+          const sz = lz * 0.64;
+          addStatic(
+            root,
+            new THREE.CylinderGeometry(0.06, 0.095, 3.65, 6),
+            hazardYellowMat,
+            sx * 0.68,
+            3.3,
+            sz * 0.68,
+            -sz * 0.2,
+            0,
+            sx * 0.2,
+          );
+        }
+        // Derrick crossbeams & crown pulley block
+        addStatic(root, new THREE.BoxGeometry(0.95, 0.09, 0.95), hazardYellowMat, 0, 2.55, 0);
+        addStatic(root, new THREE.BoxGeometry(0.68, 0.09, 0.68), hazardYellowMat, 0, 3.6, 0);
+        addStatic(root, new THREE.BoxGeometry(0.46, 0.24, 0.46), steelMat, 0, 5.05, 0);
+        addStatic(root, new THREE.CylinderGeometry(0.06, 0.08, 3.5, 6), steelMat, 0, 3.25, 0);
+
+        // Cantilevered offshore circular helipad deck with crisp yellow H-pad ring
+        addStatic(root, new THREE.CylinderGeometry(0.82, 0.78, 0.12, 16), steelMat, 1.55, 1.65, 0.55);
+        addStatic(root, new THREE.RingGeometry(0.54, 0.66, 20), hazardYellowMat, 1.55, 1.72, 0.55, -Math.PI / 2, 0, 0, false, false);
+
+        // Angled exhaust flare boom arm + animated flickering glowing orange-gold flare flame!
+        addStatic(root, new THREE.CylinderGeometry(0.05, 0.08, 2.4, 6), steelMat, -1.45, 2.75, 1.05, 0.55, 0, 0.68);
+        const flareMat = trackMat(new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff8418).multiplyScalar(1.85) }));
+        const flare = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.78, 7), flareMat);
+        flare.position.set(-2.15, 3.65, 1.6);
+        root.add(flare);
+
+        this.artifactAnims.push((t) => {
+          const flick = 0.82 + Math.sin(t * 14.5 + phase) * 0.16 + Math.cos(t * 23.2 + phase) * 0.12;
+          flare.scale.set(0.9 + flick * 0.18, flick * 1.15, 0.9 + flick * 0.18);
+          flare.rotation.y = t * 5.0 + phase;
+        });
+      } else if (art.kind === "lava_vent") {
+        // Jagged obsidian volcanic spire with glowing molten lava pool & rising embers at its mouth
+        addStatic(root, new THREE.CylinderGeometry(0.76, 1.48, 1.55, 7), obsidianMat, 0, 0.75, 0);
+        // Surrounding jagged volcanic caldera rim fangs
+        for (let fi = 0; fi < 5; fi++) {
+          const ang = (fi / 5) * Math.PI * 2 + phase;
+          const h = 0.55 + (fi % 2) * 0.35;
+          addStatic(
+            root,
+            new THREE.ConeGeometry(0.32, h, 5),
+            obsidianMat,
+            Math.cos(ang) * 0.72,
+            1.5 + h * 0.32,
+            Math.sin(ang) * 0.72,
+            Math.sin(ang) * 0.18,
+            ang,
+            -Math.cos(ang) * 0.18,
+          );
+        }
+        // Incandescent molten lava crater pool + magma rivulets
+        const pool = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.58, 0.16, 10), lavaGlowMat);
+        pool.position.set(0, 1.48, 0);
+        root.add(pool);
+        addStatic(root, new THREE.BoxGeometry(0.18, 1.1, 0.14), lavaGlowMat, 0.68, 0.85, 0.38, 0.25, 0.5, -0.35, false, false);
+        addStatic(root, new THREE.BoxGeometry(0.16, 0.95, 0.12), lavaGlowMat, -0.58, 0.78, -0.45, -0.25, -0.4, 0.36, false, false);
+
+        // Animated rising incandescent embers
+        const embers: { mesh: THREE.Mesh; offset: number; ox: number; oz: number }[] = [];
+        for (let ei = 0; ei < 4; ei++) {
+          const em = new THREE.Mesh(new THREE.OctahedronGeometry(0.085, 0), lavaGlowMat);
+          root.add(em);
+          embers.push({
+            mesh: em,
+            offset: ei * 0.25,
+            ox: Math.cos(ei * 1.9 + phase) * 0.36,
+            oz: Math.sin(ei * 1.9 + phase) * 0.36,
+          });
+        }
+        this.artifactAnims.push((t) => {
+          const pulse = 1 + Math.sin(t * 3.2 + phase) * 0.08;
+          pool.scale.set(pulse, 1, pulse);
+          for (const e of embers) {
+            const u = ((t * 0.48 + e.offset + phase * 0.1) % 1 + 1) % 1;
+            e.mesh.position.set(e.ox * (1 + u * 0.7), 1.56 + u * 1.85, e.oz * (1 + u * 0.7));
+            const s = (1 - u) * 1.15;
+            e.mesh.scale.setScalar(Math.max(0.05, s));
+            e.mesh.rotation.y = t * 3 + e.offset * 6;
+          }
+        });
+      } else if (art.kind === "monolith") {
+        // Sleek floating dark-titanium sci-fi crystal monolith hovering gently over a glowing cyan energy pedestal
+        addStatic(root, new THREE.CylinderGeometry(0.95, 1.12, 0.28, 8), titanMat, 0, 0.14, 0);
+        addStatic(root, new THREE.RingGeometry(0.62, 0.78, 16), cyanGlowMat, 0, 0.3, 0, -Math.PI / 2, 0, 0, false, false);
+        addStatic(root, new THREE.RingGeometry(0.28, 0.4, 16), cyanGlowMat, 0, 0.31, 0, -Math.PI / 2, 0, 0, false, false);
+
+        // Hovering dark-titanium faceted monolith + glowing cyan core seam + tilted holographic ring
+        const hover = new THREE.Group();
+        hover.position.set(0, 2.35, 0);
+        const bodyGeo = new THREE.OctahedronGeometry(0.74, 0);
+        bodyGeo.scale(0.68, 2.25, 0.68);
+        addStatic(hover, bodyGeo, titanMat, 0, 0, 0);
+        addStatic(hover, new THREE.BoxGeometry(0.1, 2.4, 0.72), cyanGlowMat, 0, 0, 0, 0, Math.PI / 4, 0, false, false);
+        addStatic(hover, new THREE.BoxGeometry(0.72, 2.4, 0.1), cyanGlowMat, 0, 0, 0, 0, Math.PI / 4, 0, false, false);
+        const holoRing = new THREE.Mesh(new THREE.TorusGeometry(0.96, 0.032, 8, 24), cyanGlowMat);
+        holoRing.rotation.x = Math.PI / 2 + 0.35;
+        freezeStatic(holoRing);
+        hover.add(holoRing);
+        root.add(hover);
+
+        this.artifactAnims.push((t) => {
+          hover.position.y = 2.35 + Math.sin(t * 1.65 + phase) * 0.24;
+          hover.rotation.y = t * 0.55 + phase;
+        });
+      } else if (art.kind === "seastack") {
+        // Dramatic layered coastal sea-stack rock formation jutting from the waves with white splash foam collar
+        addStatic(root, new THREE.CylinderGeometry(0.62, 1.25, 2.6, 6), cliffMats.wall, 0, 1.25, 0, 0.04, 0.2, -0.05);
+        addStatic(root, new THREE.CylinderGeometry(0.45, 0.72, 1.35, 6), cliffMats.cap, 0.08, 2.85, -0.05, -0.05, 0.7, 0.04);
+        // Flanking leaning sea-needles
+        addStatic(root, new THREE.ConeGeometry(0.52, 2.0, 5), cliffMats.wall, 0.92, 0.92, 0.42, 0.14, 0.4, -0.22);
+        addStatic(root, new THREE.ConeGeometry(0.44, 1.6, 5), cliffMats.boulder, -0.82, 0.74, -0.48, -0.18, 1.1, 0.2);
+
+        const splashRing = new THREE.Mesh(new THREE.RingGeometry(1.12, 1.72, 20), foamRingMat);
+        splashRing.rotation.x = -Math.PI / 2;
+        splashRing.position.y = 0.042;
+        splashRing.renderOrder = 1;
+        root.add(splashRing);
+        this.artifactAnims.push((t) => {
+          const s = 1 + Math.sin(t * 2.25 + phase) * 0.06;
+          splashRing.scale.set(s, s, 1);
+        });
+      }
+
+      freezeStatic(root);
+      group.add(root);
+    }
   }
 
   isCliff(x: number, y: number): boolean {
@@ -1621,6 +2377,7 @@ export class GameScene {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    this.composer.setPixelRatio(this.renderer.getPixelRatio());
     this.composer.setSize(w, h);
   }
 
@@ -1636,10 +2393,13 @@ export class GameScene {
   }
 
   render() {
+    if (this.contextLost) return;
+
     const dt = Math.min(0.05, this.dtMs / 1000);
+    this.waterTime += dt;
+    const t = this.waterTime;
+
     if (this.waterMat) {
-      this.waterTime += dt;
-      const t = this.waterTime;
       const waveMap = this.waterMat.normalMap ?? this.waterMat.bumpMap;
       if (waveMap) {
         waveMap.offset.set(t * 0.036 + Math.sin(t * 0.48) * 0.018, t * 0.025 + Math.cos(t * 0.37) * 0.016);
@@ -1649,6 +2409,11 @@ export class GameScene {
         this.foamMat.opacity = 0.36 + 0.16 * Math.sin(t * 2.3);
       }
     }
+
+    for (let i = 0; i < this.artifactAnims.length; i++) {
+      this.artifactAnims[i](t, dt);
+    }
+
     if (this.shakeAmp > 0.004) {
       this.shakePhase += dt * 48;
       this.shakeAmp *= Math.exp(-dt * 6.2);
@@ -1663,6 +2428,32 @@ export class GameScene {
       this.shakeOffset.set(0, 0, 0);
       this.updateCamera();
     }
-    this.composer.render();
+
+    // Dynamic resolution governor & accurate full-frame GPU telemetry (accumulated across all passes)
+    this.renderer.info.autoReset = false;
+    const { scaleChanged, targetDpr } = this.graphics.sampleFrame(this.dtMs, this.renderer);
+    this.renderer.info.reset();
+    if (scaleChanged) {
+      this.renderer.setPixelRatio(targetDpr);
+      this.resize();
+    }
+
+    // Shadow update stride: full-rate on High/Ultra, every 2nd frame on Low/Medium (30-40% laptop GPU savings)
+    const stride = this.graphics.getShadowUpdateStride();
+    if (this.frameCount % stride === 0) {
+      this.renderer.shadowMap.needsUpdate = true;
+    }
+    this.frameCount++;
+
+    // Zero-Composer Ultra-Fast Laptop Path: bypass post-processing render targets completely when Low & effects OFF
+    const s = this.graphics.settings;
+    if (s.preset === "low" && !s.raytracing && !s.contactShadows && !s.bloom) {
+      this.renderer.render(this.scene, this.camera);
+    } else {
+      if (this.composer.readBuffer.depthTexture) {
+        this.raytracePass.setDepthTexture(this.composer.readBuffer.depthTexture);
+      }
+      this.composer.render();
+    }
   }
 }
