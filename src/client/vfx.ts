@@ -534,13 +534,20 @@ export class VfxSystem {
   }
 
   private spawnFlash(pos: THREE.Vector3, color: THREE.Color, size: number, life: number) {
-    const mat = new THREE.SpriteMaterial({ color, transparent: true, opacity: 1, depthWrite: false });
+    const mat = new THREE.SpriteMaterial({
+      map: getSoftPuffTex(),
+      color,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
     const sp = new THREE.Sprite(mat);
     sp.position.copy(pos);
-    sp.scale.setScalar(size);
+    sp.scale.setScalar(size * 1.35);
     this.add(sp, life, (o, t) => {
-      o.scale.setScalar(size * (1 - t * 0.55));
-      mat.opacity = 1 - t;
+      o.scale.setScalar(size * 1.35 * (1 - t * 0.5));
+      mat.opacity = 0.95 * (1 - t);
     });
   }
 
