@@ -213,6 +213,7 @@ export class World {
   private ore = new Int16Array(MAP_W * MAP_H); // remaining per tile
   private nextId = 1;
   private nextCrateId = 1;
+  private astarBudget = 12; // per-tick A* path budget to prevent Durable Object CPU exhaustion
   private lastAlert = new Map<number, number>(); // slot -> tick of last under-attack alert
   private names: Record<number, string>;
 
@@ -1000,6 +1001,7 @@ export class World {
 
   step() {
     this.tick++;
+    this.astarBudget = 12;
     this.tickProduction();
     for (const e of [...this.ents.values()]) {
       if (this.ents.has(e.id)) this.tickEnt(e);
@@ -1638,11 +1640,15 @@ export class World {
         e.order = { kind: "harvest", x: n % MAP_W, y: (n / MAP_W) | 0 };
       }
       const g = goal ?? { x: e.oreIdx % MAP_W, y: (e.oreIdx / MAP_W) | 0 };
-      e.path = findPath(e.x | 0, e.y | 0, g.x, g.y, this.passable);
+      if (this.astarBudget <= 0) return;
+      this.astarBudget--;
+      e.path = findPath(e.x | 0, e.y | 0, g.x, g.y, this.passable, 2400);
       e.order = { kind: "harvest", x: g.x, y: g.y };
       if (!e.path) {
+        // Back off for 5s so an unreachable island ore tile never spins A* every tick
         e.hstate = null;
         e.order = null;
+        e.holdUntil = this.tick + 50;
       }
       return;
     }
@@ -1654,7 +1660,14 @@ export class World {
         e.order = null;
         return;
       }
+      if (this.astarBudget <= 0) return;
       this.pathNear(e, ref, Math.max(BUILDINGS.refinery.w, BUILDINGS.refinery.h) / 2 + 0.5);
+      if (!e.path?.length) {
+        e.hstate = null;
+        e.order = null;
+        e.holdUntil = this.tick + 50;
+        return;
+      }
       e.order = { kind: "harvest", x: ref.x, y: ref.y };
       return;
     }
@@ -1838,7 +1851,12 @@ export class World {
       e.path = [];
       return;
     }
-    e.path = findPath(e.x | 0, e.y | 0, spot.x, spot.y, pass);
+    if (this.astarBudget <= 0) {
+      e.repath = 1;
+      return;
+    }
+    this.astarBudget--;
+    e.path = findPath(e.x | 0, e.y | 0, spot.x, spot.y, pass, 2400);
     if (!e.path?.length && r > 0) e.path = [];
   }
 
@@ -1884,8 +1902,10 @@ export class World {
         e.path = [];
         return true;
       }
+      if (this.astarBudget <= 0) return false;
+      this.astarBudget--;
       const goal = nearestPassable(Math.floor(o.x), Math.floor(o.y), pass, searchR);
-      e.path = goal ? (findPath(e.x | 0, e.y | 0, goal.x, goal.y, pass) ?? []) : [];
+      e.path = goal ? (findPath(e.x | 0, e.y | 0, goal.x, goal.y, pass, 2400) ?? []) : [];
     }
     if (!e.path.length) return true;
     const wp = e.path[0];
