@@ -298,6 +298,7 @@ export class Hud {
   onUpgrade?: (id: number) => void;
   onEnterFpv?: (id: number) => void;
   onExitFpv?: () => void;
+  onFilterSelection?: (kind: string) => void;
   onGroupClick?: (n: number, dbl: boolean) => void;
   onToggleWasd?: () => void;
   onToggleMute?: () => void;
@@ -324,6 +325,8 @@ export class Hud {
   private spectating = false;
   private fpvMode = false;
   private fpvLastKind = "";
+  private readyAwaiting: BuildingKind | null = null;
+  private resignConfirmTimer: ReturnType<typeof setTimeout> | null = null;
   private gfx: GraphicsBridge | null = null;
   private gfxLastMs = 0;
 
@@ -360,13 +363,51 @@ export class Hud {
     (document.getElementById("cfg-fog") as HTMLInputElement | null)?.addEventListener("change", (e) => {
       this.onSetConfig({ fog: (e.target as HTMLInputElement).checked });
     });
-    el("resign-btn")?.addEventListener("click", () => this.onResign());
-    const copy = () => {
+    const resignBtn = document.getElementById("resign-btn");
+    resignBtn?.addEventListener("click", () => {
+      if (!resignBtn.classList.contains("confirm")) {
+        resignBtn.classList.add("confirm");
+        resignBtn.textContent = "CONFIRM?";
+        if (this.resignConfirmTimer) clearTimeout(this.resignConfirmTimer);
+        this.resignConfirmTimer = setTimeout(() => {
+          resignBtn.classList.remove("confirm");
+          resignBtn.textContent = "RESIGN";
+          this.resignConfirmTimer = null;
+        }, 3500);
+        return;
+      }
+      if (this.resignConfirmTimer) {
+        clearTimeout(this.resignConfirmTimer);
+        this.resignConfirmTimer = null;
+      }
+      resignBtn.classList.remove("confirm");
+      resignBtn.textContent = "RESIGN";
+      this.onResign();
+    });
+    const copy = (e: Event) => {
       navigator.clipboard?.writeText(location.href).catch(() => {});
       this.toast("invite link copied", true);
+      const btn = e.currentTarget as HTMLElement | null;
+      if (btn && !btn.dataset.origLabel) {
+        btn.dataset.origLabel = btn.textContent ?? "COPY LINK";
+        btn.textContent = "COPIED ✓";
+        setTimeout(() => {
+          if (btn.dataset.origLabel) {
+            btn.textContent = btn.dataset.origLabel;
+            delete btn.dataset.origLabel;
+          }
+        }, 1800);
+      }
     };
     el("copy-link").addEventListener("click", copy);
     el("copy-link2").addEventListener("click", copy);
+    document.getElementById("ready-pill")?.addEventListener("click", () => {
+      if (this.readyAwaiting) this.onPlaceMode(this.readyAwaiting);
+    });
+    document.getElementById("ready-pill")?.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      if (this.readyAwaiting) this.onBuildCancel();
+    });
     el("help-btn")?.addEventListener("click", () => el("help").classList.toggle("hidden"));
     el("help-close")?.addEventListener("click", () => el("help").classList.add("hidden"));
     document.getElementById("gfx-btn")?.addEventListener("click", () => this.toggleGraphicsPanel());
@@ -1857,9 +1898,9 @@ export class Hud {
       }
       if (state.awaiting === kind) {
         b.classList.add("ready");
-        bt.textContent = "RDY";
+        bt.textContent = "READY";
         b.title = this.buildTooltip(kind);
-        applyReason(b, "", "", "", "ready", "Finished — click to place on the map (right-click to cancel).");
+        applyReason(b, "Click to place", "Finished — click (or press B) to place · right-click here to cancel & refund.", "", "ready", "Finished — click (or press B) to place · right-click to cancel & refund.");
         continue;
       }
       if (state.bq?.kind === kind) {
@@ -1909,6 +1950,18 @@ export class Hud {
         continue;
       }
       applyReason(b, "", "", "", "avail", "Ready to build — click to start.");
+    }
+
+    // Sticky ready-to-place banner at top of sidebar (visible even if scrolled down to ARMY/NAVY)
+    this.readyAwaiting = state?.awaiting ?? null;
+    const readyPill = document.getElementById("ready-pill");
+    if (readyPill) {
+      if (this.readyAwaiting && !this.spectating && !this.fpvMode) {
+        readyPill.classList.remove("hidden");
+        readyPill.textContent = `▶ READY: ${BUILDING_NAMES[this.readyAwaiting].toUpperCase()} [B]`;
+      } else {
+        readyPill.classList.add("hidden");
+      }
     }
 
     // Multi-factory production speed badge on ARMY header (all 4 production categories)
@@ -2118,11 +2171,13 @@ export class Hud {
     // (prevents 5Hz innerHTML destruction from eating clicks on the UPGRADE button)
     if (sig !== this.selSig) {
       this.selSig = sig;
+      const multiTypes = counts.size > 1;
       const parts = [...counts]
         .map(([k, n]) => {
           const ic = this.iconFor(k);
           const img = ic ? `<img class="si-icon" src="${ic}">` : "";
-          return `<span>${img}${n}× ${label(k as BuildingKind | UnitKind as never)}</span>`;
+          const cls = multiTypes ? ` class="si-filter" data-filter-kind="${k}" title="Click to select only ${label(k as BuildingKind | UnitKind as never)}"` : "";
+          return `<span${cls}>${img}${n}× ${label(k as BuildingKind | UnitKind as never)}</span>`;
         })
         .join("");
       const vetBadge =
@@ -2133,6 +2188,14 @@ export class Hud {
         ? `<span class="si-hold" title="Holding position — fires in range without chasing">[HOLD]</span>`
         : "";
       box.innerHTML = `<div class="si-row">${parts}${vetBadge}${holdBadge}</div><div class="si-hp"><i></i><span></span></div>`;
+      if (multiTypes) {
+        for (const chip of box.querySelectorAll<HTMLElement>(".si-filter[data-filter-kind]")) {
+          chip.addEventListener("click", () => {
+            const k = chip.dataset.filterKind;
+            if (k) this.onFilterSelection?.(k);
+          });
+        }
+      }
 
       if (singleId !== null && singleKind === "factory") {
         const b = document.createElement("button");

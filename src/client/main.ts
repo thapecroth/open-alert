@@ -12,6 +12,7 @@ import {
   MAP_W,
   MAP_H,
   BUILDINGS,
+  BUILDING_NAMES,
   PLAYER_COLORS,
   SPAWNS,
   BUILD_ORDER,
@@ -205,10 +206,20 @@ hud.onBuild = (kind) => {
   net.send({ t: "build", kind });
   audio.playUi("buildStart");
 };
-hud.onBuildCancel = () => net.send({ t: "buildCancel" });
+hud.onBuildCancel = () => {
+  if (input.placing) input.exitPlacing();
+  net.send({ t: "buildCancel" });
+  audio.playUi("click");
+  hud.toast("Construction cancelled & refunded", true);
+};
 hud.onPlaceMode = (kind) => {
+  if (input.placing === kind) {
+    input.exitPlacing();
+    return;
+  }
   input.placingCancelled = false;
   input.enterPlacing(kind);
+  audio.playUi("select");
 };
 hud.onTrain = (u) => {
   net.send({ t: "train", unit: u });
@@ -218,7 +229,30 @@ hud.onTrain = (u) => {
     audio.playUi("buildStart");
   }
 };
-hud.onTrainCancel = (u) => net.send({ t: "trainCancel", unit: u });
+hud.onTrainCancel = (u) => {
+  net.send({ t: "trainCancel", unit: u });
+  audio.playUi("click");
+};
+hud.onFilterSelection = (kind) => {
+  const next = new Set<number>();
+  for (const id of input.selection) {
+    const t = renderer.tracked.get(id);
+    if (t && t.last.o === mySlot && t.last.k === kind) next.add(id);
+  }
+  if (next.size) {
+    input.setSelection(next);
+    audio.playUi("select");
+  }
+};
+input.onPlaceReadyHotkey = () => {
+  const aw = latestState?.awaiting;
+  if (!aw) return;
+  if (input.placing === aw) input.exitPlacing();
+  else {
+    input.enterPlacing(aw);
+    audio.playUi("select");
+  }
+};
 hud.onBuildBlocked = () => audio.playUi("deny");
 hud.onUpgrade = (id) => {
   net.send({ t: "upgrade", id });
@@ -462,10 +496,13 @@ net.onMsg = (m: S2C) => {
         if (awaiting !== prevAwaiting) {
           input.placingCancelled = false;
           input.clearPlacePending();
-          if (awaiting) audio.playUi("buildDone");
+          if (awaiting) {
+            audio.playUi("buildDone");
+            hud.toast(`${BUILDING_NAMES[awaiting]} READY — click in sidebar or press B to place`, true);
+          }
         }
         prevAwaiting = awaiting;
-        if (awaiting && !input.placing && !input.placingCancelled && !fpv.active) input.enterPlacing(awaiting);
+        // Classic RA2 flow: NEVER auto-hijack cursor when a structure finishes; player clicks READY or presses B!
         if (!awaiting && input.placing) input.exitPlacing();
       }
       break;
