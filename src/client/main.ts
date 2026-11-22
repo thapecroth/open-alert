@@ -209,7 +209,7 @@ hud.onBuild = (kind) => {
 hud.onBuildCancel = () => {
   if (input.placing) input.exitPlacing();
   net.send({ t: "buildCancel" });
-  audio.playUi("click");
+  audio.playUi("select");
   hud.toast("Construction cancelled & refunded", true);
 };
 hud.onPlaceMode = (kind) => {
@@ -231,7 +231,7 @@ hud.onTrain = (u) => {
 };
 hud.onTrainCancel = (u) => {
   net.send({ t: "trainCancel", unit: u });
-  audio.playUi("click");
+  audio.playUi("select");
 };
 hud.onFilterSelection = (kind) => {
   const next = new Set<number>();

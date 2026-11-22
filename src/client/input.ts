@@ -345,7 +345,7 @@ export class Input {
     document.getElementById("verb-patrol")?.classList.toggle("armed", on);
   }
 
-  private setSelection(sel: Set<number>) {
+  setSelection(sel: Set<number>) {
     this.selection = sel;
     if (this.amoveNext) this.setAmove(false);
     if (this.patrolNext) this.setPatrol(false);
