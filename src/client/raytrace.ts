@@ -418,6 +418,12 @@ export class RaytracePass extends Pass {
     this.material.uniforms.uHasWater.value = hasWater ? 1.0 : 0.0;
   }
 
+  private appleSilicon = false;
+
+  setAppleSilicon(on: boolean): void {
+    this.appleSilicon = on;
+  }
+
   setQuality(preset: QualityPreset, ssr: boolean, contactShadows: boolean): void {
     const u = this.material.uniforms;
     u.uEnableSsr.value = ssr ? 1.0 : 0.0;
@@ -425,7 +431,7 @@ export class RaytracePass extends Pass {
 
     switch (preset) {
       case "low":
-        u.uSsrSteps.value = 14;
+        u.uSsrSteps.value = 12;
         u.uShadowSteps.value = 6;
         u.uAoStrength.value = ssr || contactShadows ? 0.24 : 0.0;
         break;
@@ -435,12 +441,12 @@ export class RaytracePass extends Pass {
         u.uAoStrength.value = 0.34;
         break;
       case "high":
-        u.uSsrSteps.value = 18;
+        u.uSsrSteps.value = this.appleSilicon ? 15 : 18;
         u.uShadowSteps.value = 6;
         u.uAoStrength.value = 0.40;
         break;
       case "ultra":
-        u.uSsrSteps.value = 24;
+        u.uSsrSteps.value = this.appleSilicon ? 20 : 24;
         u.uShadowSteps.value = 8;
         u.uAoStrength.value = 0.44;
         break;

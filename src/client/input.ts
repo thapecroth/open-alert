@@ -91,7 +91,11 @@ export class Input {
       (e) => {
         if (!this._enabled) return;
         e.preventDefault();
-        gs.zoom(e.deltaY * 0.02);
+        // Smooth macOS trackpad pinch-to-zoom (ctrlKey) & two-finger scroll normalization
+        const raw = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 120 : e.deltaY;
+        const clamped = Math.max(-180, Math.min(180, raw));
+        const mult = e.ctrlKey ? 0.085 : 0.018;
+        gs.zoom(clamped * mult);
       },
       { passive: false },
     );

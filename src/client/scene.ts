@@ -548,6 +548,7 @@ export class GameScene {
 
     this.renderer = new THREE.WebGLRenderer({
       canvas,
+      alpha: false, // Opaque canvas lets macOS CoreAnimation/Metal skip full-screen alpha compositing
       antialias: true,
       powerPreference: "high-performance",
       stencil: false,
@@ -610,12 +611,17 @@ export class GameScene {
     this.pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environmentIntensity = 0.78;
 
-    // Hardware DepthTexture EffectComposer: RenderPass -> RaytracePass -> UnrealBloomPass -> OutputPass
+    // Hardware DepthTexture EffectComposer (with Safari/macOS HalfFloat fallback check)
     const initW = Math.max(1, Math.floor((canvas.clientWidth || innerWidth) * this.graphics.getTargetDpr()));
     const initH = Math.max(1, Math.floor((canvas.clientHeight || innerHeight) * this.graphics.getTargetDpr()));
+    const hasHalfFloat =
+      this.renderer.capabilities.isWebGL2 &&
+      (this.renderer.extensions.has("EXT_color_buffer_float") ||
+        this.renderer.extensions.has("EXT_color_buffer_half_float"));
+    const rtType = hasHalfFloat ? THREE.HalfFloatType : THREE.UnsignedByteType;
     const depthTex1 = new THREE.DepthTexture(initW, initH, THREE.UnsignedIntType);
     const rt = new THREE.WebGLRenderTarget(initW, initH, {
-      type: THREE.HalfFloatType,
+      type: rtType,
       depthTexture: depthTex1,
     });
     this.composer = new EffectComposer(this.renderer, rt);
@@ -625,11 +631,18 @@ export class GameScene {
     this.composer.addPass(new RenderPass(this.scene, this.camera));
 
     this.raytracePass = new RaytracePass(this.scene, this.camera, initW, initH);
+    this.raytracePass.setAppleSilicon(this.graphics.gpu.appleSilicon);
     this.raytracePass.setDepthTexture(this.composer.readBuffer.depthTexture ?? depthTex1);
     this.composer.addPass(this.raytracePass);
 
-    // Restrained filmic bloom: silhouettes stay razor-sharp while afterburners, beams & explosions pop
-    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(initW, initH), 0.28, 0.4, 0.96);
+    // Half-resolution filmic bloom cuts Metal TBDR bandwidth ~70% on Retina MacBooks with identical glow
+    const bScale = this.graphics.getBloomScale();
+    this.bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(Math.max(1, Math.floor(initW * bScale)), Math.max(1, Math.floor(initH * bScale))),
+      0.28,
+      0.4,
+      0.96,
+    );
     this.composer.addPass(this.bloomPass);
     this.composer.addPass(new OutputPass());
 
@@ -2374,11 +2387,14 @@ export class GameScene {
   resize() {
     const w = this.canvas.clientWidth || innerWidth;
     const h = this.canvas.clientHeight || innerHeight;
+    const dpr = this.renderer.getPixelRatio();
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    this.composer.setPixelRatio(this.renderer.getPixelRatio());
+    this.composer.setPixelRatio(dpr);
     this.composer.setSize(w, h);
+    const bScale = this.graphics.getBloomScale();
+    this.bloomPass.setSize(Math.max(1, Math.floor(w * dpr * bScale)), Math.max(1, Math.floor(h * dpr * bScale)));
   }
 
   setLoop(cb: () => void) {

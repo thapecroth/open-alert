@@ -158,6 +158,8 @@ export interface GpuInfo {
   maxTextureSize: number;
   cores: number;
   recommended: QualityPreset;
+  appleSilicon?: boolean;
+  isMac?: boolean;
 }
 
 export interface GraphicsStats {
@@ -1011,7 +1013,7 @@ export class Hud {
     }
     const glBadge = document.getElementById("gfx-badge-gl");
     if (glBadge) {
-      glBadge.textContent = `${gpu.backend || "WebGL2"} GPU`;
+      glBadge.textContent = gpu.appleSilicon ? "APPLE SILICON · METAL" : `${gpu.backend || "WebGL2"} GPU`;
       glBadge.classList.add("acc");
     }
     const wgpuBadge = document.getElementById("gfx-badge-wgpu");
