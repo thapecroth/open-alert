@@ -19,7 +19,7 @@
 
 import type { Ent, P, World } from "./world";
 import { BUILDINGS, MAP_H, MAP_W, SPAWNS, UNITS, UPGRADE_COST } from "../shared/gamedefs";
-import type { BuildingKind, EntKind, UnitKind } from "../shared/gamedefs";
+import type { BotDiff, BotProfile, BuildingKind, EntKind, UnitKind } from "../shared/gamedefs";
 
 const isB = (k: EntKind): k is BuildingKind => k in BUILDINGS;
 const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);
@@ -36,6 +36,8 @@ type Phase = "early" | "mid" | "late";
 
 export interface RtsBotOpts {
   aggressive?: boolean; // earlier waves, bigger queues, extra turret
+  diff?: BotDiff; // easy | normal | brutal
+  profile?: BotProfile; // balanced | rusher | turtle | tech
 }
 
 export class RtsBot {
@@ -45,9 +47,11 @@ export class RtsBot {
   waves = 0; // assault waves launched
   errors: string[] = []; // swallowed exceptions (should stay empty)
 
-  private aggro: boolean;
+  private diff: BotDiff;
+  private profile: BotProfile;
   private nextCheap = 0;
   private nextSlow = 30;
+  private slowStep: number;
   private nextPlaceTry = 0;
   private awaitingSince = -1; // tick we first saw current `awaiting`
   private deniedTiles = new Set<string>(); // "kind:tx,ty" that cmdPlace refused
@@ -65,20 +69,62 @@ export class RtsBot {
   private infCap: number;
   private tankCap: number;
   private turretCap: number;
+  private armyCap: number;
 
   constructor(
     private world: World,
     private slot: number,
     opts?: RtsBotOpts,
   ) {
-    this.aggro = opts?.aggressive ?? false;
-    // jittered so identical bots on different slots don't move in lockstep
-    this.firstWaveAt = (this.aggro ? 620 : 1050) + ((Math.random() * 140) | 0) + slot * 53;
-    this.assaultEvery = this.aggro ? 330 : 480;
-    this.waveMin = this.aggro ? 6 : 8;
-    this.infCap = this.aggro ? 6 : 4;
-    this.tankCap = this.aggro ? 4 : 3;
-    this.turretCap = this.aggro ? 3 : 2;
+    this.diff = opts?.diff ?? (opts?.aggressive ? "brutal" : "normal");
+    this.profile = opts?.profile ?? "balanced";
+    const jitter = ((Math.random() * 140) | 0) + slot * 53;
+    if (this.diff === "easy") {
+      this.firstWaveAt = 1350 + jitter;
+      this.assaultEvery = 620;
+      this.waveMin = 7;
+      this.infCap = 3;
+      this.tankCap = 2;
+      this.turretCap = 1;
+      this.armyCap = 24;
+      this.slowStep = 56;
+    } else if (this.diff === "brutal") {
+      this.firstWaveAt = 580 + jitter;
+      this.assaultEvery = 290;
+      this.waveMin = 6;
+      this.infCap = 7;
+      this.tankCap = 5;
+      this.turretCap = 3;
+      this.armyCap = 55;
+      this.slowStep = 30;
+    } else {
+      this.firstWaveAt = 850 + jitter;
+      this.assaultEvery = 400;
+      this.waveMin = 7;
+      this.infCap = 5;
+      this.tankCap = 4;
+      this.turretCap = 2;
+      this.armyCap = 45;
+      this.slowStep = 38;
+    }
+    // Personality profile modifiers (rusher = fast early raids, turtle = heavy defense & slow push, tech = boom to MKII/Ion)
+    if (this.profile === "rusher") {
+      this.firstWaveAt = Math.max(240, Math.round(this.firstWaveAt * 0.45));
+      this.assaultEvery = Math.max(160, Math.round(this.assaultEvery * 0.62));
+      this.waveMin = Math.max(3, this.waveMin - 3);
+      this.infCap += 2;
+      this.turretCap = Math.max(0, this.turretCap - 1);
+    } else if (this.profile === "turtle") {
+      this.firstWaveAt = Math.round(this.firstWaveAt * 1.85);
+      this.assaultEvery = Math.round(this.assaultEvery * 1.4);
+      this.waveMin += 5;
+      this.turretCap += 3;
+    } else if (this.profile === "tech") {
+      this.firstWaveAt = Math.round(this.firstWaveAt * 1.45);
+      this.assaultEvery = Math.round(this.assaultEvery * 1.15);
+      this.waveMin += 2;
+      this.tankCap += 2;
+    }
   }
 
   think(): void {
@@ -111,7 +157,7 @@ export class RtsBot {
       this.defend(t);
     }
     if (t >= this.nextSlow) {
-      this.nextSlow = t + 38 + ((Math.random() * 14) | 0);
+      this.nextSlow = t + this.slowStep + ((Math.random() * 14) | 0);
       this.slow(me, t);
     }
   }
@@ -164,7 +210,7 @@ export class RtsBot {
     let best: { x: number; y: number } | null = null,
       bd = Infinity;
     for (const e of this.world.ents.values()) {
-      if (e.o === this.slot || e.o < 0 || !isB(e.k)) continue;
+      if (e.o < 0 || this.world.isAlly(this.slot, e.o) || !isB(e.k)) continue;
       if (this.world.players.get(e.o)?.eliminated) continue;
       const d = dist(ref.x, ref.y, e.x, e.y);
       if (d < bd) {
@@ -179,7 +225,7 @@ export class RtsBot {
     let best: { x: number; y: number } | null = null,
       bd = Infinity;
     for (const e of this.world.ents.values()) {
-      if (e.o === this.slot || e.o < 0) continue;
+      if (e.o < 0 || this.world.isAlly(this.slot, e.o)) continue;
       if (this.world.players.get(e.o)?.eliminated) continue;
       const d = dist(ref.x, ref.y, e.x, e.y);
       if (d < bd) {
@@ -284,16 +330,17 @@ export class RtsBot {
     if (!has("factory")) return "factory";
     // brownout always wins — production halves at low power
     if (me.lowPower) return "power";
-    if (me.pwrHave - me.pwrUse < 20 && (bc.get("power") ?? 0) < 3) return "power";
+    const pwrCount = bc.get("power") ?? 0;
+    if (me.pwrHave - me.pwrUse < 20 && pwrCount < 5) return "power";
     // tech wants (a factory exists by here): radar unlocks arc/rocket/arty,
     // techlab the factory upgrade + purifier. Each draws a lot of power, so
     // if placing it would brown us out, grow the grid first instead.
     if (!has("radar")) {
-      if (me.pwrHave - me.pwrUse < 45 && (bc.get("power") ?? 0) < 3) return "power";
+      if (me.pwrHave - me.pwrUse < 45 && pwrCount < 5) return "power";
       return "radar";
     }
     if (!has("techlab") && me.credits > 1400) {
-      if (me.pwrHave - me.pwrUse < 60 && (bc.get("power") ?? 0) < 3) return "power";
+      if (me.pwrHave - me.pwrUse < 60 && pwrCount < 5) return "power";
       return "techlab";
     }
     // defense: arc coils replace turrets once radar is up and they're
@@ -307,10 +354,22 @@ export class RtsBot {
     if (this.phase !== "early" && me.credits > 3000 && refs < 2) return "refinery";
     if (me.credits > 2400 && !has("depot") && has("factory")) return "depot"; // keeps the armor column repaired
     if (me.credits > 3200 && defense < this.turretCap) return pickDef();
-    // late: the purifier pays for itself; keep expanding economy/power when flush
+    // late: the purifier pays for itself; normal & brutal also build the Ion Uplink superweapon
     if (this.phase === "late" && has("techlab") && !has("purifier") && me.credits > 2400) return "purifier";
+    if (
+      this.world.config.superweapons &&
+      this.diff !== "easy" &&
+      this.profile !== "rusher" &&
+      has("techlab") &&
+      !has("superweapon") &&
+      (this.phase === "late" || this.diff === "brutal" || this.profile === "tech")
+    ) {
+      if (me.pwrHave - me.pwrUse < 100 && pwrCount < 6) return "power";
+      const swThresh = this.profile === "tech" || this.diff === "brutal" ? 2550 : 3200;
+      if (me.credits >= swThresh) return "superweapon";
+    }
     if (this.phase === "late" && me.credits > 4200 && refs < 3) return "refinery";
-    if (me.credits > 4000 && (bc.get("power") ?? 0) < 3) return "power";
+    if (me.credits > 4000 && pwrCount < 4) return "power";
     return null;
   }
 
@@ -328,8 +387,13 @@ export class RtsBot {
       engi = 0,
       artys = 0,
       heavies = 0,
-      spiders = 0;
+      spiders = 0,
+      neutralDerricks = 0;
     for (const e of w.ents.values()) {
+      if (e.o === -1 && e.k === "derrick") {
+        neutralDerricks++;
+        continue;
+      }
       if (e.o !== this.slot) continue;
       if (e.k === "harvester") harv++;
       else if (!isB(e.k)) {
@@ -342,11 +406,12 @@ export class RtsBot {
     }
 
     // barracks: infantry scaled by phase, rocket troopers alternating in once
-    // radar is up, and exactly one engineer kept on retainer for late pushes
+    // radar is up, and an engineer for neutral Oil Derricks / late pushes
     const infGoal = this.phase === "early" ? Math.min(2, this.infCap) : this.phase === "mid" ? this.infCap : this.infCap + 2;
-    if ((bc.get("barracks") ?? 0) > 0 && army < 45) {
+    if ((bc.get("barracks") ?? 0) > 0 && army < this.armyCap) {
       const q = me.queues.barracks;
-      if (!q && !engi && me.credits > 800) {
+      const wantDerrickEngi = this.diff !== "easy" && neutralDerricks > 0 && me.credits >= UNITS.engineer.cost + 200;
+      if (!q && !engi && (wantDerrickEngi || me.credits > 800)) {
         this.trycmd(() => w.cmdTrain(this.slot, "engineer"));
       } else {
         // a fresh queue alternates what it starts with, so rockets mix in
@@ -378,7 +443,7 @@ export class RtsBot {
         // f2 units bypass the army cap — they're the whole point of the upgrade,
         // and the cap would starve them exactly when a winning bot unlocks them
         const f2unit = f2 && (unit === "heavy" || unit === "spider");
-        if (unit && (unit === "harvester" || army < 45 || f2unit) && me.credits >= UNITS[unit].cost + reserve) {
+        if (unit && (unit === "harvester" || army < this.armyCap || f2unit) && me.credits >= UNITS[unit].cost + reserve) {
           this.trycmd(() => w.cmdTrain(this.slot, unit));
         }
       } else {
@@ -388,7 +453,7 @@ export class RtsBot {
         const cap = u === "tank" ? tankGoal : u === "arty" ? 2 : u === "heavy" || u === "spider" ? 4 : 0;
         const fielded = u === "arty" ? artys : u === "heavy" ? heavies : u === "spider" ? spiders : 0;
         const f2u = f2 && (u === "heavy" || u === "spider");
-        if (cap > 0 && fielded + q.count < cap && (army < 45 || f2u) && me.credits >= UNITS[u].cost + reserve) {
+        if (cap > 0 && fielded + q.count < cap && (army < this.armyCap || f2u) && me.credits >= UNITS[u].cost + reserve) {
           this.trycmd(() => w.cmdTrain(this.slot, u));
         }
         // a queued harvester is left to finish rather than cancelled
@@ -487,7 +552,7 @@ export class RtsBot {
     let best: { x: number; y: number } | null = null,
       bd = Infinity;
     for (const e of this.world.ents.values()) {
-      if (e.o === this.slot || e.o < 0) continue;
+      if (e.o < 0 || this.world.isAlly(this.slot, e.o)) continue;
       if (this.world.players.get(e.o)?.eliminated) continue;
       if (e.k !== "harvester" && e.k !== "refinery") continue;
       const d = dist(base.x, base.y, e.x, e.y);
@@ -497,6 +562,91 @@ export class RtsBot {
       }
     }
     return best;
+  }
+
+  // Normal & brutal bots send idle Sappers (engineers) to capture nearby neutral Oil Derricks.
+  private captureDerricks() {
+    if (this.diff === "easy") return;
+    const w = this.world;
+    const base = this.baseCenter();
+    if (!base) return;
+    const maxDist = this.diff === "brutal" ? 999 : 42;
+    const derricks: Ent[] = [];
+    for (const e of w.ents.values()) {
+      if (e.k !== "derrick") continue;
+      if (e.o === -1 || (this.diff === "brutal" && !w.isAlly(this.slot, e.o))) {
+        if (dist(base.x, base.y, e.x, e.y) <= maxDist) derricks.push(e);
+      }
+    }
+    if (!derricks.length) return;
+    // Prefer neutral derricks first, then closest to base
+    derricks.sort((a, b) => {
+      if ((a.o === -1) !== (b.o === -1)) return a.o === -1 ? -1 : 1;
+      return dist(base.x, base.y, a.x, a.y) - dist(base.x, base.y, b.x, b.y);
+    });
+    for (const e of w.ents.values()) {
+      if (e.o !== this.slot || e.k !== "engineer" || e.order) continue;
+      const d = derricks[0];
+      this.trycmd(() => w.cmdOrder(this.slot, [e.id], "attack", d.x, d.y, d.id));
+      return;
+    }
+  }
+
+  // Brutal (and close-range Normal) bots grab nearby supply crates with idle combat units.
+  private grabCrates() {
+    if (this.diff === "easy" || !this.world.crates.size) return;
+    const w = this.world;
+    const maxRange = this.diff === "brutal" ? 28 : 12;
+    const assigned = new Set<number>();
+    for (const crate of w.crates.values()) {
+      let best: Ent | null = null,
+        bd = maxRange;
+      for (const u of w.ents.values()) {
+        if (u.o !== this.slot || isB(u.k) || u.k === "harvester" || u.k === "engineer") continue;
+        if (u.order || assigned.has(u.id)) continue;
+        const d = dist(u.x, u.y, crate.x, crate.y);
+        if (d < bd) {
+          bd = d;
+          best = u;
+        }
+      }
+      if (best) {
+        assigned.add(best.id);
+        this.trycmd(() => w.cmdOrder(this.slot, [best.id], "move", crate.x, crate.y));
+      }
+    }
+  }
+
+  // Fire charged Orbital Ion Cannon at the highest-value enemy structure.
+  private fireSuperweapon(me: P, bc: Map<BuildingKind, number>) {
+    if (this.diff === "easy") return;
+    if (me.swLeft !== 0 || !this.hasBuilding(bc, "superweapon")) return;
+    const w = this.world;
+    const priority: Partial<Record<EntKind, number>> = {
+      conyard: 100,
+      superweapon: 95,
+      factory2: 90,
+      factory: 85,
+      techlab: 80,
+      refinery: 70,
+      barracks: 60,
+      radar: 55,
+      power: 45,
+    };
+    let best: Ent | null = null,
+      bestScore = -1;
+    for (const e of w.ents.values()) {
+      if (e.o < 0 || w.isAlly(this.slot, e.o)) continue;
+      if (w.players.get(e.o)?.eliminated) continue;
+      const score = (priority[e.k] ?? (isB(e.k) ? 40 : 10)) + e.hp * 0.01;
+      if (score > bestScore) {
+        bestScore = score;
+        best = e;
+      }
+    }
+    if (best) {
+      this.trycmd(() => w.cmdSuperweapon(this.slot, best!.x, best!.y));
+    }
   }
 
   // Group idle combat units at a muster point on the enemy-facing edge of the
@@ -538,7 +688,7 @@ export class RtsBot {
     let threat: Ent | null = null,
       bd = DEF_RADIUS * DEF_RADIUS;
     for (const e of w.ents.values()) {
-      if (e.o === this.slot || e.o < 0) continue;
+      if (e.o < 0 || w.isAlly(this.slot, e.o)) continue;
       const p = w.players.get(e.o);
       if (p && p.eliminated) continue;
       for (const m of mine) {
@@ -555,7 +705,7 @@ export class RtsBot {
     this.lastDefend = t;
     const ids: number[] = [];
     for (const e of w.ents.values()) {
-      if (e.o !== this.slot || isB(e.k) || e.k === "harvester") continue;
+      if (e.o !== this.slot || isB(e.k) || e.k === "harvester" || e.k === "engineer") continue;
       if (dist(e.x, e.y, base.x, base.y) > GUARD_RADIUS) continue;
       ids.push(e.id);
     }
@@ -610,10 +760,11 @@ export class RtsBot {
     // late game presses the advantage even without a full wave if it's big enough
     const press = this.phase === "late" && army.length >= waveMin + 5 && t - this.lastAssault >= interval / 2;
     if (army.length >= waveMin && (due || big || press) && !recentThreat) {
-      // the lone engineer rides along only on big late pushes — it's the
-      // capture threat, and feeding it into a small skirmish just wastes it
+      // the lone engineer rides along only on big late pushes if idle —
+      // don't pull one that is already en route to a neutral Oil Derrick
       const takeEngi = this.phase !== "late" || army.length >= waveMin * 1.5;
-      const ids = army.filter((e) => e.k !== "engineer" || takeEngi).map((e) => e.id);
+      const ids = army.filter((e) => e.k !== "engineer" || (takeEngi && !e.order)).map((e) => e.id);
+      if (!ids.length) return;
       const err = w.cmdOrder(this.slot, ids, "amove", goal.x, goal.y);
       if (err) {
         this.denies++;
@@ -657,6 +808,9 @@ export class RtsBot {
     this.repairs(me, want ? Math.min(BUILDINGS[want].cost, 500) : 150);
     this.upgrade(me, bc);
     this.wakeHarvesters();
+    if (w.config.superweapons) this.fireSuperweapon(me, bc);
+    if (w.config.derricks) this.captureDerricks();
+    if (w.config.crates) this.grabCrates();
     this.scout(t);
     this.rally();
     this.assault(t);
@@ -665,7 +819,7 @@ export class RtsBot {
 
 // Compatibility shim for worker.ts, which manages bots as
 //   const bots = new Map<string, AIBot>(); // player id -> brain
-//   new AIBot(id);                          // lobby add-bot
+//   new AIBot(id, diff);                    // lobby add-bot
 //   bot.tick(world, slot);                  // once per sim tick
 // The world isn't known until the game starts, so the RtsBot is created lazily
 // on first tick (and re-created if the world instance changes, e.g. rematch).
@@ -673,15 +827,19 @@ export class AIBot {
   private impl: RtsBot | null = null;
   private w: World | null = null;
   private s = -1;
+  private opts: RtsBotOpts;
 
   constructor(
     public readonly id: string,
-    private opts?: RtsBotOpts,
-  ) {}
+    opts?: BotDiff | RtsBotOpts,
+  ) {
+    if (typeof opts === "string") this.opts = { diff: opts };
+    else this.opts = opts ?? { diff: "normal" };
+  }
 
   tick(world: World, slot: number) {
     if (!this.impl || this.w !== world || this.s !== slot) {
-      this.impl = new RtsBot(world, slot, this.opts ?? { aggressive: true });
+      this.impl = new RtsBot(world, slot, this.opts);
       this.w = world;
       this.s = slot;
     }

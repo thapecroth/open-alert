@@ -3,7 +3,8 @@ import type { Connection } from "partyserver";
 import { World } from "./server/world";
 import { AIBot } from "./server/bot";
 import type { C2S, S2C, LobbyPlayer } from "./shared/protocol";
-import { MAX_PLAYERS, TICK_MS, SNAP_EVERY, MAP_W, MAP_H, PLAYER_COLORS } from "./shared/gamedefs";
+import { MAX_PLAYERS, TICK_MS, SNAP_EVERY, MAP_W, MAP_H, PLAYER_COLORS, DEFAULT_CONFIG } from "./shared/gamedefs";
+import type { MapId, BotDiff, BotProfile, GameConfig } from "./shared/gamedefs";
 
 interface Env {
   GameRoom: DurableObjectNamespace;
@@ -18,16 +19,26 @@ interface PlayerRec {
   ready: boolean;
   spectator: boolean;
   connected: boolean;
+  team: number;
   bot?: boolean;
+  diff?: BotDiff;
+  profile?: BotProfile;
 }
 
 const send = (conn: Connection, msg: S2C) => conn.send(JSON.stringify(msg));
 const ORDER_KINDS = new Set(["move", "amove", "attack", "harvest"]);
+const VALID_MAPS = new Set<MapId>(["crossroads", "canyon", "basin"]);
+const VALID_DIFFS = new Set<BotDiff>(["easy", "normal", "brutal"]);
+const VALID_PROFILES = new Set<BotProfile>(["balanced", "rusher", "turtle", "tech"]);
+const VALID_CREDITS = new Set([3000, 5000, 10000, 20000]);
+const VALID_SPEEDS = new Set([0.75, 1, 1.5, 2]);
 const validIds = (v: unknown): number[] =>
   Array.isArray(v) ? v.filter((n): n is number => Number.isFinite(n)) : [];
 
 export class GameRoom extends Server<Env> {
   phase: "lobby" | "playing" | "ended" = "lobby";
+  map: MapId = "crossroads";
+  config: GameConfig = { ...DEFAULT_CONFIG };
   players = new Map<string, PlayerRec>(); // by player id (client token)
   connPlayer = new Map<string, string>(); // conn id -> player id
   world: World | null = null;
@@ -86,11 +97,85 @@ export class GameRoom extends Server<Env> {
           if (actives.length < 2) return send(conn, { t: "deny", msg: "need at least 2 players — add a bot!" });
           const unready = actives.filter((p) => !p.bot && p.id !== me.id && !p.ready);
           if (unready.length) return send(conn, { t: "deny", msg: `${unready[0].name} is not ready` });
+          const firstTeam = actives[0].team;
+          if (firstTeam > 0 && actives.every((p) => p.team === firstTeam)) {
+            return send(conn, { t: "deny", msg: "need opponents on another team" });
+          }
           this.startGame();
         }
         return;
       case "addbot":
-        if (me && this.isHost(me) && this.phase === "lobby") this.addBot();
+        if (me && this.isHost(me) && this.phase === "lobby") {
+          const diff: BotDiff = typeof m.diff === "string" && VALID_DIFFS.has(m.diff) ? m.diff : "normal";
+          const profile: BotProfile =
+            typeof m.profile === "string" && VALID_PROFILES.has(m.profile) ? m.profile : "balanced";
+          this.addBot(diff, profile);
+        }
+        return;
+      case "setBotConfig":
+        if (me && this.isHost(me) && this.phase === "lobby" && typeof m.id === "string") {
+          const target = this.players.get(m.id);
+          if (target && target.bot) {
+            if (typeof m.diff === "string" && VALID_DIFFS.has(m.diff)) target.diff = m.diff;
+            if (typeof m.profile === "string" && VALID_PROFILES.has(m.profile)) target.profile = m.profile;
+            this.bots.set(m.id, new AIBot(m.id, { diff: target.diff ?? "normal", profile: target.profile ?? "balanced" }));
+            this.broadcastLobby();
+          }
+        }
+        return;
+      case "kickbot":
+        if (me && this.isHost(me) && this.phase === "lobby" && typeof m.id === "string") {
+          const target = this.players.get(m.id);
+          if (target && target.bot) {
+            this.players.delete(m.id);
+            this.bots.delete(m.id);
+            this.broadcastLobby();
+          }
+        }
+        return;
+      case "setMap":
+        if (me && this.isHost(me) && this.phase === "lobby" && typeof m.map === "string" && VALID_MAPS.has(m.map)) {
+          this.map = m.map;
+          this.broadcastLobby();
+        }
+        return;
+      case "setConfig":
+        if (me && this.isHost(me) && this.phase === "lobby" && m.config && typeof m.config === "object") {
+          const c = m.config;
+          if (typeof c.startCredits === "number" && VALID_CREDITS.has(c.startCredits))
+            this.config.startCredits = c.startCredits;
+          if (typeof c.gameSpeed === "number" && VALID_SPEEDS.has(c.gameSpeed)) this.config.gameSpeed = c.gameSpeed;
+          if (typeof c.superweapons === "boolean") this.config.superweapons = c.superweapons;
+          if (typeof c.crates === "boolean") this.config.crates = c.crates;
+          if (typeof c.derricks === "boolean") this.config.derricks = c.derricks;
+          if (typeof c.fog === "boolean") this.config.fog = c.fog;
+          this.broadcastLobby();
+        }
+        return;
+      case "setTeam":
+        if (me && !me.spectator && this.phase === "lobby" && Number.isInteger(m.team) && m.team >= 0 && m.team <= 4) {
+          if (typeof m.id === "string" && m.id !== me.id) {
+            if (this.isHost(me)) {
+              const target = this.players.get(m.id);
+              if (target && target.bot) {
+                target.team = m.team;
+                this.broadcastLobby();
+              }
+            }
+          } else {
+            me.team = m.team;
+            this.broadcastLobby();
+          }
+        }
+        return;
+      case "setName":
+        if (me && this.phase === "lobby" && typeof m.name === "string") {
+          const clean = m.name.slice(0, 16).trim();
+          if (clean) {
+            me.name = clean;
+            this.broadcastLobby();
+          }
+        }
         return;
       case "chat":
         if (me && typeof m.text === "string" && m.text.trim()) {
@@ -176,6 +261,18 @@ export class GameRoom extends Server<Env> {
       case "upgrade":
         err = Number.isFinite(m.id) ? this.world.cmdUpgrade(slot, m.id) : "bad id";
         break;
+      case "rally":
+        err =
+          Number.isFinite(m.id) && Number.isFinite(m.x) && Number.isFinite(m.y)
+            ? this.world.cmdRally(slot, m.id, m.x, m.y)
+            : "bad coords";
+        break;
+      case "superweapon":
+        err =
+          Number.isFinite(m.x) && Number.isFinite(m.y)
+            ? this.world.cmdSuperweapon(slot, m.x, m.y)
+            : "bad coords";
+        break;
       case "resign":
         this.world.cmdResign(slot);
         break;
@@ -212,7 +309,7 @@ export class GameRoom extends Server<Env> {
     const id = tok || crypto.randomUUID();
     if (this.phase === "playing") {
       // join mid-game as spectator
-      const p: PlayerRec = { id, connId: conn.id, name: clean, slot: -1, ready: true, spectator: true, connected: true };
+      const p: PlayerRec = { id, connId: conn.id, name: clean, slot: -1, ready: true, spectator: true, connected: true, team: 0 };
       this.players.set(id, p);
       this.connPlayer.set(conn.id, id);
       this.sendInit(conn, p);
@@ -232,7 +329,7 @@ export class GameRoom extends Server<Env> {
       conn.close(4000, "room full");
       return;
     }
-    const p: PlayerRec = { id, connId: conn.id, name: clean, slot, ready: false, spectator: false, connected: true };
+    const p: PlayerRec = { id, connId: conn.id, name: clean, slot, ready: false, spectator: false, connected: true, team: 0 };
     this.players.set(id, p);
     this.connPlayer.set(conn.id, id);
     this.broadcastLobby();
@@ -257,6 +354,8 @@ export class GameRoom extends Server<Env> {
       host: p.id === hostId,
       connected: p.connected,
       spectator: p.spectator,
+      team: p.team,
+      ...(p.bot ? { bot: true, diff: p.diff, profile: p.profile } : {}),
       eliminated: this.world?.players.get(p.slot)?.eliminated,
     }));
   }
@@ -265,7 +364,7 @@ export class GameRoom extends Server<Env> {
     const players = this.lobbyList();
     for (const conn of this.getConnections()) {
       const pid = this.connPlayer.get(conn.id);
-      if (pid) send(conn, { t: "lobby", players, you: pid, room: this.name });
+      if (pid) send(conn, { t: "lobby", players, you: pid, room: this.name, map: this.map, config: this.config });
     }
   }
 
@@ -277,14 +376,16 @@ export class GameRoom extends Server<Env> {
       slot: p.spectator ? -1 : p.slot,
       w: MAP_W,
       h: MAP_H,
+      map: this.map,
+      config: this.config,
       ore: this.world.oreSnapshot(),
       players: [...this.players.values()]
         .filter((x) => !x.spectator)
-        .map((x) => ({ id: x.id, slot: x.slot, name: x.name })),
+        .map((x) => ({ id: x.id, slot: x.slot, name: x.name, team: x.team })),
     });
   }
 
-  private addBot() {
+  private addBot(diff: BotDiff = "normal", profile: BotProfile = "balanced") {
     const used = new Set([...this.players.values()].filter((p) => p.slot >= 0).map((p) => p.slot));
     let slot = -1;
     for (let s = 0; s < MAX_PLAYERS; s++)
@@ -302,20 +403,27 @@ export class GameRoom extends Server<Env> {
       ready: true,
       spectator: false,
       connected: true,
+      team: 0,
       bot: true,
+      diff,
+      profile,
     };
     this.players.set(id, p);
-    this.bots.set(id, new AIBot(id));
+    this.bots.set(id, new AIBot(id, { diff, profile }));
     this.broadcastLobby();
   }
 
   private startGame() {
-    const slots = [...this.players.values()]
-      .filter((p) => p.connected && !p.spectator && p.slot >= 0)
-      .map((p) => p.slot)
-      .sort((a, b) => a - b);
+    const actives = [...this.players.values()].filter((p) => p.connected && !p.spectator && p.slot >= 0);
+    const slots = actives.map((p) => p.slot).sort((a, b) => a - b);
     if (!slots.length) return;
-    this.world = new World(slots);
+    const teams: Record<number, number> = {};
+    const names: Record<number, string> = {};
+    for (const p of actives) {
+      teams[p.slot] = p.team;
+      names[p.slot] = p.name;
+    }
+    this.world = new World(slots, { map: this.map, teams, names, config: this.config });
     this.phase = "playing";
     this.endSent = false;
     for (const conn of this.getConnections()) {
@@ -324,7 +432,8 @@ export class GameRoom extends Server<Env> {
       if (p) this.sendInit(conn, p);
     }
     if (this.timer) clearInterval(this.timer);
-    this.timer = setInterval(() => this.gameTick(), TICK_MS);
+    const tickMs = Math.max(40, Math.round(TICK_MS / (this.config.gameSpeed || 1)));
+    this.timer = setInterval(() => this.gameTick(), tickMs);
   }
 
   private gameTick() {
@@ -341,12 +450,23 @@ export class GameRoom extends Server<Env> {
     }
     if (w.winner !== null && !this.endSent) {
       this.endSent = true;
+      const names: Record<number, string> = {};
+      for (const p of this.players.values()) if (!p.spectator && p.slot >= 0) names[p.slot] = p.name;
       const wp = [...this.players.values()].find((p) => p.slot === w.winner);
+      const reason =
+        w.winnerTeam && w.winnerTeam > 0
+          ? `Team ${w.winnerTeam} wins!`
+          : wp
+            ? `${wp.name} wins!`
+            : "draw";
       this.broadcast(
         JSON.stringify({
           t: "end",
           winner: w.winner,
-          reason: wp ? `${wp.name} wins!` : "draw",
+          winnerTeam: w.winnerTeam,
+          reason,
+          durationSec: Math.round((w.tick * TICK_MS) / 1000),
+          stats: w.getStats(names),
         } satisfies S2C),
       );
       if (this.timer) {
@@ -364,6 +484,8 @@ export class GameRoom extends Server<Env> {
     }
     this.world = null;
     this.phase = "lobby";
+    this.map = "crossroads";
+    this.config = { ...DEFAULT_CONFIG };
     this.endSent = false;
     this.players.clear();
     this.bots.clear();

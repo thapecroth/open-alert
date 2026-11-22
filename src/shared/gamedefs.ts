@@ -20,7 +20,9 @@ export type BuildingKind =
   | "turret"
   | "arc"
   | "purifier"
-  | "depot";
+  | "depot"
+  | "superweapon"
+  | "derrick";
 export type UnitKind =
   | "infantry"
   | "engineer"
@@ -31,6 +33,35 @@ export type UnitKind =
   | "spider"
   | "harvester";
 export type EntKind = BuildingKind | UnitKind;
+export type MapId = "crossroads" | "canyon" | "basin";
+export type BotDiff = "easy" | "normal" | "brutal";
+export type BotProfile = "balanced" | "rusher" | "turtle" | "tech";
+export type CrateKind = "cash" | "vet" | "heal" | "unit";
+
+export interface GameConfig {
+  startCredits: number; // 3000 | 5000 | 10000 | 20000
+  gameSpeed: number; // 0.75 | 1 | 1.5 | 2
+  superweapons: boolean;
+  crates: boolean;
+  derricks: boolean;
+  fog: boolean;
+}
+
+export const DEFAULT_CONFIG: GameConfig = {
+  startCredits: START_CREDITS,
+  gameSpeed: 1,
+  superweapons: true,
+  crates: true,
+  derricks: true,
+  fog: true,
+};
+
+export const BOT_PROFILES: { id: BotProfile; label: string; desc: string }[] = [
+  { id: "balanced", label: "Balanced", desc: "Adaptive economy, mixed army & steady pressure" },
+  { id: "rusher", label: "Rusher", desc: "Early aggressive raids & fast infantry/tank waves" },
+  { id: "turtle", label: "Turtle", desc: "Heavy turret/arc defenses & massive late counter-push" },
+  { id: "tech", label: "Tech Boom", desc: "Greedy dual harvesters, fast Tech Lab, Mastodons & Ion Cannon" },
+];
 
 export interface BuildingDef {
   w: number; // footprint in tiles
@@ -43,7 +74,8 @@ export interface BuildingDef {
   dmg?: number;
   rof?: number; // ticks between shots
   requires?: BuildingKind[]; // tech prerequisites — all must exist before cmdBuild
-  noBuild?: true; // exists in the world but can't be queued (upgrade results)
+  noBuild?: true; // exists in the world but can't be queued (upgrade/neutral structures)
+  limit?: number; // max count per player
 }
 export const BUILDINGS: Record<BuildingKind, BuildingDef> = {
   conyard: { w: 3, h: 3, cost: 0, hp: 1000, power: 40, buildTicks: 0 },
@@ -58,6 +90,8 @@ export const BUILDINGS: Record<BuildingKind, BuildingDef> = {
   arc: { w: 1, h: 1, cost: 800, hp: 550, power: -40, buildTicks: 70, range: 7, dmg: 30, rof: 24, requires: ["radar"] },
   purifier: { w: 2, h: 2, cost: 900, hp: 500, power: -25, buildTicks: 90, requires: ["techlab"] },
   depot: { w: 3, h: 2, cost: 800, hp: 700, power: -30, buildTicks: 90, requires: ["factory"] },
+  superweapon: { w: 3, h: 3, cost: 2500, hp: 1100, power: -100, buildTicks: 150, requires: ["techlab"], limit: 1 },
+  derrick: { w: 2, h: 2, cost: 0, hp: 850, power: 0, buildTicks: 0, noBuild: true },
 };
 export const BUILD_ORDER: BuildingKind[] = [
   "power",
@@ -70,6 +104,7 @@ export const BUILD_ORDER: BuildingKind[] = [
   "depot",
   "techlab",
   "purifier",
+  "superweapon",
 ];
 
 export interface UnitDef {
@@ -119,6 +154,8 @@ export const BUILDING_NAMES: Record<BuildingKind, string> = {
   arc: "Arc Coil",
   purifier: "Ore Purifier",
   depot: "Service Depot",
+  superweapon: "Ion Uplink",
+  derrick: "Oil Derrick",
 };
 
 // ---------- tech & special mechanics ----------
@@ -127,6 +164,30 @@ export const PURIFIER_BONUS = 0.25; // +25% credits per harvester deposit
 export const DEPOT_RANGE = 6; // service depot heal aura radius (tiles)
 export const DEPOT_HEAL = 4; // hp restored per vehicle per second
 export const CAPTURE_RANGE = 1.9; // engineer must be this close to capture
+
+// Veterancy (0=Rookie, 1=Veteran ★, 2=Elite ★★, 3=Heroic ★★★)
+export const VET_XP = [0, 260, 750, 1600] as const;
+export const VET_DMG = [1, 1.2, 1.4, 1.65] as const;
+export const VET_HP = [1, 1.15, 1.3, 1.5] as const;
+export const VET_HEAL = [0, 0, 2, 5] as const; // HP/sec regen at Elite & Heroic
+
+// Superweapon (Orbital Ion Cannon)
+export const SW_CHARGE_TICKS = 900; // 90s full power
+export const SW_RADIUS = 5.5;
+export const SW_DAMAGE = 950;
+
+// Neutral Oil Derricks & Battlefield Supply Crates
+export const DERRICK_CAPTURE_BONUS = 500;
+export const DERRICK_INCOME = 25; // credits per second (every 10 ticks)
+export const CRATE_INTERVAL_TICKS = 350; // drop every 35s
+export const CRATE_MAX = 3;
+export const CRATE_CASH = 1000;
+
+// Splash damage radii
+export const SPLASH_RADIUS: Partial<Record<EntKind, number>> = {
+  arty: 2.3,
+  heavy: 1.15,
+};
 
 export const HARVEST_TICKS_PER_UNIT = 4; // 1 cargo per 4 ticks => ~16s to fill (RA2-like)
 export const ORE_REGEN_TICKS = 50; // ore field regrowth pulse every 5s
@@ -144,3 +205,73 @@ export const SPAWNS: { x: number; y: number }[] = [
   { x: MAP_W - 8, y: 5 },
   { x: 5, y: MAP_H - 8 },
 ];
+
+// ---------- Deterministic Handcrafted Maps ----------
+export const MAP_LIST: { id: MapId; name: string; desc: string }[] = [
+  { id: "crossroads", name: "Twin Crossroads", desc: "Balanced flank mesas & twin contested Oil Derricks" },
+  { id: "canyon", name: "Iron Canyon", desc: "Twin canyon walls channeling fights across 3 lanes" },
+  { id: "basin", name: "Shattered Basin", desc: "Open ore basin ringed by 4 captureable Oil Derricks" },
+];
+
+export interface MapLayout {
+  cliffs: [number, number][]; // impassable elevated rocky plateau tiles
+  derricks: [number, number][]; // top-left 2x2 tile of neutral Oil Derricks
+}
+
+const mapCache = new Map<MapId, MapLayout>();
+
+export function getMapLayout(id: MapId = "crossroads"): MapLayout {
+  const cached = mapCache.get(id);
+  if (cached) return cached;
+  const cliffSet = new Set<number>();
+  const addRect = (x0: number, y0: number, w: number, h: number) => {
+    for (let y = y0; y < y0 + h; y++) {
+      for (let x = x0; x < x0 + w; x++) {
+        if (x >= 0 && y >= 0 && x < MAP_W && y < MAP_H) cliffSet.add(y * MAP_W + x);
+      }
+    }
+  };
+  let derricks: [number, number][] = [];
+
+  if (id === "crossroads") {
+    // 4 symmetrical rocky mesas flanking the center crossroads — wide clear lanes everywhere
+    addRect(22, 16, 4, 3);
+    addRect(38, 16, 4, 3);
+    addRect(22, 45, 4, 3);
+    addRect(38, 45, 4, 3);
+    addRect(15, 29, 3, 6);
+    addRect(46, 29, 3, 6);
+    derricks = [
+      [31, 10],
+      [31, 52],
+    ];
+  } else if (id === "canyon") {
+    // Twin vertical canyon walls creating north, center bridge, and south chokepoints
+    addRect(29, 10, 4, 15);
+    addRect(29, 39, 4, 15);
+    addRect(18, 28, 3, 8);
+    addRect(43, 28, 3, 8);
+    derricks = [
+      [12, 31],
+      [50, 31],
+    ];
+  } else {
+    // basin: outer corner rock spurs framing a massive central arena + 4 derricks
+    addRect(21, 20, 3, 3);
+    addRect(40, 20, 3, 3);
+    addRect(21, 41, 3, 3);
+    addRect(40, 41, 3, 3);
+    derricks = [
+      [31, 8],
+      [31, 54],
+      [8, 31],
+      [54, 31],
+    ];
+  }
+
+  const cliffs: [number, number][] = [];
+  for (const k of cliffSet) cliffs.push([k % MAP_W, (k / MAP_W) | 0]);
+  const layout: MapLayout = { cliffs, derricks };
+  mapCache.set(id, layout);
+  return layout;
+}
