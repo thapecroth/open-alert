@@ -23,6 +23,7 @@ export class Input {
   onOrderLabel: (text: string | null, x?: number, y?: number) => void = () => {};
   onOpenChat: () => void = () => {};
   onEnterFpv: () => void = () => {};
+  onPlaceReadyHotkey: () => void = () => {};
   onWasdChange: (on: boolean) => void = () => {};
   onSuperweaponArmedChange: (armed: boolean) => void = () => {};
   onReconArmedChange: (armed: boolean) => void = () => {};
@@ -188,8 +189,26 @@ export class Input {
     this.labelTimer = setTimeout(() => this.onOrderLabel(null), ms);
   }
 
+  private modalOpen(): boolean {
+    const gfx = document.getElementById("gfx-panel");
+    const help = document.getElementById("help");
+    return Boolean((gfx && !gfx.classList.contains("hidden")) || (help && !help.classList.contains("hidden")));
+  }
+
+  private syncCursor() {
+    const c = this.gs.canvas;
+    if (this.placing || this.amoveNext || this.patrolNext || this.swArmed || this.reconArmed) {
+      c.style.cursor = "crosshair";
+    } else if (this.verb) {
+      c.style.cursor = "pointer";
+    } else {
+      c.style.cursor = "";
+    }
+  }
+
   private onKeyDown(e: KeyboardEvent) {
     if (!this._enabled) return;
+    if (this.modalOpen() && e.code !== "Escape") return;
     const tag = (e.target as HTMLElement | null)?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
       if (e.code === "Escape") (e.target as HTMLElement).blur();
@@ -249,6 +268,11 @@ export class Input {
       if (e.code === "KeyX") this.scatterSelected();
     }
 
+    if (e.code === "KeyB" && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      this.onPlaceReadyHotkey();
+      return;
+    }
+
     if (e.code === "KeyP") this.armPatrol();
     if (e.code === "KeyG") this.holdSelected();
     if (e.code === "KeyV") this.armVerb("sell");
@@ -295,7 +319,8 @@ export class Input {
       this.setPatrol(false);
       this.armVerb(null);
       if (this.placing) {
-        this.cancelPlacing();
+        // Classic RA2: Esc / right-click stows placement mode WITHOUT deleting the finished structure!
+        this.exitPlacing();
       } else if (this.selection.size) {
         this.setSelection(new Set());
       }
@@ -601,7 +626,11 @@ export class Input {
     }
     if (this.placing) {
       if (e.button === 0) this.tryPlace();
-      else this.cancelPlacing();
+      else {
+        // Classic RA2: right-clicking the battlefield stows placement without refunding/deleting the structure
+        this.exitPlacing();
+        this.flashLabel("STOWED — click READY in sidebar or press B to place", 1300);
+      }
       return;
     }
     if (e.button === 0) {
@@ -969,6 +998,7 @@ export class Input {
     this.gs.scene.add(this.ghost);
     this.updateBuildZones(true);
     this.moveGhost();
+    this.syncCursor();
     document.getElementById("placement-hint")?.classList.remove("hidden");
   }
 
@@ -977,6 +1007,7 @@ export class Input {
     this.ghostOk = false;
     this.ghostReason = null;
     this.updateBuildZones(false);
+    this.syncCursor();
     if (this.ghost) {
       this.gs.scene.remove(this.ghost);
       this.ghost.traverse((c) => {
@@ -1021,9 +1052,9 @@ export class Input {
       hint.classList.toggle("invalid", !ok);
       hint.textContent = ok
         ? d.waterOnly
-          ? "Left-click on water to deploy Naval Shipyard · Right-click or Esc to cancel & refund"
-          : "Left-click to place · Right-click or Esc to cancel & refund"
-        : `Cannot place: ${reason} · Right-click or Esc to cancel`;
+          ? "Left-click on water to deploy Naval Shipyard · Right-click or Esc to stow (stays Ready)"
+          : "Left-click to place · Right-click or Esc to stow (stays Ready in sidebar)"
+        : `Cannot place: ${reason} · Right-click or Esc to stow`;
     }
   }
 
@@ -1049,7 +1080,8 @@ export class Input {
   // ---------- per-frame ----------
 
   update(dt: number) {
-    if (!this._enabled) return;
+    if (!this._enabled || this.modalOpen()) return;
+    this.syncCursor();
     if (this.placing) this.moveGhost();
 
     let dx = 0,

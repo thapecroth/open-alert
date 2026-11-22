@@ -538,6 +538,11 @@ try {
         const sentBuild = (await sentAfter(m0)).some((m) => m.t === "build" && m.kind === "power");
         const bqOk = await until(() => window.__oa.state?.bq?.kind === "power", 4000);
         const awaitingOk = await until(() => window.__oa.state?.awaiting === "power", 18000);
+        // Classic RA2 non-interruptive flow: finishing a structure must NOT hijack cursor; player clicks READY!
+        await sleep(250);
+        const noAutoHijack = (await gs()).placing === null;
+        const bReady = await buildBtn();
+        if (bReady) await click(bReady.x, bReady.y);
         const placingOk = await until(() => window.__oa.input.placing === "power", 3000);
         // find a legal ghost spot and click it for real
         const cands = await findSpots();
@@ -571,27 +576,33 @@ try {
         }
         rec(
           name,
-          sentBuild && bqOk && awaitingOk && placingOk && placeSent && placed && cleared,
-          `buildMsg=${sentBuild} bq=${bqOk} awaiting=${awaitingOk} autoPlacing=${placingOk} ghostGreen@${spot ? spot.tx + "," + spot.ty : "NONE"}(#${ghex}) placeMsg=${placeSent} entInSnaps=${placed} awaitingCleared=${cleared}`,
+          sentBuild && bqOk && awaitingOk && noAutoHijack && placingOk && placeSent && placed && cleared,
+          `buildMsg=${sentBuild} bq=${bqOk} awaiting=${awaitingOk} noHijack=${noAutoHijack} clickToPlace=${placingOk} ghostGreen@${spot ? spot.tx + "," + spot.ty : "NONE"}(#${ghex}) placeMsg=${placeSent} entInSnaps=${placed} awaitingCleared=${cleared}`,
         );
         await shot("i-05-placed");
 
-        // --- second plant: ESC during placement = real cancel (refund + unblock queue)
+        // --- second plant: ESC during placement = stow (keeps READY), right-click sidebar = cancel & refund!
         const b1 = await buildBtn();
         await click(b1.x, b1.y);
         const awaiting2 = await until(() => window.__oa.state?.awaiting === "power", 18000);
+        const b1Ready = await buildBtn();
+        if (b1Ready) await click(b1Ready.x, b1Ready.y);
         const placing2 = await until(() => window.__oa.input.placing === "power", 3000);
         const cr0 = (await gs()).credits;
-        const m2 = await mark();
         await page.keyboard.press("Escape");
-        await sleep(400);
+        await sleep(300);
         const esc = await gs();
+        const stowedOk = esc.placing === null && esc.awaiting === "power";
+        // Right-clicking READY button in sidebar refunds & unblocks queue
+        const m2 = await mark();
+        const b1Refund = await buildBtn();
+        if (b1Refund) await rightClick(b1Refund.x, b1Refund.y);
         const bcSent = (await sentAfter(m2)).some((m) => m.t === "buildCancel");
         const awGone = await until(() => window.__oa.state?.awaiting == null, 4000);
         await sleep(350);
         const cr1 = (await gs()).credits;
         const refundOk = bcSent && awGone && cr1 - cr0 === 300;
-        // the queue must accept a fresh build afterwards (the old stuck-forever bug)
+        // the queue must accept a fresh build afterwards
         const b4 = await buildBtn();
         await click(b4.x, b4.y);
         const rebuild = await until(
@@ -605,9 +616,9 @@ try {
           await until(() => window.__oa.state?.awaiting == null && window.__oa.state?.bq == null, 5000);
         }
         rec(
-          "5b ESC cancel = real buildCancel (refund + queue unblocked)",
-          awaiting2 && placing2 && esc.placing === null && refundOk && rebuild,
-          `awaiting2=${awaiting2} placing2=${placing2} esc(placing=${esc.placing},cancelled=${esc.cancelled}) refund +${cr1 - cr0}cr (want +300, cancelMsg=${bcSent}, awGone=${awGone}) rebuild=${rebuild}`,
+          "5b ESC stows placement (stays READY) + sidebar right-click refunds",
+          awaiting2 && placing2 && stowedOk && refundOk && rebuild,
+          `awaiting2=${awaiting2} placing2=${placing2} stowedOk=${stowedOk} refund +${cr1 - cr0}cr (want +300, cancelMsg=${bcSent}, awGone=${awGone}) rebuild=${rebuild}`,
         );
       }
     } catch (e) {
@@ -780,6 +791,8 @@ try {
       if (b && !b.disabled) await click(b.x, b.y);
       const buildMsg8 = (await sentAfter(mB)).some((m) => m.t === "build");
       const awaiting = await until(() => window.__oa.state?.awaiting === "power", 18000);
+      const bR = await buildBtn();
+      if (bR) await click(bR.x, bR.y);
       const placing = await until(() => window.__oa.input.placing === "power", 3000);
       const buildEv = `hasConyard=${hasCy} credits=${pre8.credits} bq=${pre8.bq} awaitingPre=${pre8.awaiting} btn=${b ? (b.disabled ? "disabled" : "enabled") : "missing"} buildMsgSent=${buildMsg8}`;
       if (awaiting && placing) {
