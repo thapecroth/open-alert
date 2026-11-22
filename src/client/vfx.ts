@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { OrderKind, WeaponFx } from "../shared/protocol";
+import { getCraterTexture } from "./textures";
 
 interface FxItem {
   obj: THREE.Object3D;
@@ -7,6 +8,13 @@ interface FxItem {
   life: number;
   tick: (o: THREE.Object3D, t: number, dt: number) => void;
   disposeGeo?: boolean;
+  disposeTex?: boolean;
+}
+
+interface CraterItem {
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+  fading: boolean;
 }
 
 const sharedCyl = new THREE.CylinderGeometry(0.035, 0.035, 1, 6);
@@ -15,12 +23,18 @@ const sharedSpark = new THREE.BoxGeometry(0.1, 0.1, 0.1);
 const sharedSmoke = new THREE.DodecahedronGeometry(0.28, 0);
 const sharedFire = new THREE.SphereGeometry(0.5, 10, 8);
 const sharedRing = new THREE.TorusGeometry(1, 0.055, 8, 28);
+const sharedBeamCyl = new THREE.CylinderGeometry(1, 1, 60, 18, 1, true);
+const sharedCraterGeo = new THREE.PlaneGeometry(1, 1);
+sharedCraterGeo.rotateX(-Math.PI / 2);
+
 const sharedPinRing = new THREE.RingGeometry(0.18, 0.28, 18);
 sharedPinRing.rotateX(-Math.PI / 2);
 const sharedPinPost = new THREE.CylinderGeometry(0.035, 0.035, 0.65, 6);
 const sharedPinHead = new THREE.OctahedronGeometry(0.14, 0);
+const sharedRallyFlag = new THREE.BoxGeometry(0.46, 0.24, 0.035);
 
 const UP = new THREE.Vector3(0, 1, 0);
+const MAX_CRATERS = 45;
 
 const ORDER_COLORS: Record<OrderKind, number> = {
   move: 0x4dff70,
@@ -31,17 +45,24 @@ const ORDER_COLORS: Record<OrderKind, number> = {
 
 export class VfxSystem {
   private fxs: FxItem[] = [];
+  private craters: CraterItem[] = [];
   private lastNow = performance.now();
 
   constructor(private scene: THREE.Scene) {}
 
-  private add(obj: THREE.Object3D, life: number, tick: FxItem["tick"], disposeGeo = false) {
+  private add(
+    obj: THREE.Object3D,
+    life: number,
+    tick: FxItem["tick"],
+    disposeGeo = false,
+    disposeTex = false,
+  ) {
     this.scene.add(obj);
-    this.fxs.push({ obj, born: performance.now(), life, tick, disposeGeo });
+    this.fxs.push({ obj, born: performance.now(), life, tick, disposeGeo, disposeTex });
   }
 
   spawnSmoke(x: number, y: number, z: number, dark: boolean) {
-    if (this.fxs.length > 140) return; // cap particle count under heavy battles
+    if (this.fxs.length > 160) return; // cap particle count under heavy battles
     const col = dark ? 0x26292e : 0x8ea0ad;
     const mat = new THREE.MeshBasicMaterial({
       color: col,
@@ -65,7 +86,8 @@ export class VfxSystem {
     });
   }
 
-  spawnShot(fx: number, fy: number, tx: number, ty: number, weapon: WeaponFx = "bullet") {
+  spawnShot(fx: number, fy: number, tx: number, ty: number, weapon: WeaponFx = "bullet", vet = 0) {
+    const heroic = vet >= 3;
     const a = new THREE.Vector3(fx, weapon === "arc" ? 1.35 : 0.72, fy);
     const b = new THREE.Vector3(tx, 0.48, ty);
     const dir = b.clone().sub(a);
@@ -86,20 +108,21 @@ export class VfxSystem {
         pts.push(p);
       }
       const geo = new THREE.BufferGeometry().setFromPoints(pts);
-      const mat = new THREE.LineBasicMaterial({ color: new THREE.Color(1.4, 2.5, 3.2), transparent: true, opacity: 1 });
+      const col = heroic ? new THREE.Color(3.2, 1.1, 0.55) : new THREE.Color(1.4, 2.5, 3.2);
+      const mat = new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 1 });
       const bolt = new THREE.Line(geo, mat);
       this.add(bolt, 210, (_o, t) => (mat.opacity = 1 - t), true);
-      // Electric impact burst
-      this.spawnFlash(b, new THREE.Color(1.0, 2.2, 3.0), 0.85, 190);
-      this.spawnFlash(a, new THREE.Color(1.0, 2.0, 2.8), 0.6, 160);
+      this.spawnFlash(b, heroic ? new THREE.Color(3.2, 1.0, 0.4) : new THREE.Color(1.0, 2.2, 3.0), heroic ? 1.15 : 0.85, 190);
+      this.spawnFlash(a, heroic ? new THREE.Color(3.0, 1.1, 0.5) : new THREE.Color(1.0, 2.0, 2.8), heroic ? 0.8 : 0.6, 160);
       return;
     }
 
     if (weapon === "arty") {
       // High-arcing parabolic artillery shell + impact shockwave
-      const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.4, 1.5, 0.5) });
+      const col = heroic ? new THREE.Color(3.4, 0.85, 0.35) : new THREE.Color(2.4, 1.5, 0.5);
+      const mat = new THREE.MeshBasicMaterial({ color: col });
       const shell = new THREE.Mesh(sharedShell, mat);
-      shell.scale.setScalar(1.35);
+      shell.scale.setScalar(heroic ? 1.85 : 1.35);
       const arcH = Math.min(5.2, 1.8 + len * 0.36);
       let smokeTick = 0;
       let impacted = false;
@@ -114,19 +137,21 @@ export class VfxSystem {
         }
         if (t >= 0.92 && !impacted) {
           impacted = true;
-          this.spawnImpactRing(b.x, b.z, 1.15, new THREE.Color(2.4, 1.2, 0.35));
-          this.spawnFlash(b, new THREE.Color(2.8, 1.4, 0.4), 1.0, 220);
+          this.spawnImpactRing(b.x, b.z, heroic ? 1.55 : 1.15, heroic ? new THREE.Color(3.2, 0.8, 0.3) : new THREE.Color(2.4, 1.2, 0.35));
+          this.spawnFlash(b, heroic ? new THREE.Color(3.4, 0.95, 0.35) : new THREE.Color(2.8, 1.4, 0.4), heroic ? 1.35 : 1.0, 220);
         }
       });
-      this.spawnFlash(a, new THREE.Color(2.4, 1.4, 0.5), 0.7, 150);
+      this.spawnFlash(a, heroic ? new THREE.Color(3.2, 1.0, 0.4) : new THREE.Color(2.4, 1.4, 0.5), heroic ? 0.95 : 0.7, 150);
       return;
     }
 
     if (weapon === "rocket") {
       // Flying smoking rocket
-      const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.5, 1.6, 0.55) });
+      const col = heroic ? new THREE.Color(3.3, 0.85, 0.32) : new THREE.Color(2.5, 1.6, 0.55);
+      const mat = new THREE.MeshBasicMaterial({ color: col });
       const m = new THREE.Mesh(sharedCyl, mat);
-      m.scale.set(1.5, 0.42, 1.5);
+      const sc = heroic ? 2.1 : 1.5;
+      m.scale.set(sc, heroic ? 0.58 : 0.42, sc);
       m.quaternion.setFromUnitVectors(UP, dir.clone().normalize());
       let smokeTick = 0;
       let hit = false;
@@ -139,18 +164,21 @@ export class VfxSystem {
         }
         if (t >= 0.9 && !hit) {
           hit = true;
-          this.spawnFlash(b, new THREE.Color(2.6, 1.3, 0.35), 0.75, 170);
+          this.spawnFlash(b, heroic ? new THREE.Color(3.3, 0.9, 0.3) : new THREE.Color(2.6, 1.3, 0.35), heroic ? 1.05 : 0.75, 170);
+          if (heroic) this.spawnImpactRing(b.x, b.z, 0.85, new THREE.Color(3.1, 0.85, 0.3));
         }
       });
-      this.spawnFlash(a, new THREE.Color(2.2, 1.4, 0.5), 0.45, 110);
+      this.spawnFlash(a, heroic ? new THREE.Color(3.0, 0.95, 0.35) : new THREE.Color(2.2, 1.4, 0.5), heroic ? 0.65 : 0.45, 110);
       return;
     }
 
     if (weapon === "cannon") {
       // Heavy glowing shell streaking rapidly + muzzle puff
-      const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.6, 1.7, 0.55), transparent: true, opacity: 0.98 });
+      const col = heroic ? new THREE.Color(3.4, 0.92, 0.3) : new THREE.Color(2.6, 1.7, 0.55);
+      const mat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.98 });
       const beam = new THREE.Mesh(sharedCyl, mat);
-      beam.scale.set(1.45, Math.min(len, 1.4), 1.45);
+      const thick = heroic ? 2.15 : 1.45;
+      beam.scale.set(thick, Math.min(len, heroic ? 1.85 : 1.4), thick);
       beam.quaternion.setFromUnitVectors(UP, dir.clone().normalize());
       let hit = false;
       this.add(beam, 175, (o, t) => {
@@ -158,32 +186,34 @@ export class VfxSystem {
         mat.opacity = 1 - t * 0.85;
         if (t >= 0.82 && !hit) {
           hit = true;
-          this.spawnFlash(b, new THREE.Color(2.5, 1.4, 0.4), 0.65, 150);
+          this.spawnFlash(b, heroic ? new THREE.Color(3.4, 0.95, 0.3) : new THREE.Color(2.5, 1.4, 0.4), heroic ? 0.95 : 0.65, 150);
+          if (heroic) this.spawnImpactRing(b.x, b.z, 0.9, new THREE.Color(3.2, 0.85, 0.28));
         }
       });
-      this.spawnFlash(a, new THREE.Color(2.8, 1.9, 0.7), 0.68, 130);
+      this.spawnFlash(a, heroic ? new THREE.Color(3.4, 1.25, 0.4) : new THREE.Color(2.8, 1.9, 0.7), heroic ? 0.95 : 0.68, 140);
       this.spawnSmoke(a.x, a.y, a.z, false);
       return;
     }
 
     if (weapon === "melee") {
-      // Electric melee slash spark
-      this.spawnFlash(b, new THREE.Color(1.2, 2.4, 2.8), 0.55, 150);
+      this.spawnFlash(b, heroic ? new THREE.Color(3.2, 0.95, 0.35) : new THREE.Color(1.2, 2.4, 2.8), heroic ? 0.8 : 0.55, 150);
       return;
     }
 
     // Default: crisp ballistic rifle / turret tracer
     const mat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(2.2, 1.9, 0.85),
+      color: heroic ? new THREE.Color(3.2, 0.95, 0.35) : new THREE.Color(2.2, 1.9, 0.85),
       transparent: true,
-      opacity: 0.92,
+      opacity: 0.94,
     });
     const beam = new THREE.Mesh(sharedCyl, mat);
-    beam.scale.set(0.75, len, 0.75);
+    const thick = heroic ? 1.25 : 0.75;
+    beam.scale.set(thick, len, thick);
     beam.position.copy(a).lerp(b, 0.5);
     beam.quaternion.setFromUnitVectors(UP, dir.normalize());
-    this.add(beam, 120, (_o, t) => (mat.opacity = 0.92 * (1 - t)));
-    this.spawnFlash(a, new THREE.Color(2.6, 2.0, 0.85), 0.36, 100);
+    this.add(beam, 125, (_o, t) => (mat.opacity = 0.94 * (1 - t)));
+    this.spawnFlash(a, heroic ? new THREE.Color(3.3, 1.15, 0.4) : new THREE.Color(2.6, 2.0, 0.85), heroic ? 0.56 : 0.36, 110);
+    if (heroic) this.spawnFlash(b, new THREE.Color(3.0, 0.9, 0.35), 0.42, 110);
   }
 
   private spawnFlash(pos: THREE.Vector3, color: THREE.Color, size: number, life: number) {
@@ -197,20 +227,57 @@ export class VfxSystem {
     });
   }
 
-  private spawnImpactRing(x: number, z: number, radius: number, color: THREE.Color) {
-    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, depthWrite: false });
+  private spawnImpactRing(x: number, z: number, radius: number, color: THREE.Color, life = 380) {
+    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.88, depthWrite: false });
     const ring = new THREE.Mesh(sharedRing, mat);
     ring.rotation.x = -Math.PI / 2;
     ring.position.set(x, 0.1, z);
-    this.add(ring, 380, (o, t) => {
+    this.add(ring, life, (o, t) => {
       const sc = 0.3 + t * radius * 1.5;
       o.scale.setScalar(sc);
-      mat.opacity = 0.85 * (1 - t);
+      mat.opacity = 0.88 * (1 - t);
     });
+  }
+
+  // ---------- Persistent Battlefield Scorch Craters ----------
+
+  spawnCrater(x: number, y: number, r: number) {
+    const mat = new THREE.MeshBasicMaterial({
+      map: getCraterTexture(),
+      transparent: true,
+      opacity: 0.88,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+    });
+    const mesh = new THREE.Mesh(sharedCraterGeo, mat);
+    const sz = Math.max(1.2, r * 2.15);
+    mesh.position.set(x, 0.025, y);
+    mesh.rotation.y = Math.random() * Math.PI * 2;
+    mesh.scale.set(sz, 1, sz);
+    mesh.renderOrder = 1;
+    this.scene.add(mesh);
+    this.craters.push({ mesh, mat, fading: false });
+
+    // Ring-buffer cap: softly fade out oldest crater beyond MAX_CRATERS
+    let liveCount = 0;
+    for (const c of this.craters) if (!c.fading) liveCount++;
+    if (liveCount > MAX_CRATERS) {
+      for (const c of this.craters) {
+        if (!c.fading) {
+          c.fading = true;
+          break;
+        }
+      }
+    }
   }
 
   spawnBoom(x: number, y: number, r: number) {
     const rad = Math.max(1.2, r * 1.05);
+    if (r >= 1.1) {
+      this.spawnCrater(x, y, Math.min(3.4, r * 0.95));
+    }
+
     // Fireball
     const fireMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.5, 1.05, 0.25), transparent: true, opacity: 0.95 });
     const fire = new THREE.Mesh(sharedFire, fireMat);
@@ -225,7 +292,7 @@ export class VfxSystem {
     this.spawnImpactRing(x, y, rad, new THREE.Color(2.2, 1.25, 0.35));
 
     // Flying sparks/debris chunks
-    const chunks = Math.min(6, Math.max(3, Math.round(rad * 2.5)));
+    const chunks = Math.min(8, Math.max(3, Math.round(rad * 2.5)));
     for (let i = 0; i < chunks; i++) {
       const ang = (i / chunks) * Math.PI * 2 + Math.random() * 0.6;
       const spd = (1.6 + Math.random() * 2.0) * Math.min(2, rad * 0.7);
@@ -247,6 +314,234 @@ export class VfxSystem {
     this.spawnSmoke(x + 0.3, 0.5, y - 0.25, true);
   }
 
+  // ---------- Orbital Ion Cannon Sky-Beam Superweapon VFX ----------
+
+  spawnSuperweapon(x: number, y: number) {
+    // Phase 1 (0..450ms): 3 converging cyan-white plasma target rings on the ground
+    for (let i = 0; i < 3; i++) {
+      const startR = 5.6 - i * 1.1;
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(1.4, 2.8, 3.6),
+        transparent: true,
+        opacity: 0.9,
+        depthWrite: false,
+      });
+      const ring = new THREE.Mesh(sharedRing, ringMat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(x, 0.14 + i * 0.04, y);
+      this.add(ring, 460 + i * 35, (o, t) => {
+        const ease = t * t;
+        const sc = Math.max(0.2, startR * (1 - ease * 0.92));
+        o.scale.setScalar(sc);
+        ringMat.opacity = t < 0.85 ? 0.3 + t * 0.7 : (1 - t) * 6;
+      });
+    }
+
+    // Ground charge glow buildup during convergence
+    const chargeMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(1.6, 3.0, 3.8),
+      transparent: true,
+      opacity: 0.2,
+      depthWrite: false,
+    });
+    const charge = new THREE.Mesh(sharedFire, chargeMat);
+    charge.position.set(x, 0.25, y);
+    this.add(charge, 480, (o, t) => {
+      o.scale.setScalar(0.5 + t * 2.2);
+      chargeMat.opacity = 0.2 + t * 0.75;
+    });
+
+    // Phase 2 & 3 (total 1700ms): Colossal orbital sky-beam descending from y=60 + blast detonation at t=0.26 (~450ms)
+    const beamGroup = new THREE.Group();
+    beamGroup.position.set(x, 0, y);
+
+    const coreMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(2.6, 3.6, 4.2),
+      transparent: true,
+      opacity: 0,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const core = new THREE.Mesh(sharedBeamCyl, coreMat);
+    core.position.y = 30;
+    beamGroup.add(core);
+
+    const outerMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(0.55, 2.0, 3.4),
+      transparent: true,
+      opacity: 0,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const outer = new THREE.Mesh(sharedBeamCyl, outerMat);
+    outer.position.y = 30;
+    beamGroup.add(outer);
+
+    // Spiralling plasma energy helix rings cascading down the beam
+    const helixMats: THREE.MeshBasicMaterial[] = [];
+    const helixRings: THREE.Mesh[] = [];
+    for (let i = 0; i < 4; i++) {
+      const hm = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(1.5, 3.0, 4.0),
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      });
+      const hr = new THREE.Mesh(sharedRing, hm);
+      hr.rotation.x = Math.PI / 2 + (i % 2 === 0 ? 0.28 : -0.28);
+      hr.position.y = 48;
+      beamGroup.add(hr);
+      helixMats.push(hm);
+      helixRings.push(hr);
+    }
+
+    let detonated = false;
+    this.add(beamGroup, 1700, (_o, t) => {
+      const fireStart = 0.265; // ~450ms
+      if (t < fireStart) {
+        coreMat.opacity = 0;
+        outerMat.opacity = 0;
+        return;
+      }
+      const u = (t - fireStart) / (1 - fireStart); // 0..1 across beam duration
+
+      if (!detonated) {
+        detonated = true;
+        // Massive scorch crater
+        this.spawnCrater(x, y, 4.4);
+        // Blinding ground impact flash core
+        const blastMat = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(2.4, 3.2, 3.8),
+          transparent: true,
+          opacity: 0.98,
+          depthWrite: false,
+        });
+        const blast = new THREE.Mesh(sharedFire, blastMat);
+        blast.position.set(x, 0.8, y);
+        this.add(blast, 820, (bo, bt) => {
+          bo.scale.setScalar(1.4 + bt * 6.8);
+          bo.position.y = 0.7 + bt * 1.4;
+          blastMat.opacity = (1 - bt) * (1 - bt);
+        });
+        // Colossal expanding cyan plasma shockwave + secondary fiery thermal ring
+        this.spawnImpactRing(x, y, 5.4, new THREE.Color(1.1, 2.8, 3.8), 760);
+        this.spawnImpactRing(x, y, 4.2, new THREE.Color(3.0, 1.35, 0.32), 680);
+
+        // 14 fiery debris & ionized chunks rocketing outward
+        for (let i = 0; i < 14; i++) {
+          const ang = (i / 14) * Math.PI * 2 + Math.random() * 0.35;
+          const spd = 4.2 + Math.random() * 5.2;
+          const vy = 4.6 + Math.random() * 4.2;
+          const col = i % 3 === 0 ? 0x52e8ff : i % 2 === 0 ? 0xff9828 : 0x2e343c;
+          const dMat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 1 });
+          const deb = new THREE.Mesh(sharedSpark, dMat);
+          deb.scale.setScalar(1.6 + Math.random() * 1.2);
+          deb.position.set(x, 0.7, y);
+          this.add(deb, 880, (doObj, dt0) => {
+            const s = dt0 * 0.88;
+            doObj.position.set(
+              x + Math.cos(ang) * spd * s,
+              Math.max(0.1, 0.7 + vy * s - 6.4 * s * s),
+              y + Math.sin(ang) * spd * s,
+            );
+            doObj.rotation.x += 0.24;
+            doObj.rotation.y += 0.19;
+            dMat.opacity = 1 - dt0;
+          });
+        }
+
+        // Dense billowing blast smoke clouds
+        for (let i = 0; i < 6; i++) {
+          const ang = (i / 6) * Math.PI * 2;
+          this.spawnSmoke(x + Math.cos(ang) * 1.8, 0.9, y + Math.sin(ang) * 1.8, true);
+        }
+      }
+
+      // Beam strike descent & taper envelope
+      const drop = Math.min(1, u / 0.08);
+      const env = u < 0.12 ? u / 0.12 : Math.pow(Math.max(0, 1 - (u - 0.12) / 0.88), 1.45);
+      const pulse = 1 + 0.1 * Math.sin(u * 42);
+      const coreR = Math.max(0.05, 1.55 * env * pulse);
+      const outerR = Math.max(0.1, 3.05 * env * pulse);
+
+      core.position.y = 60 - 30 * drop;
+      core.scale.set(coreR, drop, coreR);
+      coreMat.opacity = Math.min(0.98, env * 1.25);
+
+      outer.position.y = 60 - 30 * drop;
+      outer.scale.set(outerR, drop, outerR);
+      outerMat.opacity = Math.min(0.55, env * 0.72);
+
+      // Spiralling helix energy rings rushing downward along the sky-beam
+      for (let i = 0; i < helixRings.length; i++) {
+        const phase = (u * 3.2 + i * 0.25) % 1;
+        helixRings[i].position.y = 46 * (1 - phase) + 0.5;
+        helixRings[i].rotation.y = u * 14 + i * 1.6;
+        const rSc = Math.max(0.1, (2.2 + 0.6 * Math.sin(phase * Math.PI)) * env);
+        helixRings[i].scale.setScalar(rSc);
+        helixMats[i].opacity = env * (1 - phase * 0.5) * 0.85;
+      }
+    });
+  }
+
+  // ---------- Floating World-Space Text Popups ----------
+
+  spawnPopup(x: number, y: number, text: string, color = "#ffd84d") {
+    const W = 384;
+    const H = 80;
+    const c = document.createElement("canvas");
+    c.width = W;
+    c.height = H;
+    const ctx = c.getContext("2d")!;
+    ctx.clearRect(0, 0, W, H);
+
+    ctx.font = "900 32px system-ui, -apple-system, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+
+    // Crisp dark outline + subtle colored glow for high readability over terrain & explosions
+    ctx.strokeStyle = "rgba(6, 10, 16, 0.92)";
+    ctx.lineWidth = 8;
+    ctx.strokeText(text, W / 2, H / 2);
+
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = color;
+    ctx.fillText(text, W / 2, H / 2);
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const mat = new THREE.SpriteMaterial({
+      map: tex,
+      transparent: true,
+      opacity: 1,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const sp = new THREE.Sprite(mat);
+    const startY = 1.65;
+    sp.position.set(x, startY, y);
+    sp.renderOrder = 30;
+    const baseW = 3.8;
+    const baseH = baseW * (H / W);
+    sp.scale.set(baseW, baseH, 1);
+
+    this.add(
+      sp,
+      1400,
+      (o, t) => {
+        const easeOut = 1 - Math.pow(1 - t, 2.2);
+        o.position.y = startY + easeOut * 2.1;
+        const pop = t < 0.12 ? 0.72 + (t / 0.12) * 0.36 : t < 0.24 ? 1.08 - ((t - 0.12) / 0.12) * 0.08 : 1;
+        o.scale.set(baseW * pop, baseH * pop, 1);
+        mat.opacity = t > 0.58 ? Math.max(0, 1 - (t - 0.58) / 0.42) : 1;
+      },
+      false,
+      true,
+    );
+  }
+
   update() {
     const now = performance.now();
     const dt = Math.min(0.1, (now - this.lastNow) / 1000);
@@ -256,10 +551,22 @@ export class VfxSystem {
       const t = (now - f.born) / f.life;
       if (t >= 1) {
         this.scene.remove(f.obj);
-        disposeFxObj(f.obj, !!f.disposeGeo);
+        disposeFxObj(f.obj, !!f.disposeGeo, !!f.disposeTex);
         this.fxs.splice(i, 1);
       } else {
         f.tick(f.obj, t, dt);
+      }
+    }
+
+    // Fade out overflow craters cleanly
+    for (let i = this.craters.length - 1; i >= 0; i--) {
+      const c = this.craters[i];
+      if (!c.fading) continue;
+      c.mat.opacity -= dt * 0.75;
+      if (c.mat.opacity <= 0.02) {
+        this.scene.remove(c.mesh);
+        c.mat.dispose();
+        this.craters.splice(i, 1);
       }
     }
   }
@@ -267,13 +574,18 @@ export class VfxSystem {
   clear() {
     for (const f of this.fxs) {
       this.scene.remove(f.obj);
-      disposeFxObj(f.obj, !!f.disposeGeo);
+      disposeFxObj(f.obj, !!f.disposeGeo, !!f.disposeTex);
     }
     this.fxs = [];
+    for (const c of this.craters) {
+      this.scene.remove(c.mesh);
+      c.mat.dispose();
+    }
+    this.craters = [];
   }
 }
 
-function disposeFxObj(o: THREE.Object3D, disposeGeo: boolean) {
+function disposeFxObj(o: THREE.Object3D, disposeGeo: boolean, disposeTex = false) {
   o.traverse((c) => {
     if (c instanceof THREE.Mesh || c instanceof THREE.Line) {
       if (disposeGeo) (c.geometry as THREE.BufferGeometry)?.dispose?.();
@@ -281,12 +593,14 @@ function disposeFxObj(o: THREE.Object3D, disposeGeo: boolean) {
       if (Array.isArray(m)) m.forEach((x) => x.dispose());
       else m?.dispose?.();
     } else if (c instanceof THREE.Sprite) {
-      (c.material as THREE.SpriteMaterial).dispose();
+      const sm = c.material as THREE.SpriteMaterial;
+      if (disposeTex && sm.map) sm.map.dispose();
+      sm.dispose();
     }
   });
 }
 
-// ---------- Selected-Unit Waypoint Path Renderer ----------
+// ---------- Selected-Unit Waypoint & Building Rally Line Renderer ----------
 
 export class WaypointOverlay {
   private group = new THREE.Group();
@@ -300,8 +614,9 @@ export class WaypointOverlay {
   update(
     entries: { x: number; y: number; wp: [number, number, OrderKind][] }[],
     nowSec: number,
+    rallies: { x: number; y: number; rx: number; ry: number }[] = [],
   ) {
-    // Clear previous frame's waypoint segments cleanly
+    // Clear previous frame's waypoint & rally segments cleanly
     for (const o of this.objs) {
       this.group.remove(o);
       if (o instanceof THREE.Line) {
@@ -312,7 +627,7 @@ export class WaypointOverlay {
       }
     }
     this.objs = [];
-    if (!entries.length) return;
+    if (!entries.length && !rallies.length) return;
 
     const pulse = 0.85 + 0.2 * Math.sin(nowSec * 6);
     const seenNodes = new Set<string>();
@@ -365,9 +680,54 @@ export class WaypointOverlay {
         py = wy;
       }
     }
+
+    // Crisp cyan rally lines & animated flag pins for selected production buildings
+    const RALLY_COL = 0x44f0ff;
+    for (const r of rallies) {
+      const pts = [new THREE.Vector3(r.x, 0.14, r.y), new THREE.Vector3(r.rx, 0.09, r.ry)];
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(pts),
+        new THREE.LineBasicMaterial({ color: RALLY_COL, transparent: true, opacity: 0.88 }),
+      );
+      this.group.add(line);
+      this.objs.push(line);
+
+      const ring = new THREE.Mesh(
+        sharedPinRing,
+        new THREE.MeshBasicMaterial({
+          color: RALLY_COL,
+          transparent: true,
+          opacity: 0.88,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        }),
+      );
+      ring.position.set(r.rx, 0.07, r.ry);
+      ring.scale.setScalar(pulse * 1.15);
+      this.group.add(ring);
+      this.objs.push(ring);
+
+      const post = new THREE.Mesh(
+        sharedPinPost,
+        new THREE.MeshBasicMaterial({ color: 0xbef9ff, transparent: true, opacity: 0.9 }),
+      );
+      post.position.set(r.rx, 0.45, r.ry);
+      post.scale.set(1, 1.35, 1);
+      this.group.add(post);
+      this.objs.push(post);
+
+      const flag = new THREE.Mesh(
+        sharedRallyFlag,
+        new THREE.MeshBasicMaterial({ color: RALLY_COL, transparent: true, opacity: 0.95 }),
+      );
+      flag.position.set(r.rx + 0.23, 0.76, r.ry);
+      flag.rotation.y = Math.sin(nowSec * 4.5) * 0.24;
+      this.group.add(flag);
+      this.objs.push(flag);
+    }
   }
 
   clear() {
-    this.update([], 0);
+    this.update([], 0, []);
   }
 }

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { CrateKind } from "../shared/gamedefs";
 import { BUILDINGS, EntKind, isBuildingKind } from "./util";
 import { getArmorMat, getConcreteMat, getGlowMat, getTreadMat } from "./textures";
 
@@ -26,12 +27,21 @@ export interface EntVis {
   turret: THREE.Group | null;
   barBg: THREE.Sprite;
   barFg: THREE.Sprite;
+  vetBadge: THREE.Sprite;
   ring: THREE.Mesh;
   topY: number;
   spin?: THREE.Group;
   bin?: THREE.Mesh;
   rig: AnimRig;
   kind: EntKind;
+}
+
+export interface CrateVis {
+  root: THREE.Group;
+  box: THREE.Group;
+  ring: THREE.Mesh;
+  beacon: THREE.Mesh;
+  kind: CrateKind;
 }
 
 // ---------- Palette helpers ----------
@@ -174,6 +184,75 @@ function makeBar(w: number): { bg: THREE.Sprite; fg: THREE.Sprite } {
   bg.userData.isBar = true;
   fg.userData.isBar = true;
   return { bg, fg };
+}
+
+// ---------- Veterancy Star Badge Sprites ----------
+
+const vetTexCache = new Map<number, THREE.CanvasTexture>();
+
+function getVetTexture(rank: number): THREE.CanvasTexture {
+  const r = Math.max(1, Math.min(3, rank | 0));
+  const cached = vetTexCache.get(r);
+  if (cached) return cached;
+
+  const W = 128;
+  const H = 48;
+  const c = document.createElement("canvas");
+  c.width = W;
+  c.height = H;
+  const ctx = c.getContext("2d")!;
+  ctx.clearRect(0, 0, W, H);
+
+  const stars = r === 1 ? "★" : r === 2 ? "★★" : "★★★";
+  const pillW = r === 1 ? 42 : r === 2 ? 72 : 104;
+  const px = (W - pillW) / 2;
+
+  // Subtle dark tactical pill backdrop
+  ctx.fillStyle = r === 3 ? "rgba(44, 10, 10, 0.86)" : "rgba(10, 14, 20, 0.82)";
+  ctx.strokeStyle = r === 3 ? "#ff5238" : r === 2 ? "#ffd040" : "#d8c47a";
+  ctx.lineWidth = r === 3 ? 2.5 : 2;
+  ctx.beginPath();
+  ctx.roundRect(px, 7, pillW, 34, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  // Radiant glow for heroic / elite stars
+  ctx.font = "900 24px system-ui, -apple-system, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.shadowColor = r === 3 ? "#ff3820" : r === 2 ? "#ffae00" : "#e8d890";
+  ctx.shadowBlur = r === 3 ? 12 : r === 2 ? 8 : 4;
+  ctx.fillStyle = r === 3 ? "#ffe066" : r === 2 ? "#ffd83a" : "#ece2b8";
+  ctx.fillText(stars, W / 2, H / 2 + 1);
+
+  if (r === 3) {
+    // Crisp crimson-gold heroic outline accent
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "#ff3a1f";
+    ctx.lineWidth = 1.2;
+    ctx.strokeText(stars, W / 2, H / 2 + 1);
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  vetTexCache.set(r, tex);
+  return tex;
+}
+
+export function setVetBadge(vis: EntVis, vet: number): void {
+  const rank = Math.max(0, Math.min(3, vet | 0));
+  if (vis.vetBadge.userData.vetRank === rank) return;
+  vis.vetBadge.userData.vetRank = rank;
+  if (rank <= 0) {
+    vis.vetBadge.visible = false;
+    return;
+  }
+  const mat = vis.vetBadge.material as THREE.SpriteMaterial;
+  mat.map = getVetTexture(rank);
+  mat.needsUpdate = true;
+  const sc = rank === 3 ? 1.15 : 1.0;
+  vis.vetBadge.scale.set(0.76 * sc, 0.285 * sc, 1);
+  vis.vetBadge.visible = true;
 }
 
 // ---------- Articulated Humanoid Builder ----------
@@ -893,6 +972,170 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
       topY = 1.72;
       break;
     }
+
+    case "superweapon": {
+      // Monumental Orbital Ion Uplink (3x3)
+      body.add(foundationPad(3, 3, 0.24));
+      // Armored stepped command bunker base
+      add(box(2.54, 0.46, 2.54, dark), 0, 0.47, 0);
+      add(box(2.08, 0.34, 2.08, HULL), 0, 0.87, 0);
+      add(box(1.62, 0.18, 1.62, colorHex), 0, 1.12, 0);
+      // Glowing cyan command viewports on all 4 flanks
+      add(box(1.16, 0.1, 0.05, WIN_GLOW, 0.82), 0, 0.56, 1.28);
+      add(box(1.16, 0.1, 0.05, WIN_GLOW, 0.82), 0, 0.56, -1.28);
+      add(box(0.05, 0.1, 1.16, WIN_GLOW, 0.82), 1.28, 0.56, 0);
+      add(box(0.05, 0.1, 1.16, WIN_GLOW, 0.82), -1.28, 0.56, 0);
+
+      // Central sky-beam aperture pedestal + glowing plasma core
+      const ped = cyl(1.24, 0.46, GUNM, 0, true);
+      add(ped, 0, 1.38, 0);
+      const apertureRing = new THREE.Mesh(geoTorus, getArmorMat(colorHex, 0.6, 0.38, 0.2));
+      apertureRing.rotation.x = Math.PI / 2;
+      apertureRing.scale.setScalar(1.02);
+      add(apertureRing, 0, 1.62, 0);
+      const skyCore = cyl(0.54, 0.26, CORE_GLOW, 0.92);
+      add(skyCore, 0, 1.62, 0);
+      pulse.push(skyCore);
+
+      // Huge tilted orbital emitter dish assembly (spins smoothly)
+      spin = new THREE.Group();
+      spin.position.set(0, 1.98, 0);
+      body.add(spin);
+      const gimbal = new THREE.Mesh(geoTorus, getArmorMat(STEEL, 0.65, 0.35));
+      gimbal.rotation.x = Math.PI / 2;
+      gimbal.scale.setScalar(1.26);
+      spin.add(gimbal);
+      const dish = cyl(1.62, 0.18, bright, 0, true);
+      dish.rotation.x = 0.52;
+      dish.position.set(0, 0.22, -0.14);
+      spin.add(dish);
+      const dishRim = new THREE.Mesh(geoTorus, getArmorMat(CORE_GLOW, 0.6, 0.3, 0.5));
+      dishRim.rotation.x = Math.PI / 2 + 0.52;
+      dishRim.scale.setScalar(1.48);
+      dishRim.position.set(0, 0.26, -0.16);
+      spin.add(dishRim);
+      // Emitter focus spire jutting from dish center
+      const focusRod = cyl(0.1, 0.78, STEEL);
+      focusRod.rotation.x = 0.52;
+      focusRod.position.set(0, 0.56, 0.04);
+      spin.add(focusRod);
+      const focusOrb = sph(0.24, CORE_GLOW, 0.95);
+      focusOrb.position.set(0, 0.86, 0.22);
+      spin.add(focusOrb);
+      pulse.push(focusOrb);
+
+      // Counter-rotating cyan plasma accelerator ring orbiting the upper array
+      spin2 = new THREE.Group();
+      spin2.position.set(0, 2.28, 0);
+      body.add(spin2);
+      const accel1 = new THREE.Mesh(geoTorus, getArmorMat(CORE_GLOW, 0.65, 0.28, 0.55));
+      accel1.rotation.x = Math.PI / 2 + 0.28;
+      accel1.scale.setScalar(1.68);
+      spin2.add(accel1);
+      const accel2 = new THREE.Mesh(geoTorus, getArmorMat(bright, 0.65, 0.32, 0.35));
+      accel2.rotation.x = Math.PI / 2 - 0.28;
+      accel2.scale.setScalar(1.36);
+      spin2.add(accel2);
+
+      // 3 tall charging pylon spires positioned symmetrically at 120°
+      for (let i = 0; i < 3; i++) {
+        const ang = (i * Math.PI * 2) / 3 + Math.PI / 6;
+        const px = Math.cos(ang) * 1.06;
+        const pz = Math.sin(ang) * 1.06;
+        const pylon = cyl(0.24, 1.92, HULL2, 0, true);
+        add(pylon, px, 1.64, pz);
+        const fin = box(0.12, 1.26, 0.36, colorHex);
+        fin.rotation.y = -ang + Math.PI / 2;
+        add(fin, Math.cos(ang) * 1.18, 1.38, Math.sin(ang) * 1.18);
+        // Glowing plasma insulator collars along each spire
+        for (const ry of [1.82, 2.18, 2.52]) {
+          const coil = new THREE.Mesh(geoTorus, getArmorMat(CORE_GLOW, 0.6, 0.3, 0.65));
+          coil.rotation.x = Math.PI / 2;
+          coil.scale.setScalar(0.32);
+          add(coil, px, ry, pz);
+        }
+        const tip = sph(0.18, CORE_GLOW, 0.95);
+        add(tip, px, 2.72, pz);
+        pulse.push(tip);
+      }
+
+      smokePos = new THREE.Vector3(-0.75, 1.65, -0.75);
+      topY = 3.18;
+      break;
+    }
+
+    case "derrick": {
+      // Classic Nodding Industrial Oil Derrick (2x2)
+      body.add(foundationPad(2, 2, 0.2));
+      // Steel machinery skid & wellhead housing
+      add(box(1.56, 0.16, 1.56, HULL), 0, 0.28, 0);
+      add(box(0.54, 0.32, 0.56, GUNM), 0.18, 0.52, -0.34);
+      // Wellhead collar + drill pipe at front (+Z)
+      add(cyl(0.34, 0.42, GUNM), 0.18, 0.56, 0.56);
+      add(cyl(0.2, 0.12, colorHex), 0.18, 0.78, 0.56);
+
+      // Cylindrical crude oil storage tank with faction-colored trim band
+      add(cyl(0.68, 0.88, HULL2), -0.48, 0.8, -0.36);
+      add(cyl(0.71, 0.16, colorHex), -0.48, 0.92, -0.36);
+      const capDome = sph(0.66, STEEL);
+      capDome.scale.multiply(new THREE.Vector3(1, 0.34, 1));
+      add(capDome, -0.48, 1.24, -0.36);
+      // Faction status beacon on tank top
+      const beacon = sph(0.12, colorHex, 0.85);
+      add(beacon, -0.48, 1.42, -0.36);
+      pulse.push(beacon);
+
+      // Steel A-frame lattice Sampson post rising to the walking-beam pivot
+      const pivotX = 0.18;
+      const pivotY = 1.58;
+      const pivotZ = -0.02;
+      for (const [sx, sz] of [
+        [-0.26, -0.26],
+        [0.26, -0.26],
+        [-0.26, 0.26],
+        [0.26, 0.26],
+      ]) {
+        const strut = box(0.08, 1.28, 0.08, STEEL);
+        strut.position.set(pivotX + sx * 0.55, 0.96, pivotZ + sz * 0.55);
+        strut.rotation.z = sx > 0 ? 0.2 : -0.2;
+        strut.rotation.x = sz > 0 ? -0.2 : 0.2;
+        body.add(strut);
+      }
+      // Cross braces on Sampson post
+      add(box(0.46, 0.06, 0.46, GUNM), pivotX, 0.92, pivotZ);
+      add(box(0.26, 0.16, 0.24, GUNM), pivotX, pivotY, pivotZ);
+
+      // Animated nodding horsehead walking-beam (crane rocks around X in anim.ts!)
+      crane = new THREE.Group();
+      crane.position.set(pivotX, pivotY, pivotZ);
+      body.add(crane);
+      // Horizontal I-beam
+      const beam = box(0.16, 0.16, 1.38, colorHex);
+      crane.add(beam);
+      const beamTop = box(0.2, 0.05, 1.42, HULL);
+      beamTop.position.set(0, 0.1, 0);
+      crane.add(beamTop);
+      // Industrial curved horsehead nose at front (+Z)
+      const headMain = box(0.22, 0.44, 0.28, GUNM);
+      headMain.position.set(0, -0.06, 0.64);
+      headMain.rotation.x = 0.18;
+      crane.add(headMain);
+      const headAccent = box(0.24, 0.12, 0.3, "#d89c28");
+      headAccent.position.set(0, 0.04, 0.66);
+      crane.add(headAccent);
+      // Vertical steel sucker rod descending into the wellhead
+      const rod = cyl(0.05, 1.15, STEEL);
+      rod.position.set(0, -0.62, 0.58);
+      crane.add(rod);
+      // Heavy rear counterweight & crank housing (-Z)
+      const counter = box(0.32, 0.28, 0.34, dark);
+      counter.position.set(0, -0.1, -0.64);
+      crane.add(counter);
+
+      smokePos = new THREE.Vector3(-0.48, 1.38, -0.36);
+      topY = 2.18;
+      break;
+    }
   }
 
   // Health bar sprites (tagged isBar so icon renderer & raycaster ignore them)
@@ -901,6 +1144,17 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
   bg.position.y = topY + 0.38;
   fg.position.y = topY + 0.38;
   root.add(bg, fg);
+
+  // Veterancy badge sprite (centered cleanly above HP bar; hidden until rank >= 1)
+  const vetMat = new THREE.SpriteMaterial({ transparent: true, opacity: 0.98, depthTest: false });
+  const vetBadge = new THREE.Sprite(vetMat);
+  vetBadge.position.set(0, topY + 0.58, 0);
+  vetBadge.scale.set(0.76, 0.285, 1);
+  vetBadge.renderOrder = 22;
+  vetBadge.visible = false;
+  vetBadge.userData.isBar = true;
+  vetBadge.userData.vetRank = 0;
+  root.add(vetBadge);
 
   // Crisp selection ring
   const ringSize = isBuildingKind(kind) ? Math.max(BUILDINGS[kind].w, BUILDINGS[kind].h) * 0.78 : 0.68;
@@ -938,7 +1192,85 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
     smokePos,
   };
 
-  return { root, turret, barBg: bg, barFg: fg, ring, topY, spin, bin, rig, kind };
+  return { root, turret, barBg: bg, barFg: fg, vetBadge, ring, topY, spin, bin, rig, kind };
+}
+
+// ---------- Battlefield Supply Crate 3D Model ----------
+
+const CRATE_ACCENTS: Record<CrateKind, string> = {
+  cash: "#ffbe2e",
+  vet: "#3ce8ff",
+  heal: "#34e870",
+  unit: "#ff5436",
+};
+
+const geoCrateBeacon = new THREE.CylinderGeometry(0.12, 0.34, 1.35, 12, 1, true);
+
+export function makeCrateVis(kind: CrateKind): CrateVis {
+  const accent = CRATE_ACCENTS[kind] ?? "#ffbe2e";
+  const accentHex = new THREE.Color(accent).getHex();
+  const root = new THREE.Group();
+
+  // Hovering rotating armored drop-crate body
+  const crateBox = new THREE.Group();
+  crateBox.position.y = 0.48;
+  root.add(crateBox);
+
+  const hull = box(0.68, 0.56, 0.68, HULL, 0, 0.55, 0.45);
+  crateBox.add(hull);
+  // Glowing faction-neutral energy stripe band around crate center
+  const band = box(0.72, 0.14, 0.72, accent, 0.95);
+  crateBox.add(band);
+  // Armored corner bumper frames
+  for (const [cx, cz] of [
+    [-0.31, -0.31],
+    [0.31, -0.31],
+    [-0.31, 0.31],
+    [0.31, 0.31],
+  ]) {
+    const post = box(0.11, 0.62, 0.11, STEEL, 0, 0.6, 0.4);
+    post.position.set(cx, 0, cz);
+    crateBox.add(post);
+  }
+  // Top cap + glowing status diamond
+  const lid = box(0.56, 0.08, 0.56, GUNM);
+  lid.position.y = 0.31;
+  crateBox.add(lid);
+  const topCore = sph(0.18, accent, 1.0);
+  topCore.position.y = 0.39;
+  crateBox.add(topCore);
+
+  // Pulsing ground beacon ring
+  const ring = new THREE.Mesh(
+    geoRing,
+    new THREE.MeshBasicMaterial({
+      color: accentHex,
+      transparent: true,
+      opacity: 0.85,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.05;
+  ring.scale.setScalar(0.72);
+  root.add(ring);
+
+  // Soft vertical light beacon column
+  const beacon = new THREE.Mesh(
+    geoCrateBeacon,
+    new THREE.MeshBasicMaterial({
+      color: accentHex,
+      transparent: true,
+      opacity: 0.2,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
+  );
+  beacon.position.y = 0.72;
+  root.add(beacon);
+
+  return { root, box: crateBox, ring, beacon, kind };
 }
 
 export function tagEntity(root: THREE.Group, id: number) {

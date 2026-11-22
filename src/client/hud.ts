@@ -1,4 +1,4 @@
-import type { LobbyPlayer, PlayerState, EntSnap } from "../shared/protocol";
+import type { LobbyPlayer, PlayerState, EntSnap, MatchStats } from "../shared/protocol";
 import {
   BUILDINGS,
   UNITS,
@@ -7,8 +7,17 @@ import {
   BUILDING_NAMES,
   UPGRADE_COST,
   PLAYER_COLORS,
+  SW_CHARGE_TICKS,
+  MAP_LIST,
+  BOT_PROFILES,
+  DEFAULT_CONFIG,
+  getMapLayout,
   BuildingKind,
   UnitKind,
+  MapId,
+  BotDiff,
+  BotProfile,
+  GameConfig,
   MAP_W,
   MAP_H,
 } from "../shared/gamedefs";
@@ -22,13 +31,15 @@ const TOOLTIPS: Record<string, string> = {
   barracks: "Barracks — trains infantry: Riflemen, Sappers, Rocket Troopers.",
   radar: "Radar Uplink — reveals the minimap; unlocks rockets, siege, arc coils.",
   factory: "War Factory — builds vehicles. Upgrade it to unlock heavies.",
-  techlab: "Tech Lab — unlocks the Ore Purifier and War Factory upgrades.",
+  techlab: "Tech Lab — unlocks the Ore Purifier, Ion Uplink, and War Factory upgrades.",
   turret: "Sentry Turret — automated base defense. Needs power.",
   arc: "Arc Coil — heavy zap defense in every direction. Needs power + radar.",
   purifier: "Ore Purifier — +25% on every harvester deposit.",
   depot: "Service Depot — repairs nearby vehicles automatically.",
+  superweapon: "Ion Uplink — charges an Orbital Ion Cannon strike (90s). Limit 1.",
+  derrick: "Oil Derrick — capture with a Sapper for +$500 bonus & +$25/s income.",
   infantry: "Rifleman — cheap, fast, good vs infantry.",
-  engineer: "Sapper — captures enemy buildings on contact. Unarmed.",
+  engineer: "Sapper — captures enemy buildings & Oil Derricks on contact. Unarmed.",
   rocket: "Rocket Trooper — long-range anti-armor infantry. Needs radar.",
   tank: "Battle Tank — armored punch. Crushes infantry.",
   arty: "Siege Launcher — long-range artillery. Fragile. Needs radar.",
@@ -41,7 +52,13 @@ export class Hud {
   onReady: (r: boolean) => void = () => {};
   onStart: () => void = () => {};
   onRematch: () => void = () => {};
-  onAddBot: () => void = () => {};
+  onAddBot: (diff: BotDiff, profile: BotProfile) => void = () => {};
+  onSetBotConfig: (id: string, diff?: BotDiff, profile?: BotProfile) => void = () => {};
+  onKickBot: (id: string) => void = () => {};
+  onSetMap: (map: MapId) => void = () => {};
+  onSetConfig: (cfg: Partial<GameConfig>) => void = () => {};
+  onSetTeam: (team: number, id?: string) => void = () => {};
+  onSetName: (name: string) => void = () => {};
   onResign: () => void = () => {};
   onChat: (text: string) => void = () => {};
   onBuild: (k: BuildingKind) => void = () => {};
@@ -51,10 +68,14 @@ export class Hud {
   onTrainCancel: (u: UnitKind) => void = () => {};
   onMinimapNav: (x: number, y: number) => void = () => {};
   onMinimapPing: (x: number, y: number) => void = () => {};
+  onMinimapOrder?: (x: number, y: number, shift: boolean) => boolean;
+  onSuperweaponClick: () => void = () => {};
   onVerb: (v: "amove" | "stop" | "sell" | "repair") => void = () => {};
   onUpgrade?: (id: number) => void;
   onGroupClick?: (n: number, dbl: boolean) => void;
   onToggleWasd?: () => void;
+  onToggleMute?: () => void;
+  onToggleMusic?: () => void;
 
   private ready = false;
   private icons = new Map<string, string>();
@@ -67,6 +88,11 @@ export class Hud {
   private chatLines: string[] = [];
   private selSig = "";
   private lastGroupClick = { n: -1, t: 0 };
+  private lastSubmittedName = "";
+  private displayCredits = 0;
+  private targetCredits = 0;
+  private creditsInit = false;
+  private spectating = false;
 
   constructor() {
     el("ready-btn").addEventListener("click", () => {
@@ -77,7 +103,30 @@ export class Hud {
     });
     el("start-btn").addEventListener("click", () => this.onStart());
     el("rematch-btn").addEventListener("click", () => this.onRematch());
-    el("addbot-btn")?.addEventListener("click", () => this.onAddBot());
+    el("addbot-btn")?.addEventListener("click", () => {
+      const diff = ((document.getElementById("bot-diff") as HTMLSelectElement | null)?.value as BotDiff) ?? "normal";
+      const profile =
+        ((document.getElementById("bot-profile") as HTMLSelectElement | null)?.value as BotProfile) ?? "balanced";
+      this.onAddBot(diff, profile);
+    });
+    (document.getElementById("cfg-credits") as HTMLSelectElement | null)?.addEventListener("change", (e) => {
+      this.onSetConfig({ startCredits: Number((e.target as HTMLSelectElement).value) });
+    });
+    (document.getElementById("cfg-speed") as HTMLSelectElement | null)?.addEventListener("change", (e) => {
+      this.onSetConfig({ gameSpeed: Number((e.target as HTMLSelectElement).value) });
+    });
+    (document.getElementById("cfg-sw") as HTMLInputElement | null)?.addEventListener("change", (e) => {
+      this.onSetConfig({ superweapons: (e.target as HTMLInputElement).checked });
+    });
+    (document.getElementById("cfg-crates") as HTMLInputElement | null)?.addEventListener("change", (e) => {
+      this.onSetConfig({ crates: (e.target as HTMLInputElement).checked });
+    });
+    (document.getElementById("cfg-derricks") as HTMLInputElement | null)?.addEventListener("change", (e) => {
+      this.onSetConfig({ derricks: (e.target as HTMLInputElement).checked });
+    });
+    (document.getElementById("cfg-fog") as HTMLInputElement | null)?.addEventListener("change", (e) => {
+      this.onSetConfig({ fog: (e.target as HTMLInputElement).checked });
+    });
     el("resign-btn")?.addEventListener("click", () => this.onResign());
     const copy = () => {
       navigator.clipboard?.writeText(location.href).catch(() => {});
@@ -88,6 +137,56 @@ export class Hud {
     el("help-btn")?.addEventListener("click", () => el("help").classList.toggle("hidden"));
     el("help-close")?.addEventListener("click", () => el("help").classList.add("hidden"));
     el("wasd-btn")?.addEventListener("click", () => this.onToggleWasd?.());
+    document.getElementById("mute-btn")?.addEventListener("click", () => this.onToggleMute?.());
+    document.getElementById("music-btn")?.addEventListener("click", () => this.onToggleMusic?.());
+    document.getElementById("sw-hud")?.addEventListener("click", () => this.onSuperweaponClick());
+
+    // Lobby callsign input
+    const nameInput = document.getElementById("name-input") as HTMLInputElement | null;
+    if (nameInput) {
+      const commitName = () => {
+        const clean = nameInput.value.trim().slice(0, 20);
+        if (!clean) {
+          nameInput.value = this.lastSubmittedName;
+          return;
+        }
+        nameInput.value = clean;
+        if (clean !== this.lastSubmittedName) {
+          this.lastSubmittedName = clean;
+          localStorage.setItem("oa-name", clean);
+          this.onSetName(clean);
+        }
+      };
+      nameInput.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          commitName();
+          nameInput.blur();
+        } else if (e.key === "Escape") {
+          nameInput.value = this.lastSubmittedName;
+          nameInput.blur();
+        }
+      });
+      nameInput.addEventListener("blur", commitName);
+    }
+
+    // Lobby map selector populated from MAP_LIST
+    const mapSelect = document.getElementById("map-select") as HTMLSelectElement | null;
+    if (mapSelect) {
+      mapSelect.innerHTML = "";
+      for (const m of MAP_LIST) {
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = m.name;
+        mapSelect.appendChild(opt);
+      }
+      mapSelect.addEventListener("change", () => {
+        const map = mapSelect.value as MapId;
+        this.updateMapDesc(map);
+        this.onSetMap(map);
+      });
+      this.updateMapDesc(MAP_LIST[0].id);
+    }
 
     for (const v of ["amove", "stop", "sell", "repair"] as const) {
       el(`verb-${v}`)?.addEventListener("click", () => this.onVerb(v));
@@ -133,9 +232,12 @@ export class Hud {
       const b = document.createElement("button");
       b.className = "sbtn";
       b.dataset.unit = unit;
-      b.title = `${TOOLTIPS[unit] ?? l} · ${d.buildTicks / 10}s to train`;
+      b.title = `${TOOLTIPS[unit] ?? l} · ${d.buildTicks / 10}s to train · Shift+click = ×5`;
       b.innerHTML = `<span class="icon" data-kind="${unit}"></span><span class="sname">${l}</span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span>`;
-      b.addEventListener("click", () => this.onTrain(unit));
+      b.addEventListener("click", (e) => {
+        const count = e.shiftKey ? 5 : 1;
+        for (let i = 0; i < count; i++) this.onTrain(unit);
+      });
       b.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         this.onTrainCancel(unit);
@@ -144,7 +246,7 @@ export class Hud {
       this.trainBtns.set(unit, b);
     }
 
-    // Minimap navigation & pings
+    // Minimap navigation, orders & pings
     const nav = (e: PointerEvent) => {
       const r = this.minimap.getBoundingClientRect();
       const x = ((e.clientX - r.left) / r.width) * MAP_W;
@@ -155,7 +257,10 @@ export class Hud {
     this.minimap.addEventListener("pointerdown", (e) => {
       if (e.button === 2) {
         const r = this.minimap.getBoundingClientRect();
-        this.onMinimapPing(((e.clientX - r.left) / r.width) * MAP_W, ((e.clientY - r.top) / r.height) * MAP_H);
+        const x = Math.max(0.5, Math.min(MAP_W - 0.5, ((e.clientX - r.left) / r.width) * MAP_W));
+        const y = Math.max(0.5, Math.min(MAP_H - 0.5, ((e.clientY - r.top) / r.height) * MAP_H));
+        if (!e.altKey && this.onMinimapOrder?.(x, y, e.shiftKey)) return;
+        this.onMinimapPing(x, y);
         return;
       }
       mmDrag = true;
@@ -164,6 +269,54 @@ export class Hud {
     this.minimap.addEventListener("contextmenu", (e) => e.preventDefault());
     window.addEventListener("pointermove", (e) => mmDrag && nav(e));
     window.addEventListener("pointerup", () => (mmDrag = false));
+  }
+
+  private updateMapDesc(mapId: MapId) {
+    const d = document.getElementById("map-desc");
+    if (!d) return;
+    const info = MAP_LIST.find((m) => m.id === mapId);
+    d.textContent = info ? info.desc : "";
+  }
+
+  setInitialName(name: string) {
+    this.lastSubmittedName = name;
+    const inp = document.getElementById("name-input") as HTMLInputElement | null;
+    if (inp && document.activeElement !== inp) inp.value = name;
+  }
+
+  setAudioState(muted: boolean, musicOn: boolean) {
+    const mb = document.getElementById("mute-btn");
+    if (mb) {
+      mb.textContent = muted ? "SFX: OFF" : "SFX";
+      mb.classList.toggle("on", !muted);
+    }
+    const bgm = document.getElementById("music-btn");
+    if (bgm) {
+      bgm.textContent = musicOn ? "BGM" : "BGM: OFF";
+      bgm.classList.toggle("on", musicOn && !muted);
+    }
+  }
+
+  resetMatch() {
+    this.creditsInit = false;
+    this.displayCredits = 0;
+    this.targetCredits = 0;
+    this.spectating = false;
+    this.selSig = "";
+    const sw = document.getElementById("sw-hud");
+    if (sw) sw.classList.add("hidden");
+  }
+
+  tick(dt: number) {
+    if (this.spectating || !this.creditsInit) return;
+    const diff = this.targetCredits - this.displayCredits;
+    if (Math.abs(diff) > 0.5) {
+      this.displayCredits = Math.abs(diff) < 2 ? this.targetCredits : this.displayCredits + diff * Math.min(1, dt * 11);
+      el("credits").textContent = fmtCost(Math.round(this.displayCredits));
+    } else if (this.displayCredits !== this.targetCredits) {
+      this.displayCredits = this.targetCredits;
+      el("credits").textContent = fmtCost(Math.round(this.displayCredits));
+    }
   }
 
   private buildTooltip(kind: BuildingKind, missing?: BuildingKind[]) {
@@ -222,29 +375,148 @@ export class Hud {
     el("conn-status").textContent = s;
   }
 
-  showLobby(players: LobbyPlayer[], you: string) {
+  showLobby(players: LobbyPlayer[], you: string, mapId: MapId = "crossroads", config: GameConfig = DEFAULT_CONFIG) {
     el("lobby").classList.remove("hidden");
     el("endscreen").classList.add("hidden");
     const me = players.find((p) => p.id === you);
     this.ready = !!me?.ready;
     el("ready-btn").textContent = this.ready ? "UNREADY" : "READY";
     el("ready-btn").classList.toggle("on", this.ready);
+    const isHost = !!me?.host;
+
+    if (me) this.setInitialName(me.name);
+    const mapSelect = document.getElementById("map-select") as HTMLSelectElement | null;
+    if (mapSelect) {
+      mapSelect.value = mapId;
+      mapSelect.disabled = !isHost;
+    }
+    const cfgCr = document.getElementById("cfg-credits") as HTMLSelectElement | null;
+    if (cfgCr) {
+      cfgCr.value = String(config.startCredits);
+      cfgCr.disabled = !isHost;
+    }
+    const cfgSp = document.getElementById("cfg-speed") as HTMLSelectElement | null;
+    if (cfgSp) {
+      cfgSp.value = String(config.gameSpeed);
+      cfgSp.disabled = !isHost;
+    }
+    const syncChk = (id: string, val: boolean) => {
+      const inp = document.getElementById(id) as HTMLInputElement | null;
+      if (inp) {
+        inp.checked = val;
+        inp.disabled = !isHost;
+      }
+    };
+    syncChk("cfg-sw", config.superweapons);
+    syncChk("cfg-crates", config.crates);
+    syncChk("cfg-derricks", config.derricks);
+    syncChk("cfg-fog", config.fog);
+    this.updateMapDesc(mapId);
+
     const list = el("player-list");
     list.innerHTML = "";
     for (const p of players) {
       const li = document.createElement("li");
       if (p.eliminated) li.classList.add("dead");
       const color = p.slot >= 0 ? PLAYER_COLORS[p.slot] : "#8a97a5";
-      li.innerHTML = `<span class="cdot" style="background:${color}"></span><span class="pname" style="color:${color}">${esc(p.name)}${p.id === you ? " (you)" : ""}</span>
-        <span class="meta">${p.spectator ? "spectating" : p.host ? "◆ host" : ""} ${p.connected ? (p.ready ? "· ready" : "") : "· offline"}${p.eliminated ? " · out" : ""}</span>`;
+
+      const dot = document.createElement("span");
+      dot.className = "cdot";
+      dot.style.background = color;
+      li.appendChild(dot);
+
+      const pname = document.createElement("span");
+      pname.className = "pname";
+      pname.style.color = color;
+      pname.textContent = `${p.name}${p.id === you ? " (you)" : ""}`;
+      li.appendChild(pname);
+
+      if (!p.spectator) {
+        const team = p.team ?? 0;
+        const tLabel = team === 0 ? "FFA" : `T${team}`;
+        const tClass = `tbadge ${team === 1 ? "t1" : team === 2 ? "t2" : "ffa"}`;
+        if (p.id === you || (isHost && p.bot)) {
+          const tb = document.createElement("button");
+          tb.type = "button";
+          tb.className = tClass + " own";
+          tb.textContent = tLabel;
+          tb.title = "Click to cycle team (FFA / Team 1 / Team 2)";
+          tb.addEventListener("click", () => {
+            const next = team === 0 ? 1 : team === 1 ? 2 : 0;
+            this.onSetTeam(next, p.id === you ? undefined : p.id);
+          });
+          li.appendChild(tb);
+        } else {
+          const ts = document.createElement("span");
+          ts.className = tClass;
+          ts.textContent = tLabel;
+          li.appendChild(ts);
+        }
+      }
+
+      if (isHost && p.bot) {
+        const dSel = document.createElement("select");
+        dSel.className = "bot-inline";
+        dSel.title = "Bot difficulty";
+        for (const dv of ["easy", "normal", "brutal"] as BotDiff[]) {
+          const o = document.createElement("option");
+          o.value = dv;
+          o.textContent = dv[0].toUpperCase() + dv.slice(1);
+          o.selected = (p.diff ?? "normal") === dv;
+          dSel.appendChild(o);
+        }
+        dSel.addEventListener("change", () => this.onSetBotConfig(p.id, dSel.value as BotDiff, undefined));
+        li.appendChild(dSel);
+
+        const pSel = document.createElement("select");
+        pSel.className = "bot-inline";
+        pSel.title = "Bot playstyle profile";
+        for (const bp of BOT_PROFILES) {
+          const o = document.createElement("option");
+          o.value = bp.id;
+          o.textContent = bp.label;
+          o.selected = (p.profile ?? "balanced") === bp.id;
+          pSel.appendChild(o);
+        }
+        pSel.addEventListener("change", () => this.onSetBotConfig(p.id, undefined, pSel.value as BotProfile));
+        li.appendChild(pSel);
+      } else {
+        const meta = document.createElement("span");
+        meta.className = "meta";
+        const profLabel = BOT_PROFILES.find((bp) => bp.id === (p.profile ?? "balanced"))?.label ?? "Balanced";
+        const role = p.spectator
+          ? "spectating"
+          : p.bot
+            ? `AI · ${p.diff ?? "normal"} · ${profLabel}`
+            : p.host
+              ? "◆ host"
+              : "";
+        const conn = p.connected ? (p.ready ? "· ready" : "") : "· offline";
+        const out = p.eliminated ? " · out" : "";
+        meta.textContent = `${role} ${conn}${out}`.trim();
+        li.appendChild(meta);
+      }
+
+      if (isHost && p.bot) {
+        const kick = document.createElement("button");
+        kick.type = "button";
+        kick.className = "kick-btn";
+        kick.title = `Remove ${p.name}`;
+        kick.textContent = "×";
+        kick.addEventListener("click", () => this.onKickBot(p.id));
+        li.appendChild(kick);
+      }
+
       list.appendChild(li);
     }
-    const isHost = !!me?.host;
+
     el("start-btn").classList.toggle("hidden", !isHost);
     el("addbot-btn")?.classList.toggle("hidden", !isHost);
+    document.getElementById("bot-diff")?.classList.toggle("hidden", !isHost);
+    document.getElementById("bot-profile")?.classList.toggle("hidden", !isHost);
     el("lobby-hint").textContent = isHost
-      ? "you are host — add a bot or wait for friends, then start (2-4 players)"
-      : "waiting for host to start…";
+      ? "you are host — configure match rules, bot difficulty & playstyles, then start (2-4 players)"
+      : "waiting for host to start… (click your team badge to switch teams)";
   }
 
   hideLobby(spectating = false) {
@@ -256,8 +528,12 @@ export class Hud {
   }
 
   setSpectatorMode(spectating: boolean) {
+    this.spectating = spectating;
     for (const id of ["sidebar", "verbbar", "resign-btn", "groupbar"]) {
       document.getElementById(id)?.classList.toggle("hidden", spectating);
+    }
+    if (spectating) {
+      document.getElementById("sw-hud")?.classList.add("hidden");
     }
   }
 
@@ -267,10 +543,53 @@ export class Hud {
     if (box) box.innerHTML = "";
   }
 
-  showEnd(text: string, reason = "") {
+  showEnd(text: string, reason = "", stats?: MatchStats[], durationSec?: number) {
     el("end-text").textContent = text;
     const r = document.getElementById("end-reason");
     if (r) r.textContent = reason;
+
+    const dur = document.getElementById("end-duration");
+    if (dur) {
+      if (durationSec !== undefined && Number.isFinite(durationSec)) {
+        const s = Math.max(0, Math.floor(durationSec));
+        const mm = String(Math.floor(s / 60)).padStart(2, "0");
+        const ss = String(s % 60).padStart(2, "0");
+        dur.textContent = `MATCH DURATION ${mm}:${ss}`;
+        dur.classList.remove("hidden");
+      } else {
+        dur.textContent = "";
+        dur.classList.add("hidden");
+      }
+    }
+
+    const box = document.getElementById("end-stats");
+    if (box) {
+      if (stats?.length) {
+        const rows = [...stats]
+          .sort((a, b) => a.slot - b.slot)
+          .map((st) => {
+            const color = st.slot >= 0 ? PLAYER_COLORS[st.slot] ?? "#8a97a5" : "#8a97a5";
+            const tLabel = st.team > 0 ? `T${st.team}` : "FFA";
+            const tCls = st.team === 1 ? "t1" : st.team === 2 ? "t2" : "ffa";
+            return `<tr>
+              <td><span class="stats-cmdr"><span class="cdot" style="background:${color}"></span><span style="color:${color}">${esc(st.name)}</span></span></td>
+              <td><span class="tbadge ${tCls}">${tLabel}</span></td>
+              <td class="stats-cr">${fmtCost(Math.round(st.creditsEarned))}</td>
+              <td>${st.unitsBuilt}</td>
+              <td>${st.unitsLost}</td>
+              <td>${st.bldDestroyed}</td>
+            </tr>`;
+          })
+          .join("");
+        box.innerHTML = `<table class="stats-table">
+          <thead><tr><th>COMMANDER</th><th>TEAM</th><th>CREDITS</th><th>BUILT</th><th>LOST</th><th>RAZED</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+      } else {
+        box.innerHTML = "";
+      }
+    }
+
     el("endscreen").classList.remove("hidden");
   }
 
@@ -306,6 +625,7 @@ export class Hud {
     const pw = el("power");
     const wrap = el("spec-board");
     if (spectatorStates) {
+      this.spectating = true;
       cr.textContent = "";
       pw.innerHTML = "";
       pw.classList.remove("low");
@@ -317,15 +637,58 @@ export class Hud {
         .join(" · ");
       return;
     }
+    this.spectating = false;
     wrap.innerHTML = "";
     if (!state) return;
-    cr.textContent = fmtCost(state.credits);
+    if (!this.creditsInit) {
+      this.creditsInit = true;
+      this.displayCredits = state.credits;
+      this.targetCredits = state.credits;
+      cr.textContent = fmtCost(state.credits);
+    } else {
+      this.targetCredits = state.credits;
+    }
     const pct = state.pwrHave > 0 ? Math.min(1, state.pwrUse / state.pwrHave) : state.pwrUse > 0 ? 1 : 0;
     pw.innerHTML = `PWR <b>${state.pwrHave - state.pwrUse >= 0 ? "+" : ""}${state.pwrHave - state.pwrUse}</b><i style="width:${Math.round(pct * 34)}px"></i>`;
     pw.classList.toggle("low", state.lowPower);
   }
 
-  updateSidebar(state: PlayerState | null, has: (k: string) => boolean) {
+  updateSuperweapon(state: PlayerState | null, swArmed = false) {
+    const btn = document.getElementById("sw-hud") as HTMLButtonElement | null;
+    if (!btn) return;
+    if (!state || this.spectating || state.swLeft === undefined || state.swLeft < 0) {
+      btn.classList.add("hidden");
+      btn.classList.remove("ready", "armed");
+      return;
+    }
+    btn.classList.remove("hidden");
+    const prog = btn.querySelector<HTMLElement>(".sw-prog");
+    const txt = btn.querySelector<HTMLElement>(".sw-txt");
+    const total = state.swTotal && state.swTotal > 0 ? state.swTotal : SW_CHARGE_TICKS;
+    if (state.swReady) {
+      btn.disabled = false;
+      btn.classList.add("ready");
+      btn.classList.toggle("armed", swArmed);
+      if (prog) prog.style.width = "100%";
+      if (txt) txt.textContent = swArmed ? "TARGET STRIKE — CLICK MAP" : "⚡ ION CANNON READY — CLICK TO FIRE";
+    } else {
+      btn.disabled = true;
+      btn.classList.remove("ready", "armed");
+      const sec = Math.max(0, Math.ceil(state.swLeft / 10));
+      const m = Math.floor(sec / 60);
+      const s = String(sec % 60).padStart(2, "0");
+      const pct = Math.max(0, Math.min(100, (1 - state.swLeft / total) * 100));
+      if (prog) prog.style.width = `${pct.toFixed(1)}%`;
+      if (txt) txt.textContent = `ION CANNON ${m}:${s}`;
+    }
+  }
+
+  updateSidebar(
+    state: PlayerState | null,
+    has: (k: string) => boolean,
+    countOf?: (k: BuildingKind) => number,
+    config: GameConfig = DEFAULT_CONFIG,
+  ) {
     for (const [kind, b] of this.buildBtns) {
       const d = BUILDINGS[kind];
       b.classList.remove("ready", "locked");
@@ -335,6 +698,13 @@ export class Hud {
       const bt = b.querySelector<HTMLElement>(".btime")!;
       prog.style.width = "0%";
       bt.textContent = `${d.buildTicks / 10}s`;
+      if (kind === "superweapon" && !config.superweapons) {
+        b.classList.add("locked");
+        b.disabled = true;
+        bt.textContent = "OFF";
+        b.title = "Superweapons disabled in match settings";
+        continue;
+      }
       if (!state || !has("conyard")) {
         b.disabled = true;
         continue;
@@ -348,6 +718,12 @@ export class Hud {
         b.dataset.busy = "1";
         prog.style.width = `${(1 - state.bq.left / state.bq.total) * 100}%`;
         bt.textContent = `${(state.bq.left / 10).toFixed(1)}s`;
+        continue;
+      }
+      if (d.limit !== undefined && countOf && countOf(kind) >= d.limit) {
+        b.disabled = true;
+        bt.textContent = "MAX";
+        b.title = this.buildTooltip(kind);
         continue;
       }
       const missing = d.requires?.filter((r) => !has(r)) ?? [];
@@ -429,7 +805,8 @@ export class Hud {
     }
     const counts = new Map<string, number>();
     let hpSum = 0,
-      hpMax = 0;
+      hpMax = 0,
+      maxVet = 0;
     let singleId: number | null = null;
     let singleKind: string | null = null;
     for (const id of sel) {
@@ -438,6 +815,7 @@ export class Hud {
       counts.set(t.last.k, (counts.get(t.last.k) ?? 0) + 1);
       hpSum += t.last.hp;
       hpMax += t.last.mhp;
+      if ((t.last.vet ?? 0) > maxVet) maxVet = t.last.vet ?? 0;
       if (sel.size === 1 && t.last.o === mySlot) {
         singleId = id;
         singleKind = t.last.k;
@@ -455,7 +833,7 @@ export class Hud {
     const canAfford = state ? state.credits >= UPGRADE_COST : true;
     const sig =
       [...counts].map(([k, n]) => `${k}:${n}`).join(",") +
-      `|${singleId ?? ""}|${singleKind ?? ""}|${hasTech ? 1 : 0}|${canAfford ? 1 : 0}`;
+      `|${singleId ?? ""}|${singleKind ?? ""}|${hasTech ? 1 : 0}|${canAfford ? 1 : 0}|v${maxVet}`;
 
     // Only rebuild DOM structure when selection or upgrade readiness actually changes
     // (prevents 5Hz innerHTML destruction from eating clicks on the UPGRADE button)
@@ -468,7 +846,11 @@ export class Hud {
           return `<span>${img}${n}× ${label(k as BuildingKind | UnitKind as never)}</span>`;
         })
         .join("");
-      box.innerHTML = `<div class="si-row">${parts}</div><div class="si-hp"><i></i><span></span></div>`;
+      const vetBadge =
+        maxVet > 0
+          ? `<span class="si-vet" title="Veterancy rank ${maxVet}">${"★".repeat(Math.min(3, maxVet))}</span>`
+          : "";
+      box.innerHTML = `<div class="si-row">${parts}${vetBadge}</div><div class="si-hp"><i></i><span></span></div>`;
 
       if (singleId !== null && singleKind === "factory") {
         const b = document.createElement("button");
@@ -502,6 +884,7 @@ export class Hud {
     camH: number,
     mySlot: number,
     hasRadar: boolean,
+    mapId: MapId = "crossroads",
   ) {
     const now = performance.now();
     if (now - this.mmLast < 160) return;
@@ -518,9 +901,27 @@ export class Hud {
       ctx.fillText("NO RADAR UPLINK", 80, 80);
       return;
     }
+    // Impassable rocky cliff plateaus
+    const cliffs = getMapLayout(mapId).cliffs;
+    ctx.fillStyle = "#2a343d";
+    const cs = Math.ceil(s);
+    for (let i = 0; i < cliffs.length; i++) {
+      ctx.fillRect(cliffs[i][0] * s, cliffs[i][1] * s, cs, cs);
+    }
+    // Ore veins
     ctx.fillStyle = "#b58b2e";
     for (const key of oreCells.keys()) {
       ctx.fillRect((key % MAP_W) * s, ((key / MAP_W) | 0) * s, Math.max(1.6, s), Math.max(1.6, s));
+    }
+    // Supply crates (pulsing bright white/gold dots)
+    if (r.crates && r.crates.size) {
+      const pulse = 0.5 + 0.5 * Math.sin(now * 0.008);
+      for (const c of r.crates.values()) {
+        ctx.fillStyle = pulse > 0.5 ? "#fff7cc" : "#ffc43d";
+        ctx.beginPath();
+        ctx.arc(c.x * s, c.y * s, 2.2 + pulse * 1.1, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     for (const t of r.tracked.values()) {
       const e: EntSnap = t.last;

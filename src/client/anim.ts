@@ -14,7 +14,17 @@ export interface AnimState {
   buildAge: number;
   isNewBuilding: boolean;
   smokeCd: number;
+  hitFlash: number;
+  flashing: boolean;
 }
+
+const HIT_FLASH_MAT = new THREE.MeshStandardMaterial({
+  color: 0xfff2e0,
+  emissive: 0xffffff,
+  emissiveIntensity: 0.58,
+  roughness: 0.42,
+  metalness: 0.2,
+});
 
 export function createAnimState(e: EntSnap, animateConstruct: boolean): AnimState {
   return {
@@ -28,7 +38,13 @@ export function createAnimState(e: EntSnap, animateConstruct: boolean): AnimStat
     buildAge: animateConstruct && isBuildingKind(e.k) ? 0 : 1,
     isNewBuilding: animateConstruct && isBuildingKind(e.k),
     smokeCd: 0.4 + ((e.id * 0.13) % 0.6),
+    hitFlash: 0,
+    flashing: false,
   };
+}
+
+export function triggerHitFlash(st: AnimState) {
+  st.hitFlash = 0.11;
 }
 
 function angleDiff(a: number, b: number) {
@@ -181,24 +197,60 @@ export function stepEntityAnim(
       rig.turret.rotation.y += diff * Math.min(1, dt * 12);
       if (rig.recoil) rig.recoil.position.z = 0.26 - st.recoil * 0.16;
     }
-    if (rig.spin) rig.spin.rotation.y += dt * (k === "techlab" ? 1.4 : 0.9);
-    if (rig.spin2) rig.spin2.rotation.y -= dt * 1.9;
+    if (rig.spin) {
+      const rate = k === "superweapon" ? 1.55 + 0.55 * Math.sin(nowSec * 0.9) : k === "techlab" ? 1.4 : 0.9;
+      rig.spin.rotation.y += dt * rate;
+    }
+    if (rig.spin2) {
+      const rate2 = k === "superweapon" ? 2.75 + 0.85 * Math.sin(nowSec * 1.4) : 1.9;
+      rig.spin2.rotation.y -= dt * rate2;
+    }
     if (rig.flag) {
       rig.flag.rotation.y = Math.sin(nowSec * 3.8 + last.id) * 0.22;
     }
     if (rig.crane) {
       if (k === "depot") rig.crane.position.x = Math.sin(nowSec * 1.1 + last.id) * 0.55;
-      else rig.crane.rotation.y = Math.sin(nowSec * 0.65 + last.id) * 0.18;
+      else if (k === "derrick") {
+        // Classic nodding industrial horsehead walking-beam (faster when captured & actively pumping)
+        const pumpSpeed = last.o >= 0 ? 2.4 : 1.15;
+        rig.crane.rotation.x = Math.sin(nowSec * pumpSpeed + last.id) * 0.27;
+      } else {
+        rig.crane.rotation.y = Math.sin(nowSec * 0.65 + last.id) * 0.18;
+      }
     }
   }
 
   // Subtle energy core / beacon breathing pulse (relative to each mesh's authored baseScale)
   if (rig.pulse) {
-    const s = 0.92 + 0.14 * Math.sin(nowSec * 3.6 + last.id);
+    const freq = k === "superweapon" ? 5.2 : 3.6;
+    const amp = k === "superweapon" ? 0.18 : 0.14;
+    const s = 0.92 + amp * Math.sin(nowSec * freq + last.id);
     for (const p of rig.pulse) {
       const base = p.userData.baseScale as THREE.Vector3 | undefined;
       if (base) p.scale.set(base.x * s, base.y * s, base.z * s);
     }
+  }
+
+  // Brief 110ms tactile emissive hit-flash (isolated to this entity's body meshes)
+  if (st.hitFlash > 0) {
+    st.hitFlash = Math.max(0, st.hitFlash - dt);
+    if (!st.flashing) {
+      st.flashing = true;
+      rig.body.traverse((o) => {
+        if (o instanceof THREE.Mesh && !o.userData.isBar) {
+          o.userData._origMat = o.material;
+          o.material = HIT_FLASH_MAT;
+        }
+      });
+    }
+  } else if (st.flashing) {
+    st.flashing = false;
+    rig.body.traverse((o) => {
+      if (o instanceof THREE.Mesh && o.userData._origMat) {
+        o.material = o.userData._origMat as THREE.Material | THREE.Material[];
+        delete o.userData._origMat;
+      }
+    });
   }
 
   // Damaged smoke & industrial exhaust emitter

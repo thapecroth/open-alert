@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { MAP_W, MAP_H, SPAWNS } from "../shared/gamedefs";
+import { MAP_W, MAP_H, SPAWNS, MapId, getMapLayout } from "../shared/gamedefs";
 
 // Deterministic PRNG so procedural textures are consistent across frames and clients
 function mulberry32(seed: number) {
@@ -279,27 +279,317 @@ export function getGlowMat(hex: string, intensity = 1.25): THREE.MeshBasicMateri
   return m;
 }
 
+// ---------- Stratified Rock & Scorch Crater Textures ----------
+
+let rockBumpTex: THREE.CanvasTexture | null = null;
+let rockRoughTex: THREE.CanvasTexture | null = null;
+
+function ensureRockDetail() {
+  if (rockBumpTex && rockRoughTex) return;
+  const S = 256;
+  const [bc, bctx] = makeCanvas(S, S);
+  const [rc, rctx] = makeCanvas(S, S);
+  const noise = valueNoise2D(8821);
+  const rand = mulberry32(6143);
+
+  const bimg = bctx.createImageData(S, S);
+  const rimg = rctx.createImageData(S, S);
+  const bd = bimg.data;
+  const rd = rimg.data;
+
+  for (let py = 0; py < S; py++) {
+    // Horizontal sedimentary strata bands
+    const strata =
+      Math.sin((py / S) * Math.PI * 10) * 0.35 +
+      Math.sin((py / S) * Math.PI * 24 + 1.2) * 0.22 +
+      Math.sin((py / S) * Math.PI * 5.0 + 0.5) * 0.25;
+    for (let px = 0; px < S; px++) {
+      const n = noise((px / S) * 10, (py / S) * 14);
+      const crack = Math.abs(noise((px / S) * 22 + 4.1, (py / S) * 8 + 9.2) - 0.5);
+      const fissure = crack < 0.045 ? -58 : 0;
+      const grain = (rand() - 0.5) * 26;
+      const bv = Math.max(15, Math.min(245, 128 + strata * 44 + (n - 0.5) * 76 + fissure + grain));
+      const rv = Math.max(130, Math.min(245, 198 - strata * 16 + (rand() - 0.5) * 28));
+      const idx = (py * S + px) * 4;
+      bd[idx] = bd[idx + 1] = bd[idx + 2] = bv;
+      bd[idx + 3] = 255;
+      rd[idx] = rd[idx + 1] = rd[idx + 2] = rv;
+      rd[idx + 3] = 255;
+    }
+  }
+  bctx.putImageData(bimg, 0, 0);
+  rctx.putImageData(rimg, 0, 0);
+
+  rockBumpTex = new THREE.CanvasTexture(bc);
+  rockBumpTex.wrapS = rockBumpTex.wrapT = THREE.RepeatWrapping;
+  rockBumpTex.repeat.set(2, 2);
+  rockRoughTex = new THREE.CanvasTexture(rc);
+  rockRoughTex.wrapS = rockRoughTex.wrapT = THREE.RepeatWrapping;
+  rockRoughTex.repeat.set(2, 2);
+}
+
+export interface CliffBiomeMats {
+  wall: THREE.MeshStandardMaterial;
+  cap: THREE.MeshStandardMaterial;
+  boulder: THREE.MeshStandardMaterial;
+  foliage: THREE.MeshStandardMaterial;
+  trunk: THREE.MeshStandardMaterial;
+}
+
+const cliffMatsCache = new Map<MapId, CliffBiomeMats>();
+
+export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
+  const cached = cliffMatsCache.get(mapId);
+  if (cached) return cached;
+  ensureRockDetail();
+
+  const palette: Record<
+    MapId,
+    { wall: number; cap: number; boulder: number; foliage: number; trunk: number }
+  > = {
+    crossroads: {
+      wall: 0x4b4a45,
+      cap: 0x7b7868,
+      boulder: 0x5c5b55,
+      foliage: 0x264b30,
+      trunk: 0x4a3525,
+    },
+    canyon: {
+      wall: 0x86442c,
+      cap: 0xc2794e,
+      boulder: 0x9b5538,
+      foliage: 0x4b5c32,
+      trunk: 0x573b28,
+    },
+    basin: {
+      wall: 0x2f3640,
+      cap: 0x55606d,
+      boulder: 0x3e4752,
+      foliage: 0x1e3c38,
+      trunk: 0x362d28,
+    },
+  };
+  const p = palette[mapId];
+
+  const mats: CliffBiomeMats = {
+    wall: new THREE.MeshStandardMaterial({
+      color: p.wall,
+      bumpMap: rockBumpTex!,
+      bumpScale: 0.14,
+      roughnessMap: rockRoughTex!,
+      roughness: 0.92,
+      metalness: 0.06,
+    }),
+    cap: new THREE.MeshStandardMaterial({
+      color: p.cap,
+      bumpMap: rockBumpTex!,
+      bumpScale: 0.08,
+      roughnessMap: rockRoughTex!,
+      roughness: 0.88,
+      metalness: 0.05,
+    }),
+    boulder: new THREE.MeshStandardMaterial({
+      color: p.boulder,
+      bumpMap: rockBumpTex!,
+      bumpScale: 0.12,
+      roughness: 0.9,
+      metalness: 0.08,
+    }),
+    foliage: new THREE.MeshStandardMaterial({
+      color: p.foliage,
+      roughness: 0.88,
+      metalness: 0.03,
+      flatShading: true,
+    }),
+    trunk: new THREE.MeshStandardMaterial({
+      color: p.trunk,
+      roughness: 0.94,
+      metalness: 0.02,
+    }),
+  };
+  cliffMatsCache.set(mapId, mats);
+  return mats;
+}
+
+let craterTexCache: THREE.CanvasTexture | null = null;
+export function getCraterTexture(): THREE.CanvasTexture {
+  if (craterTexCache) return craterTexCache;
+  const S = 256;
+  const [c, ctx] = makeCanvas(S, S);
+  const rand = mulberry32(3197);
+  const cx = S / 2;
+  const cy = S / 2;
+
+  ctx.clearRect(0, 0, S, S);
+
+  // Soft outer soot halo
+  const outer = ctx.createRadialGradient(cx, cy, S * 0.06, cx, cy, S * 0.48);
+  outer.addColorStop(0, "rgba(8, 7, 7, 0.94)");
+  outer.addColorStop(0.32, "rgba(18, 15, 13, 0.82)");
+  outer.addColorStop(0.58, "rgba(38, 30, 24, 0.46)");
+  outer.addColorStop(0.82, "rgba(28, 22, 18, 0.16)");
+  outer.addColorStop(1, "rgba(15, 12, 10, 0)");
+  ctx.fillStyle = outer;
+  ctx.beginPath();
+  ctx.arc(cx, cy, S * 0.48, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Radial scorch streaks & blast rays
+  for (let i = 0; i < 42; i++) {
+    const ang = rand() * Math.PI * 2;
+    const r0 = S * (0.08 + rand() * 0.1);
+    const r1 = S * (0.28 + rand() * 0.2);
+    ctx.strokeStyle = `rgba(12, 10, 9, ${0.18 + rand() * 0.34})`;
+    ctx.lineWidth = 1.5 + rand() * 5.5;
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(ang) * r0, cy + Math.sin(ang) * r0);
+    ctx.lineTo(cx + Math.cos(ang) * r1, cy + Math.sin(ang) * r1);
+    ctx.stroke();
+  }
+
+  // Subtle warm ash / cracked rim ring
+  const rim = ctx.createRadialGradient(cx, cy, S * 0.16, cx, cy, S * 0.32);
+  rim.addColorStop(0, "rgba(85, 58, 36, 0)");
+  rim.addColorStop(0.55, "rgba(72, 54, 40, 0.28)");
+  rim.addColorStop(1, "rgba(40, 32, 26, 0)");
+  ctx.fillStyle = rim;
+  ctx.beginPath();
+  ctx.arc(cx, cy, S * 0.34, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Deep charred impact pit center
+  const pit = ctx.createRadialGradient(cx, cy, 0, cx, cy, S * 0.22);
+  pit.addColorStop(0, "rgba(4, 4, 4, 0.96)");
+  pit.addColorStop(0.65, "rgba(14, 11, 10, 0.85)");
+  pit.addColorStop(1, "rgba(20, 16, 14, 0)");
+  ctx.fillStyle = pit;
+  ctx.beginPath();
+  ctx.arc(cx, cy, S * 0.22, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Fine scorched speckles
+  for (let i = 0; i < 240; i++) {
+    const a = rand() * Math.PI * 2;
+    const rad = Math.sqrt(rand()) * S * 0.44;
+    const sz = 1 + rand() * 2.4;
+    ctx.fillStyle = rand() > 0.25 ? "rgba(10, 9, 8, 0.45)" : "rgba(95, 76, 56, 0.25)";
+    ctx.fillRect(cx + Math.cos(a) * rad, cy + Math.sin(a) * rad, sz, sz);
+  }
+
+  craterTexCache = new THREE.CanvasTexture(c);
+  craterTexCache.colorSpace = THREE.SRGBColorSpace;
+  return craterTexCache;
+}
+
 // ---------- Procedural Battlefield Terrain Map ----------
 
-export function createBattlefieldTextures(): { map: THREE.CanvasTexture; bumpMap: THREE.CanvasTexture } {
+interface BiomePalette {
+  seedA: number;
+  seedB: number;
+  base: [number, number, number];
+  altDelta: [number, number, number];
+  noiseAmp: [number, number, number];
+  road: [number, number, number];
+  spawn: [number, number, number];
+  cliff: [number, number, number];
+  talus: [number, number, number];
+  trackStroke: string;
+}
+
+const BIOMES: Record<MapId, BiomePalette> = {
+  crossroads: {
+    // Olive-ochre European steppe
+    seedA: 1337,
+    seedB: 7331,
+    base: [84, 80, 56],
+    altDelta: [-20, 14, -8],
+    noiseAmp: [24, 22, 14],
+    road: [118, 104, 80],
+    spawn: [92, 94, 88],
+    cliff: [56, 54, 50],
+    talus: [68, 64, 54],
+    trackStroke: "rgba(42, 36, 26, 0.15)",
+  },
+  canyon: {
+    // Arid red-sandstone mesa theater
+    seedA: 2459,
+    seedB: 8417,
+    base: [132, 84, 54],
+    altDelta: [22, 16, 4],
+    noiseAmp: [26, 18, 12],
+    road: [158, 118, 82],
+    spawn: [114, 96, 82],
+    cliff: [92, 46, 32],
+    talus: [112, 62, 42],
+    trackStroke: "rgba(68, 34, 20, 0.16)",
+  },
+  basin: {
+    // Dark alpine volcanic basin
+    seedA: 3911,
+    seedB: 9173,
+    base: [58, 66, 68],
+    altDelta: [-10, 12, 6],
+    noiseAmp: [18, 20, 22],
+    road: [84, 90, 94],
+    spawn: [74, 80, 86],
+    cliff: [36, 42, 49],
+    talus: [48, 54, 60],
+    trackStroke: "rgba(22, 28, 34, 0.18)",
+  },
+};
+
+export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
+  map: THREE.CanvasTexture;
+  bumpMap: THREE.CanvasTexture;
+} {
   const S = 1024;
   const [dc, dctx] = makeCanvas(S, S);
   const [bc, bctx] = makeCanvas(S, S);
-  const noiseA = valueNoise2D(1337);
-  const noiseB = valueNoise2D(7331);
-  const rand = mulberry32(5519);
+  const bio = BIOMES[mapId] ?? BIOMES.crossroads;
+  const noiseA = valueNoise2D(bio.seedA);
+  const noiseB = valueNoise2D(bio.seedB);
+  const rand = mulberry32(5519 + bio.seedA);
+  const layout = getMapLayout(mapId);
+
+  // Precompute tile-level cliff mask and soft distance field (in tiles) for rocky cliff footprints
+  const cliffGrid = new Uint8Array(MAP_W * MAP_H);
+  for (const [cx, cy] of layout.cliffs) {
+    if (cx >= 0 && cy >= 0 && cx < MAP_W && cy < MAP_H) cliffGrid[cy * MAP_W + cx] = 1;
+  }
+
+  const cliffNear = (wx: number, wy: number): { inside: boolean; dist: number } => {
+    const tx = Math.floor(wx);
+    const ty = Math.floor(wy);
+    if (tx >= 0 && ty >= 0 && tx < MAP_W && ty < MAP_H && cliffGrid[ty * MAP_W + tx]) {
+      return { inside: true, dist: 0 };
+    }
+    let minD = 99;
+    const x0 = Math.max(0, tx - 2);
+    const x1 = Math.min(MAP_W - 1, tx + 2);
+    const y0 = Math.max(0, ty - 2);
+    const y1 = Math.min(MAP_H - 1, ty + 2);
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        if (!cliffGrid[y * MAP_W + x]) continue;
+        const dx = Math.max(x - wx, 0, wx - (x + 1));
+        const dy = Math.max(y - wy, 0, wy - (y + 1));
+        const dd = Math.hypot(dx, dy);
+        if (dd < minD) minD = dd;
+      }
+    }
+    return { inside: false, dist: minD };
+  };
 
   const img = dctx.createImageData(S, S);
   const bimg = bctx.createImageData(S, S);
   const d = img.data;
   const b = bimg.data;
 
-  // Compute natural worn dirt road factor between corners and center
+  // Compute natural worn convoy road factor between corners and center
   const roadDist = (wx: number, wy: number) => {
     const cx = MAP_W / 2,
       cy = MAP_H / 2;
     let best = 999;
-    // Diagonal supply routes through center
     for (const s of SPAWNS) {
       const sx = s.x + 1.5,
         sy = s.y + 1.5;
@@ -312,7 +602,6 @@ export function createBattlefieldTextures(): { map: THREE.CanvasTexture; bumpMap
       const dd = Math.hypot(wx - px, wy - py);
       if (dd < best) best = dd;
     }
-    // Perimeter ring route
     const ringDist = Math.abs(Math.hypot(wx - cx, wy - cy) - 18);
     return Math.min(best, ringDist * 1.15);
   };
@@ -323,22 +612,24 @@ export function createBattlefieldTextures(): { map: THREE.CanvasTexture; bumpMap
       const wx = (px / S) * MAP_W;
       const n1 = noiseA(wx * 0.14, wy * 0.14);
       const n2 = noiseB(wx * 0.42, wy * 0.42);
+      const n3 = noiseA(wx * 0.14 + 0.18, wy * 0.14 + 0.18);
+      const slopeShade = 1 + (n1 - n3) * 0.32;
       const fine = (rand() - 0.5) * 14;
 
-      // Biome blend: olive tactical meadow vs warm sandy earth vs slate rock
-      const grassMix = Math.max(0, Math.min(1, (n1 - 0.34) * 2.4));
-      let r = 82 + grassMix * -18 + n2 * 24;
-      let g = 78 + grassMix * 12 + n2 * 22;
-      let bl = 58 + grassMix * -8 + n2 * 14;
+      const altMix = Math.max(0, Math.min(1, (n1 - 0.34) * 2.4));
+      let r = bio.base[0] + altMix * bio.altDelta[0] + n2 * bio.noiseAmp[0];
+      let g = bio.base[1] + altMix * bio.altDelta[1] + n2 * bio.noiseAmp[1];
+      let bl = bio.base[2] + altMix * bio.altDelta[2] + n2 * bio.noiseAmp[2];
+      let bumpExtra = 0;
 
       // Worn convoy roads
       const rd = roadDist(wx, wy) + (n2 - 0.5) * 1.4;
       if (rd < 2.2) {
         const k = Math.max(0, 1 - rd / 2.2);
-        const s = k * k * 0.65;
-        r = r * (1 - s) + 114 * s;
-        g = g * (1 - s) + 102 * s;
-        bl = bl * (1 - s) + 82 * s;
+        const s = k * k * 0.62;
+        r = r * (1 - s) + bio.road[0] * s;
+        g = g * (1 - s) + bio.road[1] * s;
+        bl = bl * (1 - s) + bio.road[2] * s;
       }
 
       // Flattened compacted gravel clearings at each spawn base
@@ -346,11 +637,41 @@ export function createBattlefieldTextures(): { map: THREE.CanvasTexture; bumpMap
         const sd = Math.hypot(wx - (sp.x + 1.5), wy - (sp.y + 1.5));
         if (sd < 7.5) {
           const k = Math.max(0, 1 - sd / 7.5);
-          const s = k * k * 0.55;
-          r = r * (1 - s) + 92 * s;
-          g = g * (1 - s) + 94 * s;
-          bl = bl * (1 - s) + 90 * s;
+          const s = k * k * 0.52;
+          r = r * (1 - s) + bio.spawn[0] * s;
+          g = g * (1 - s) + bio.spawn[1] * s;
+          bl = bl * (1 - s) + bio.spawn[2] * s;
         }
+      }
+
+      // Industrial oil-stained pads around Oil Derricks
+      for (const [dx, dy] of layout.derricks) {
+        const dd = Math.hypot(wx - (dx + 1), wy - (dy + 1));
+        if (dd < 2.6) {
+          const k = Math.max(0, 1 - dd / 2.6);
+          const s = k * k * 0.58;
+          r = r * (1 - s) + 54 * s;
+          g = g * (1 - s) + 56 * s;
+          bl = bl * (1 - s) + 58 * s;
+        }
+      }
+
+      // Map-specific rocky cliff footprints + dark ambient-occlusion scree apron
+      const cf = cliffNear(wx, wy);
+      if (cf.inside) {
+        const strata = Math.sin((wx * 1.6 + wy * 1.2 + n2 * 2.5) * 2.4) * 10;
+        r = bio.cliff[0] + strata;
+        g = bio.cliff[1] + strata * 0.9;
+        bl = bio.cliff[2] + strata * 0.85;
+        bumpExtra = 55;
+      } else if (cf.dist < 1.5) {
+        const k = Math.max(0, 1 - cf.dist / 1.5);
+        const scree = k * k * 0.72;
+        const ao = 1 - k * k * 0.34;
+        r = (r * (1 - scree) + bio.talus[0] * scree) * ao;
+        g = (g * (1 - scree) + bio.talus[1] * scree) * ao;
+        bl = (bl * (1 - scree) + bio.talus[2] * scree) * ao;
+        bumpExtra = k * 34;
       }
 
       // Subtle tactical vignette near map border
@@ -358,12 +679,12 @@ export function createBattlefieldTextures(): { map: THREE.CanvasTexture; bumpMap
       const edgeDark = edge < 2.5 ? 0.72 + (edge / 2.5) * 0.28 : 1;
 
       const idx4 = (py * S + px) * 4;
-      d[idx4] = Math.max(18, Math.min(220, (r + fine) * edgeDark));
-      d[idx4 + 1] = Math.max(18, Math.min(220, (g + fine) * edgeDark));
-      d[idx4 + 2] = Math.max(16, Math.min(220, (bl + fine) * edgeDark));
+      d[idx4] = Math.max(16, Math.min(225, (r * slopeShade + fine) * edgeDark));
+      d[idx4 + 1] = Math.max(16, Math.min(225, (g * slopeShade + fine) * edgeDark));
+      d[idx4 + 2] = Math.max(14, Math.min(225, (bl * slopeShade + fine) * edgeDark));
       d[idx4 + 3] = 255;
 
-      const bv = Math.max(30, Math.min(230, 120 + (n2 - 0.5) * 90 + fine * 2.5));
+      const bv = Math.max(25, Math.min(238, 120 + (n2 - 0.5) * 92 + bumpExtra + fine * 2.5));
       b[idx4] = b[idx4 + 1] = b[idx4 + 2] = bv;
       b[idx4 + 3] = 255;
     }
@@ -372,7 +693,7 @@ export function createBattlefieldTextures(): { map: THREE.CanvasTexture; bumpMap
   bctx.putImageData(bimg, 0, 0);
 
   // Faint road track marks
-  dctx.strokeStyle = "rgba(42, 36, 28, 0.14)";
+  dctx.strokeStyle = bio.trackStroke;
   dctx.lineWidth = 3;
   dctx.setLineDash([12, 10]);
   for (const sp of SPAWNS) {

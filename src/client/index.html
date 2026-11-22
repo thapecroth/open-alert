@@ -31,6 +31,8 @@
         <span id="spec-board"></span>
         <span id="credits">$0</span>
         <span id="power"></span>
+        <button id="mute-btn" class="on" title="Toggle sound effects">SFX</button>
+        <button id="music-btn" class="on" title="Toggle tactical soundtrack">BGM</button>
         <button id="wasd-btn" title="Toggle WASD camera pan vs Classic RTS hotkeys">KEYS: RTS</button>
         <button id="resign-btn" title="Self-destruct your base and leave the game">RESIGN</button>
         <button id="help-btn" title="Controls & hotkeys">?</button>
@@ -52,7 +54,13 @@
     </div>
 
     <div id="selinfo" class="hidden"></div>
-    <div id="groupbar" class="hidden"></div>
+    <div id="left-stack">
+      <button id="sw-hud" class="hidden" title="Orbital Ion Cannon">
+        <span class="sw-prog"></span>
+        <span class="sw-txt"></span>
+      </button>
+      <div id="groupbar" class="hidden"></div>
+    </div>
     <div id="toasts"></div>
     <canvas id="minimap" width="160" height="160" class="hidden"></canvas>
     <div id="order-label" class="hidden"></div>
@@ -68,8 +76,9 @@
         <table>
           <tr><td>Left-click / drag / Shift+click</td><td>select · box-select · add/toggle</td></tr>
           <tr><td>Double-click unit</td><td>select all same-type units on screen</td></tr>
-          <tr><td>Right-click</td><td>move · attack · harvest ore</td></tr>
-          <tr><td><kbd>Shift</kbd> + Right-click</td><td>queue walking waypoints (chains orders)</td></tr>
+          <tr><td>Right-click</td><td>move · attack · harvest · set rally point</td></tr>
+          <tr><td><kbd>Shift</kbd> + Right-click · Minimap R-click</td><td>queue waypoints · issue map orders (<kbd>Alt</kbd>+R-click = ping)</td></tr>
+          <tr><td><kbd>Shift</kbd> + Click unit icon</td><td>queue ×5 units in production</td></tr>
           <tr><td><kbd>Ctrl</kbd>+<kbd>1</kbd>–<kbd>9</kbd> / <kbd>1</kbd>–<kbd>9</kbd></td><td>assign / recall control groups (2× tap = center)</td></tr>
           <tr><td><kbd>A</kbd> + click / right-click</td><td>attack-move (fight en route)</td></tr>
           <tr><td><kbd>S</kbd> / <kbd>X</kbd></td><td>stop & clear waypoints · scatter units</td></tr>
@@ -92,10 +101,58 @@
           ROOM <span id="lobby-room">----</span>
           <button id="copy-link2">COPY INVITE LINK</button>
         </div>
+        <div class="lobby-config">
+          <div class="cfg-field">
+            <label for="name-input">CALLSIGN</label>
+            <input id="name-input" maxlength="20" placeholder="Commander" autocomplete="off" />
+          </div>
+          <div class="cfg-field">
+            <label for="map-select">MAP</label>
+            <select id="map-select" title="Battlefield map"></select>
+          </div>
+          <div class="cfg-field">
+            <label for="cfg-credits">STARTING CREDITS</label>
+            <select id="cfg-credits" title="Starting credits per player">
+              <option value="3000">$3,000 (Tight)</option>
+              <option value="5000" selected>$5,000 (Standard)</option>
+              <option value="10000">$10,000 (Rich)</option>
+              <option value="20000">$20,000 (Mega)</option>
+            </select>
+          </div>
+          <div class="cfg-field">
+            <label for="cfg-speed">GAME SPEED</label>
+            <select id="cfg-speed" title="Simulation speed multiplier">
+              <option value="0.75">0.75× Tactical</option>
+              <option value="1" selected>1.0× Normal</option>
+              <option value="1.5">1.5× Fast</option>
+              <option value="2">2.0× Turbo</option>
+            </select>
+          </div>
+        </div>
+        <div class="lobby-toggles">
+          <label class="cfg-toggle"><input id="cfg-sw" type="checkbox" checked /><span>Superweapons</span></label>
+          <label class="cfg-toggle"><input id="cfg-crates" type="checkbox" checked /><span>Supply Crates</span></label>
+          <label class="cfg-toggle"><input id="cfg-derricks" type="checkbox" checked /><span>Oil Derricks</span></label>
+          <label class="cfg-toggle"><input id="cfg-fog" type="checkbox" checked /><span>Fog of War</span></label>
+        </div>
+        <p id="map-desc" class="map-desc"></p>
         <ul id="player-list"></ul>
-        <div class="row">
+        <div class="row lobby-actions">
           <button id="ready-btn">READY</button>
-          <button id="addbot-btn" class="hidden">+ BOT</button>
+          <div class="bot-controls">
+            <select id="bot-diff" class="hidden" title="AI Bot Difficulty">
+              <option value="easy">Easy</option>
+              <option value="normal" selected>Normal</option>
+              <option value="brutal">Brutal</option>
+            </select>
+            <select id="bot-profile" class="hidden" title="AI Bot Playstyle Profile">
+              <option value="balanced" selected>Balanced</option>
+              <option value="rusher">Rusher</option>
+              <option value="turtle">Turtle</option>
+              <option value="tech">Tech Boom</option>
+            </select>
+            <button id="addbot-btn" class="hidden">+ BOT</button>
+          </div>
           <button id="start-btn" class="hidden">START GAME</button>
         </div>
         <p class="hint" id="lobby-hint">waiting for players…</p>
@@ -103,9 +160,11 @@
     </div>
 
     <div id="endscreen" class="hidden">
-      <div class="panel">
+      <div class="panel end-panel">
         <h1 id="end-text">GAME OVER</h1>
         <p id="end-reason"></p>
+        <div id="end-duration" class="end-duration"></div>
+        <div id="end-stats"></div>
         <button id="rematch-btn">REMATCH</button>
         <p class="hint">rematch returns everyone to the lobby</p>
       </div>

@@ -6,6 +6,10 @@ import {
   BuildingKind,
   UnitKind,
   EntKind,
+  MapId,
+  CrateKind,
+  GameConfig,
+  DEFAULT_CONFIG,
   START_CREDITS,
   ORE_VALUE,
   HARVEST_TICKS_PER_UNIT,
@@ -17,12 +21,36 @@ import {
   DEPOT_RANGE,
   DEPOT_HEAL,
   CAPTURE_RANGE,
+  VET_XP,
+  VET_DMG,
+  VET_HP,
+  VET_HEAL,
+  SW_CHARGE_TICKS,
+  SW_RADIUS,
+  SW_DAMAGE,
+  DERRICK_CAPTURE_BONUS,
+  DERRICK_INCOME,
+  CRATE_INTERVAL_TICKS,
+  CRATE_MAX,
+  CRATE_CASH,
+  SPLASH_RADIUS,
   SPAWNS,
+  getMapLayout,
 } from "../shared/gamedefs";
-import type { OrderKind, EntSnap, PlayerState, ProdQueue, GameEvent, WeaponFx } from "../shared/protocol";
+import type {
+  OrderKind,
+  EntSnap,
+  CrateSnap,
+  PlayerState,
+  ProdQueue,
+  GameEvent,
+  WeaponFx,
+  MatchStats,
+} from "../shared/protocol";
 import { findPath, nearestPassable } from "./path";
 
 const MAX_WAYPOINTS = 16;
+const CRATE_KINDS: readonly CrateKind[] = ["cash", "vet", "heal", "unit"];
 
 const hasOwn = (o: object, k: unknown): boolean =>
   typeof k === "string" && Object.prototype.hasOwnProperty.call(o, k);
@@ -36,7 +64,7 @@ interface Order {
 
 export interface Ent {
   id: number;
-  o: number; // owner slot
+  o: number; // owner slot, -1 = neutral
   k: EntKind;
   x: number;
   y: number;
@@ -53,10 +81,14 @@ export interface Ent {
   repath: number;
   agro: number | null; // enemy id an amove unit is currently chasing (for resume-after-kill)
   holdUntil: number; // suppress harvester auto-resume until this tick (stop/explicit orders)
+  xp: number;
+  vet: number; // 0..3 veterancy rank
+  rally?: [number, number]; // rally point on production buildings
 }
 
 export interface P {
   slot: number;
+  team: number; // 0 = FFA, 1..4 = allied team
   credits: number;
   awaiting: BuildingKind | null;
   bq: { kind: BuildingKind; left: number; total: number } | null;
@@ -65,12 +97,42 @@ export interface P {
   pwrHave: number;
   pwrUse: number;
   lowPower: boolean;
+  swLeft: number; // -1 if no superweapon, else 0..SW_CHARGE_TICKS
+  unitsBuilt: number;
+  unitsLost: number;
+  bldDestroyed: number;
+  creditsEarned: number;
+}
+
+export interface WorldOpts {
+  map?: MapId;
+  teams?: Record<number, number>;
+  names?: Record<number, string>;
+  config?: Partial<GameConfig>;
 }
 
 const idx = (x: number, y: number) => y * MAP_W + x;
 const inBounds = (x: number, y: number) => x >= 0 && y >= 0 && x < MAP_W && y < MAP_H;
 const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);
 const isBuilding = (k: EntKind): k is BuildingKind => k in BUILDINGS;
+const isInfantry = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer";
+const isHeavyArmor = (k: EntKind) => k === "tank" || k === "heavy" || k === "harvester";
+const isVehicle = (k: EntKind) =>
+  k === "tank" || k === "heavy" || k === "arty" || k === "harvester" || k === "spider";
+
+const armorMult = (attacker: EntKind, target: EntKind): number => {
+  if (attacker === "infantry") {
+    if (isInfantry(target)) return 1.35;
+    if (isHeavyArmor(target)) return 0.7;
+  } else if (attacker === "rocket") {
+    if (isVehicle(target)) return 1.4;
+    if (isInfantry(target)) return 0.75;
+  } else if (attacker === "arty") {
+    if (isBuilding(target)) return 1.35;
+  }
+  return 1;
+};
+
 const entityDist = (a: Ent, b: Ent) => {
   if (!isBuilding(b.k)) return dist(a.x, a.y, b.x, b.y);
   const bd = BUILDINGS[b.k];
@@ -88,28 +150,49 @@ const weaponFxOf = (k: EntKind): WeaponFx => {
   return "bullet";
 };
 const weaponOf = (e: Ent) =>
-  isBuilding(e.k) ? { range: BUILDINGS[e.k].range ?? 0, dmg: BUILDINGS[e.k].dmg ?? 0, rof: BUILDINGS[e.k].rof ?? 0 } : { range: UNITS[e.k as UnitKind].range, dmg: UNITS[e.k as UnitKind].dmg, rof: UNITS[e.k as UnitKind].rof };
+  isBuilding(e.k)
+    ? { range: BUILDINGS[e.k].range ?? 0, dmg: BUILDINGS[e.k].dmg ?? 0, rof: BUILDINGS[e.k].rof ?? 0 }
+    : { range: UNITS[e.k as UnitKind].range, dmg: UNITS[e.k as UnitKind].dmg, rof: UNITS[e.k as UnitKind].rof };
 
 export class World {
   tick = 0;
+  map: MapId;
+  config: GameConfig;
   winner: number | null = null;
+  winnerTeam: number | null = null;
   ents = new Map<number, Ent>();
   players = new Map<number, P>(); // keyed by slot
+  crates = new Map<number, CrateSnap>();
   events: GameEvent[] = [];
 
   private block = new Uint8Array(MAP_W * MAP_H); // 1 = building footprint
+  private cliff = new Uint8Array(MAP_W * MAP_H); // 1 = impassable rocky cliff
   private bld = new Int32Array(MAP_W * MAP_H).fill(-1); // ent id per tile
   private ore = new Int16Array(MAP_W * MAP_H); // remaining per tile
   private nextId = 1;
+  private nextCrateId = 1;
   private lastAlert = new Map<number, number>(); // slot -> tick of last under-attack alert
+  private names: Record<number, string>;
 
-  constructor(slots: number[]) {
+  constructor(slots: number[], opts?: WorldOpts) {
+    this.map = opts?.map ?? "crossroads";
+    this.config = { ...DEFAULT_CONFIG, ...(opts?.config ?? {}) };
+    this.names = opts?.names ? { ...opts.names } : {};
+    const layout = getMapLayout(this.map);
+    for (const [cx, cy] of layout.cliffs) {
+      if (inBounds(cx, cy)) this.cliff[idx(cx, cy)] = 1;
+    }
+
     this.genOre(slots);
+
     for (const slot of slots) {
       const s = SPAWNS[slot];
+      const rawTeam = opts?.teams?.[slot] ?? 0;
+      const team = Number.isInteger(rawTeam) && rawTeam >= 1 && rawTeam <= 4 ? rawTeam : 0;
       this.players.set(slot, {
         slot,
-        credits: START_CREDITS,
+        team,
+        credits: this.config.startCredits,
         awaiting: null,
         bq: null,
         queues: {},
@@ -117,6 +200,11 @@ export class World {
         pwrHave: 0,
         pwrUse: 0,
         lowPower: false,
+        swLeft: -1,
+        unitsBuilt: 0,
+        unitsLost: 0,
+        bldDestroyed: 0,
+        creditsEarned: 0,
       });
       this.placeBuilding(slot, "conyard", s.x, s.y);
       // starting squad
@@ -132,14 +220,51 @@ export class World {
       }
       this.recomputePower(slot);
     }
+
+    // Spawn neutral Oil Derricks from map layout if enabled (clear any ore underneath)
+    if (this.config.derricks) {
+      for (const [dx, dy] of layout.derricks) {
+        const dd = BUILDINGS.derrick;
+        for (let y = dy; y < dy + dd.h; y++)
+          for (let x = dx; x < dx + dd.w; x++) if (inBounds(x, y)) this.ore[idx(x, y)] = 0;
+        this.placeBuilding(-1, "derrick", dx, dy);
+      }
+    }
+  }
+
+  isAlly(slotA: number, slotB: number): boolean {
+    if (slotA === slotB) return true;
+    if (slotA < 0 || slotB < 0) return false;
+    const a = this.players.get(slotA);
+    const b = this.players.get(slotB);
+    return !!(a && b && a.team > 0 && a.team === b.team);
+  }
+
+  getStats(names: Record<number, string> = {}): MatchStats[] {
+    const out: MatchStats[] = [];
+    for (const p of this.players.values()) {
+      out.push({
+        slot: p.slot,
+        name: names[p.slot] ?? this.names[p.slot] ?? `Player ${p.slot + 1}`,
+        team: p.team,
+        unitsBuilt: p.unitsBuilt,
+        unitsLost: p.unitsLost,
+        bldDestroyed: p.bldDestroyed,
+        creditsEarned: Math.floor(p.creditsEarned),
+      });
+    }
+    out.sort((a, b) => a.slot - b.slot);
+    return out;
   }
 
   private genOre(slots: number[]) {
     const blob = (cx: number, cy: number, r: number) => {
       for (let y = Math.max(0, cy - r); y <= Math.min(MAP_H - 1, cy + r); y++)
         for (let x = Math.max(0, cx - r); x <= Math.min(MAP_W - 1, cx + r); x++) {
+          const i = idx(x, y);
+          if (this.cliff[i] || this.block[i]) continue;
           const d = dist(x, y, cx, cy);
-          if (d <= r && Math.random() > d / (r + 1)) this.ore[idx(x, y)] = 25 + ((Math.random() * 35) | 0);
+          if (d <= r && Math.random() > d / (r + 1)) this.ore[i] = 25 + ((Math.random() * 35) | 0);
         }
     };
     for (const slot of slots) {
@@ -158,7 +283,7 @@ export class World {
     return out;
   }
 
-  passable = (x: number, y: number) => inBounds(x, y) && this.block[idx(x, y)] === 0;
+  passable = (x: number, y: number) => inBounds(x, y) && this.block[idx(x, y)] === 0 && this.cliff[idx(x, y)] === 0;
 
   footprint(kind: BuildingKind, tx: number, ty: number) {
     const d = BUILDINGS[kind];
@@ -191,6 +316,8 @@ export class World {
       repath: 0,
       agro: null,
       holdUntil: 0,
+      xp: 0,
+      vet: 0,
     };
     this.ents.set(e.id, e);
     for (let y = ty; y < ty + d.h; y++)
@@ -222,6 +349,8 @@ export class World {
       repath: 0,
       agro: null,
       holdUntil: 0,
+      xp: 0,
+      vet: 0,
     };
     this.ents.set(e.id, e);
     this.events.push({ e: "spawn", id: e.id });
@@ -259,6 +388,7 @@ export class World {
     for (let y = ty; y < ty + d.h; y++)
       for (let x = tx; x < tx + d.w; x++) {
         const i = idx(x, y);
+        if (this.cliff[i]) return "blocked by terrain";
         if (this.block[i]) return "blocked";
         if (this.ore[i] > 0) return "can't build on ore";
       }
@@ -309,7 +439,7 @@ export class World {
         ord = { kind: "move", x: gx, y: gy };
       } else if (kind === "attack") {
         const tgt = Number.isFinite(target) ? this.ents.get(target as number) : null;
-        if (!tgt || tgt.o === slot) continue;
+        if (!tgt || this.isAlly(slot, tgt.o)) continue;
         ord = { kind, x: tgt.x, y: tgt.y, target };
       } else if (kind === "harvest") {
         const t = Math.floor(x) + Math.floor(y) * MAP_W;
@@ -364,7 +494,7 @@ export class World {
       const next = e.orderQueue.shift()!;
       if (next.kind === "attack" && next.target != null) {
         const tgt = this.ents.get(next.target);
-        if (!tgt || tgt.o === e.o) continue;
+        if (!tgt || this.isAlly(e.o, tgt.o)) continue;
       }
       if (next.kind === "harvest" && e.k === "harvester") {
         const t = Math.floor(next.x) + Math.floor(next.y) * MAP_W;
@@ -406,7 +536,13 @@ export class World {
     if (!hasOwn(BUILDINGS, kind)) return "unknown building";
     const d = BUILDINGS[kind];
     if (d.noBuild) return "can't build that";
+    if (kind === "superweapon" && !this.config.superweapons) return "superweapons disabled";
     if (d.requires) for (const r of d.requires) if (!this.hasBuilding(slot, r)) return `need a ${r}`;
+    if (d.limit != null) {
+      let count = 0;
+      for (const e of this.ents.values()) if (e.o === slot && e.k === kind) count++;
+      if (count >= d.limit) return "limit reached";
+    }
     if (p.credits < d.cost) return "insufficient funds";
     if (!this.hasBuilding(slot, "conyard")) return "need a construction yard";
     p.credits -= d.cost;
@@ -467,6 +603,43 @@ export class World {
     return null;
   }
 
+  cmdRally(slot: number, id: number, x: number, y: number): string | null {
+    const p = this.players.get(slot);
+    if (!p || p.eliminated) return "dead";
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return "bad coords";
+    if (!inBounds(Math.floor(x), Math.floor(y))) return "off map";
+    const e = this.ents.get(id);
+    if (!e || e.o !== slot || (e.k !== "barracks" && e.k !== "factory" && e.k !== "factory2")) {
+      return "can't set rally";
+    }
+    e.rally = [Math.round(x * 10) / 10, Math.round(y * 10) / 10];
+    return null;
+  }
+
+  cmdSuperweapon(slot: number, x: number, y: number): string | null {
+    const p = this.players.get(slot);
+    if (!p || p.eliminated) return "dead";
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return "bad coords";
+    if (!inBounds(Math.floor(x), Math.floor(y))) return "off map";
+    if (!this.hasBuilding(slot, "superweapon")) return "need a superweapon";
+    if (p.swLeft > 0 || p.swLeft < 0) return "superweapon charging";
+    p.swLeft = SW_CHARGE_TICKS;
+    for (const e of [...this.ents.values()]) {
+      if (!this.ents.has(e.id)) continue;
+      if (this.isAlly(slot, e.o)) continue;
+      const d = dist(x, y, e.x, e.y);
+      if (d > SW_RADIUS) continue;
+      const falloff = Math.max(0.25, 1 - (d / SW_RADIUS) * 0.75);
+      e.hp -= SW_DAMAGE * falloff;
+      this.events.push({ e: "hit", id: e.id });
+      if (e.o >= 0) this.alertVictim(e.o, e.x, e.y);
+      if (e.hp <= 0) this.destroy(e, slot);
+    }
+    this.events.push({ e: "superweapon", x, y, slot });
+    this.events.push({ e: "boom", x, y, r: SW_RADIUS });
+    return null;
+  }
+
   cmdResign(slot: number) {
     const p = this.players.get(slot);
     if (!p || p.eliminated) return;
@@ -483,7 +656,11 @@ export class World {
     p.awaiting = null;
     const b = this.placeBuilding(slot, kind, tx, ty);
     this.recomputePower(slot);
-    if (kind === "refinery") this.spawnNearBuilding(slot, "harvester", b);
+    if (kind === "refinery") {
+      if (this.spawnNearBuilding(slot, "harvester", b)) p.unitsBuilt++;
+    } else if (kind === "superweapon" && p.swLeft < 0) {
+      p.swLeft = SW_CHARGE_TICKS;
+    }
     return null;
   }
 
@@ -514,11 +691,11 @@ export class World {
     if (--q.count === 0) delete p.queues[d.trainsAt];
   }
 
-  // engineer takes over an enemy building once it reaches the footprint edge.
+  // engineer takes over an enemy building or neutral Oil Derrick once it reaches the footprint edge.
   // distance is measured to the edge, not the center, or 3x3 buildings
   // (conyard/factory/techlab) would stay unreachable.
   private tryCapture(e: Ent, tgt: Ent): boolean {
-    if (e.k !== "engineer" || !isBuilding(tgt.k) || tgt.o === e.o) return false;
+    if (e.k !== "engineer" || !isBuilding(tgt.k) || this.isAlly(e.o, tgt.o)) return false;
     const bd = BUILDINGS[tgt.k];
     const edgeDist = Math.hypot(
       Math.max(0, Math.abs(e.x - tgt.x) - bd.w / 2),
@@ -529,6 +706,14 @@ export class World {
     tgt.o = e.o;
     this.recomputePower(prev);
     this.recomputePower(e.o);
+    if (tgt.k === "derrick") {
+      const p = this.players.get(e.o);
+      if (p) {
+        p.credits += DERRICK_CAPTURE_BONUS;
+        p.creditsEarned += DERRICK_CAPTURE_BONUS;
+      }
+      this.events.push({ e: "income", x: tgt.x, y: tgt.y, amt: DERRICK_CAPTURE_BONUS, slot: e.o });
+    }
     this.events.push({ e: "cap", x: tgt.x, y: tgt.y, slot: e.o });
     this.destroy(e);
     return true;
@@ -568,19 +753,160 @@ export class World {
   step() {
     this.tick++;
     this.tickProduction();
-    for (const e of this.ents.values()) this.tickEnt(e);
+    for (const e of [...this.ents.values()]) {
+      if (this.ents.has(e.id)) this.tickEnt(e);
+    }
     this.separate();
-    if (this.tick % 10 === 0) this.tickDepots();
+    this.tickCrates();
+    if (this.tick % 10 === 0) {
+      this.tickDepots();
+      this.tickDerricks();
+      this.tickVetRegen();
+    }
     if (this.tick % ORE_REGEN_TICKS === 0) this.regenOre();
     this.checkEnd();
   }
 
   private tickDepots() {
     for (const d of this.ents.values()) {
-      if (d.k !== "depot") continue;
+      if (d.k !== "depot" || d.o < 0) continue;
       for (const e of this.ents.values())
-        if (e.o === d.o && !isBuilding(e.k) && e.hp < e.mhp && dist(e.x, e.y, d.x, d.y) <= DEPOT_RANGE)
+        if (this.isAlly(d.o, e.o) && !isBuilding(e.k) && e.hp < e.mhp && dist(e.x, e.y, d.x, d.y) <= DEPOT_RANGE)
           e.hp = Math.min(e.mhp, e.hp + DEPOT_HEAL);
+    }
+  }
+
+  private tickDerricks() {
+    const emitPopup = this.tick % 40 === 0;
+    for (const d of this.ents.values()) {
+      if (d.k !== "derrick" || d.o < 0) continue;
+      const p = this.players.get(d.o);
+      if (!p || p.eliminated) continue;
+      p.credits += DERRICK_INCOME;
+      p.creditsEarned += DERRICK_INCOME;
+      if (emitPopup) {
+        this.events.push({ e: "income", x: d.x, y: d.y, amt: DERRICK_INCOME * 4, slot: d.o });
+      }
+    }
+  }
+
+  private tickVetRegen() {
+    for (const e of this.ents.values()) {
+      if (e.vet >= 2 && !isBuilding(e.k) && e.hp < e.mhp) {
+        e.hp = Math.min(e.mhp, e.hp + VET_HEAL[e.vet]);
+      }
+    }
+  }
+
+  private tickCrates() {
+    if (!this.config.crates) return;
+    // Periodic spawn in contested mid-map [14..50, 14..50]
+    if (
+      this.tick >= 250 &&
+      (this.tick === 250 || (this.tick - 250) % CRATE_INTERVAL_TICKS === 0) &&
+      this.crates.size < CRATE_MAX
+    ) {
+      for (let tries = 0; tries < 30; tries++) {
+        const tx = 14 + Math.floor(Math.random() * 37);
+        const ty = 14 + Math.floor(Math.random() * 37);
+        if (!this.passable(tx, ty) || this.ore[idx(tx, ty)] > 0) continue;
+        const cx = tx + 0.5,
+          cy = ty + 0.5;
+        let tooClose = false;
+        for (const c of this.crates.values()) {
+          if (dist(cx, cy, c.x, c.y) < 3) {
+            tooClose = true;
+            break;
+          }
+        }
+        if (tooClose) continue;
+        const kind = CRATE_KINDS[Math.floor(Math.random() * CRATE_KINDS.length)];
+        const crate: CrateSnap = { id: this.nextCrateId++, x: cx, y: cy, kind };
+        this.crates.set(crate.id, crate);
+        break;
+      }
+    }
+
+    if (!this.crates.size) return;
+
+    // Collection check
+    for (const [cid, crate] of [...this.crates.entries()]) {
+      let collector: Ent | null = null;
+      for (const u of this.ents.values()) {
+        if (isBuilding(u.k) || u.o < 0) continue;
+        if (dist(u.x, u.y, crate.x, crate.y) <= 1.2) {
+          collector = u;
+          break;
+        }
+      }
+      if (!collector) continue;
+      this.crates.delete(cid);
+      const p = this.players.get(collector.o);
+      let text = "";
+      if (crate.kind === "cash") {
+        if (p) {
+          p.credits += CRATE_CASH;
+          p.creditsEarned += CRATE_CASH;
+        }
+        text = "+$1,000 CRATE";
+      } else if (crate.kind === "vet") {
+        if (collector.vet < 3 && collector.k !== "harvester" && collector.k !== "engineer") {
+          this.promoteUnit(collector, collector.vet + 1);
+          text = "★ PROMOTED!";
+        } else {
+          if (p) {
+            p.credits += 500;
+            p.creditsEarned += 500;
+          }
+          text = "★ PROMOTED!";
+        }
+      } else if (crate.kind === "heal") {
+        collector.hp = collector.mhp;
+        for (const u of this.ents.values()) {
+          if (!isBuilding(u.k) && this.isAlly(collector.o, u.o) && dist(collector.x, collector.y, u.x, u.y) <= 8) {
+            u.hp = u.mhp;
+          }
+        }
+        text = "SQUAD REPAIRED!";
+      } else if (crate.kind === "unit") {
+        const bonusKind: UnitKind = this.hasBuilding(collector.o, "factory2") ? "heavy" : "tank";
+        const spot = nearestPassable(Math.floor(collector.x), Math.floor(collector.y), this.passable, 6);
+        if (spot) {
+          this.spawnUnit(collector.o, bonusKind, spot.x, spot.y);
+          if (p) p.unitsBuilt++;
+        }
+        text = "BONUS REINFORCEMENT!";
+      }
+      this.events.push({ e: "crate", x: crate.x, y: crate.y, kind: crate.kind, slot: collector.o, text });
+    }
+  }
+
+  private promoteUnit(e: Ent, newVet: number) {
+    const clamped = Math.min(3, Math.max(0, newVet));
+    if (clamped <= e.vet || isBuilding(e.k) || e.k === "harvester" || e.k === "engineer") return;
+    const oldMhp = e.mhp;
+    e.vet = clamped;
+    e.xp = Math.max(e.xp, VET_XP[clamped]);
+    e.mhp = Math.round(UNITS[e.k].hp * VET_HP[clamped]);
+    const gain = e.mhp - oldMhp;
+    e.hp = Math.min(e.mhp, e.hp + gain + Math.round(e.mhp * 0.25));
+    this.events.push({ e: "promote", id: e.id, vet: e.vet, x: e.x, y: e.y, slot: e.o });
+  }
+
+  private grantXp(e: Ent, amount: number) {
+    if (amount <= 0 || isBuilding(e.k) || e.k === "harvester" || e.k === "engineer" || e.vet >= 3) return;
+    e.xp += amount;
+    let targetVet = e.vet;
+    while (targetVet < 3 && e.xp >= VET_XP[targetVet + 1]) targetVet++;
+    if (targetVet > e.vet) this.promoteUnit(e, targetVet);
+  }
+
+  private alertVictim(slot: number, x: number, y: number) {
+    if (slot < 0) return;
+    const last = this.lastAlert.get(slot) ?? -999;
+    if (this.tick - last >= 80) {
+      this.lastAlert.set(slot, this.tick);
+      this.events.push({ e: "alert", slot, x, y });
     }
   }
 
@@ -623,6 +949,12 @@ export class World {
           p.bq = null;
         }
       }
+      if (this.hasBuilding(p.slot, "superweapon")) {
+        if (p.swLeft < 0) p.swLeft = SW_CHARGE_TICKS;
+        else if (p.swLeft > 0) p.swLeft = Math.max(0, p.swLeft - rate);
+      } else {
+        p.swLeft = -1;
+      }
       for (const cat of ["barracks", "factory"] as const) {
         const q = p.queues[cat];
         if (!q) continue;
@@ -640,6 +972,12 @@ export class World {
           if (!spawned) {
             // nowhere to deploy — refund instead of eating the unit
             p.credits += UNITS[q.unit].cost;
+          } else {
+            p.unitsBuilt++;
+            if (b && b.rally) {
+              const rk: OrderKind = spawned.k === "engineer" || spawned.k === "harvester" ? "move" : "amove";
+              this.cmdOrder(p.slot, [spawned.id], rk, b.rally[0], b.rally[1]);
+            }
           }
           if (--q.count <= 0) delete p.queues[cat];
           else q.left = q.total;
@@ -658,7 +996,7 @@ export class World {
     const o = e.order;
     if (o?.kind === "attack" && o.target != null) {
       const tgt = this.ents.get(o.target);
-      if (!tgt || tgt.o === e.o) {
+      if (!tgt || this.isAlly(e.o, tgt.o)) {
         this.advanceOrder(e);
       } else if (e.k === "engineer" && isBuilding(tgt.k)) {
         // engineers don't shoot — they walk in and take the building
@@ -754,8 +1092,12 @@ export class World {
         const arrived = this.stepAlong(e, 0.4) || dist(e.x, e.y, ref.x, ref.y) <= dockR;
         if (arrived) {
           const p = this.players.get(e.o);
-          if (p)
-            p.credits += Math.floor(e.cargo * ORE_VALUE * (this.hasBuilding(e.o, "purifier") ? 1 + PURIFIER_BONUS : 1));
+          const deposit = Math.floor(e.cargo * ORE_VALUE * (this.hasBuilding(e.o, "purifier") ? 1 + PURIFIER_BONUS : 1));
+          if (p && deposit > 0) {
+            p.credits += deposit;
+            p.creditsEarned += deposit;
+            this.events.push({ e: "income", x: ref.x, y: ref.y, amt: deposit, slot: e.o });
+          }
           e.cargo = 0;
           e.hstate = "toOre";
           e.order = null;
@@ -909,7 +1251,7 @@ export class World {
     let best: Ent | null = null,
       bd = range;
     for (const t of this.ents.values()) {
-      if (t.o === e.o || t.o < 0) continue;
+      if (t.o < 0 || this.isAlly(e.o, t.o)) continue;
       const tp = this.players.get(t.o);
       if (!tp || tp.eliminated) continue;
       const d = entityDist(e, t);
@@ -931,20 +1273,54 @@ export class World {
     if (w.range <= 0) return;
     if (isBuilding(e.k) && this.players.get(e.o)?.lowPower) return; // powered defenses offline
     e.cd = w.rof;
-    tgt.hp -= w.dmg;
-    this.events.push({ e: "shot", fx: e.x, fy: e.y, tx: tgt.x, ty: tgt.y, w: weaponFxOf(e.k), src: e.id });
-    // rate-limited "under attack" alert for the victim
-    if (tgt.o >= 0) {
-      const last = this.lastAlert.get(tgt.o) ?? -999;
-      if (this.tick - last >= 80) {
-        this.lastAlert.set(tgt.o, this.tick);
-        this.events.push({ e: "alert", slot: tgt.o, x: tgt.x, y: tgt.y });
+    const baseDmg = w.dmg * VET_DMG[e.vet];
+    const directDmg = baseDmg * armorMult(e.k, tgt.k);
+    const tx = tgt.x,
+      ty = tgt.y;
+    tgt.hp -= directDmg;
+    this.events.push({
+      e: "shot",
+      fx: e.x,
+      fy: e.y,
+      tx,
+      ty,
+      w: weaponFxOf(e.k),
+      src: e.id,
+      ...(e.vet > 0 ? { vet: e.vet } : {}),
+    });
+    this.events.push({ e: "hit", id: tgt.id });
+    this.grantXp(e, directDmg * 0.5);
+    this.alertVictim(tgt.o, tx, ty);
+
+    // Splash damage to non-ally targets within SPLASH_RADIUS
+    const splashR = SPLASH_RADIUS[e.k];
+    if (splashR) {
+      for (const other of [...this.ents.values()]) {
+        if (other.id === tgt.id || !this.ents.has(other.id)) continue;
+        if (this.isAlly(e.o, other.o)) continue;
+        const d = dist(tx, ty, other.x, other.y);
+        if (d > splashR) continue;
+        const falloff = 1 - d / splashR;
+        const sdmg = baseDmg * 0.65 * falloff * armorMult(e.k, other.k);
+        if (sdmg <= 0) continue;
+        other.hp -= sdmg;
+        this.events.push({ e: "hit", id: other.id });
+        this.grantXp(e, sdmg * 0.5);
+        this.alertVictim(other.o, other.x, other.y);
+        if (other.hp <= 0) {
+          this.grantXp(e, other.mhp * 0.8);
+          this.destroy(other, e.o);
+        }
       }
     }
-    if (tgt.hp <= 0) this.destroy(tgt);
+
+    if (tgt.hp <= 0 && this.ents.has(tgt.id)) {
+      this.grantXp(e, tgt.mhp * 0.8);
+      this.destroy(tgt, e.o);
+    }
   }
 
-  private destroy(e: Ent) {
+  private destroy(e: Ent, killerSlot?: number) {
     if (!this.ents.has(e.id)) return;
     const wasBuilding = isBuilding(e.k);
     if (wasBuilding) {
@@ -958,7 +1334,16 @@ export class World {
         }
     }
     this.ents.delete(e.id);
-    if (wasBuilding) this.recomputePower(e.o); // after removal so the corpse doesn't count
+    if (wasBuilding) {
+      this.recomputePower(e.o); // after removal so the corpse doesn't count
+      if (killerSlot != null && killerSlot >= 0 && !this.isAlly(killerSlot, e.o)) {
+        const kp = this.players.get(killerSlot);
+        if (kp) kp.bldDestroyed++;
+      }
+    } else if (e.o >= 0) {
+      const op = this.players.get(e.o);
+      if (op) op.unitsLost++;
+    }
     const size = wasBuilding ? Math.max(BUILDINGS[e.k as BuildingKind].w, BUILDINGS[e.k as BuildingKind].h) : 1;
     this.events.push({ e: "boom", x: e.x, y: e.y, r: size });
   }
@@ -1033,12 +1418,14 @@ export class World {
         const minSep = isVeh(a.k) && isVeh(b.k) ? 1.05 : isVeh(a.k) || isVeh(b.k) ? 0.85 : 0.72;
         if (d2 > minSep * minSep) continue;
         const crushable = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer";
-        if ((a.k === "tank" || a.k === "heavy") && crushable(b.k) && a.o !== b.o) {
-          this.destroy(b);
+        if ((a.k === "tank" || a.k === "heavy") && crushable(b.k) && !this.isAlly(a.o, b.o)) {
+          this.grantXp(a, b.mhp * 0.8);
+          this.destroy(b, a.o);
           continue;
         }
-        if ((b.k === "tank" || b.k === "heavy") && crushable(a.k) && a.o !== b.o) {
-          this.destroy(a);
+        if ((b.k === "tank" || b.k === "heavy") && crushable(a.k) && !this.isAlly(a.o, b.o)) {
+          this.grantXp(b, a.mhp * 0.8);
+          this.destroy(a, b.o);
           break;
         }
         const d = Math.sqrt(d2) || 0.01;
@@ -1073,11 +1460,21 @@ export class World {
         this.events.push({ e: "elim", slot: p.slot });
       }
     }
-    const aliveSlots = [...this.players.values()].filter((p) => !p.eliminated).map((p) => p.slot);
-    if (aliveSlots.length <= 1) this.winner = aliveSlots[0] ?? null;
+    const alivePlayers = [...this.players.values()].filter((p) => !p.eliminated);
+    if (alivePlayers.length === 0) return;
+    if (alivePlayers.length === 1) {
+      this.winner = alivePlayers[0].slot;
+      this.winnerTeam = alivePlayers[0].team > 0 ? alivePlayers[0].team : null;
+      return;
+    }
+    const firstTeam = alivePlayers[0].team;
+    if (firstTeam > 0 && alivePlayers.every((p) => p.team === firstTeam)) {
+      this.winner = alivePlayers[0].slot;
+      this.winnerTeam = firstTeam;
+    }
   }
 
-  snapshot(): { ents: EntSnap[]; players: Record<number, PlayerState>; events: GameEvent[] } {
+  snapshot(): { ents: EntSnap[]; crates: CrateSnap[]; players: Record<number, PlayerState>; events: GameEvent[] } {
     const ents: EntSnap[] = [];
     for (const e of this.ents.values()) {
       const s: EntSnap = {
@@ -1091,6 +1488,8 @@ export class World {
         d: Math.round(e.d * 10),
       };
       if (e.k === "harvester") s.cargo = e.cargo;
+      if (e.vet > 0) s.vet = e.vet;
+      if (e.rally) s.rally = [e.rally[0], e.rally[1]];
       if (!isBuilding(e.k) && (e.order || e.orderQueue.length)) {
         const wp: [number, number, OrderKind][] = [];
         const pushOrd = (ord: Order) => {
@@ -1113,7 +1512,7 @@ export class World {
     }
     const players: Record<number, PlayerState> = {};
     for (const p of this.players.values()) {
-      players[p.slot] = {
+      const ps: PlayerState = {
         slot: p.slot,
         credits: Math.floor(p.credits),
         pwrHave: p.pwrHave,
@@ -1123,10 +1522,17 @@ export class World {
         awaiting: p.awaiting,
         bq: p.bq ? { ...p.bq } : null,
         queues: { ...p.queues },
+        team: p.team,
       };
+      if (p.swLeft >= 0) {
+        ps.swReady = p.swLeft <= 0;
+        ps.swLeft = Math.ceil(p.swLeft);
+        ps.swTotal = SW_CHARGE_TICKS;
+      }
+      players[p.slot] = ps;
     }
     const events = this.events;
     this.events = [];
-    return { ents, players, events };
+    return { ents, crates: [...this.crates.values()], players, events };
   }
 }

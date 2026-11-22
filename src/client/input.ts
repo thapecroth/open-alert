@@ -14,6 +14,7 @@ export class Input {
   placingCancelled = false;
   placePending = false;
   verb: "sell" | "repair" | null = null;
+  swArmed = false;
   wasdPan = localStorage.getItem("oa-wasd") === "1";
 
   onSelectionChange: (ids: Set<number>) => void = () => {};
@@ -21,6 +22,9 @@ export class Input {
   onOrderLabel: (text: string | null, x?: number, y?: number) => void = () => {};
   onOpenChat: () => void = () => {};
   onWasdChange: (on: boolean) => void = () => {};
+  onSuperweaponArmedChange: (armed: boolean) => void = () => {};
+  onUiSound: (kind: "select" | "move" | "attack" | "place" | "deny") => void = () => {};
+  isAlly: (slot: number) => boolean = () => false;
 
   private gs: GameScene;
   private r: Renderer;
@@ -97,6 +101,7 @@ export class Input {
     this.exitPlacing();
     this.clearPlacePending();
     this.placingCancelled = false;
+    this.disarmSuperweapon();
     this.setAmove(false);
     this.armVerb(null);
     this.selection = new Set();
@@ -134,7 +139,7 @@ export class Input {
 
   private onKeyDown(e: KeyboardEvent) {
     const tag = (e.target as HTMLElement | null)?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA") {
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
       if (e.code === "Escape") (e.target as HTMLElement).blur();
       return;
     }
@@ -199,6 +204,10 @@ export class Input {
         help.classList.add("hidden");
         return;
       }
+      if (this.swArmed) {
+        this.disarmSuperweapon();
+        return;
+      }
       this.setAmove(false);
       this.armVerb(null);
       if (this.placing) {
@@ -219,6 +228,38 @@ export class Input {
     if (this.amoveNext) this.setAmove(false);
     this.r.setSelected(this.selection);
     this.onSelectionChange(this.selection);
+    if (sel.size > 0) this.onUiSound("select");
+  }
+
+  hasSelectedUnits(): boolean {
+    return this.myUnits().length > 0;
+  }
+
+  armSuperweapon() {
+    if (this.placing) return;
+    if (this.swArmed) {
+      this.disarmSuperweapon();
+      return;
+    }
+    this.setAmove(false);
+    this.armVerb(null);
+    this.swArmed = true;
+    if (this.labelTimer) clearTimeout(this.labelTimer);
+    this.onOrderLabel(
+      "ION CANNON ARMED — LEFT-CLICK TARGET (RIGHT-CLICK / ESC TO CANCEL)",
+      Math.max(20, this.px + 12),
+      Math.max(50, this.py - 12),
+    );
+    this.onSuperweaponArmedChange(true);
+    this.onUiSound("select");
+  }
+
+  disarmSuperweapon() {
+    if (!this.swArmed) return;
+    this.swArmed = false;
+    if (this.labelTimer) clearTimeout(this.labelTimer);
+    this.onOrderLabel(null);
+    this.onSuperweaponArmedChange(false);
   }
 
   private myUnits(): number[] {
@@ -373,6 +414,7 @@ export class Input {
       this.net.send({ t: "order", ids: [id], kind: "move", x: tx, y: ty });
     }
     this.flashLabel("SCATTER", 700);
+    this.onUiSound("move");
   }
 
   // ---------- Pointer interactions ----------
@@ -385,6 +427,21 @@ export class Input {
     if (e.button === 1) {
       this.middleDrag = { x: e.clientX, y: e.clientY };
       e.preventDefault();
+      return;
+    }
+    if (this.swArmed) {
+      if (e.button === 0) {
+        const ground = this.gs.pickGround();
+        if (ground) {
+          this.net.send({ t: "superweapon", x: ground.x, y: ground.z });
+          this.disarmSuperweapon();
+          this.orderMarker(ground, "amove", false, 0x4ad8ff);
+          this.flashLabel("ORBITAL STRIKE INBOUND!", 1600);
+          this.onUiSound("attack");
+        }
+      } else {
+        this.disarmSuperweapon();
+      }
       return;
     }
     if (this.placing) {
@@ -414,6 +471,7 @@ export class Input {
 
   armAmove() {
     if (this.placing) return;
+    this.disarmSuperweapon();
     if (!this.myUnits().length) {
       this.flashLabel("select units first", 800);
       return;
@@ -428,7 +486,10 @@ export class Input {
 
   armVerb(v: "sell" | "repair" | null) {
     if (v && this.placing) return;
-    if (v) this.setAmove(false);
+    if (v) {
+      this.disarmSuperweapon();
+      this.setAmove(false);
+    }
     this.verb = this.verb === v ? null : v;
     if (this.labelTimer) clearTimeout(this.labelTimer);
     this.onOrderLabel(this.verb ? `${this.verb.toUpperCase()} — click your building` : null, this.px + 12, this.py - 12);
@@ -538,12 +599,44 @@ export class Input {
     }
   }
 
+  issueMinimapOrder(x: number, y: number, queue = false): boolean {
+    const ids = this.myUnits();
+    if (!ids.length) return false;
+    let kind: OrderKind = "move";
+    if (this.amoveNext) {
+      kind = "amove";
+      this.setAmove(false);
+    }
+    this.net.send({ t: "order", ids, kind, x, y, ...(queue ? { queue: true } : {}) });
+    this.orderMarker(new THREE.Vector3(x, 0, y), kind, queue);
+    const base = kind === "amove" ? "ATTACK-MOVE" : "MOVE";
+    this.flashLabel(queue ? `+ ${base} (MAP)` : `${base} (MAP)`, 750);
+    this.onUiSound(kind === "amove" ? "attack" : "move");
+    return true;
+  }
+
   private issueOrder(queue = false) {
     const ids = this.myUnits();
-    if (!ids.length) return;
+    const slot = this.getSlot();
+    if (!ids.length) {
+      // Single own production building selected -> right-click sets its rally point
+      if (this.selection.size === 1) {
+        const singleId = [...this.selection][0];
+        const b = this.r.tracked.get(singleId);
+        if (b && b.last.o === slot && (b.last.k === "barracks" || b.last.k === "factory" || b.last.k === "factory2")) {
+          const ground = this.gs.pickGround();
+          if (ground) {
+            this.net.send({ t: "rally", id: singleId, x: ground.x, y: ground.z });
+            this.orderMarker(ground, "move", false, 0x4ad8ff);
+            this.flashLabel("RALLY POINT SET", 900);
+            this.onUiSound("move");
+          }
+        }
+      }
+      return;
+    }
     const entId = this.gs.pickEntity();
     const t = entId != null ? this.r.tracked.get(entId) : null;
-    const slot = this.getSlot();
     const ground = this.gs.pickGround();
     if (!ground) return;
 
@@ -552,7 +645,15 @@ export class Input {
     if (this.amoveNext) {
       kind = "amove";
       this.setAmove(false);
-    } else if (t && t.last.o !== slot && t.last.o >= 0) {
+    } else if (t && t.last.o !== slot && t.last.o >= 0 && !this.isAlly(t.last.o)) {
+      kind = "attack";
+      target = entId!;
+    } else if (
+      t &&
+      t.last.o === -1 &&
+      t.last.k === "derrick" &&
+      ids.some((id) => this.r.tracked.get(id)?.last.k === "engineer")
+    ) {
       kind = "attack";
       target = entId!;
     } else {
@@ -566,10 +667,13 @@ export class Input {
     this.orderMarker(ground, kind, queue);
     const base = kind === "amove" ? "ATTACK-MOVE" : kind.toUpperCase();
     this.flashLabel(queue ? `+ ${base} WAYPOINT` : base, 750);
+    this.onUiSound(kind === "attack" || kind === "amove" ? "attack" : "move");
   }
 
-  private orderMarker(p: THREE.Vector3, kind: OrderKind, queue = false) {
-    const c = kind === "attack" ? 0xff3026 : kind === "amove" ? 0xff6a3c : kind === "harvest" ? 0xffcc33 : 0x4dff70;
+  private orderMarker(p: THREE.Vector3, kind: OrderKind, queue = false, colorOverride?: number) {
+    const c =
+      colorOverride ??
+      (kind === "attack" ? 0xff3026 : kind === "amove" ? 0xff6a3c : kind === "harvest" ? 0xffcc33 : 0x4dff70);
     const disc = new THREE.Mesh(
       new THREE.RingGeometry(queue ? 0.22 : 0.3, queue ? 0.34 : 0.44, 24),
       new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }),
@@ -598,16 +702,40 @@ export class Input {
     if (ids.length) {
       this.net.send({ t: "stop", ids });
       this.flashLabel("STOP", 600);
+      this.onUiSound("move");
     }
   }
 
   // ---------- placement ----------
 
+  private updateBuildZones(show: boolean) {
+    if (!show) {
+      this.gs.setBuildZones(null);
+      return;
+    }
+    const slot = this.getSlot();
+    const zones: { x: number; y: number; w: number; h: number }[] = [];
+    for (const t of this.r.tracked.values()) {
+      if (t.last.o === slot && isBuildingKind(t.last.k)) {
+        const d = BUILDINGS[t.last.k];
+        zones.push({
+          x: Math.round(t.last.x - d.w / 2),
+          y: Math.round(t.last.y - d.h / 2),
+          w: d.w,
+          h: d.h,
+        });
+      }
+    }
+    this.gs.setBuildZones(zones);
+  }
+
   enterPlacing(kind: BuildingKind) {
     if (this.ghost) this.exitPlacing();
+    this.disarmSuperweapon();
     this.placing = kind;
     this.ghost = makePlacementGhost(kind);
     this.gs.scene.add(this.ghost);
+    this.updateBuildZones(true);
     this.moveGhost();
     document.getElementById("placement-hint")?.classList.remove("hidden");
   }
@@ -616,6 +744,7 @@ export class Input {
     this.placing = null;
     this.ghostOk = false;
     this.ghostReason = null;
+    this.updateBuildZones(false);
     if (this.ghost) {
       this.gs.scene.remove(this.ghost);
       this.ghost.traverse((c) => {
@@ -670,6 +799,7 @@ export class Input {
     const { tx, ty } = this.ghost.userData;
     if (!this.ghostOk) {
       if (this.ghostReason) this.flashLabel(this.ghostReason.toUpperCase(), 850);
+      this.onUiSound("deny");
       return;
     }
     this.placePending = true;
@@ -679,6 +809,7 @@ export class Input {
       this.placePendingTimer = null;
     }, 1500);
     this.net.send({ t: "place", tx, ty });
+    this.onUiSound("place");
   }
 
   // ---------- per-frame ----------

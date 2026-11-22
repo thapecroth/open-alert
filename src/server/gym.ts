@@ -56,6 +56,7 @@ export interface GymAction {
   order?: { ids: number[]; kind: string; x: number; y: number; target?: number } | null;
   stop?: number[] | null;
   upgrade?: number | null;
+  superweapon?: { x: number; y: number } | null;
 }
 
 export interface GymStepResult {
@@ -169,6 +170,18 @@ export class GymEnv {
             anyOf: [{ type: "integer" }, { type: "null" }],
             description: "upgrade your war factory ent id to MKII (needs techlab + $1500) — unlocks heavy/spider",
           },
+          superweapon: {
+            anyOf: [
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["x", "y"],
+                properties: { x: { type: "number" }, y: { type: "number" } },
+              },
+              { type: "null" },
+            ],
+            description: "fire charged Orbital Ion Cannon at map coords (needs superweapon building + full charge)",
+          },
         },
       },
     };
@@ -225,6 +238,10 @@ export class GymEnv {
       if (a.upgrade != null) {
         const e = this.w.cmdUpgrade(this.slot, a.upgrade);
         if (e) denied.push(`upgrade: ${e}`);
+      }
+      if (a.superweapon != null) {
+        const e = this.w.cmdSuperweapon(this.slot, a.superweapon.x, a.superweapon.y);
+        if (e) denied.push(`superweapon: ${e}`);
       }
       if (this.opponent === "mirror") this.mirrorAction(a);
     }
@@ -334,17 +351,20 @@ export class GymEnv {
     for (const [x, y, amt] of this.w.oreSnapshot()) out[y * MAP_W + x] = Math.min(1, amt / ORE_CELL_MAX);
     for (const e of this.w.ents.values()) {
       const mine = e.o === this.slot;
+      const foe = e.o >= 0 && !mine;
       const frac = Math.max(0, Math.min(1, e.hp / e.mhp));
       if (isB(e.k)) {
-        const d = BUILDINGS[e.k];
-        const ch = mine ? 2 : 4;
-        const x0 = Math.round(e.x - d.w / 2), y0 = Math.round(e.y - d.h / 2);
-        for (let dy = 0; dy < d.h; dy++)
-          for (let dx = 0; dx < d.w; dx++) {
-            const x = x0 + dx, y = y0 + dy;
-            if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H) out[ch * S + y * MAP_W + x] = 1;
-          }
-      } else {
+        if (mine || foe) {
+          const d = BUILDINGS[e.k];
+          const ch = mine ? 2 : 4;
+          const x0 = Math.round(e.x - d.w / 2), y0 = Math.round(e.y - d.h / 2);
+          for (let dy = 0; dy < d.h; dy++)
+            for (let dx = 0; dx < d.w; dx++) {
+              const x = x0 + dx, y = y0 + dy;
+              if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H) out[ch * S + y * MAP_W + x] = 1;
+            }
+        }
+      } else if (mine || foe) {
         const ch = mine ? 1 : 3;
         const x = Math.round(e.x), y = Math.round(e.y);
         if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H)
@@ -441,6 +461,10 @@ export class GymEnv {
     }
     if (a.stop != null && !Array.isArray(a.stop)) return { ok: false, reason: "bad stop ids" };
     if (a.upgrade != null && !num(a.upgrade)) return { ok: false, reason: "bad upgrade id" };
+    if (a.superweapon != null) {
+      const sw = a.superweapon;
+      if (!sw || typeof sw !== "object" || !num(sw.x) || !num(sw.y)) return { ok: false, reason: "bad superweapon coords" };
+    }
     return { ok: true };
   }
 
@@ -557,6 +581,7 @@ export class GymEnv {
       if (ids.length) w.cmdOrder(s, ids, a.order.kind as OrderKind, MAP_W - a.order.x, MAP_H - a.order.y);
     }
     if (a.stop != null) w.cmdStop(s, this.ownUnitIds(a.stop, s));
+    if (a.superweapon != null) w.cmdSuperweapon(s, MAP_W - a.superweapon.x, MAP_H - a.superweapon.y);
   }
 
   /** Mirror housekeeping each tick: never leave a finished building unplaced. */
