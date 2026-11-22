@@ -1,4 +1,4 @@
-import type { LobbyPlayer, PlayerState, EntSnap, MatchStats } from "../shared/protocol";
+import type { LobbyPlayer, PlayerState, EntSnap, CrateSnap, MatchStats } from "../shared/protocol";
 import {
   BUILDINGS,
   UNITS,
@@ -7,7 +7,9 @@ import {
   BUILDING_NAMES,
   UPGRADE_COST,
   PLAYER_COLORS,
+  SPAWNS,
   SW_CHARGE_TICKS,
+  RECON_CHARGE_TICKS,
   MAP_LIST,
   BOT_PROFILES,
   DEFAULT_CONFIG,
@@ -48,6 +50,21 @@ const TOOLTIPS: Record<string, string> = {
   harvester: "Ore Harvester — collects ore; a full load is worth $1000.",
 };
 
+const MAP_PREVIEW_PALETTES: Record<MapId, { bg: string; grid: string; cliff: string; cliffEdge: string }> = {
+  crossroads: { bg: "#2b3926", grid: "rgba(180,210,160,0.08)", cliff: "#5a6257", cliffEdge: "#768072" }, // Steppe (olive)
+  canyon: { bg: "#4a2c20", grid: "rgba(235,175,140,0.08)", cliff: "#82523c", cliffEdge: "#a16a50" }, // Canyon (rust)
+  basin: { bg: "#28323c", grid: "rgba(170,200,225,0.08)", cliff: "#576574", cliffEdge: "#748494" }, // Alpine (slate)
+  tundra: { bg: "#2e4656", grid: "rgba(210,240,255,0.1)", cliff: "#88b3ca", cliffEdge: "#b0d5e8" }, // Arctic (icy)
+  fortress: { bg: "#4d3f2a", grid: "rgba(235,210,160,0.08)", cliff: "#85704f", cliffEdge: "#a38d68" }, // Desert (sandy)
+  jungle: { bg: "#1c3828", grid: "rgba(150,225,175,0.08)", cliff: "#3e5e47", cliffEdge: "#567d61" }, // Jungle (emerald)
+  islands: { bg: "#1d3d44", grid: "rgba(155,225,240,0.08)", cliff: "#10232d", cliffEdge: "#2e6576" }, // Riverland (teal)
+  oasis: { bg: "#574323", grid: "rgba(250,215,145,0.09)", cliff: "#947542", cliffEdge: "#b39259" }, // Sahara (golden)
+};
+
+function fmtBoost(mult: number): string {
+  return `×${Number(mult.toFixed(2))}`;
+}
+
 export class Hud {
   onReady: (r: boolean) => void = () => {};
   onStart: () => void = () => {};
@@ -70,7 +87,8 @@ export class Hud {
   onMinimapPing: (x: number, y: number) => void = () => {};
   onMinimapOrder?: (x: number, y: number, shift: boolean) => boolean;
   onSuperweaponClick: () => void = () => {};
-  onVerb: (v: "amove" | "stop" | "sell" | "repair") => void = () => {};
+  onReconClick: () => void = () => {};
+  onVerb: (v: "amove" | "patrol" | "hold" | "stop" | "sell" | "repair") => void = () => {};
   onUpgrade?: (id: number) => void;
   onGroupClick?: (n: number, dbl: boolean) => void;
   onToggleWasd?: () => void;
@@ -140,6 +158,7 @@ export class Hud {
     document.getElementById("mute-btn")?.addEventListener("click", () => this.onToggleMute?.());
     document.getElementById("music-btn")?.addEventListener("click", () => this.onToggleMusic?.());
     document.getElementById("sw-hud")?.addEventListener("click", () => this.onSuperweaponClick());
+    document.getElementById("recon-hud")?.addEventListener("click", () => this.onReconClick());
 
     // Lobby callsign input
     const nameInput = document.getElementById("name-input") as HTMLInputElement | null;
@@ -177,7 +196,7 @@ export class Hud {
       for (const m of MAP_LIST) {
         const opt = document.createElement("option");
         opt.value = m.id;
-        opt.textContent = m.name;
+        opt.textContent = `${m.name} · ${m.biome}`;
         mapSelect.appendChild(opt);
       }
       mapSelect.addEventListener("change", () => {
@@ -188,7 +207,7 @@ export class Hud {
       this.updateMapDesc(MAP_LIST[0].id);
     }
 
-    for (const v of ["amove", "stop", "sell", "repair"] as const) {
+    for (const v of ["amove", "patrol", "hold", "stop", "sell", "repair"] as const) {
       el(`verb-${v}`)?.addEventListener("click", () => this.onVerb(v));
     }
 
@@ -273,9 +292,112 @@ export class Hud {
 
   private updateMapDesc(mapId: MapId) {
     const d = document.getElementById("map-desc");
-    if (!d) return;
-    const info = MAP_LIST.find((m) => m.id === mapId);
-    d.textContent = info ? info.desc : "";
+    if (d) {
+      const info = MAP_LIST.find((m) => m.id === mapId);
+      d.textContent = info ? info.desc : "";
+    }
+    this.drawMapPreview(mapId);
+  }
+
+  drawMapPreview(mapId: MapId) {
+    const canvas = document.getElementById("map-preview") as HTMLCanvasElement | null;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const w = canvas.width;
+    const h = canvas.height;
+    const s = w / MAP_W;
+    const pal = MAP_PREVIEW_PALETTES[mapId] ?? MAP_PREVIEW_PALETTES.crossroads;
+    const layout = getMapLayout(mapId);
+
+    // Biome-tinted terrain background
+    ctx.fillStyle = pal.bg;
+    ctx.fillRect(0, 0, w, h);
+
+    // Subtle quadrant tactical grid
+    ctx.strokeStyle = pal.grid;
+    ctx.lineWidth = 1;
+    for (let t = 16; t < MAP_W; t += 16) {
+      const p = Math.round(t * s) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(p, 0);
+      ctx.lineTo(p, h);
+      ctx.moveTo(0, p);
+      ctx.lineTo(w, p);
+      ctx.stroke();
+    }
+
+    // Center gold ore blob + bonus extraOre zones
+    const drawOreBlob = (cx: number, cy: number, rTiles: number) => {
+      const px = cx * s;
+      const py = cy * s;
+      const pr = Math.max(2.6, rTiles * s);
+      ctx.fillStyle = "rgba(255, 196, 61, 0.28)";
+      ctx.beginPath();
+      ctx.arc(px, py, pr * 1.32, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#e0ae34";
+      ctx.beginPath();
+      ctx.arc(px, py, pr * 0.88, 0, Math.PI * 2);
+      ctx.fill();
+    };
+    drawOreBlob(MAP_W / 2, MAP_H / 2, 3.6);
+    if (layout.extraOre) {
+      for (const [ox, oy, or] of layout.extraOre) {
+        drawOreBlob(ox, oy, or);
+      }
+    }
+
+    // Impassable cliff mesas / river channels
+    const cs = Math.ceil(s);
+    ctx.fillStyle = pal.cliff;
+    for (let i = 0; i < layout.cliffs.length; i++) {
+      const [cx, cy] = layout.cliffs[i];
+      ctx.fillRect(cx * s, cy * s, cs, cs);
+    }
+    ctx.fillStyle = pal.cliffEdge;
+    for (let i = 0; i < layout.cliffs.length; i++) {
+      const [cx, cy] = layout.cliffs[i];
+      ctx.fillRect(cx * s, cy * s, cs, Math.max(1, s * 0.4));
+    }
+
+    // Neutral Oil Derricks (amber diamond markers)
+    for (const [dx, dy] of layout.derricks) {
+      const mx = (dx + 1) * s;
+      const my = (dy + 1) * s;
+      const r = 4;
+      ctx.beginPath();
+      ctx.moveTo(mx, my - r);
+      ctx.lineTo(mx + r, my);
+      ctx.lineTo(mx, my + r);
+      ctx.lineTo(mx - r, my);
+      ctx.closePath();
+      ctx.fillStyle = "#ffc43d";
+      ctx.fill();
+      ctx.strokeStyle = "#0b1118";
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+    }
+
+    // 4 corner player spawn dots
+    for (let i = 0; i < SPAWNS.length; i++) {
+      const sp = SPAWNS[i];
+      const sx = (sp.x + 1.5) * s;
+      const sy = (sp.y + 1.5) * s;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 3.8, 0, Math.PI * 2);
+      ctx.fillStyle = PLAYER_COLORS[i] ?? "#ffffff";
+      ctx.fill();
+      ctx.strokeStyle = "#0b1118";
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+    }
+
+    // Subtle inset tactical frame
+    ctx.strokeStyle = "rgba(180, 220, 240, 0.18)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
   }
 
   setInitialName(name: string) {
@@ -303,8 +425,23 @@ export class Hud {
     this.targetCredits = 0;
     this.spectating = false;
     this.selSig = "";
+    this.updateClock(0);
+    this.hideHoverTip();
     const sw = document.getElementById("sw-hud");
     if (sw) sw.classList.add("hidden");
+    const recon = document.getElementById("recon-hud");
+    if (recon) recon.classList.add("hidden");
+    const boost = document.getElementById("prod-boost");
+    if (boost) boost.classList.add("hidden");
+  }
+
+  updateClock(tick: number) {
+    const clock = document.getElementById("game-clock");
+    if (!clock) return;
+    const sec = Math.max(0, Math.floor(tick / 10));
+    const mm = String(Math.floor(sec / 60)).padStart(2, "0");
+    const ss = String(sec % 60).padStart(2, "0");
+    clock.textContent = `${mm}:${ss}`;
   }
 
   tick(dt: number) {
@@ -376,6 +513,7 @@ export class Hud {
   }
 
   showLobby(players: LobbyPlayer[], you: string, mapId: MapId = "crossroads", config: GameConfig = DEFAULT_CONFIG) {
+    this.hideHoverTip();
     el("lobby").classList.remove("hidden");
     el("endscreen").classList.add("hidden");
     const me = players.find((p) => p.id === you);
@@ -534,6 +672,7 @@ export class Hud {
     }
     if (spectating) {
       document.getElementById("sw-hud")?.classList.add("hidden");
+      document.getElementById("recon-hud")?.classList.add("hidden");
     }
   }
 
@@ -544,6 +683,7 @@ export class Hud {
   }
 
   showEnd(text: string, reason = "", stats?: MatchStats[], durationSec?: number) {
+    this.hideHoverTip();
     el("end-text").textContent = text;
     const r = document.getElementById("end-reason");
     if (r) r.textContent = reason;
@@ -653,6 +793,44 @@ export class Hud {
     pw.classList.toggle("low", state.lowPower);
   }
 
+  updateRecon(state: PlayerState | null, reconArmed = false) {
+    const btn = document.getElementById("recon-hud") as HTMLButtonElement | null;
+    if (!btn) return;
+    if (!state || this.spectating || state.reconLeft === undefined || state.reconLeft < 0) {
+      btn.classList.add("hidden");
+      btn.classList.remove("ready", "armed", "offline");
+      return;
+    }
+    btn.classList.remove("hidden");
+    const prog = btn.querySelector<HTMLElement>(".recon-prog");
+    const txt = btn.querySelector<HTMLElement>(".recon-txt");
+    const total = state.reconTotal && state.reconTotal > 0 ? state.reconTotal : RECON_CHARGE_TICKS;
+    if (state.lowPower) {
+      btn.disabled = true;
+      btn.classList.remove("ready", "armed");
+      btn.classList.add("offline");
+      const pct = Math.max(0, Math.min(100, (1 - state.reconLeft / total) * 100));
+      if (prog) prog.style.width = `${pct.toFixed(1)}%`;
+      if (txt) txt.textContent = "RECON OFFLINE (LOW PWR)";
+    } else if (state.reconReady) {
+      btn.disabled = false;
+      btn.classList.remove("offline");
+      btn.classList.add("ready");
+      btn.classList.toggle("armed", reconArmed);
+      if (prog) prog.style.width = "100%";
+      if (txt) txt.textContent = reconArmed ? "RECON SCAN — CLICK MAP" : "◎ RECON SCAN READY";
+    } else {
+      btn.disabled = true;
+      btn.classList.remove("ready", "armed", "offline");
+      const sec = Math.max(0, Math.ceil(state.reconLeft / 10));
+      const m = Math.floor(sec / 60);
+      const s = String(sec % 60).padStart(2, "0");
+      const pct = Math.max(0, Math.min(100, (1 - state.reconLeft / total) * 100));
+      if (prog) prog.style.width = `${pct.toFixed(1)}%`;
+      if (txt) txt.textContent = `RECON SCAN ${m}:${s}`;
+    }
+  }
+
   updateSuperweapon(state: PlayerState | null, swArmed = false) {
     const btn = document.getElementById("sw-hud") as HTMLButtonElement | null;
     if (!btn) return;
@@ -736,17 +914,41 @@ export class Hud {
       if (state.bq || state.awaiting || state.credits < d.cost) b.disabled = true;
     }
 
+    // Multi-factory production speed badge on ARMY header
+    const boostEl = document.getElementById("prod-boost");
+    const bBoost = state?.prodBoost?.barracks ?? 1;
+    const fBoost = state?.prodBoost?.factory ?? 1;
+    if (boostEl) {
+      if (bBoost > 1.01 || fBoost > 1.01) {
+        if (bBoost > 1.01 && fBoost > 1.01) {
+          boostEl.textContent =
+            Math.abs(bBoost - fBoost) < 0.01 ? fmtBoost(bBoost) : `B ${fmtBoost(bBoost)} · F ${fmtBoost(fBoost)}`;
+          boostEl.title = `Multi-structure speed bonus: Barracks ${fmtBoost(bBoost)}, War Factory ${fmtBoost(fBoost)}`;
+        } else if (bBoost > 1.01) {
+          boostEl.textContent = `INF ${fmtBoost(bBoost)}`;
+          boostEl.title = `Multiple Barracks: infantry train ${fmtBoost(bBoost)} faster`;
+        } else {
+          boostEl.textContent = `VEH ${fmtBoost(fBoost)}`;
+          boostEl.title = `Multiple War Factories: vehicles build ${fmtBoost(fBoost)} faster`;
+        }
+        boostEl.classList.remove("hidden");
+      } else {
+        boostEl.classList.add("hidden");
+      }
+    }
+
     for (const [unit, b] of this.trainBtns) {
       const d = UNITS[unit];
       const prog = b.querySelector<HTMLElement>(".prog")!;
       const bt = b.querySelector<HTMLElement>(".btime")!;
+      const cat = d.trainsAt;
+      const mult = cat === "barracks" ? bBoost : fBoost;
       prog.style.width = "0%";
-      bt.textContent = `${d.buildTicks / 10}s`;
+      bt.textContent = mult > 1.01 ? `${(d.buildTicks / 10 / mult).toFixed(1)}s` : `${d.buildTicks / 10}s`;
       b.querySelector(".qcount")?.remove();
       b.classList.remove("locked");
       b.disabled = true;
       if (!state) continue;
-      const cat = d.trainsAt;
       if (!has(cat) || (d.requires && !has(d.requires))) {
         b.classList.add("locked");
         continue;
@@ -806,7 +1008,8 @@ export class Hud {
     const counts = new Map<string, number>();
     let hpSum = 0,
       hpMax = 0,
-      maxVet = 0;
+      maxVet = 0,
+      anyHold = false;
     let singleId: number | null = null;
     let singleKind: string | null = null;
     for (const id of sel) {
@@ -816,6 +1019,7 @@ export class Hud {
       hpSum += t.last.hp;
       hpMax += t.last.mhp;
       if ((t.last.vet ?? 0) > maxVet) maxVet = t.last.vet ?? 0;
+      if (t.last.hold) anyHold = true;
       if (sel.size === 1 && t.last.o === mySlot) {
         singleId = id;
         singleKind = t.last.k;
@@ -833,7 +1037,7 @@ export class Hud {
     const canAfford = state ? state.credits >= UPGRADE_COST : true;
     const sig =
       [...counts].map(([k, n]) => `${k}:${n}`).join(",") +
-      `|${singleId ?? ""}|${singleKind ?? ""}|${hasTech ? 1 : 0}|${canAfford ? 1 : 0}|v${maxVet}`;
+      `|${singleId ?? ""}|${singleKind ?? ""}|${hasTech ? 1 : 0}|${canAfford ? 1 : 0}|v${maxVet}|h${anyHold ? 1 : 0}`;
 
     // Only rebuild DOM structure when selection or upgrade readiness actually changes
     // (prevents 5Hz innerHTML destruction from eating clicks on the UPGRADE button)
@@ -850,7 +1054,10 @@ export class Hud {
         maxVet > 0
           ? `<span class="si-vet" title="Veterancy rank ${maxVet}">${"★".repeat(Math.min(3, maxVet))}</span>`
           : "";
-      box.innerHTML = `<div class="si-row">${parts}${vetBadge}</div><div class="si-hp"><i></i><span></span></div>`;
+      const holdBadge = anyHold
+        ? `<span class="si-hold" title="Holding position — fires in range without chasing">[HOLD]</span>`
+        : "";
+      box.innerHTML = `<div class="si-row">${parts}${vetBadge}${holdBadge}</div><div class="si-hp"><i></i><span></span></div>`;
 
       if (singleId !== null && singleKind === "factory") {
         const b = document.createElement("button");
@@ -876,6 +1083,39 @@ export class Hud {
     if (txt) txt.textContent = `HP ${Math.round(hpSum)} / ${hpMax}`;
   }
 
+  showHoverTip(ent: EntSnap | null, crate: CrateSnap | null, x: number, y: number) {
+    const tip = document.getElementById("hover-tip");
+    if (!tip) return;
+    if (!ent && !crate) {
+      tip.classList.add("hidden");
+      return;
+    }
+    if (ent) {
+      if (ent.o === -1 && ent.k === "derrick") {
+        tip.innerHTML = `<span class="ht-dot" style="background:#ffc43d"></span><span>Oil Derrick — Capture with Sapper</span>`;
+      } else {
+        const col = ent.o >= 0 ? PLAYER_COLORS[ent.o] ?? "#8a97a5" : "#8a97a5";
+        const name = esc(label(ent.k));
+        const vet = (ent.vet ?? 0) > 0 ? `<span class="ht-vet">${"★".repeat(Math.min(3, ent.vet!))}</span>` : "";
+        const hold = ent.hold ? `<span class="ht-hold">[HOLD]</span>` : "";
+        tip.innerHTML = `<span class="ht-dot" style="background:${col}"></span><span>${name}</span>${vet}${hold}<span class="ht-meta">· HP ${Math.round(ent.hp)}/${ent.mhp}</span>`;
+      }
+    } else if (crate) {
+      tip.innerHTML = `<span class="ht-dot" style="background:#ffc43d"></span><span>Supply Crate — Walk unit over to collect</span>`;
+    }
+    tip.classList.remove("hidden");
+    const w = tip.offsetWidth || 180;
+    const h = tip.offsetHeight || 26;
+    const lx = Math.max(10, Math.min(window.innerWidth - w - 10, x + 14));
+    const ly = y + 18 + h > window.innerHeight - 10 ? Math.max(46, y - h - 10) : Math.max(46, y + 18);
+    tip.style.left = `${lx}px`;
+    tip.style.top = `${ly}px`;
+  }
+
+  hideHoverTip() {
+    document.getElementById("hover-tip")?.classList.add("hidden");
+  }
+
   drawMinimap(
     r: Renderer,
     oreCells: Set<number>,
@@ -885,6 +1125,7 @@ export class Hud {
     mySlot: number,
     hasRadar: boolean,
     mapId: MapId = "crossroads",
+    lowPower = false,
   ) {
     const now = performance.now();
     if (now - this.mmLast < 160) return;
@@ -894,11 +1135,30 @@ export class Hud {
     ctx.fillStyle = "#080e14";
     ctx.fillRect(0, 0, 160, 160);
     if (mySlot >= 0 && !hasRadar) {
-      ctx.fillStyle = "#5f7485";
-      ctx.font = "10px monospace";
+      ctx.fillStyle = "#6e8699";
+      ctx.font = '700 11px "Rajdhani", monospace';
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText("NO RADAR UPLINK", 80, 80);
+      return;
+    }
+    if (mySlot >= 0 && hasRadar && lowPower) {
+      // Subtle outage scanlines + amber/red warning instead of live radar dots
+      ctx.fillStyle = "rgba(255, 196, 61, 0.045)";
+      const shift = Math.floor((now / 90) % 8);
+      for (let y = shift; y < 160; y += 8) {
+        ctx.fillRect(0, y, 160, 2);
+      }
+      ctx.strokeStyle = "rgba(255, 84, 84, 0.45)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(4.5, 4.5, 151, 151);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = '700 12px "Rajdhani", monospace';
+      ctx.fillStyle = "#ffc43d";
+      ctx.fillText("LOW POWER —", 80, 71);
+      ctx.fillStyle = "#ff5454";
+      ctx.fillText("RADAR OFFLINE", 80, 89);
       return;
     }
     // Impassable rocky cliff plateaus

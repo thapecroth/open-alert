@@ -14,6 +14,8 @@ export type UiSfx =
   | "alert"
   | "cap"
   | "upgrade"
+  | "recon"
+  | "hold"
   | "win"
   | "lose";
 
@@ -669,7 +671,11 @@ export class AudioEngine {
                 ? 0.12
                 : kind === "promote" || kind === "crate"
                   ? 0.12
-                  : 0.04;
+                  : kind === "recon"
+                    ? 0.35
+                    : kind === "hold"
+                      ? 0.06
+                      : 0.04;
 
     if (!this.allow(`ui:${kind}`, minGap, now)) return;
 
@@ -714,6 +720,12 @@ export class AudioEngine {
           break;
         case "upgrade":
           this.uiUpgrade(ctx, bus, now);
+          break;
+        case "recon":
+          this.uiRecon(ctx, bus, now);
+          break;
+        case "hold":
+          this.uiHold(ctx, bus, now);
           break;
         case "win":
           this.uiWin(ctx, bus, now);
@@ -1258,6 +1270,57 @@ export class AudioEngine {
       this.playTone(ctx, lp, "sawtooth", f * 0.75, f * 1.5, now, 0.44, 0.12, 0.03);
     }
     this.playTone(ctx, bus, "sine", N.A4, N.D5, now + 0.18, 0.32, 0.14, 0.015);
+  }
+
+  private uiRecon(ctx: AudioContext, bus: AudioNode, now: number): void {
+    // Crisp sweeping sonar/radar ping with subtle secondary echo
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.Q.value = 3.2;
+    bp.frequency.setValueAtTime(900, now);
+    bp.frequency.exponentialRampToValueAtTime(2200, now + 0.16);
+    bp.connect(bus);
+
+    // Rising dish sweep
+    this.playTone(ctx, bp, "sine", 680, 1780, now, 0.16, 0.22, 0.008);
+    this.playTone(ctx, bp, "triangle", 340, 890, now, 0.15, 0.1, 0.008);
+
+    // Resonant sonar ping + overtone shimmer
+    this.playTone(ctx, bus, "sine", 1320, 1295, now + 0.11, 0.38, 0.2, 0.004);
+    this.playTone(ctx, bus, "sine", 2640, 2610, now + 0.11, 0.22, 0.075, 0.004);
+
+    // Faint radar bounce echo
+    this.playTone(ctx, bus, "sine", 1320, 1300, now + 0.31, 0.24, 0.08, 0.006);
+  }
+
+  private uiHold(ctx: AudioContext, bus: AudioNode, now: number): void {
+    // Short firm mechanical lock click (stabilizer clamp engagement)
+    this.playTone(ctx, bus, "triangle", 250, 96, now, 0.048, 0.24, 0.002);
+
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.value = 1680;
+    bp.Q.value = 2.4;
+    bp.connect(bus);
+
+    this.playTone(ctx, bp, "square", 1520, 940, now + 0.02, 0.032, 0.22, 0.002);
+    this.playTone(ctx, bus, "sine", 520, 390, now + 0.022, 0.04, 0.14, 0.002);
+
+    if (this.whiteNoise) {
+      const snap = this.makeNoiseSource(ctx, this.whiteNoise);
+      const hp = ctx.createBiquadFilter();
+      hp.type = "highpass";
+      hp.frequency.value = 2600;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, now + 0.016);
+      g.gain.linearRampToValueAtTime(0.18, now + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.044);
+      snap.connect(hp);
+      hp.connect(g);
+      g.connect(bus);
+      snap.start(now + 0.016, 0.15);
+      snap.stop(now + 0.05);
+    }
   }
 
   private uiWin(ctx: AudioContext, bus: AudioNode, now: number): void {

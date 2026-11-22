@@ -3,7 +3,7 @@ import type { Connection } from "partyserver";
 import { World } from "./server/world";
 import { AIBot } from "./server/bot";
 import type { C2S, S2C, LobbyPlayer } from "./shared/protocol";
-import { MAX_PLAYERS, TICK_MS, SNAP_EVERY, MAP_W, MAP_H, PLAYER_COLORS, DEFAULT_CONFIG } from "./shared/gamedefs";
+import { MAX_PLAYERS, TICK_MS, SNAP_EVERY, MAP_W, MAP_H, PLAYER_COLORS, DEFAULT_CONFIG, MAP_LIST } from "./shared/gamedefs";
 import type { MapId, BotDiff, BotProfile, GameConfig } from "./shared/gamedefs";
 
 interface Env {
@@ -26,8 +26,8 @@ interface PlayerRec {
 }
 
 const send = (conn: Connection, msg: S2C) => conn.send(JSON.stringify(msg));
-const ORDER_KINDS = new Set(["move", "amove", "attack", "harvest"]);
-const VALID_MAPS = new Set<MapId>(["crossroads", "canyon", "basin"]);
+const ORDER_KINDS = new Set(["move", "amove", "attack", "harvest", "patrol"]);
+const VALID_MAPS = new Set<MapId>(MAP_LIST.map((m) => m.id));
 const VALID_DIFFS = new Set<BotDiff>(["easy", "normal", "brutal"]);
 const VALID_PROFILES = new Set<BotProfile>(["balanced", "rusher", "turtle", "tech"]);
 const VALID_CREDITS = new Set([3000, 5000, 10000, 20000]);
@@ -236,6 +236,12 @@ export class GameRoom extends Server<Env> {
         break;
       case "stop":
         this.world.cmdStop(slot, validIds(m.ids));
+        break;
+      case "hold":
+        this.world.cmdHold(slot, validIds(m.ids));
+        break;
+      case "recon":
+        err = Number.isFinite(m.x) && Number.isFinite(m.y) ? this.world.cmdRecon(slot, m.x, m.y) : "bad coords";
         break;
       case "build":
         err = typeof m.kind === "string" ? this.world.cmdBuild(slot, m.kind) : "bad kind";

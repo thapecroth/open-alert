@@ -69,6 +69,7 @@ const allies = new Set<number>();
 let prevAwaiting: string | null = null;
 let iconColor = "";
 let lastTrainSfx = 0;
+let lastHoverMs = 0;
 
 hud.setRoom(room);
 hud.setStatus("connecting…");
@@ -143,6 +144,8 @@ hud.onResign = () => net.send({ t: "resign" });
 hud.onChat = (text) => net.send({ t: "chat", text });
 hud.onVerb = (v) => {
   if (v === "amove") input.armAmove();
+  else if (v === "patrol") input.armPatrol();
+  else if (v === "hold") input.holdNow();
   else if (v === "stop") input.stopNow();
   else input.armVerb(v);
 };
@@ -170,6 +173,9 @@ hud.onUpgrade = (id) => {
 };
 hud.onSuperweaponClick = () => {
   if (latestState?.swReady) input.armSuperweapon();
+};
+hud.onReconClick = () => {
+  if (latestState?.reconReady && !latestState.lowPower) input.armRecon();
 };
 hud.onMinimapPing = (x, y) => net.send({ t: "ping", x, y });
 hud.onMinimapOrder = (x, y, shift) => input.issueMinimapOrder(x, y, shift);
@@ -199,6 +205,7 @@ input.onWasdChange = (on) => hud.setWasdLabel(on);
 input.onSelectionChange = (sel) => hud.updateSelInfo(sel, renderer.tracked, mySlot, latestState, has);
 input.onGroupsChange = (g) => hud.updateGroups(g, renderer.tracked, mySlot);
 input.onSuperweaponArmedChange = (armed) => hud.updateSuperweapon(latestState, armed);
+input.onReconArmedChange = (armed) => hud.updateRecon(latestState, armed);
 input.onUiSound = (kind) => audio.playUi(kind);
 input.onOrderLabel = (text, x, y) => {
   const l = el("order-label");
@@ -251,6 +258,7 @@ net.onMsg = (m: S2C) => {
       }
       renderer.reset();
       input.reset();
+      gs.resetYaw();
       gs.loadMap(currentMap);
       gs.resetFog();
       gs.clearOre();
@@ -310,6 +318,14 @@ net.onMsg = (m: S2C) => {
           hud.toast("⚡ ORBITAL ION CANNON FIRED!", ev.slot === mySlot);
           hud.ping(ev.x, ev.y);
           input.setLastAlert(ev.x, ev.y);
+        } else if (ev.e === "recon") {
+          if (mySlot < 0 || ev.slot === mySlot || allies.has(ev.slot)) {
+            audio.playUi("recon");
+            hud.ping(ev.x, ev.y);
+            if (ev.slot === mySlot || allies.has(ev.slot)) {
+              hud.toast("◎ RECON SCAN ACTIVE", true);
+            }
+          }
         } else if (ev.e === "elim") {
           const mine = ev.slot === mySlot;
           if (mine) {
@@ -341,7 +357,10 @@ net.onMsg = (m: S2C) => {
       }
       latestState = mySlot >= 0 ? m.players[mySlot] ?? null : null;
       if (!latestState?.swReady && input.swArmed) input.disarmSuperweapon();
+      if ((!latestState?.reconReady || latestState?.lowPower) && input.reconArmed) input.disarmRecon();
+      hud.updateClock(m.tick);
       hud.updateTop(latestState, mySlot < 0 ? m.players : undefined);
+      hud.updateRecon(latestState, input.reconArmed);
       hud.updateSuperweapon(latestState, input.swArmed);
       hud.updateSidebar(latestState, has, countOf, currentConfig);
       hud.updateSelInfo(input.selection, renderer.tracked, mySlot, latestState, has);
@@ -424,8 +443,45 @@ gs.engine.runRenderLoop(() => {
   renderer.update(dt);
   hud.tick(dt);
   audio.update(dt);
-  if (phase === "playing")
-    hud.drawMinimap(renderer, oreCells, gs.camTarget.x, gs.camTarget.z, gs.camHeight, mySlot, has("radar"), currentMap);
+  if (phase === "playing") {
+    hud.drawMinimap(
+      renderer,
+      oreCells,
+      gs.camTarget.x,
+      gs.camTarget.z,
+      gs.camHeight,
+      mySlot,
+      has("radar"),
+      currentMap,
+      !!latestState?.lowPower,
+    );
+    const hp = input.hoverPointer;
+    if (!hp) {
+      hud.hideHoverTip();
+    } else {
+      const now = performance.now();
+      if (now - lastHoverMs >= 80) {
+        lastHoverMs = now;
+        if (document.elementFromPoint(hp.x, hp.y) !== canvas) {
+          hud.hideHoverTip();
+        } else {
+          gs.syncPointer(hp.x, hp.y);
+          const entId = gs.pickEntity();
+          const t = entId != null ? renderer.tracked.get(entId) : null;
+          if (t && t.vis.root.visible) {
+            hud.showHoverTip(t.last, null, hp.x, hp.y);
+          } else {
+            const g = gs.pickGround();
+            const crate = g ? renderer.pickCrateAt(g.x, g.z) : null;
+            if (crate) hud.showHoverTip(null, crate, hp.x, hp.y);
+            else hud.hideHoverTip();
+          }
+        }
+      }
+    }
+  } else {
+    hud.hideHoverTip();
+  }
   gs.render();
 });
 window.addEventListener("resize", () => gs.engine.resize());

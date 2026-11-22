@@ -26,6 +26,83 @@ interface Tracked {
   vis: EntVis;
   last: EntSnap;
   anim: AnimState;
+  holdInd?: THREE.Group;
+}
+
+// Shared Hold Position indicator assets (zero per-unit GPU leaks)
+const holdRingGeo = new THREE.RingGeometry(0.46, 0.56, 8);
+holdRingGeo.rotateX(-Math.PI / 2);
+const holdRingMat = new THREE.MeshBasicMaterial({
+  color: 0xffc83d,
+  transparent: true,
+  opacity: 0.82,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
+let holdBadgeMat: THREE.SpriteMaterial | null = null;
+
+function getHoldBadgeMat(): THREE.SpriteMaterial {
+  if (holdBadgeMat) return holdBadgeMat;
+  const S = 64;
+  const c = document.createElement("canvas");
+  c.width = S;
+  c.height = S;
+  const ctx = c.getContext("2d")!;
+  ctx.clearRect(0, 0, S, S);
+
+  // Crisp tactical amber shield silhouette
+  ctx.beginPath();
+  ctx.moveTo(S * 0.5, S * 0.08);
+  ctx.lineTo(S * 0.88, S * 0.22);
+  ctx.lineTo(S * 0.82, S * 0.62);
+  ctx.quadraticCurveTo(S * 0.5, S * 0.94, S * 0.5, S * 0.94);
+  ctx.quadraticCurveTo(S * 0.5, S * 0.94, S * 0.18, S * 0.62);
+  ctx.lineTo(S * 0.12, S * 0.22);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(18, 22, 28, 0.92)";
+  ctx.fill();
+  ctx.lineWidth = 4.5;
+  ctx.strokeStyle = "#ffc83d";
+  ctx.stroke();
+
+  // Bold 'H' hold-position glyph
+  ctx.fillStyle = "#ffe28a";
+  ctx.font = "900 30px system-ui, -apple-system, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("H", S * 0.5, S * 0.52);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  holdBadgeMat = new THREE.SpriteMaterial({
+    map: tex,
+    transparent: true,
+    opacity: 0.96,
+    depthTest: false,
+    depthWrite: false,
+  });
+  return holdBadgeMat;
+}
+
+function makeHoldIndicator(topY: number): THREE.Group {
+  const g = new THREE.Group();
+  g.userData.isBar = true;
+
+  const ring = new THREE.Mesh(holdRingGeo, holdRingMat);
+  ring.position.y = 0.062;
+  ring.renderOrder = 6;
+  ring.userData.isBar = true;
+  g.add(ring);
+
+  const badge = new THREE.Sprite(getHoldBadgeMat());
+  badge.position.set(0, topY + 0.62, 0);
+  badge.scale.set(0.32, 0.32, 1);
+  badge.renderOrder = 23;
+  badge.userData.isBar = true;
+  g.userData.badge = badge;
+  g.add(badge);
+
+  return g;
 }
 
 export class Renderer {
@@ -42,6 +119,8 @@ export class Renderer {
   private seen = new Set<number>();
   private hasInitialSnap = false;
   private swShakeTimers: ReturnType<typeof setTimeout>[] = [];
+  private lastAllies?: Set<number>;
+  private lastVisSlot = -1;
 
   constructor(private gs: GameScene) {
     this.vfx = new VfxSystem(gs.scene);
@@ -66,6 +145,8 @@ export class Renderer {
     this.selection.clear();
     this.seen.clear();
     this.hasInitialSnap = false;
+    this.lastAllies = undefined;
+    this.lastVisSlot = -1;
     for (const tm of this.swShakeTimers) clearTimeout(tm);
     this.swShakeTimers = [];
     this.vfx.clear();
@@ -161,6 +242,7 @@ export class Renderer {
         scene.add(vis.root);
         this.gs.pickables.push(vis.root);
         t.vis = vis;
+        t.holdInd = undefined;
         t.anim.flashing = false;
         t.anim.hitFlash = 0;
         if (ownerChanged) {
@@ -181,6 +263,18 @@ export class Renderer {
       t.vis.barFg.visible = show;
       setVetBadge(t.vis, e.vet ?? 0);
       if (t.vis.bin) t.vis.bin.scale.y = Math.max(0.05, (e.cargo ?? 0) / 40);
+
+      // Hold Position stance indicator (ground amber anchor ring + centered shield badge)
+      const holding = Boolean(e.hold) && !isBuildingKind(e.k);
+      if (holding && !t.holdInd) {
+        t.holdInd = makeHoldIndicator(t.vis.topY);
+        t.vis.root.add(t.holdInd);
+      }
+      if (t.holdInd) {
+        t.holdInd.visible = holding;
+        const badge = t.holdInd.userData.badge as THREE.Sprite | undefined;
+        if (badge) badge.position.y = t.vis.topY + ((e.vet ?? 0) > 0 ? 0.86 : 0.62);
+      }
     }
   }
 
@@ -307,6 +401,15 @@ export class Renderer {
         }
       } else if (ev.e === "cap") {
         this.vfx.spawnPopup(ev.x, ev.y, "CAPTURED!", "#48eeff");
+      } else if (ev.e === "recon") {
+        this.vfx.spawnRecon(ev.x, ev.y, ev.r);
+        this.vfx.spawnPopup(ev.x, ev.y, "RECON SCAN", "#4ad8ff");
+        if (mySlot < 0 || ev.slot === mySlot || this.lastAllies?.has(ev.slot)) {
+          this.gs.addReconReveal(ev.x, ev.y, ev.r, 10000);
+          if (this.lastVisSlot >= 0) {
+            this.applyVisibility(this.lastVisSlot, this.lastAllies);
+          }
+        }
       }
     }
   }
@@ -317,9 +420,26 @@ export class Renderer {
     return out;
   }
 
-  // Live Fog of War + Fog-lite entity reveal: allied forces share sight,
+  pickCrateAt(wx: number, wz: number): CrateSnap | null {
+    let best: CrateSnap | null = null;
+    let bestD2 = 1.2 * 1.2;
+    for (const c of this.crates.values()) {
+      const dx = c.x - wx;
+      const dz = c.y - wz;
+      const d2 = dx * dx + dz * dz;
+      if (d2 <= bestD2) {
+        bestD2 = d2;
+        best = c;
+      }
+    }
+    return best;
+  }
+
+  // Live Fog of War + Fog-lite entity reveal: allied forces & active recon scans share sight,
   // enemy buildings remain visible once scouted, and spectators see everything.
   applyVisibility(mySlot: number, allies?: Set<number>) {
+    this.lastAllies = allies;
+    this.lastVisSlot = mySlot;
     if (mySlot < 0) {
       for (const t of this.tracked.values()) if (!t.vis.root.visible) t.vis.root.visible = true;
       for (const cv of this.crateVis.values()) cv.root.visible = true;
@@ -335,6 +455,7 @@ export class Renderer {
         visionSources.push({ x: t.last.x, y: t.last.y, r });
       }
     }
+    const reconZones = this.gs.getActiveReconReveals();
 
     for (const [id, t] of this.tracked) {
       const e = t.last;
@@ -349,6 +470,16 @@ export class Renderer {
         if (dx * dx + dy * dy <= m.r * m.r) {
           vis = true;
           break;
+        }
+      }
+      if (!vis) {
+        for (const z of reconZones) {
+          const dx = z.x - e.x;
+          const dy = z.y - e.y;
+          if (dx * dx + dy * dy <= z.r * z.r) {
+            vis = true;
+            break;
+          }
         }
       }
       if (vis) this.seen.add(id);

@@ -41,6 +41,7 @@ const ORDER_COLORS: Record<OrderKind, number> = {
   amove: 0xff6a3c,
   attack: 0xff3030,
   harvest: 0xffc436,
+  patrol: 0x4ad8ff,
 };
 
 export class VfxSystem {
@@ -482,6 +483,121 @@ export class VfxSystem {
         helixMats[i].opacity = env * (1 - phase * 0.5) * 0.85;
       }
     });
+  }
+
+  // ---------- Radar Recon Scan VFX (3 expanding cyan pulses + rotating sweep line over 2.4s) ----------
+
+  spawnRecon(x: number, y: number, r: number) {
+    const duration = 2400;
+    const rad = Math.max(2, r);
+
+    // 3 concentric expanding cyan radar scan pulses staggered across 2.4s
+    for (let i = 0; i < 3; i++) {
+      const delay = i * 0.22; // 0, 0.22, 0.44
+      const span = 1 - delay;
+      const pulseMat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(0.55, 2.35, 3.2),
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      });
+      const ring = new THREE.Mesh(sharedRing, pulseMat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(x, 0.14 + i * 0.015, y);
+      ring.renderOrder = 16;
+      this.add(ring, duration, (o, t) => {
+        if (t < delay) {
+          pulseMat.opacity = 0;
+          o.scale.setScalar(0.15);
+          return;
+        }
+        const u = Math.min(1, (t - delay) / span);
+        const ease = 1 - Math.pow(1 - u, 1.8);
+        const sc = 0.35 + ease * (rad - 0.35);
+        o.scale.set(sc, sc, Math.max(0.18, 0.9 - ease * 0.65));
+        const fadeIn = Math.min(1, u / 0.08);
+        const fadeOut = Math.pow(Math.max(0, 1 - u), 1.35);
+        pulseMat.opacity = 0.9 * fadeIn * fadeOut;
+      });
+    }
+
+    // Outer tactical scan perimeter ring marking full reveal radius
+    const rimMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(0.38, 1.95, 2.75),
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    });
+    const rim = new THREE.Mesh(sharedRing, rimMat);
+    rim.rotation.x = -Math.PI / 2;
+    rim.position.set(x, 0.12, y);
+    rim.scale.set(rad, rad, 0.25);
+    rim.renderOrder = 15;
+    this.add(rim, duration, (_o, t) => {
+      const env = t < 0.1 ? t / 0.1 : t > 0.72 ? (1 - t) / 0.28 : 1;
+      rimMat.opacity = 0.48 * env * (0.85 + 0.15 * Math.sin(t * 28));
+    });
+
+    // Rotating radar sweep beam + soft glowing trailing sector on the ground
+    const sweepGroup = new THREE.Group();
+    sweepGroup.position.set(x, 0.15, y);
+    sweepGroup.renderOrder = 17;
+
+    const lineGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(rad, 0, 0),
+    ]);
+    const lineMat = new THREE.LineBasicMaterial({
+      color: new THREE.Color(0.85, 2.8, 3.6),
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+    });
+    const sweepLine = new THREE.Line(lineGeo, lineMat);
+    sweepGroup.add(sweepLine);
+
+    // Trailing radar sweep cone wedge behind the clockwise rotating line
+    const wedgeGeo = new THREE.CircleGeometry(rad, 20, 0, Math.PI / 4);
+    wedgeGeo.rotateX(-Math.PI / 2);
+    const wedgeMat = new THREE.MeshBasicMaterial({
+      color: 0x3ce4ff,
+      transparent: true,
+      opacity: 0.16,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const wedge = new THREE.Mesh(wedgeGeo, wedgeMat);
+    sweepGroup.add(wedge);
+
+    // Center radar lock ping dot
+    const dotGeo = new THREE.CircleGeometry(0.42, 16);
+    dotGeo.rotateX(-Math.PI / 2);
+    const dotMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(1.0, 2.8, 3.6),
+      transparent: true,
+      opacity: 0.92,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const dot = new THREE.Mesh(dotGeo, dotMat);
+    dot.position.y = 0.02;
+    sweepGroup.add(dot);
+
+    this.add(
+      sweepGroup,
+      duration,
+      (o, t) => {
+        // 2.5 crisp revolutions over 2.4s
+        o.rotation.y = -t * Math.PI * 5;
+        const env = t < 0.08 ? t / 0.08 : t > 0.72 ? (1 - t) / 0.28 : 1;
+        lineMat.opacity = 0.95 * env;
+        wedgeMat.opacity = 0.18 * env;
+        dotMat.opacity = 0.92 * env;
+        const p = 0.85 + 0.35 * Math.sin(t * 24);
+        dot.scale.setScalar(p);
+      },
+      true,
+    );
   }
 
   // ---------- Floating World-Space Text Popups ----------

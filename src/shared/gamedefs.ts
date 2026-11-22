@@ -33,7 +33,15 @@ export type UnitKind =
   | "spider"
   | "harvester";
 export type EntKind = BuildingKind | UnitKind;
-export type MapId = "crossroads" | "canyon" | "basin";
+export type MapId =
+  | "crossroads"
+  | "canyon"
+  | "basin"
+  | "tundra"
+  | "fortress"
+  | "jungle"
+  | "islands"
+  | "oasis";
 export type BotDiff = "easy" | "normal" | "brutal";
 export type BotProfile = "balanced" | "rusher" | "turtle" | "tech";
 export type CrateKind = "cash" | "vet" | "heal" | "unit";
@@ -171,10 +179,13 @@ export const VET_DMG = [1, 1.2, 1.4, 1.65] as const;
 export const VET_HP = [1, 1.15, 1.3, 1.5] as const;
 export const VET_HEAL = [0, 0, 2, 5] as const; // HP/sec regen at Elite & Heroic
 
-// Superweapon (Orbital Ion Cannon)
+// Superweapon (Orbital Ion Cannon) & Radar Recon Support Power
 export const SW_CHARGE_TICKS = 900; // 90s full power
 export const SW_RADIUS = 5.5;
 export const SW_DAMAGE = 950;
+export const RECON_CHARGE_TICKS = 450; // 45s cooldown on Radar Uplink
+export const RECON_DURATION_TICKS = 100; // 10s fog reveal
+export const RECON_RADIUS = 12;
 
 // Neutral Oil Derricks & Battlefield Supply Crates
 export const DERRICK_CAPTURE_BONUS = 500;
@@ -206,16 +217,22 @@ export const SPAWNS: { x: number; y: number }[] = [
   { x: 5, y: MAP_H - 8 },
 ];
 
-// ---------- Deterministic Handcrafted Maps ----------
-export const MAP_LIST: { id: MapId; name: string; desc: string }[] = [
-  { id: "crossroads", name: "Twin Crossroads", desc: "Balanced flank mesas & twin contested Oil Derricks" },
-  { id: "canyon", name: "Iron Canyon", desc: "Twin canyon walls channeling fights across 3 lanes" },
-  { id: "basin", name: "Shattered Basin", desc: "Open ore basin ringed by 4 captureable Oil Derricks" },
+// ---------- Deterministic Handcrafted Maps (8 Biomes & Tactical Layouts) ----------
+export const MAP_LIST: { id: MapId; name: string; biome: string; desc: string }[] = [
+  { id: "crossroads", name: "Twin Crossroads", biome: "Steppe", desc: "Balanced flank mesas & twin contested Oil Derricks" },
+  { id: "canyon", name: "Iron Canyon", biome: "Canyon", desc: "Twin sandstone canyon walls channeling fights across 3 lanes" },
+  { id: "basin", name: "Shattered Basin", biome: "Alpine", desc: "Open volcanic ore basin ringed by 4 captureable Oil Derricks" },
+  { id: "tundra", name: "Frostbite Pass", biome: "Arctic", desc: "Frozen glacial divide with wide north/south bypasses & rich center ice field" },
+  { id: "fortress", name: "Citadel Bastion", biome: "Desert", desc: "Walled central citadel with 4 gates guarding a mega ore cache" },
+  { id: "jungle", name: "Emerald Valley", biome: "Jungle", desc: "Diagonal ridge corridors built for ambushes & flanking raids" },
+  { id: "islands", name: "Bridgehead Crossing", biome: "Riverland", desc: "Four quadrants linked by tight chokepoint bridges — artillery heaven" },
+  { id: "oasis", name: "Scorched Oasis", biome: "Sahara", desc: "Golden dune ring with fast open flank tank lanes & twin oasis passes" },
 ];
 
 export interface MapLayout {
-  cliffs: [number, number][]; // impassable elevated rocky plateau tiles
+  cliffs: [number, number][]; // impassable elevated rocky/glacial/chasm tiles
   derricks: [number, number][]; // top-left 2x2 tile of neutral Oil Derricks
+  extraOre?: [number, number, number][]; // optional [cx, cy, radius] bonus ore blobs
 }
 
 const mapCache = new Map<MapId, MapLayout>();
@@ -232,9 +249,9 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     }
   };
   let derricks: [number, number][] = [];
+  let extraOre: [number, number, number][] | undefined;
 
   if (id === "crossroads") {
-    // 4 symmetrical rocky mesas flanking the center crossroads — wide clear lanes everywhere
     addRect(22, 16, 4, 3);
     addRect(38, 16, 4, 3);
     addRect(22, 45, 4, 3);
@@ -246,7 +263,6 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [31, 52],
     ];
   } else if (id === "canyon") {
-    // Twin vertical canyon walls creating north, center bridge, and south chokepoints
     addRect(29, 10, 4, 15);
     addRect(29, 39, 4, 15);
     addRect(18, 28, 3, 8);
@@ -255,8 +271,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [12, 31],
       [50, 31],
     ];
-  } else {
-    // basin: outer corner rock spurs framing a massive central arena + 4 derricks
+  } else if (id === "basin") {
     addRect(21, 20, 3, 3);
     addRect(40, 20, 3, 3);
     addRect(21, 41, 3, 3);
@@ -267,11 +282,96 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [8, 31],
       [54, 31],
     ];
+  } else if (id === "tundra") {
+    // Glacial divide across center-left & center-right with twin north/south passes
+    addRect(17, 29, 10, 4);
+    addRect(37, 29, 10, 4);
+    addRect(29, 14, 6, 4);
+    addRect(29, 46, 6, 4);
+    derricks = [
+      [11, 31],
+      [51, 31],
+    ];
+    extraOre = [
+      [32, 22, 3],
+      [32, 42, 3],
+    ];
+  } else if (id === "fortress") {
+    // Central walled citadel with 4 wide gate openings (N/S/E/W)
+    addRect(22, 22, 7, 2);
+    addRect(35, 22, 7, 2);
+    addRect(22, 40, 7, 2);
+    addRect(35, 40, 7, 2);
+    addRect(22, 24, 2, 5);
+    addRect(22, 35, 2, 5);
+    addRect(40, 24, 2, 5);
+    addRect(40, 35, 2, 5);
+    derricks = [
+      [31, 9],
+      [31, 53],
+      [9, 31],
+      [53, 31],
+    ];
+    extraOre = [[32, 32, 5]];
+  } else if (id === "jungle") {
+    // Diagonal ridge corridors creating ambush lanes
+    addRect(18, 17, 6, 3);
+    addRect(22, 20, 4, 3);
+    addRect(40, 44, 6, 3);
+    addRect(38, 41, 4, 3);
+    addRect(40, 17, 6, 3);
+    addRect(38, 20, 4, 3);
+    addRect(18, 44, 6, 3);
+    addRect(22, 41, 4, 3);
+    derricks = [
+      [31, 12],
+      [31, 50],
+      [14, 31],
+      [48, 31],
+    ];
+    extraOre = [
+      [20, 32, 3],
+      [44, 32, 3],
+    ];
+  } else if (id === "islands") {
+    // Four quadrants separated by impassable canyon-river cross with 4 wide bridges + center island
+    addRect(30, 0, 4, 11);
+    addRect(30, 18, 4, 8);
+    addRect(30, 38, 4, 8);
+    addRect(30, 53, 4, 11);
+    addRect(0, 30, 11, 4);
+    addRect(18, 30, 8, 4);
+    addRect(38, 30, 8, 4);
+    addRect(53, 30, 11, 4);
+    derricks = [
+      [23, 23],
+      [39, 39],
+      [39, 23],
+      [23, 39],
+    ];
+    extraOre = [
+      [14, 24, 2],
+      [49, 39, 2],
+    ];
+  } else {
+    // oasis: curved desert rock spurs around a fast central arena + flanking ore oases
+    addRect(24, 15, 16, 2);
+    addRect(24, 47, 16, 2);
+    addRect(15, 24, 2, 16);
+    addRect(47, 24, 2, 16);
+    derricks = [
+      [31, 7],
+      [31, 55],
+    ];
+    extraOre = [
+      [22, 32, 3],
+      [42, 32, 3],
+    ];
   }
 
   const cliffs: [number, number][] = [];
   for (const k of cliffSet) cliffs.push([k % MAP_W, (k / MAP_W) | 0]);
-  const layout: MapLayout = { cliffs, derricks };
+  const layout: MapLayout = { cliffs, derricks, extraOre };
   mapCache.set(id, layout);
   return layout;
 }

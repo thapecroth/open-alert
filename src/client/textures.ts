@@ -334,6 +334,8 @@ export interface CliffBiomeMats {
   boulder: THREE.MeshStandardMaterial;
   foliage: THREE.MeshStandardMaterial;
   trunk: THREE.MeshStandardMaterial;
+  accent?: THREE.MeshStandardMaterial;
+  water?: THREE.MeshStandardMaterial;
 }
 
 const cliffMatsCache = new Map<MapId, CliffBiomeMats>();
@@ -345,7 +347,19 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
 
   const palette: Record<
     MapId,
-    { wall: number; cap: number; boulder: number; foliage: number; trunk: number }
+    {
+      wall: number;
+      cap: number;
+      boulder: number;
+      foliage: number;
+      trunk: number;
+      wallRough?: number;
+      capRough?: number;
+      wallMetal?: number;
+      capMetal?: number;
+      accent?: number;
+      water?: number;
+    }
   > = {
     crossroads: {
       wall: 0x4b4a45,
@@ -368,8 +382,63 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
       foliage: 0x1e3c38,
       trunk: 0x362d28,
     },
+    tundra: {
+      // Ice-blue glacier cliffs, bright snow-frosted cap & dark arctic spruce
+      wall: 0x5d8eb4,
+      cap: 0xd6eaf8,
+      boulder: 0x84aac7,
+      foliage: 0x224642,
+      trunk: 0x3d3028,
+      wallRough: 0.44,
+      capRough: 0.52,
+      wallMetal: 0.16,
+      capMetal: 0.1,
+      accent: 0xe6f4ff,
+    },
+    fortress: {
+      // Weathered ochre sandstone citadel walls with fortified dark stone parapet trim
+      wall: 0x9c8056,
+      cap: 0x4a4742,
+      boulder: 0x876f4c,
+      foliage: 0x566034,
+      trunk: 0x5a402a,
+      wallRough: 0.88,
+      capRough: 0.78,
+      capMetal: 0.12,
+      accent: 0x3a3834,
+    },
+    jungle: {
+      // Mossy dark basalt ridges & rich dense vibrant tropical canopies
+      wall: 0x2a3c30,
+      cap: 0x355c35,
+      boulder: 0x344a39,
+      foliage: 0x1e7d38,
+      trunk: 0x4c321e,
+      accent: 0x2ea048,
+    },
+    islands: {
+      // Wet coastal slate river-gorge crags & shimmering blue-teal water surface
+      wall: 0x284756,
+      cap: 0x476874,
+      boulder: 0x3a5460,
+      foliage: 0x235c46,
+      trunk: 0x47382c,
+      wallRough: 0.56,
+      capRough: 0.48,
+      wallMetal: 0.14,
+      water: 0x166d8c,
+    },
+    oasis: {
+      // Terracotta Sahara rock spurs & vibrant palm-green oasis foliage
+      wall: 0xa65836,
+      cap: 0xd9a162,
+      boulder: 0xb56d42,
+      foliage: 0x2d8a3c,
+      trunk: 0x6e4d30,
+      accent: 0x3ba64a,
+    },
   };
-  const p = palette[mapId];
+  const p = palette[mapId] ?? palette.crossroads;
 
   const mats: CliffBiomeMats = {
     wall: new THREE.MeshStandardMaterial({
@@ -377,27 +446,27 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
       bumpMap: rockBumpTex!,
       bumpScale: 0.14,
       roughnessMap: rockRoughTex!,
-      roughness: 0.92,
-      metalness: 0.06,
+      roughness: p.wallRough ?? 0.92,
+      metalness: p.wallMetal ?? 0.06,
     }),
     cap: new THREE.MeshStandardMaterial({
       color: p.cap,
       bumpMap: rockBumpTex!,
       bumpScale: 0.08,
       roughnessMap: rockRoughTex!,
-      roughness: 0.88,
-      metalness: 0.05,
+      roughness: p.capRough ?? 0.88,
+      metalness: p.capMetal ?? 0.05,
     }),
     boulder: new THREE.MeshStandardMaterial({
       color: p.boulder,
       bumpMap: rockBumpTex!,
       bumpScale: 0.12,
-      roughness: 0.9,
-      metalness: 0.08,
+      roughness: p.wallRough ? Math.min(0.86, p.wallRough + 0.15) : 0.9,
+      metalness: p.wallMetal ?? 0.08,
     }),
     foliage: new THREE.MeshStandardMaterial({
       color: p.foliage,
-      roughness: 0.88,
+      roughness: 0.86,
       metalness: 0.03,
       flatShading: true,
     }),
@@ -406,6 +475,27 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
       roughness: 0.94,
       metalness: 0.02,
     }),
+    accent:
+      p.accent !== undefined
+        ? new THREE.MeshStandardMaterial({
+            color: p.accent,
+            roughness: mapId === "tundra" ? 0.45 : 0.78,
+            metalness: mapId === "tundra" ? 0.12 : 0.08,
+            flatShading: true,
+          })
+        : undefined,
+    water:
+      p.water !== undefined
+        ? new THREE.MeshStandardMaterial({
+            color: p.water,
+            emissive: 0x0a384c,
+            emissiveIntensity: 0.45,
+            roughness: 0.22,
+            metalness: 0.28,
+            transparent: true,
+            opacity: 0.9,
+          })
+        : undefined,
   };
   cliffMatsCache.set(mapId, mats);
   return mats;
@@ -536,6 +626,71 @@ const BIOMES: Record<MapId, BiomePalette> = {
     talus: [48, 54, 60],
     trackStroke: "rgba(22, 28, 34, 0.18)",
   },
+  tundra: {
+    // Crisp Arctic snowfield with frosty blue-white drifts & glacial ice
+    seedA: 4621,
+    seedB: 8837,
+    base: [192, 208, 222],
+    altDelta: [-22, -10, 10],
+    noiseAmp: [18, 18, 16],
+    road: [148, 168, 186],
+    spawn: [158, 174, 188],
+    cliff: [94, 136, 172],
+    talus: [136, 164, 188],
+    trackStroke: "rgba(62, 86, 112, 0.2)",
+  },
+  fortress: {
+    // Sun-baked ochre desert plateau with weathered sandstone & fortified dark stone
+    seedA: 5113,
+    seedB: 6329,
+    base: [154, 126, 84],
+    altDelta: [-18, -14, -10],
+    noiseAmp: [22, 18, 12],
+    road: [132, 114, 88],
+    spawn: [110, 106, 98],
+    cliff: [74, 66, 56],
+    talus: [104, 92, 72],
+    trackStroke: "rgba(56, 44, 30, 0.17)",
+  },
+  jungle: {
+    // Deep lush emerald tropical valley floor with mossy dark basalt ridges
+    seedA: 6427,
+    seedB: 2909,
+    base: [42, 84, 48],
+    altDelta: [14, 26, -4],
+    noiseAmp: [16, 24, 14],
+    road: [98, 86, 60],
+    spawn: [72, 86, 66],
+    cliff: [32, 46, 36],
+    talus: [42, 64, 44],
+    trackStroke: "rgba(28, 24, 16, 0.2)",
+  },
+  islands: {
+    // Deep blue-teal riverland terrain with coastal sandbars & wet slate chasms
+    seedA: 7219,
+    seedB: 4093,
+    base: [60, 96, 88],
+    altDelta: [26, 18, -4],
+    noiseAmp: [18, 20, 18],
+    road: [144, 130, 100],
+    spawn: [96, 108, 106],
+    cliff: [20, 74, 98],
+    talus: [152, 138, 104],
+    trackStroke: "rgba(38, 50, 48, 0.16)",
+  },
+  oasis: {
+    // Warm golden Sahara sand dunes with terracotta rock spurs & palm-green oasis accents
+    seedA: 8369,
+    seedB: 3541,
+    base: [184, 144, 84],
+    altDelta: [20, 14, -8],
+    noiseAmp: [22, 18, 12],
+    road: [158, 120, 74],
+    spawn: [142, 122, 92],
+    cliff: [128, 72, 46],
+    talus: [154, 104, 62],
+    trackStroke: "rgba(84, 52, 26, 0.16)",
+  },
 };
 
 export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
@@ -656,6 +811,21 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
         }
       }
 
+      // Lush palm-green oasis basins around flanking ore pools on Sahara Oasis map
+      if (mapId === "oasis" && layout.extraOre) {
+        for (const [ox, oy, orad] of layout.extraOre) {
+          const od = Math.hypot(wx - ox, wy - oy);
+          const span = orad + 3.2;
+          if (od < span) {
+            const k = Math.max(0, 1 - od / span);
+            const s = k * k * 0.65;
+            r = r * (1 - s) + 64 * s;
+            g = g * (1 - s) + 128 * s;
+            bl = bl * (1 - s) + 68 * s;
+          }
+        }
+      }
+
       // Map-specific rocky cliff footprints + dark ambient-occlusion scree apron
       const cf = cliffNear(wx, wy);
       if (cf.inside) {
@@ -663,25 +833,27 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
         r = bio.cliff[0] + strata;
         g = bio.cliff[1] + strata * 0.9;
         bl = bio.cliff[2] + strata * 0.85;
-        bumpExtra = 55;
-      } else if (cf.dist < 1.5) {
-        const k = Math.max(0, 1 - cf.dist / 1.5);
-        const scree = k * k * 0.72;
-        const ao = 1 - k * k * 0.34;
+        bumpExtra = mapId === "islands" ? -28 : 55;
+      } else if (cf.dist < (mapId === "islands" ? 2.1 : 1.5)) {
+        const range = mapId === "islands" ? 2.1 : 1.5;
+        const k = Math.max(0, 1 - cf.dist / range);
+        const scree = k * k * (mapId === "islands" ? 0.82 : 0.72);
+        const ao = 1 - k * k * (mapId === "islands" ? 0.14 : 0.34);
         r = (r * (1 - scree) + bio.talus[0] * scree) * ao;
         g = (g * (1 - scree) + bio.talus[1] * scree) * ao;
         bl = (bl * (1 - scree) + bio.talus[2] * scree) * ao;
-        bumpExtra = k * 34;
+        bumpExtra = mapId === "islands" ? -k * 12 : k * 34;
       }
 
       // Subtle tactical vignette near map border
       const edge = Math.min(wx, wy, MAP_W - wx, MAP_H - wy);
       const edgeDark = edge < 2.5 ? 0.72 + (edge / 2.5) * 0.28 : 1;
+      const maxC = mapId === "tundra" ? 238 : 225;
 
       const idx4 = (py * S + px) * 4;
-      d[idx4] = Math.max(16, Math.min(225, (r * slopeShade + fine) * edgeDark));
-      d[idx4 + 1] = Math.max(16, Math.min(225, (g * slopeShade + fine) * edgeDark));
-      d[idx4 + 2] = Math.max(14, Math.min(225, (bl * slopeShade + fine) * edgeDark));
+      d[idx4] = Math.max(16, Math.min(maxC, (r * slopeShade + fine) * edgeDark));
+      d[idx4 + 1] = Math.max(16, Math.min(maxC, (g * slopeShade + fine) * edgeDark));
+      d[idx4 + 2] = Math.max(14, Math.min(maxC, (bl * slopeShade + fine) * edgeDark));
       d[idx4 + 3] = 255;
 
       const bv = Math.max(25, Math.min(238, 120 + (n2 - 0.5) * 92 + bumpExtra + fine * 2.5));
