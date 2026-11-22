@@ -363,6 +363,7 @@ export class GameScene {
   camTarget = new THREE.Vector3(MAP_W / 2, 0, MAP_H / 2);
   camHeight = 26;
   camYaw = 0; // radians around Y axis (0 = North-Up)
+  fpvActive = false;
   ground!: THREE.Mesh;
   raycaster = new THREE.Raycaster();
   pickables: THREE.Object3D[] = []; // entity roots — raycast for pickEntity
@@ -437,6 +438,7 @@ export class GameScene {
     this.scene.fog = new THREE.FogExp2(0x9fb2c2, 0.0028);
 
     this.camera = new THREE.PerspectiveCamera(48, 1, 0.5, 700);
+    this.scene.add(this.camera);
     this.updateCamera();
 
     // Cinematic 3-point sunlit biome lighting (tuned per theater in loadMap)
@@ -1528,6 +1530,7 @@ export class GameScene {
   // Standard North-Up isometric RTS camera (camYaw === 0: -Z is UP/North, +X is RIGHT/East),
   // supporting smooth orbital yaw rotation around camTarget.
   updateCamera() {
+    if (this.fpvActive) return;
     const h = this.camHeight;
     const dist = h * 0.68;
     const offX = this.camYaw === 0 ? 0 : Math.sin(this.camYaw) * dist;
@@ -1543,6 +1546,39 @@ export class GameScene {
       this.camTarget.z + this.shakeOffset.z * 0.35,
     );
     this.camera.lookAt(this.lookVec);
+  }
+
+  // First-person 3D camera placement: map yaw=0 faces +X (East), yaw=+PI/2 faces +Z (South),
+  // pitch>0 tilts up toward +Y; Three.js camera looks down -Z, so rotation.y = -PI/2 - yaw.
+  setFpvCamera(pos: THREE.Vector3, yaw: number, pitch: number, fov = 68): void {
+    this.fpvActive = true;
+    if (this.camera.fov !== fov || this.camera.near !== 0.08) {
+      this.camera.fov = fov;
+      this.camera.near = 0.08;
+      this.camera.updateProjectionMatrix();
+    }
+    this.camera.position.set(
+      pos.x + this.shakeOffset.x * 0.18,
+      Math.max(0.18, pos.y + this.shakeOffset.y * 0.14),
+      pos.z + this.shakeOffset.z * 0.18,
+    );
+    this.camera.rotation.order = "YXZ";
+    this.camera.rotation.y = -Math.PI / 2 - yaw;
+    this.camera.rotation.x = pitch;
+    this.camera.rotation.z = 0;
+  }
+
+  restoreRtsCamera(targetX?: number, targetZ?: number): void {
+    this.fpvActive = false;
+    this.camera.fov = 48;
+    this.camera.near = 0.5;
+    this.camera.rotation.order = "XYZ";
+    this.camera.updateProjectionMatrix();
+    if (targetX !== undefined && targetZ !== undefined) {
+      this.camTarget.x = Math.max(-2, Math.min(MAP_W + 2, targetX));
+      this.camTarget.z = Math.max(-2, Math.min(MAP_H + 2, targetZ));
+    }
+    this.updateCamera();
   }
 
   rotateYaw(deltaRad: number): void {

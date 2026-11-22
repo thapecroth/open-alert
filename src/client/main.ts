@@ -4,6 +4,7 @@ import { Renderer } from "./render";
 import { Input } from "./input";
 import { Hud } from "./hud";
 import { AudioEngine } from "./audio";
+import { FirstPersonController } from "./fpv";
 import { generateIcons } from "./icons";
 import { isBuildingKind, el } from "./util";
 import * as THREE from "three";
@@ -18,10 +19,11 @@ import {
   DEFAULT_CONFIG,
   SHIPYARD_BUILD_DIST,
   BuildingKind,
+  EntKind,
   MapId,
   GameConfig,
 } from "../shared/gamedefs";
-import type { S2C, PlayerState } from "../shared/protocol";
+import type { S2C, PlayerState, WeaponFx } from "../shared/protocol";
 
 // ---------- identity & room ----------
 
@@ -116,10 +118,49 @@ function placeReason(tx: number, ty: number, w: number, h: number, kind?: Buildi
 }
 
 const oreAt = (x: number, y: number) => oreCells.has(y * MAP_W + x);
+const isAlly = (slot: number) => allies.has(slot);
+
+function weaponFxOf(k: EntKind): WeaponFx {
+  if (k === "tank" || k === "heavy" || k === "destroyer") return "cannon";
+  if (k === "rocket" || k === "interceptor") return "rocket";
+  if (k === "arty") return "arty";
+  if (k === "arc") return "arc";
+  if (k === "spider") return "melee";
+  if (k === "dreadnought") return "missile";
+  if (k === "sub") return "torpedo";
+  if (k === "bomber" || k === "zeppelin") return "bomb";
+  return "bullet";
+}
 
 const input = new Input(gs, renderer, net, () => mySlot, placeReason, oreAt);
-input.isAlly = (slot) => allies.has(slot);
+input.isAlly = isAlly;
+const fpv = new FirstPersonController(gs, renderer, net, () => mySlot, isAlly);
 hud.setWasdLabel(input.wasdPan);
+
+function enterFpv(id: number) {
+  if (phase !== "playing" || mySlot < 0 || fpv.active) return;
+  if (input.placing) input.exitPlacing();
+  input.armVerb(null);
+  input.disarmRecon();
+  input.disarmSuperweapon();
+  if (!fpv.enter(id)) return;
+  input.enabled = false;
+  hud.setFpvMode(true);
+  audio.playUi("select");
+}
+
+fpv.onExit = (reason) => {
+  input.enabled = true;
+  hud.setFpvMode(false, mySlot < 0);
+  hud.updateSelInfo(input.selection, renderer.tracked, mySlot, latestState, has);
+  if (reason === "dead") {
+    hud.toast("UNIT DESTROYED — RETURNING TO COMMAND");
+    audio.playUi("lose");
+  }
+};
+fpv.onFireSfx = (kind, vet) => {
+  audio.playShot(weaponFxOf(kind), vet);
+};
 
 function has(kind: string) {
   for (const t of renderer.tracked.values())
@@ -181,6 +222,10 @@ hud.onUpgrade = (id) => {
   net.send({ t: "upgrade", id });
   audio.playUi("upgrade");
 };
+hud.onEnterFpv = (id) => enterFpv(id);
+hud.onExitFpv = () => {
+  if (fpv.active) fpv.exit("user");
+};
 hud.onSuperweaponClick = () => {
   if (latestState?.swReady && !latestState.lowPower) input.armSuperweapon();
 };
@@ -188,8 +233,9 @@ hud.onReconClick = () => {
   if (latestState?.reconReady && !latestState.lowPower) input.armRecon();
 };
 hud.onMinimapPing = (x, y) => net.send({ t: "ping", x, y });
-hud.onMinimapOrder = (x, y, shift) => input.issueMinimapOrder(x, y, shift);
+hud.onMinimapOrder = (x, y, shift) => (fpv.active ? false : input.issueMinimapOrder(x, y, shift));
 hud.onMinimapNav = (x, y) => {
+  if (fpv.active) return;
   gs.camTarget.x = Math.max(-2, Math.min(MAP_W + 2, x));
   gs.camTarget.z = Math.max(-2, Math.min(MAP_H + 2, y));
   gs.updateCamera();
@@ -211,6 +257,9 @@ hud.onToggleMusic = () => {
 };
 
 input.onOpenChat = () => hud.focusChat();
+input.onEnterFpv = () => {
+  if (input.selection.size === 1) enterFpv([...input.selection][0]);
+};
 input.onWasdChange = (on) => hud.setWasdLabel(on);
 input.onSelectionChange = (sel) => hud.updateSelInfo(sel, renderer.tracked, mySlot, latestState, has);
 input.onGroupsChange = (g) => hud.updateGroups(g, renderer.tracked, mySlot);
@@ -251,6 +300,7 @@ net.onMsg = (m: S2C) => {
       break;
     }
     case "init": {
+      if (fpv.active) fpv.exit("dead");
       myId = m.you;
       mySlot = m.slot;
       currentMap = m.map ?? "crossroads";
@@ -316,9 +366,11 @@ net.onMsg = (m: S2C) => {
             else oreCells.add(y * MAP_W + x);
           }
         } else if (ev.e === "shot") {
+          const isFpvShot = fpv.active && ev.src != null && ev.src === fpv.entId;
+          if (ev.src != null) fpv.onShotEvent(ev.src);
           const vis = mySlot < 0 || ev.src == null || renderer.isVisible(ev.src);
           if (vis) {
-            if (shotSfx++ < 3) audio.playShot(ev.w, ev.vet);
+            if (!isFpvShot && shotSfx++ < 3) audio.playShot(ev.w, ev.vet);
             audio.noteCombat(0.25);
           }
         } else if (ev.e === "boom") {
@@ -341,6 +393,7 @@ net.onMsg = (m: S2C) => {
         } else if (ev.e === "elim") {
           const mine = ev.slot === mySlot;
           if (mine) {
+            if (fpv.active) fpv.exit("dead");
             mySlot = -1;
             prevLowPower = false;
             input.reset();
@@ -399,12 +452,13 @@ net.onMsg = (m: S2C) => {
           if (awaiting) audio.playUi("buildDone");
         }
         prevAwaiting = awaiting;
-        if (awaiting && !input.placing && !input.placingCancelled) input.enterPlacing(awaiting);
+        if (awaiting && !input.placing && !input.placingCancelled && !fpv.active) input.enterPlacing(awaiting);
         if (!awaiting && input.placing) input.exitPlacing();
       }
       break;
     }
     case "end": {
+      if (fpv.active) fpv.exit("dead");
       phase = "ended";
       const mine =
         mySlot >= 0 &&
@@ -443,6 +497,7 @@ net.socket.addEventListener("open", () => {
   net,
   hud,
   audio,
+  fpv,
   get phase() {
     return phase;
   },
@@ -467,6 +522,10 @@ gs.engine.runRenderLoop(() => {
   const dt = gs.engine.getDeltaTime() / 1000;
   input.update(dt);
   renderer.update(dt);
+  if (fpv.active) {
+    const tel = fpv.update(dt);
+    hud.updateFpv(tel);
+  }
   hud.tick(dt);
   audio.update(dt);
   if (phase === "playing") {

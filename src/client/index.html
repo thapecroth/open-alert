@@ -74,6 +74,87 @@
     <div id="order-label" class="hidden"></div>
     <div id="hover-tip" class="hidden"></div>
 
+    <div id="fpv-hud" class="hidden">
+      <div id="fpv-banner">FIRST-PERSON POV · CLICK TO LOCK MOUSE · E / ESC TO EXIT</div>
+
+      <div id="fpv-reticle" class="fpv-land" aria-hidden="true">
+        <svg class="fpv-svg" viewBox="0 0 120 120" width="120" height="120">
+          <circle class="ret-dot" cx="60" cy="60" r="2.2" />
+          <g class="ret-cross">
+            <line x1="60" y1="22" x2="60" y2="48" />
+            <line x1="60" y1="72" x2="60" y2="98" />
+            <line x1="22" y1="60" x2="48" y2="60" />
+            <line x1="72" y1="60" x2="98" y2="60" />
+            <line class="ret-tick" x1="57" y1="36" x2="63" y2="36" />
+            <line class="ret-tick" x1="57" y1="84" x2="63" y2="84" />
+            <line class="ret-tick" x1="36" y1="57" x2="36" y2="63" />
+            <line class="ret-tick" x1="84" y1="57" x2="84" y2="63" />
+          </g>
+          <g class="ret-land">
+            <path d="M18 38 L10 38 L10 82 L18 82" fill="none" />
+            <path d="M102 38 L110 38 L110 82 L102 82" fill="none" />
+            <line x1="42" y1="78" x2="78" y2="78" />
+          </g>
+          <g class="ret-air">
+            <path d="M16 52 L28 60 L16 68" fill="none" />
+            <path d="M104 52 L92 60 L104 68" fill="none" />
+            <path d="M46 28 L60 18 L74 28" fill="none" />
+            <path d="M46 92 L60 102 L74 92" fill="none" />
+          </g>
+          <g class="ret-sea">
+            <circle cx="60" cy="60" r="36" fill="none" stroke-dasharray="10 8" />
+            <line x1="12" y1="60" x2="22" y2="60" />
+            <line x1="98" y1="60" x2="108" y2="60" />
+          </g>
+          <g class="ret-lock">
+            <path d="M44 36 L36 36 L36 44" fill="none" />
+            <path d="M76 36 L84 36 L84 44" fill="none" />
+            <path d="M44 84 L36 84 L36 76" fill="none" />
+            <path d="M76 84 L84 84 L84 76" fill="none" />
+          </g>
+        </svg>
+        <div id="fpv-target" class="hidden"></div>
+      </div>
+
+      <div id="fpv-status">
+        <div class="fpv-unit-head">
+          <span id="fpv-unit-icon" class="icon"></span>
+          <div class="fpv-unit-meta">
+            <div class="fpv-unit-title">
+              <span id="fpv-unit-name">UNIT</span>
+              <span id="fpv-unit-vet" class="fpv-vet"></span>
+            </div>
+            <div class="fpv-badges">
+              <span id="fpv-domain-badge" class="fpv-badge">ARMOR</span>
+              <span id="fpv-sub-badge" class="fpv-badge fpv-badge-sub hidden">SUBMERGED</span>
+            </div>
+          </div>
+        </div>
+        <div class="fpv-hp-head">
+          <span id="fpv-hp-text">HP 0 / 0</span>
+        </div>
+        <div class="fpv-hp-wrap">
+          <div id="fpv-hp-fill"></div>
+        </div>
+        <div class="fpv-metrics">
+          <span id="fpv-spd">SPD 0 m/s</span>
+          <span id="fpv-hdg">HDG 000°</span>
+          <span id="fpv-alt" class="hidden">ALT 0m</span>
+        </div>
+      </div>
+
+      <div id="fpv-weapon">
+        <div class="fpv-wpn-head">
+          <span id="fpv-wpn-status">WEAPON READY</span>
+          <span id="fpv-wpn-range">RNG 0m</span>
+        </div>
+        <div class="fpv-reload-track">
+          <div id="fpv-reload-fill"></div>
+        </div>
+        <button id="fpv-exit" type="button">EXIT POV <kbd>E</kbd> / <kbd>ESC</kbd></button>
+      </div>
+    </div>
+
     <div id="chat-box" class="hidden">
       <div id="chat-lines"></div>
       <input id="chat-input" maxlength="120" placeholder="press Enter to chat" />
@@ -91,6 +172,7 @@
           <tr><td><kbd>Ctrl</kbd>+<kbd>1</kbd>–<kbd>9</kbd> / <kbd>1</kbd>–<kbd>9</kbd></td><td>assign / recall control groups (2× tap = center)</td></tr>
           <tr><td><kbd>A</kbd> / <kbd>P</kbd> + click / right-click</td><td>attack-move (fight en route) · patrol route</td></tr>
           <tr><td><kbd>G</kbd> / <kbd>S</kbd> / <kbd>X</kbd></td><td>hold position · stop & clear waypoints · scatter</td></tr>
+          <tr><td><kbd>E</kbd></td><td>Enter / Exit First-Person POV (control any soldier, tank, jet, or ship)</td></tr>
           <tr><td><kbd>Q</kbd> / <kbd>F1</kbd> / <kbd>Tab</kbd></td><td>all combat · next harvester · cycle bases</td></tr>
           <tr><td><kbd>$</kbd> (<kbd>V</kbd>) / <kbd>R</kbd></td><td>sell / repair mode — click your building</td></tr>
           <tr><td>Recon Scan / Ion Uplink</td><td>click left support pill + left-click map target</td></tr>

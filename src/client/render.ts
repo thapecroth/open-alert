@@ -122,6 +122,7 @@ export class Renderer {
   private lastAllies?: Set<number>;
   private lastVisSlot = -1;
   private playerLowPower = new Map<number, boolean>();
+  private hiddenEntityId: number | null = null;
 
   constructor(private gs: GameScene) {
     this.vfx = new VfxSystem(gs.scene);
@@ -174,6 +175,7 @@ export class Renderer {
     this.hasInitialSnap = false;
     this.lastAllies = undefined;
     this.lastVisSlot = -1;
+    this.hiddenEntityId = null;
     this.playerLowPower.clear();
     for (const tm of this.swShakeTimers) clearTimeout(tm);
     this.swShakeTimers = [];
@@ -210,6 +212,7 @@ export class Renderer {
       if (!isBuildingKind(e.k)) applyFacing(vis.root, e.d / 10);
       setVetBadge(vis, e.vet ?? 0);
       tagEntity(vis.root, e.id);
+      if (e.id === this.hiddenEntityId) vis.root.visible = false;
       scene.add(vis.root);
       this.gs.pickables.push(vis.root);
       const anim = createAnimState(e, this.hasInitialSnap);
@@ -267,7 +270,7 @@ export class Renderer {
         const vis = makeEntVis(e.k, color, scene);
         vis.root.position.copy(t.vis.root.position);
         vis.root.rotation.y = t.vis.root.rotation.y;
-        vis.root.visible = wasVisible;
+        vis.root.visible = id === this.hiddenEntityId ? false : wasVisible;
         tagEntity(vis.root, e.id);
         scene.add(vis.root);
         this.gs.pickables.push(vis.root);
@@ -312,6 +315,30 @@ export class Renderer {
   setSelected(ids: Set<number>) {
     this.selection = ids;
     for (const [id, t] of this.tracked) t.vis.ring.visible = ids.has(id);
+  }
+
+  setHiddenEntity(id: number | null): void {
+    const prev = this.hiddenEntityId;
+    this.hiddenEntityId = id;
+    if (prev !== null && prev !== id) {
+      const prevT = this.tracked.get(prev);
+      if (prevT) prevT.vis.root.visible = true;
+    }
+    if (id !== null) {
+      const nextT = this.tracked.get(id);
+      if (nextT) nextT.vis.root.visible = false;
+    }
+    if (this.lastVisSlot >= 0) {
+      this.applyVisibility(this.lastVisSlot, this.lastAllies);
+    }
+  }
+
+  getEntityWorldPos(id: number): { x: number; y: number; d: number } | null {
+    const p = this.framePos(id);
+    if (p) return p;
+    const t = this.tracked.get(id);
+    if (!t) return null;
+    return { x: t.last.x, y: t.last.y, d: t.last.d / 10 };
   }
 
   private framePos(id: number): { x: number; y: number; d: number } | null {
@@ -501,7 +528,10 @@ export class Renderer {
     this.lastAllies = allies;
     this.lastVisSlot = mySlot;
     if (mySlot < 0) {
-      for (const t of this.tracked.values()) if (!t.vis.root.visible) t.vis.root.visible = true;
+      for (const [id, t] of this.tracked) {
+        const show = id !== this.hiddenEntityId;
+        if (t.vis.root.visible !== show) t.vis.root.visible = show;
+      }
       for (const cv of this.crateVis.values()) cv.root.visible = true;
       this.gs.updateFog(-1, []);
       return;
@@ -520,6 +550,10 @@ export class Renderer {
     const reconZones = this.gs.getActiveReconReveals();
 
     for (const [id, t] of this.tracked) {
+      if (id === this.hiddenEntityId) {
+        if (t.vis.root.visible) t.vis.root.visible = false;
+        continue;
+      }
       const e = t.last;
       if (isFriendly(e.o) || e.o < 0) {
         if (!t.vis.root.visible) t.vis.root.visible = true;

@@ -92,6 +92,16 @@ export interface Ent {
   vet: number; // 0..3 veterancy rank
   subSurfaceUntil: number; // submarine stealth: surfaced until this tick (submerged when tick >= subSurfaceUntil)
   rally?: [number, number]; // rally point on production buildings
+  direct?: {
+    until: number;
+    fwd: number;
+    strafe: number;
+    yaw: number;
+    fire: boolean;
+    aimX: number;
+    aimY: number;
+    aimTarget?: number;
+  };
 }
 
 export interface P {
@@ -693,6 +703,49 @@ export class World {
     }
   }
 
+  cmdDrive(
+    slot: number,
+    id: number,
+    fwd: number,
+    strafe: number,
+    yaw: number,
+    fire: boolean,
+    aimX?: number,
+    aimY?: number,
+    aimTarget?: number,
+  ): string | null {
+    if (!Number.isFinite(id) || !Number.isFinite(fwd) || !Number.isFinite(strafe) || !Number.isFinite(yaw)) {
+      return "bad drive";
+    }
+    const e = this.ents.get(id);
+    if (!e || e.o !== slot || isBuilding(e.k)) return "can't drive that";
+    const cfwd = Math.max(-1, Math.min(1, fwd));
+    const cstrafe = Math.max(-1, Math.min(1, strafe));
+    e.order = null;
+    e.orderQueue = [];
+    e.path = null;
+    e.hold = false;
+    e.agro = null;
+    e.hstate = null;
+    e.holdUntil = this.tick + 120;
+    e.direct = {
+      until: this.tick + 14,
+      fwd: cfwd,
+      strafe: cstrafe,
+      yaw,
+      fire: !!fire,
+      aimX: Number.isFinite(aimX) ? aimX! : e.x + Math.cos(yaw) * 6,
+      aimY: Number.isFinite(aimY) ? aimY! : e.y + Math.sin(yaw) * 6,
+      aimTarget: Number.isFinite(aimTarget) ? aimTarget : undefined,
+    };
+    return null;
+  }
+
+  cmdDriveExit(slot: number, id: number): void {
+    const e = this.ents.get(id);
+    if (e && e.o === slot) delete e.direct;
+  }
+
   cmdBuild(slot: number, kind: BuildingKind): string | null {
     const p = this.players.get(slot);
     if (!p || p.eliminated) return "dead";
@@ -881,14 +934,14 @@ export class World {
   // engineer takes over an enemy building or neutral Oil Derrick once it reaches the footprint edge.
   // distance is measured to the edge, not the center, or 3x3 buildings
   // (conyard/factory/techlab) would stay unreachable.
-  private tryCapture(e: Ent, tgt: Ent): boolean {
+  private tryCapture(e: Ent, tgt: Ent, maxRange = CAPTURE_RANGE): boolean {
     if (e.k !== "engineer" || !isBuilding(tgt.k) || this.isAlly(e.o, tgt.o)) return false;
     const bd = BUILDINGS[tgt.k];
     const edgeDist = Math.hypot(
       Math.max(0, Math.abs(e.x - tgt.x) - bd.w / 2),
       Math.max(0, Math.abs(e.y - tgt.y) - bd.h / 2)
     );
-    if (edgeDist > CAPTURE_RANGE) return false;
+    if (edgeDist > maxRange) return false;
     const prev = tgt.o;
     tgt.o = e.o;
     this.recomputePower(prev);
@@ -1192,6 +1245,14 @@ export class World {
 
   private tickEnt(e: Ent) {
     if (e.cd > 0) e.cd--;
+    if (e.direct) {
+      if (this.tick > e.direct.until) {
+        delete e.direct;
+      } else {
+        this.tickDirect(e);
+        return;
+      }
+    }
     if (e.k === "harvester") {
       this.tickHarvester(e);
       return;
@@ -1289,7 +1350,195 @@ export class World {
     }
   }
 
+  private tickDirect(e: Ent) {
+    const dir = e.direct;
+    if (!dir) return;
+    e.d = dir.yaw;
+
+    // Movement vector in map (x, y) coords:
+    // Forward = (cos(yaw), sin(yaw)), Right (strafe) = (-sin(yaw), cos(yaw))
+    let vx = Math.cos(dir.yaw) * dir.fwd - Math.sin(dir.yaw) * dir.strafe;
+    let vy = Math.sin(dir.yaw) * dir.fwd + Math.cos(dir.yaw) * dir.strafe;
+    const len = Math.hypot(vx, vy);
+    if (len > 1) {
+      vx /= len;
+      vy /= len;
+    }
+    if (len > 0.001) {
+      const speed = UNITS[e.k as UnitKind].speed * 1.15;
+      const dx = vx * speed;
+      const dy = vy * speed;
+      const dom = domainOf(e.k);
+      const canEnter = (nx: number, ny: number): boolean => {
+        if (!inBounds(nx, ny)) return false;
+        if (dom === "air") return true;
+        const ix = Math.floor(nx),
+          iy = Math.floor(ny);
+        return dom === "sea" ? this.passableSea(ix, iy) : this.passable(ix, iy);
+      };
+      const tx = Math.max(0.5, Math.min(MAP_W - 0.5, e.x + dx));
+      const ty = Math.max(0.5, Math.min(MAP_H - 0.5, e.y + dy));
+      if (canEnter(tx, ty)) {
+        e.x = tx;
+        e.y = ty;
+      } else if (Math.abs(dx) > 1e-6 && canEnter(tx, e.y)) {
+        e.x = tx;
+      } else if (Math.abs(dy) > 1e-6 && canEnter(e.x, ty)) {
+        e.y = ty;
+      }
+      e.x = Math.max(0.5, Math.min(MAP_W - 0.5, e.x));
+      e.y = Math.max(0.5, Math.min(MAP_H - 0.5, e.y));
+    }
+
+    // Sapper (engineer) FPV Capture
+    if (e.k === "engineer") {
+      const capRange = dir.fire ? CAPTURE_RANGE + 0.5 : CAPTURE_RANGE;
+      for (const b of [...this.ents.values()]) {
+        if (!isBuilding(b.k) || this.isAlly(e.o, b.o)) continue;
+        if (entityDist(e, b) <= capRange && this.tryCapture(e, b, capRange)) {
+          return;
+        }
+      }
+    }
+
+    // Harvester FPV Mining & Depositing
+    if (e.k === "harvester") {
+      const cap = UNITS.harvester.capacity ?? 40;
+      const ox = Math.floor(e.x),
+        oy = Math.floor(e.y);
+      if (inBounds(ox, oy)) {
+        const t = idx(ox, oy);
+        if (this.ore[t] > 0 && e.cargo < cap && this.tick % HARVEST_TICKS_PER_UNIT === 0) {
+          this.ore[t]--;
+          e.cargo++;
+          this.events.push({ e: "ore", cells: [[ox, oy, this.ore[t]]] });
+        }
+      }
+      if (e.cargo > 0) {
+        const ref = this.nearestRefinery(e);
+        if (ref) {
+          const dockR = Math.max(BUILDINGS.refinery.w, BUILDINGS.refinery.h) / 2 + 0.9;
+          if (dist(e.x, e.y, ref.x, ref.y) <= dockR) {
+            const p = this.players.get(e.o);
+            const deposit = Math.floor(
+              e.cargo * ORE_VALUE * (this.hasBuilding(e.o, "purifier") ? 1 + PURIFIER_BONUS : 1),
+            );
+            if (p && deposit > 0) {
+              p.credits += deposit;
+              p.creditsEarned += deposit;
+              this.events.push({ e: "income", x: ref.x, y: ref.y, amt: deposit, slot: e.o });
+            }
+            e.cargo = 0;
+          }
+        }
+      }
+    }
+
+    // Direct-Aim Firing
+    const w = weaponOf(e);
+    if (!dir.fire || e.cd > 0 || w.range <= 0) return;
+
+    const pointDistToEnt = (px: number, py: number, t: Ent) => {
+      if (!isBuilding(t.k)) return dist(px, py, t.x, t.y);
+      const bd = BUILDINGS[t.k];
+      return Math.hypot(
+        Math.max(0, Math.abs(px - t.x) - bd.w / 2),
+        Math.max(0, Math.abs(py - t.y) - bd.h / 2),
+      );
+    };
+
+    // Priority 1: Explicit aimTarget lock
+    if (dir.aimTarget != null) {
+      const tgt = this.ents.get(dir.aimTarget);
+      if (tgt && !this.isAlly(e.o, tgt.o) && this.canAttack(e, tgt) && entityDist(e, tgt) <= w.range + 1.5) {
+        this.tryFire(e, tgt);
+        return;
+      }
+    }
+
+    // Priority 2: Closest non-ally attackable entity within 1.8 tiles of (aimX, aimY) and in weapon range
+    let best: Ent | null = null;
+    let bestD = 1.8;
+    for (const t of this.ents.values()) {
+      if (this.isAlly(e.o, t.o)) continue;
+      if (!this.canAttack(e, t)) continue;
+      if (entityDist(e, t) > w.range + 1.5) continue;
+      const ad = pointDistToEnt(dir.aimX, dir.aimY, t);
+      if (ad <= bestD) {
+        bestD = ad;
+        best = t;
+      }
+    }
+    if (best) {
+      this.tryFire(e, best);
+      return;
+    }
+
+    // Priority 3: Free-Fire Shot!
+    let tx = dir.aimX;
+    let ty = dir.aimY;
+    const dx = tx - e.x;
+    const dy = ty - e.y;
+    const d = Math.hypot(dx, dy);
+    if (d > w.range) {
+      tx = e.x + (dx / d) * w.range;
+      ty = e.y + (dy / d) * w.range;
+    } else if (d < 0.01) {
+      tx = e.x + Math.cos(dir.yaw) * Math.min(w.range, 1);
+      ty = e.y + Math.sin(dir.yaw) * Math.min(w.range, 1);
+    }
+    tx = Math.max(0.1, Math.min(MAP_W - 0.1, tx));
+    ty = Math.max(0.1, Math.min(MAP_H - 0.1, ty));
+
+    e.cd = w.rof;
+    if (e.k === "sub") e.subSurfaceUntil = this.tick + 45;
+    this.events.push({
+      e: "shot",
+      fx: e.x,
+      fy: e.y,
+      tx,
+      ty,
+      w: weaponFxOf(e.k),
+      src: e.id,
+      ...(e.vet > 0 ? { vet: e.vet } : {}),
+    });
+
+    const splashR = SPLASH_RADIUS[e.k];
+    if (splashR) {
+      const baseDmg = w.dmg * VET_DMG[e.vet];
+      const hitAir = canHitAirOf(e.k);
+      for (const other of [...this.ents.values()]) {
+        if (!this.ents.has(other.id)) continue;
+        if (this.isAlly(e.o, other.o)) continue;
+        if (!hitAir && domainOf(other.k) === "air") continue;
+        const sd = pointDistToEnt(tx, ty, other);
+        if (sd > splashR) continue;
+        const falloff = 1 - sd / splashR;
+        const sdmg = baseDmg * 0.65 * falloff * armorMult(e.k, other.k);
+        if (sdmg <= 0) continue;
+        other.hp -= sdmg;
+        this.events.push({ e: "hit", id: other.id });
+        this.grantXp(e, sdmg * 0.5);
+        this.alertVictim(other.o, other.x, other.y);
+        if (other.hp <= 0) {
+          this.grantXp(e, other.mhp * 0.8);
+          this.destroy(other, e.o);
+        } else if (isBuilding(other.k) && BUILDINGS[other.k].power > 0) {
+          this.recomputePower(other.o);
+        }
+      }
+    }
+  }
+
   private tickHarvester(e: Ent) {
+    if (e.direct) {
+      if (this.tick > e.direct.until) {
+        delete e.direct;
+      } else {
+        this.tickDirect(e);
+        return;
+      }
+    }
     const o = e.order;
     // explicit move orders run through the generic mover — tickEnt returns
     // early for harvesters, so this is the only place they get stepped

@@ -22,12 +22,14 @@ export class Input {
   onGroupsChange: (groups: Map<number, Set<number>>) => void = () => {};
   onOrderLabel: (text: string | null, x?: number, y?: number) => void = () => {};
   onOpenChat: () => void = () => {};
+  onEnterFpv: () => void = () => {};
   onWasdChange: (on: boolean) => void = () => {};
   onSuperweaponArmedChange: (armed: boolean) => void = () => {};
   onReconArmedChange: (armed: boolean) => void = () => {};
   onUiSound: (kind: "select" | "move" | "attack" | "place" | "deny" | "recon" | "hold") => void = () => {};
   isAlly: (slot: number) => boolean = () => false;
 
+  private _enabled = true;
   private gs: GameScene;
   private r: Renderer;
   private net: Net;
@@ -87,6 +89,7 @@ export class Input {
     canvas.addEventListener(
       "wheel",
       (e) => {
+        if (!this._enabled) return;
         e.preventDefault();
         gs.zoom(e.deltaY * 0.02);
       },
@@ -102,8 +105,29 @@ export class Input {
     window.addEventListener("keyup", (e) => this.keys.delete(e.code));
   }
 
+  get enabled(): boolean {
+    return this._enabled;
+  }
+
+  set enabled(v: boolean) {
+    this._enabled = v;
+    if (!v) {
+      this.keys.clear();
+      this.dragStart = null;
+      this.middleDrag = null;
+      this.yawDrag = null;
+      this.panVx = 0;
+      this.panVz = 0;
+      if (this.selBox) {
+        this.selBox.remove();
+        this.selBox = null;
+      }
+    }
+  }
+
   get hoverPointer(): { x: number; y: number } | null {
     if (
+      !this._enabled ||
       !this.pointerInside ||
       this.placing ||
       this.dragStart ||
@@ -161,6 +185,7 @@ export class Input {
   }
 
   private onKeyDown(e: KeyboardEvent) {
+    if (!this._enabled) return;
     const tag = (e.target as HTMLElement | null)?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
       if (e.code === "Escape") (e.target as HTMLElement).blur();
@@ -172,6 +197,19 @@ export class Input {
       e.preventDefault();
       this.onOpenChat();
       return;
+    }
+
+    // E enters First-Person POV when a single owned unit is selected
+    if (e.code === "KeyE" && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (this.selection.size === 1) {
+        const singleId = [...this.selection][0];
+        const t = this.r.tracked.get(singleId);
+        if (t && t.last.o === this.getSlot() && !isBuildingKind(t.last.k)) {
+          e.preventDefault();
+          this.onEnterFpv();
+          return;
+        }
+      }
     }
 
     this.keys.add(e.code);
@@ -512,6 +550,7 @@ export class Input {
   // ---------- Pointer interactions ----------
 
   private onDown(e: PointerEvent) {
+    if (!this._enabled) return;
     this.px = e.clientX;
     this.py = e.clientY;
     this.gs.syncPointer(e.clientX, e.clientY);
@@ -651,6 +690,7 @@ export class Input {
   }
 
   private onMove(e: PointerEvent) {
+    if (!this._enabled) return;
     if (this.yawDrag) {
       const dx = e.clientX - this.yawDrag.x;
       this.yawDrag = { x: e.clientX };
@@ -686,6 +726,7 @@ export class Input {
   }
 
   private onUp(e: PointerEvent) {
+    if (!this._enabled) return;
     if (this.yawDrag && (e.button === 0 || e.button === 1)) {
       this.yawDrag = null;
       return;
@@ -1004,6 +1045,7 @@ export class Input {
   // ---------- per-frame ----------
 
   update(dt: number) {
+    if (!this._enabled) return;
     if (this.placing) this.moveGhost();
 
     let dx = 0,

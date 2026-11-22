@@ -240,6 +240,29 @@ export class GameRoom extends Server<Env> {
       case "hold":
         this.world.cmdHold(slot, validIds(m.ids));
         break;
+      case "drive":
+        if (
+          Number.isFinite(m.id) &&
+          Number.isFinite(m.fwd) &&
+          Number.isFinite(m.strafe) &&
+          Number.isFinite(m.yaw)
+        ) {
+          this.world.cmdDrive(
+            slot,
+            m.id,
+            m.fwd,
+            m.strafe,
+            m.yaw,
+            !!m.fire,
+            Number.isFinite(m.aimX) ? m.aimX : undefined,
+            Number.isFinite(m.aimY) ? m.aimY : undefined,
+            Number.isFinite(m.aimTarget) ? m.aimTarget : undefined,
+          );
+        }
+        break;
+      case "driveExit":
+        if (Number.isFinite(m.id)) this.world.cmdDriveExit(slot, m.id);
+        break;
       case "recon":
         err = Number.isFinite(m.x) && Number.isFinite(m.y) ? this.world.cmdRecon(slot, m.x, m.y) : "bad coords";
         break;
