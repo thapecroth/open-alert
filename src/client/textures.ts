@@ -1892,3 +1892,140 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
 
   return { map, bumpMap, normalMap };
 }
+
+// ---------- Seamless 256x256 Close-Up 1P Ground Micro-Detail Maps ----------
+
+let groundMicroMapTex: THREE.CanvasTexture | null = null;
+let groundMicroNormalTex: THREE.CanvasTexture | null = null;
+
+export function getGroundMicroDetail(): {
+  map: THREE.CanvasTexture;
+  normalMap: THREE.CanvasTexture;
+} {
+  if (groundMicroMapTex && groundMicroNormalTex) {
+    return { map: groundMicroMapTex, normalMap: groundMicroNormalTex };
+  }
+
+  const S = 256;
+  const [mc, mctx] = makeCanvas(S, S);
+  const img = mctx.createImageData(S, S);
+  const d = img.data;
+  const heights = new Float32Array(S * S);
+  const rand = mulberry32(73319);
+
+  // Tileable periodic value noise generator (period P divides S cleanly for 100% seamless tiling)
+  const makePeriodicNoise = (period: number, seed: number) => {
+    const r = mulberry32(seed);
+    const grid = new Float32Array(period * period);
+    for (let i = 0; i < grid.length; i++) grid[i] = r();
+    return (px: number, py: number) => {
+      const fx = (px / S) * period;
+      const fy = (py / S) * period;
+      const x0 = Math.floor(fx) % period;
+      const y0 = Math.floor(fy) % period;
+      const x1 = (x0 + 1) % period;
+      const y1 = (y0 + 1) % period;
+      const tx = fx - Math.floor(fx);
+      const ty = fy - Math.floor(fy);
+      const u = tx * tx * (3 - 2 * tx);
+      const v = ty * ty * (3 - 2 * ty);
+      const a = grid[y0 * period + x0];
+      const b = grid[y0 * period + x1];
+      const c = grid[y1 * period + x0];
+      const e = grid[y1 * period + x1];
+      return a + (b - a) * u + (c - a) * v + (a - b - c + e) * u * v;
+    };
+  };
+
+  const n8 = makePeriodicNoise(8, 1011);
+  const n16 = makePeriodicNoise(16, 2023);
+  const n32 = makePeriodicNoise(32, 3037);
+  const n64 = makePeriodicNoise(64, 4051);
+
+  // Base multi-octave organic earth / soil / mineral micro-grain centered around neutral 0.50
+  for (let py = 0; py < S; py++) {
+    for (let px = 0; px < S; px++) {
+      const fbm = n8(px, py) * 0.24 + n16(px, py) * 0.28 + n32(px, py) * 0.28 + n64(px, py) * 0.2;
+      const grit = (rand() - 0.5) * 0.16;
+      const h = Math.max(0.05, Math.min(0.95, 0.5 + (fbm - 0.5) * 0.62 + grit));
+      const idx = py * S + px;
+      heights[idx] = h;
+    }
+  }
+
+  // Wrap-safe helper to stamp organic micro-features seamlessly across tile borders
+  const stampDisc = (cx: number, cy: number, rad: number, dh: number) => {
+    const ir = Math.ceil(rad);
+    for (let oy = -ir; oy <= ir; oy++) {
+      const ny = (((Math.round(cy) + oy) % S) + S) % S;
+      for (let ox = -ir; ox <= ir; ox++) {
+        const nx = (((Math.round(cx) + ox) % S) + S) % S;
+        const dist = Math.hypot(ox, oy);
+        if (dist <= rad) {
+          const t = 1 - dist / (rad + 0.15);
+          const smooth = t * t * (3 - 2 * t);
+          const idx = ny * S + nx;
+          heights[idx] = Math.max(0.02, Math.min(0.98, heights[idx] + dh * smooth));
+        }
+      }
+    }
+  };
+
+  // Crisp tiny stones & aggregate pebbles (raised highlights + subtle recessed soil pores)
+  for (let i = 0; i < 420; i++) {
+    const cx = rand() * S;
+    const cy = rand() * S;
+    const rad = 1.1 + rand() * 2.5;
+    const raised = rand() > 0.34;
+    stampDisc(cx, cy, rad, raised ? 0.14 + rand() * 0.14 : -(0.1 + rand() * 0.12));
+  }
+
+  // Fine crisp organic grass / earth fiber micro-blades (wrapped toroidally)
+  for (let i = 0; i < 650; i++) {
+    const x0 = rand() * S;
+    const y0 = rand() * S;
+    const ang = rand() * Math.PI * 2;
+    const len = 3 + rand() * 7;
+    const dh = (rand() > 0.45 ? 1 : -1) * (0.055 + rand() * 0.065);
+    const steps = Math.ceil(len * 1.5);
+    for (let s = 0; s <= steps; s++) {
+      const f = s / steps;
+      const px = (((Math.round(x0 + Math.cos(ang) * len * f) % S) + S) % S);
+      const py = (((Math.round(y0 + Math.sin(ang) * len * f) % S) + S) % S);
+      const idx = py * S + px;
+      const taper = 1 - Math.abs(f - 0.5) * 1.4;
+      heights[idx] = Math.max(0.02, Math.min(0.98, heights[idx] + dh * Math.max(0.2, taper)));
+    }
+  }
+
+  // Re-center mean strictly to 0.50 so shader multiplication preserves exact biome brightness
+  let sum = 0;
+  for (let i = 0; i < heights.length; i++) sum += heights[i];
+  const meanOffset = 0.5 - sum / heights.length;
+  for (let i = 0; i < heights.length; i++) {
+    const h = Math.max(0.02, Math.min(0.98, heights[i] + meanOffset));
+    heights[i] = h;
+    // Slight warm/cool mineral speckle tinting while staying near-neutral around 128
+    const base = Math.round(h * 255);
+    const tint = ((i * 2654435761) >>> 28) - 7; // deterministic -7..+8 micro-chroma
+    const idx4 = i * 4;
+    d[idx4] = Math.max(0, Math.min(255, base + (tint >> 1)));
+    d[idx4 + 1] = Math.max(0, Math.min(255, base + (tint >> 2)));
+    d[idx4 + 2] = Math.max(0, Math.min(255, base - (tint >> 1)));
+    d[idx4 + 3] = 255;
+  }
+  mctx.putImageData(img, 0, 0);
+
+  const normalCanvas = heightBufferToNormalCanvas(heights, S, S, 2.35, true);
+
+  // Keep micro-albedo linear so neutral 0.50 maps cleanly to 1.00 contrast multiplier in GLSL
+  groundMicroMapTex = new THREE.CanvasTexture(mc);
+  groundMicroMapTex.wrapS = groundMicroMapTex.wrapT = THREE.RepeatWrapping;
+  groundMicroMapTex.anisotropy = 8;
+
+  groundMicroNormalTex = new THREE.CanvasTexture(normalCanvas);
+  groundMicroNormalTex.wrapS = groundMicroNormalTex.wrapT = THREE.RepeatWrapping;
+  groundMicroNormalTex.anisotropy = 8;
+
+  return { map: groundMicroMapTex, normalMap: groundMicroNormalTex };
+}

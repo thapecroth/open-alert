@@ -300,6 +300,7 @@ interface ViewmodelRig {
   root: THREE.Group;
   swayGroup: THREE.Group;
   recoilGroup: THREE.Group;
+  keyLight: THREE.PointLight;
   muzzleFlashes: THREE.Mesh[];
   spinners: { obj: THREE.Object3D; axis: "x" | "y" | "z"; speed: number }[];
   glowPulses: THREE.Mesh[];
@@ -337,6 +338,12 @@ function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
   const recoilGroup = new THREE.Group();
   root.add(swayGroup);
   swayGroup.add(recoilGroup);
+
+  // Dedicated 1P weapon & cockpit key fill light so PBR metals & rims gleam even when facing away from sun
+  const keyLight = new THREE.PointLight(0xdceeff, 1.35, 3.2, 1.5);
+  keyLight.position.set(0.3, 0.34, 0.14);
+  keyLight.castShadow = false;
+  root.add(keyLight);
 
   const geometries: THREE.BufferGeometry[] = [];
   const uniqueMaterials: THREE.Material[] = [];
@@ -411,7 +418,7 @@ function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
   };
 
   // Helper: peripheral armored gunner viewport bezel (keeps center clear)
-  const addGunnerCowl = (topY = 0.34, botY = -0.33, accentHex = "#38f2ff") => {
+  const addGunnerCowl = (topY = 0.34, botY = -0.33, accentHex = "#38f2ff", withRangefinder = false) => {
     const ledMat = getGlowMat(accentHex, 1.5);
     // Upper armored brow
     addPart(swayGroup, new RoundedBoxGeometry(1.06, 0.07, 0.14, 2, 0.012), cockpitTrim, 0, topY, -0.44, 0.18, 0, 0);
@@ -428,9 +435,35 @@ function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
       addPart(swayGroup, new THREE.BoxGeometry(0.032, 0.01, 0.01), ledMat, -0.42, topY - 0.025, -0.38),
       addPart(swayGroup, new THREE.BoxGeometry(0.032, 0.01, 0.01), ledMat, 0.42, topY - 0.025, -0.38),
     );
+
+    if (withRangefinder) {
+      // Sleek subtle green/cyan illuminated ballistic rangefinder bezel on armored viewport dashboard
+      const rfY = botY + 0.052;
+      const rfZ = -0.415;
+      addPart(swayGroup, new RoundedBoxGeometry(0.25, 0.044, 0.03, 2, 0.006), darkMetal, 0, rfY, rfZ, -0.34, 0, 0);
+      addPart(swayGroup, new THREE.BoxGeometry(0.215, 0.028, 0.006), glassTint, 0, rfY + 0.002, rfZ + 0.014, -0.34, 0, 0);
+      // Glowing green & cyan ballistic rangefinder readout bars + elevation tick pips
+      glowPulses.push(
+        addPart(swayGroup, new THREE.BoxGeometry(0.085, 0.006, 0.005), greenGlow, -0.045, rfY + 0.006, rfZ + 0.018, -0.34, 0, 0),
+        addPart(swayGroup, new THREE.BoxGeometry(0.068, 0.006, 0.005), cyanGlow, 0.052, rfY + 0.006, rfZ + 0.018, -0.34, 0, 0),
+      );
+      for (const tx of [-0.082, -0.042, 0, 0.042, 0.082]) {
+        addPart(
+          swayGroup,
+          new THREE.BoxGeometry(tx === 0 ? 0.014 : 0.007, 0.005, 0.005),
+          tx === 0 ? cyanGlow : greenGlow,
+          tx,
+          rfY - 0.005,
+          rfZ + 0.019,
+          -0.34,
+          0,
+          0,
+        );
+      }
+    }
   };
 
-  // Helper: sleek angled aircraft canopy struts + avionics dashboard
+  // Helper: sleek angled aircraft canopy struts + avionics dashboard + holographic HUD combiner
   const addAircraftCanopy = (wide: boolean, heavy = false) => {
     const xSpan = wide ? 0.52 : 0.46;
     const strutW = heavy ? 0.048 : 0.034;
@@ -443,25 +476,66 @@ function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
     addPart(swayGroup, new THREE.BoxGeometry(0.012, 0.22, 0.02), factionMat, -xSpan + 0.022, 0.02, -0.43, -0.24, 0.25, -0.28);
     addPart(swayGroup, new THREE.BoxGeometry(0.012, 0.22, 0.02), factionMat, xSpan - 0.022, 0.02, -0.43, -0.24, -0.25, 0.28);
     // Illuminated avionics instrument dashboard along lower edge
-    addPart(swayGroup, new RoundedBoxGeometry(0.84, 0.11, 0.22, 2, 0.016), cockpitTrim, 0, -0.32, -0.48, -0.3, 0, 0);
-    addPart(swayGroup, new RoundedBoxGeometry(0.28, 0.045, 0.02, 1, 0.004), gunMetal, 0, -0.265, -0.42, -0.42, 0, 0);
-    // Glowing MFD instrument strips (cyan attitude bar, green engines, amber weapons)
+    addPart(swayGroup, new RoundedBoxGeometry(0.86, 0.115, 0.22, 2, 0.016), cockpitTrim, 0, -0.32, -0.48, -0.3, 0, 0);
+    // Center, left & right MFD instrument bezels
+    addPart(swayGroup, new RoundedBoxGeometry(0.28, 0.048, 0.022, 1, 0.004), gunMetal, 0, -0.265, -0.42, -0.42, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.15, 0.044, 0.02, 1, 0.004), darkMetal, -0.22, -0.278, -0.422, -0.32, 0.14, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.15, 0.044, 0.02, 1, 0.004), darkMetal, 0.22, -0.278, -0.422, -0.32, -0.14, 0);
+    // Glowing avionics MFD strips (cyan attitude/telemetry, green twin engine thrust, amber weapons/radar)
     glowPulses.push(
-      addPart(swayGroup, new THREE.BoxGeometry(0.11, 0.016, 0.008), cyanGlow, 0, -0.262, -0.408, -0.42, 0, 0),
-      addPart(swayGroup, new THREE.BoxGeometry(0.09, 0.014, 0.008), greenGlow, -0.21, -0.275, -0.415, -0.32, 0.14, 0),
-      addPart(swayGroup, new THREE.BoxGeometry(0.09, 0.014, 0.008), amberGlow, 0.21, -0.275, -0.415, -0.32, -0.14, 0),
+      addPart(swayGroup, new THREE.BoxGeometry(0.125, 0.012, 0.008), cyanGlow, 0, -0.258, -0.408, -0.42, 0, 0),
+      addPart(swayGroup, new THREE.BoxGeometry(0.09, 0.007, 0.008), greenGlow, 0, -0.274, -0.406, -0.42, 0, 0),
+      addPart(swayGroup, new THREE.BoxGeometry(0.098, 0.012, 0.008), greenGlow, -0.22, -0.271, -0.41, -0.32, 0.14, 0),
+      addPart(swayGroup, new THREE.BoxGeometry(0.072, 0.007, 0.008), cyanGlow, -0.22, -0.286, -0.408, -0.32, 0.14, 0),
+      addPart(swayGroup, new THREE.BoxGeometry(0.098, 0.012, 0.008), amberGlow, 0.22, -0.271, -0.41, -0.32, -0.14, 0),
+      addPart(swayGroup, new THREE.BoxGeometry(0.072, 0.007, 0.008), cyanGlow, 0.22, -0.286, -0.408, -0.32, -0.14, 0),
     );
-    // Subtle angled HUD combiner glass frame right above center dash
-    addPart(swayGroup, new THREE.BoxGeometry(0.008, 0.09, 0.014), lightAlloy, -0.095, -0.21, -0.43, 0.15, 0, 0);
-    addPart(swayGroup, new THREE.BoxGeometry(0.008, 0.09, 0.014), lightAlloy, 0.095, -0.21, -0.43, 0.15, 0, 0);
+    // Angled HUD combiner frame + translucent holographic glass reflector pane + glowing artificial-horizon bars
+    addPart(swayGroup, new THREE.BoxGeometry(0.008, 0.105, 0.014), lightAlloy, -0.105, -0.205, -0.43, 0.18, 0, 0);
+    addPart(swayGroup, new THREE.BoxGeometry(0.008, 0.105, 0.014), lightAlloy, 0.105, -0.205, -0.43, 0.18, 0, 0);
+    addPart(swayGroup, new THREE.BoxGeometry(0.218, 0.007, 0.012), lightAlloy, 0, -0.155, -0.421, 0.18, 0, 0);
+    const hudGlassMat = trackMat(
+      new THREE.MeshBasicMaterial({
+        color: 0x38f2ff,
+        transparent: true,
+        opacity: 0.14,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    const hudPane = addPart(swayGroup, new THREE.PlaneGeometry(0.198, 0.094), hudGlassMat, 0, -0.205, -0.428, 0.18, 0, 0);
+    hudPane.renderOrder = 3;
+    // Glowing artificial-horizon bars & pitch ladder on HUD reflector glass
+    const hudBarMat = trackMat(
+      new THREE.MeshBasicMaterial({
+        color: 0x5af8ff,
+        transparent: true,
+        opacity: 0.78,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    );
+    // Split artificial-horizon wings + center chevron datum
+    addPart(swayGroup, new THREE.BoxGeometry(0.052, 0.0032, 0.002), hudBarMat, -0.048, -0.202, -0.425, 0.18, 0, 0);
+    addPart(swayGroup, new THREE.BoxGeometry(0.052, 0.0032, 0.002), hudBarMat, 0.048, -0.202, -0.425, 0.18, 0, 0);
+    addPart(swayGroup, new THREE.BoxGeometry(0.016, 0.0032, 0.002), cyanGlow, 0, -0.202, -0.424, 0.18, 0, 0);
+    // Upper & lower pitch-ladder ticks
+    addPart(swayGroup, new THREE.BoxGeometry(0.032, 0.0024, 0.002), hudBarMat, -0.04, -0.182, -0.422, 0.18, 0, 0);
+    addPart(swayGroup, new THREE.BoxGeometry(0.032, 0.0024, 0.002), hudBarMat, 0.04, -0.182, -0.422, 0.18, 0, 0);
+    addPart(swayGroup, new THREE.BoxGeometry(0.032, 0.0024, 0.002), hudBarMat, -0.04, -0.222, -0.428, 0.18, 0, 0);
+    addPart(swayGroup, new THREE.BoxGeometry(0.032, 0.0024, 0.002), hudBarMat, 0.04, -0.222, -0.428, 0.18, 0, 0);
   };
 
   if (kind === "infantry") {
-    // Futuristic bullpup pulse rifle held lower-right
+    // Futuristic bullpup pulse rifle held lower-right with sculpted armored gloved hands & forearms
     const gun = new THREE.Group();
     gun.position.set(0.25, -0.23, -0.46);
     gun.rotation.set(0.02, 0.08, -0.03);
     recoilGroup.add(gun);
+
+    const sleeveMat = getChassisMat("#1f2630", 0.58, 0.32);
+    const gloveMat = getChassisMat("#151920", 0.44, 0.44);
 
     // Main sculpted receiver & bullpup stock
     addPart(gun, new RoundedBoxGeometry(0.072, 0.105, 0.44, 3, 0.012), darkMetal, 0, 0, 0.04);
@@ -472,19 +546,76 @@ function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
     // Rifled inner barrel + tactical compensator muzzle
     addPart(gun, new THREE.CylinderGeometry(0.014, 0.016, 0.22, 12), lightAlloy, 0, 0.016, -0.44, Math.PI / 2, 0, 0);
     addPart(gun, new THREE.CylinderGeometry(0.02, 0.018, 0.048, 8), darkMetal, 0, 0.016, -0.54, Math.PI / 2, 0, 0);
-    // Angled foregrip & magazine well
+    // Angled foregrip, pistol grip & magazine well
     addPart(gun, new RoundedBoxGeometry(0.042, 0.095, 0.05, 2, 0.008), cockpitTrim, 0, -0.065, -0.18, 0.25, 0, 0);
-    addPart(gun, new RoundedBoxGeometry(0.048, 0.11, 0.075, 2, 0.008), cockpitTrim, 0, -0.07, 0.14, -0.16, 0, 0);
-    // Top Picatinny rail + glowing cyan ammo indicator strip
+    addPart(gun, new RoundedBoxGeometry(0.044, 0.095, 0.052, 2, 0.008), cockpitTrim, 0, -0.075, 0.035, -0.24, 0, 0);
+    addPart(gun, new RoundedBoxGeometry(0.048, 0.11, 0.075, 2, 0.008), cockpitTrim, 0, -0.07, 0.16, -0.16, 0, 0);
+    // Top Picatinny rail
     addPart(gun, new RoundedBoxGeometry(0.032, 0.014, 0.34, 1, 0.003), lightAlloy, 0, 0.058, -0.06);
-    glowPulses.push(addPart(gun, new THREE.BoxGeometry(0.01, 0.012, 0.065), cyanGlow, -0.038, 0.024, -0.04));
-    // Holographic reflex sight housing + glass lens + crisp cyan reticle dot
+    // Illuminated ammo counter LED strip bezel along left side of receiver
+    addPart(gun, new RoundedBoxGeometry(0.014, 0.028, 0.095, 1, 0.003), cockpitTrim, -0.04, 0.024, -0.03);
+    for (let seg = 0; seg < 4; seg++) {
+      glowPulses.push(
+        addPart(
+          gun,
+          new THREE.BoxGeometry(0.006, 0.013, 0.014),
+          cyanGlow,
+          -0.046,
+          0.024,
+          -0.062 + seg * 0.019,
+        ),
+      );
+    }
+    addPart(gun, new THREE.BoxGeometry(0.006, 0.008, 0.01), greenGlow, -0.046, 0.024, 0.011);
+
+    // Holographic reflex sight housing + translucent lens + crisp glowing cyan cross-dot reticle
     addPart(gun, new RoundedBoxGeometry(0.052, 0.012, 0.078, 1, 0.003), darkMetal, 0, 0.068, -0.02);
     addPart(gun, new RoundedBoxGeometry(0.008, 0.042, 0.062, 1, 0.002), darkMetal, -0.022, 0.09, -0.02);
     addPart(gun, new RoundedBoxGeometry(0.008, 0.042, 0.062, 1, 0.002), darkMetal, 0.022, 0.09, -0.02);
     addPart(gun, new RoundedBoxGeometry(0.052, 0.008, 0.062, 1, 0.002), darkMetal, 0, 0.112, -0.02);
-    addPart(gun, new THREE.BoxGeometry(0.036, 0.034, 0.004), glassCyan, 0, 0.09, -0.02);
-    addPart(gun, new THREE.SphereGeometry(0.0036, 8, 8), cyanGlow, 0, 0.09, -0.018);
+    const reflexGlassMat = trackMat(
+      new THREE.MeshBasicMaterial({
+        color: 0x3ce8ff,
+        transparent: true,
+        opacity: 0.18,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    );
+    addPart(gun, new THREE.PlaneGeometry(0.036, 0.034), reflexGlassMat, 0, 0.09, -0.02);
+    // Crisp glowing cyan holographic cross-dot inside reflex sight glass
+    addPart(gun, new THREE.SphereGeometry(0.0026, 8, 8), cyanGlow, 0, 0.09, -0.017);
+    addPart(gun, new THREE.BoxGeometry(0.009, 0.0014, 0.0014), cyanGlow, -0.009, 0.09, -0.017);
+    addPart(gun, new THREE.BoxGeometry(0.009, 0.0014, 0.0014), cyanGlow, 0.009, 0.09, -0.017);
+    addPart(gun, new THREE.BoxGeometry(0.0014, 0.008, 0.0014), cyanGlow, 0, 0.098, -0.017);
+    addPart(gun, new THREE.BoxGeometry(0.0014, 0.008, 0.0014), cyanGlow, 0, 0.082, -0.017);
+    addPart(gun, new THREE.TorusGeometry(0.0115, 0.001, 6, 20), cyanGlow, 0, 0.09, -0.017);
+
+    // Sculpted left tactical forearm + dark-armored gloved hand gripping the forward forend
+    const leftArm = new THREE.Group();
+    leftArm.position.set(-0.028, -0.062, -0.18);
+    gun.add(leftArm);
+    // Armored glove palm cradling foregrip/shroud + articulated finger wrap + thumb
+    addPart(leftArm, new RoundedBoxGeometry(0.058, 0.052, 0.072, 2, 0.014), gloveMat, 0.012, -0.002, 0.004, 0.14, 0.16, 0.25);
+    addPart(leftArm, new RoundedBoxGeometry(0.038, 0.022, 0.058, 2, 0.008), darkMetal, 0.044, -0.012, -0.014, 0.08, 0.12, -0.2);
+    addPart(leftArm, new RoundedBoxGeometry(0.022, 0.022, 0.054, 2, 0.007), gloveMat, -0.016, 0.036, -0.018, 0.28, 0.15, -0.1);
+    // Tactical forearm sleeve + armored vambrace + faction wrist cuff extending toward lower-left
+    addPart(leftArm, new RoundedBoxGeometry(0.064, 0.06, 0.24, 2, 0.018), sleeveMat, -0.092, -0.052, 0.115, -0.34, -0.58, 0.18);
+    addPart(leftArm, new RoundedBoxGeometry(0.068, 0.032, 0.14, 2, 0.01), darkMetal, -0.078, -0.025, 0.095, -0.34, -0.58, 0.18);
+    addPart(leftArm, new RoundedBoxGeometry(0.069, 0.018, 0.028, 1, 0.005), factionMat, -0.046, -0.016, 0.054, -0.34, -0.58, 0.18);
+
+    // Sculpted right tactical forearm + dark-armored gloved hand gripping the rear pistol grip
+    const rightArm = new THREE.Group();
+    rightArm.position.set(0.018, -0.078, 0.048);
+    gun.add(rightArm);
+    // Gloved grip palm + knuckle guard + curled trigger finger
+    addPart(rightArm, new RoundedBoxGeometry(0.056, 0.062, 0.068, 2, 0.014), gloveMat, 0.002, 0.002, 0.006, -0.22, -0.1, -0.12);
+    addPart(rightArm, new RoundedBoxGeometry(0.024, 0.046, 0.048, 2, 0.008), darkMetal, 0.026, 0.008, -0.006, -0.22, -0.1, -0.12);
+    addPart(rightArm, new RoundedBoxGeometry(0.016, 0.018, 0.052, 2, 0.006), gloveMat, 0.018, 0.028, -0.042, 0.08, -0.18, 0);
+    // Right armored forearm & cuff extending toward lower-right
+    addPart(rightArm, new RoundedBoxGeometry(0.066, 0.062, 0.24, 2, 0.018), sleeveMat, 0.052, -0.058, 0.135, -0.38, 0.3, -0.15);
+    addPart(rightArm, new RoundedBoxGeometry(0.07, 0.032, 0.13, 2, 0.01), darkMetal, 0.046, -0.032, 0.115, -0.38, 0.3, -0.15);
+    addPart(rightArm, new RoundedBoxGeometry(0.071, 0.018, 0.028, 1, 0.005), factionMat, 0.028, -0.018, 0.062, -0.38, 0.3, -0.15);
 
     addMuzzleFlash(gun, 0, 0.016, -0.61, 1.0, 0xffd15c);
   } else if (kind === "rocket") {
@@ -540,14 +671,44 @@ function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
     // Top telemetry readout glass
     addPart(tool, new THREE.BoxGeometry(0.056, 0.016, 0.08), glassCyan, 0, 0.052, 0.02, 0.18, 0, 0);
   } else if (kind === "tank" || kind === "heavy" || kind === "destroyer" || kind === "gunboat") {
-    // Armored gunner viewport cowl + massive 3D rifled cannon barrel(s) at bottom-center
+    // Armored gunner viewport cowl with ballistic rangefinder bezel + massive 3D rifled cannon barrel(s)
     const isHeavy = kind === "heavy";
     const isDual = kind === "heavy" || kind === "destroyer" || kind === "gunboat";
-    addGunnerCowl(0.35, -0.34, kind === "destroyer" || kind === "gunboat" ? "#38f2ff" : "#ffae2b");
+    addGunnerCowl(0.35, -0.34, kind === "destroyer" || kind === "gunboat" ? "#38f2ff" : "#ffae2b", true);
 
     const buildCannon = (ox: number, oy: number, rad: number, len: number, heavyBore: boolean) => {
-      // Heavy mantlet breech collar
-      addPart(recoilGroup, new RoundedBoxGeometry(rad * 3.1, rad * 2.5, 0.24, 2, 0.014), darkMetal, ox, oy, -0.46);
+      // Heavy mantlet breech collar + machined alloy breech lock ring
+      addPart(recoilGroup, new RoundedBoxGeometry(rad * 3.15, rad * 2.55, 0.24, 2, 0.014), darkMetal, ox, oy, -0.46);
+      addPart(recoilGroup, new THREE.CylinderGeometry(rad * 1.48, rad * 1.56, 0.055, 16), lightAlloy, ox, oy, -0.57, Math.PI / 2, 0, 0);
+      // Flanking hydraulic recoil recuperator cylinders + gleaming brass piston rods
+      for (const s of [-1, 1]) {
+        addPart(
+          recoilGroup,
+          new THREE.CylinderGeometry(rad * 0.34, rad * 0.36, 0.28, 10),
+          lightAlloy,
+          ox + s * rad * 1.42,
+          oy + rad * 0.56,
+          -0.56,
+          Math.PI / 2,
+          0,
+          0,
+        );
+        addPart(
+          recoilGroup,
+          new THREE.CylinderGeometry(rad * 0.17, rad * 0.17, 0.16, 8),
+          brassMat,
+          ox + s * rad * 1.42,
+          oy + rad * 0.56,
+          -0.72,
+          Math.PI / 2,
+          0,
+          0,
+        );
+      }
+      // Top breech readiness indicator LED
+      glowPulses.push(
+        addPart(recoilGroup, new THREE.BoxGeometry(rad * 0.65, 0.008, 0.022), greenGlow, ox, oy + rad * 1.28, -0.46),
+      );
       // Faction-trimmed armored barrel jacket
       addPart(recoilGroup, new RoundedBoxGeometry(rad * 2.35, rad * 1.9, 0.3, 2, 0.012), factionMat, ox, oy + 0.006, -0.6);
       // Long rifled main barrel
@@ -566,7 +727,7 @@ function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
           0,
         );
       }
-      // Slotted muzzle brake tip
+      // Slotted muzzle brake tip + machined collar ring
       addPart(
         recoilGroup,
         new RoundedBoxGeometry(rad * 2.5, rad * 2.1, 0.09, 2, 0.01),
@@ -574,6 +735,17 @@ function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
         ox,
         oy,
         -0.58 - len,
+      );
+      addPart(
+        recoilGroup,
+        new THREE.CylinderGeometry(rad * 1.15, rad * 1.15, 0.026, 12),
+        lightAlloy,
+        ox,
+        oy,
+        -0.53 - len,
+        Math.PI / 2,
+        0,
+        0,
       );
       addMuzzleFlash(recoilGroup, ox, oy, -0.66 - len, isHeavy ? 2.1 : 1.65, 0xffb33a);
     };
@@ -761,6 +933,7 @@ function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
     root,
     swayGroup,
     recoilGroup,
+    keyLight,
     muzzleFlashes,
     spinners,
     glowPulses,
@@ -787,12 +960,15 @@ export class FirstPersonController {
   private domain: UnitDomain = "land";
   private profile: UnitCameraProfile = UNIT_PROFILES.tank;
 
-  // Predicted world position & camera orientation
+  // Predicted world position & damped camera orientation
   private predX = MAP_W / 2;
   private predY = MAP_H / 2;
   private curEyeY = 1.0;
-  private yaw = 0;
-  private pitch = 0;
+  private targetYaw = 0;
+  private targetPitch = 0;
+  private renderYaw = 0;
+  private renderPitch = 0;
+  private curFov = 68;
   private curSpeed = 0;
 
   // Input state
@@ -913,8 +1089,13 @@ export class FirstPersonController {
     this.profile = profile;
     this.predX = pos.x;
     this.predY = pos.y;
-    this.yaw = wrapAngle(pos.d);
-    this.pitch = def.domain === "air" ? -0.22 : profile.initPitch;
+    const initYaw = wrapAngle(pos.d);
+    const initPitch = def.domain === "air" ? -0.22 : profile.initPitch;
+    this.targetYaw = initYaw;
+    this.renderYaw = initYaw;
+    this.targetPitch = initPitch;
+    this.renderPitch = initPitch;
+    this.curFov = profile.fov;
     this.curEyeY = kind === "sub" && t.last.sub && profile.subEyeY !== undefined ? profile.subEyeY : profile.eyeY;
     this.curSpeed = 0;
 
@@ -944,7 +1125,7 @@ export class FirstPersonController {
 
     // Place camera immediately so there's zero 1-frame jump
     this.camPos.set(this.predX, this.curEyeY, this.predY);
-    this.gs.setFpvCamera(this.camPos, this.yaw, this.pitch, profile.fov);
+    this.gs.setFpvCamera(this.camPos, this.renderYaw, this.renderPitch, this.curFov);
 
     // Attempt pointer lock safely (browsers may reject outside user gesture or in headless mode)
     this.requestLock();
@@ -1073,14 +1254,20 @@ export class FirstPersonController {
 
     if (steerTurn !== 0) {
       const deltaYaw = steerTurn * prof.turnRate * clampedDt;
-      this.yaw = wrapAngle(this.yaw + deltaYaw);
+      this.targetYaw = wrapAngle(this.targetYaw + deltaYaw);
       this.swayX = clamp(this.swayX - deltaYaw * 0.25, -0.05, 0.05);
       this.swayRoll = clamp(this.swayRoll - deltaYaw * 0.7, -0.09, 0.09);
     }
 
+    // Silky-smooth exponentially damped mouse/keyboard look (eliminates polling stair-stepping)
+    const lookAlpha = 1 - Math.exp(-36 * clampedDt);
+    const yawDiff = wrapAngle(this.targetYaw - this.renderYaw);
+    this.renderYaw = wrapAngle(this.renderYaw + yawDiff * lookAlpha);
+    this.renderPitch += (this.targetPitch - this.renderPitch) * lookAlpha;
+
     // 2. 60fps Client-Side Movement Prediction with terrain wall-sliding
-    let vx = Math.cos(this.yaw) * fwdIn - Math.sin(this.yaw) * strafeIn;
-    let vy = Math.sin(this.yaw) * fwdIn + Math.cos(this.yaw) * strafeIn;
+    let vx = Math.cos(this.renderYaw) * fwdIn - Math.sin(this.renderYaw) * strafeIn;
+    let vy = Math.sin(this.renderYaw) * fwdIn + Math.cos(this.renderYaw) * strafeIn;
     const vLen = Math.hypot(vx, vy);
     if (vLen > 1) {
       vx /= vLen;
@@ -1105,27 +1292,46 @@ export class FirstPersonController {
       }
     }
 
-    // 3. Smooth authoritative server reconciliation (lerp 0.14 @ 60fps, snap if error > 3 tiles)
-    const errX = t.last.x - this.predX;
-    const errY = t.last.y - this.predY;
-    const errDist = Math.hypot(errX, errY);
-    if (errDist > 3.0) {
-      this.predX = t.last.x;
-      this.predY = t.last.y;
-    } else if (errDist > 0.0005) {
-      const blend = 1 - Math.pow(1 - 0.14, clampedDt * 60);
-      this.predX += errX * blend;
-      this.predY += errY * blend;
+    // 3. Zero-rubberband authoritative server reconciliation:
+    // Project 5 Hz server snapshot forward by ~160ms of current velocity; apply a 0.85-tile
+    // deadzone while moving (zero backward pull under normal latency!) and gently correct outside it.
+    if (vLen > 0.01) {
+      const srvProjX = t.last.x + vx * maxTilesPerSec * 0.16;
+      const srvProjY = t.last.y + vy * maxTilesPerSec * 0.16;
+      const errX = srvProjX - this.predX;
+      const errY = srvProjY - this.predY;
+      const errDist = Math.hypot(errX, errY);
+      if (errDist > 4.0) {
+        this.predX = t.last.x;
+        this.predY = t.last.y;
+      } else if (errDist > 0.85) {
+        const excessFrac = (errDist - 0.85) / errDist;
+        const blend = 1 - Math.exp(-2.8 * clampedDt);
+        this.predX += errX * excessFrac * blend;
+        this.predY += errY * excessFrac * blend;
+      }
+    } else {
+      const errX = t.last.x - this.predX;
+      const errY = t.last.y - this.predY;
+      const errDist = Math.hypot(errX, errY);
+      if (errDist > 4.0) {
+        this.predX = t.last.x;
+        this.predY = t.last.y;
+      } else if (errDist > 0.0005) {
+        const blend = 1 - Math.exp(-6.5 * clampedDt);
+        this.predX += errX * blend;
+        this.predY += errY * blend;
+      }
     }
 
     const actualDisp = Math.hypot(this.predX - prevX, this.predY - prevY);
     const instantSpeed = actualDisp / clampedDt;
-    this.curSpeed += (instantSpeed - this.curSpeed) * Math.min(1, clampedDt * 12);
+    this.curSpeed += (instantSpeed - this.curSpeed) * (1 - Math.exp(-12 * clampedDt));
 
-    // 4. Compute eye height, bob & subtle recoil pitch kick
+    // 4. Compute eye height, bob, sprint FOV easing & subtle recoil pitch kick
     const submerged = this.kind === "sub" && Boolean(t.last.sub);
     const targetEyeY = submerged && prof.subEyeY !== undefined ? prof.subEyeY : prof.eyeY;
-    this.curEyeY += (targetEyeY - this.curEyeY) * Math.min(1, clampedDt * 6);
+    this.curEyeY += (targetEyeY - this.curEyeY) * (1 - Math.exp(-6 * clampedDt));
 
     const moveRatio = clamp(this.curSpeed / Math.max(0.5, maxTilesPerSec), 0, 1);
     if (moveRatio > 0.05) {
@@ -1142,6 +1348,11 @@ export class FirstPersonController {
           : 0;
     const walkBobY = Math.sin(this.bobPhase * 2) * prof.bobAmp * moveRatio;
 
+    // Smooth sprint / forward-flight FOV boost (baseFov -> baseFov + 4.5, damped at dt * 7)
+    const forwardSpeedFrac = fwdIn > 0.1 ? moveRatio : 0;
+    const targetFov = prof.fov + forwardSpeedFrac * 4.5;
+    this.curFov += (targetFov - this.curFov) * (1 - Math.exp(-7 * clampedDt));
+
     // Decay pitch kick smoothly
     this.pitchKick *= Math.exp(-clampedDt * 14);
     if (this.pitchKick < 0.0005) this.pitchKick = 0;
@@ -1149,8 +1360,8 @@ export class FirstPersonController {
     // 5. Update 3D FPV Camera
     const camY = this.curEyeY + idleHeave + walkBobY;
     this.camPos.set(this.predX, camY, this.predY);
-    const effPitch = clamp(this.pitch + this.pitchKick, prof.minPitch, prof.maxPitch + 0.08);
-    this.gs.setFpvCamera(this.camPos, this.yaw, effPitch, prof.fov);
+    const effPitch = clamp(this.renderPitch + this.pitchKick, prof.minPitch, prof.maxPitch + 0.08);
+    this.gs.setFpvCamera(this.camPos, this.renderYaw, effPitch, this.curFov);
     this.gs.camera.updateMatrixWorld();
 
     // 6. Animate camera-attached 3D weapon / cockpit viewmodel
@@ -1170,7 +1381,7 @@ export class FirstPersonController {
         id: this.entId,
         fwd: Math.round(fwdIn * 1000) / 1000,
         strafe: Math.round(strafeIn * 1000) / 1000,
-        yaw: Math.round(this.yaw * 10000) / 10000,
+        yaw: Math.round(this.renderYaw * 10000) / 10000,
         fire: firing,
         aimX: Math.round(aim.aimX * 100) / 100,
         aimY: Math.round(aim.aimY * 100) / 100,
@@ -1179,7 +1390,7 @@ export class FirstPersonController {
     }
 
     // 9. Build live telemetry snapshot for HUD
-    const headingDeg = ((Math.round(((this.yaw + Math.PI / 2) * 180) / Math.PI) % 360) + 360) % 360;
+    const headingDeg = ((Math.round(((this.renderYaw + Math.PI / 2) * 180) / Math.PI) % 360) + 360) % 360;
     const reloading =
       this.reloadDurMs > 0 && this.lastShotAt > 0
         ? clamp(1 - (now - this.lastShotAt) / this.reloadDurMs, 0, 1)
@@ -1296,11 +1507,11 @@ export class FirstPersonController {
       }
     }
 
-    // Looking above horizon — project 24 tiles along yaw
+    // Looking above horizon — project 24 tiles along renderYaw
     const fallbackDist = Math.max(12, def.range > 0 ? def.range : 16);
     return {
-      aimX: clamp(this.predX + Math.cos(this.yaw) * fallbackDist, 0, MAP_W),
-      aimY: clamp(this.predY + Math.sin(this.yaw) * fallbackDist, 0, MAP_H),
+      aimX: clamp(this.predX + Math.cos(this.renderYaw) * fallbackDist, 0, MAP_W),
+      aimY: clamp(this.predY + Math.sin(this.renderYaw) * fallbackDist, 0, MAP_H),
       aimDist: fallbackDist,
       target: null,
     };
@@ -1310,22 +1521,25 @@ export class FirstPersonController {
     const vm = this.viewmodel;
     if (!vm) return;
 
-    // Smooth sway decay
-    const swayDecay = Math.exp(-dt * 9);
+    // Smooth exponential sway decay
+    const swayDecay = Math.exp(-dt * 10);
     this.swayX *= swayDecay;
     this.swayY *= swayDecay;
     this.swayRoll *= swayDecay;
 
-    const bobX = Math.cos(this.bobPhase) * this.profile.bobAmp * 0.55 * moveRatio;
-    const bobY = Math.abs(Math.sin(this.bobPhase)) * -this.profile.bobAmp * 0.65 * moveRatio;
+    // Smooth figure-8 sinusoidal weapon bob + subtle organic idle breathing
+    const bobX = Math.sin(this.bobPhase) * this.profile.bobAmp * 0.58 * moveRatio;
+    const bobY = -Math.abs(Math.cos(this.bobPhase)) * this.profile.bobAmp * 0.68 * moveRatio;
+    const idleX = Math.cos(this.elapsed * 1.15) * 0.0016;
+    const idleY = Math.sin(this.elapsed * 2.3) * 0.0022;
     const waveRoll = this.domain === "sea" ? Math.sin(this.elapsed * 1.7) * 0.018 : 0;
 
-    vm.swayGroup.position.set(this.swayX + bobX, this.swayY + bobY, 0);
-    vm.swayGroup.rotation.set(0, 0, this.swayRoll + waveRoll);
+    vm.swayGroup.position.set(this.swayX + bobX + idleX, this.swayY + bobY + idleY, 0);
+    vm.swayGroup.rotation.set(this.swayY * 0.65, this.swayX * 0.85, this.swayRoll + waveRoll);
 
-    // Recoil kick & spring recovery
-    this.recoil *= Math.exp(-dt * 12);
-    if (this.recoil < 0.002) this.recoil = 0;
+    // Recoil kick & smooth spring recovery
+    this.recoil *= Math.exp(-dt * 11.5);
+    if (this.recoil < 0.0015) this.recoil = 0;
     vm.recoilGroup.position.z = this.recoil * this.profile.recoilKickZ;
     vm.recoilGroup.rotation.x = this.recoil * this.profile.recoilPitch * 1.4;
 
@@ -1360,6 +1574,8 @@ export class FirstPersonController {
   private disposeViewmodel(): void {
     const vm = this.viewmodel;
     if (!vm) return;
+    vm.root.remove(vm.keyLight);
+    vm.keyLight.dispose();
     this.gs.camera.remove(vm.root);
     for (const g of vm.geometries) g.dispose();
     for (const m of vm.uniqueMaterials) m.dispose();
@@ -1472,8 +1688,8 @@ export class FirstPersonController {
     const dYaw = dx * sens;
     const dPitch = -dy * sens;
 
-    this.yaw = wrapAngle(this.yaw + dYaw);
-    this.pitch = clamp(this.pitch + dPitch, this.profile.minPitch, this.profile.maxPitch);
+    this.targetYaw = wrapAngle(this.targetYaw + dYaw);
+    this.targetPitch = clamp(this.targetPitch + dPitch, this.profile.minPitch, this.profile.maxPitch);
 
     // Subtle inertial weapon/cockpit lag on mouse movement
     this.swayX = clamp(this.swayX - dYaw * 0.22, -0.045, 0.045);

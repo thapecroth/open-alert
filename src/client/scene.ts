@@ -5,7 +5,13 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { MAP_W, MAP_H, MapId, MapArtifact, getMapLayout } from "../shared/gamedefs";
-import { createBattlefieldTextures, createOceanWaterMaterial, getCliffRockMaterials, getChassisMat } from "./textures";
+import {
+  createBattlefieldTextures,
+  createOceanWaterMaterial,
+  getCliffRockMaterials,
+  getChassisMat,
+  getGroundMicroDetail,
+} from "./textures";
 import { GraphicsManager } from "./graphics";
 import { RaytracePass } from "./raytrace";
 
@@ -505,6 +511,8 @@ export class GameScene {
   private hemiLight!: THREE.HemisphereLight;
   private sunLight!: THREE.DirectionalLight;
   private rimLight!: THREE.DirectionalLight;
+  private curSunOffset: [number, number, number] = [-42, 58, 28];
+  private shadowFpvTight = false;
   private skyMat!: THREE.ShaderMaterial;
   private envSkyMat!: THREE.ShaderMaterial;
   private envScene!: THREE.Scene;
@@ -737,9 +745,12 @@ export class GameScene {
     this.hemiLight.intensity = atm.hemiIntensity;
 
     const [sx, sy, sz] = atm.sunOffset;
+    this.curSunOffset = [sx, sy, sz];
     this.sunLight.color.setHex(atm.sunColor);
     this.sunLight.intensity = atm.sunIntensity;
-    this.sunLight.position.set(MAP_W / 2 + sx, sy, MAP_H / 2 + sz);
+    const sunCenterX = this.fpvActive ? this.sunLight.target.position.x : MAP_W / 2;
+    const sunCenterZ = this.fpvActive ? this.sunLight.target.position.z : MAP_H / 2;
+    this.sunLight.position.set(sunCenterX + sx, sy, sunCenterZ + sz);
 
     this.rimLight.color.setHex(atm.rimColor);
     this.rimLight.intensity = atm.rimIntensity;
@@ -778,12 +789,53 @@ export class GameScene {
   private buildGround() {
     const geo = new THREE.PlaneGeometry(MAP_W, MAP_H);
     geo.rotateX(-Math.PI / 2);
+    const { map: microMap, normalMap: microNormalMap } = getGroundMicroDetail();
     this.groundMat = new THREE.MeshStandardMaterial({
       normalScale: new THREE.Vector2(0.88, 0.88),
       roughness: 0.9,
       metalness: 0.03,
       envMapIntensity: 0.45,
     });
+    // Dual-UV close-up micro-detail shader: 32x repeats of 256px seamless grain (128 px/tile)
+    // fades smoothly with camera distance so 1P eye-level ground is razor-sharp while RTS stays clean.
+    this.groundMat.customProgramCacheKey = () => "ground-micro-detail-v1";
+    this.groundMat.onBeforeCompile = (shader) => {
+      shader.uniforms.uMicroMap = { value: microMap };
+      shader.uniforms.uMicroNormalMap = { value: microNormalMap };
+      shader.uniforms.uMicroRepeat = { value: 32.0 };
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <map_pars_fragment>",
+          `#include <map_pars_fragment>
+          uniform sampler2D uMicroMap;
+          uniform sampler2D uMicroNormalMap;
+          uniform float uMicroRepeat;`,
+        )
+        .replace(
+          "#include <map_fragment>",
+          `#include <map_fragment>
+          #ifdef USE_MAP
+            float microFade = 1.0 - smoothstep(9.0, 26.0, length(vViewPosition));
+            if (microFade > 0.001) {
+              vec3 microSample = texture2D(uMicroMap, vMapUv * uMicroRepeat).rgb;
+              vec3 microContrast = mix(vec3(1.0), 0.84 + microSample * 0.32, microFade);
+              diffuseColor.rgb *= microContrast;
+            }
+          #endif`,
+        )
+        .replace(
+          "#include <normal_fragment_maps>",
+          `#include <normal_fragment_maps>
+          #if defined( USE_NORMALMAP_TANGENTSPACE ) && !defined( USE_NORMALMAP_OBJECTSPACE )
+            float microNormFade = 1.0 - smoothstep(9.0, 26.0, length(vViewPosition));
+            if (microNormFade > 0.001) {
+              vec3 microN = texture2D(uMicroNormalMap, vNormalMapUv * uMicroRepeat).xyz * 2.0 - 1.0;
+              vec3 detailN = normalize(vec3(mapN.xy + microN.xy * (0.58 * microNormFade), max(0.05, mapN.z * microN.z)));
+              normal = normalize(tbn * detailN);
+            }
+          #endif`,
+        );
+    };
     const g = new THREE.Mesh(geo, this.groundMat);
     g.position.set(MAP_W / 2, 0, MAP_H / 2);
     g.receiveShadow = true;
@@ -2321,7 +2373,7 @@ export class GameScene {
   // pitch>0 tilts up toward +Y; Three.js camera looks down -Z, so rotation.y = -PI/2 - yaw.
   setFpvCamera(pos: THREE.Vector3, yaw: number, pitch: number, fov = 68): void {
     this.fpvActive = true;
-    if (this.camera.fov !== fov || this.camera.near !== 0.08) {
+    if (Math.abs(this.camera.fov - fov) > 0.01 || this.camera.near !== 0.08) {
       this.camera.fov = fov;
       this.camera.near = 0.08;
       this.camera.updateProjectionMatrix();
@@ -2335,6 +2387,25 @@ export class GameScene {
     this.camera.rotation.y = -Math.PI / 2 - yaw;
     this.camera.rotation.x = pitch;
     this.camera.rotation.z = 0;
+
+    // 2x sharper dynamic 1P shadows: track forward frustum in front of camera and tighten shadow bounds ±45 -> ±24
+    const shadowTargetX = pos.x + Math.cos(yaw) * 10;
+    const shadowTargetZ = pos.z + Math.sin(yaw) * 10;
+    const [sx, sy, sz] = this.curSunOffset;
+    this.sunLight.target.position.set(shadowTargetX, 0, shadowTargetZ);
+    this.sunLight.position.set(shadowTargetX + sx, sy, shadowTargetZ + sz);
+    this.sunLight.target.updateMatrixWorld();
+    if (!this.shadowFpvTight) {
+      this.shadowFpvTight = true;
+      const sc = this.sunLight.shadow.camera;
+      sc.left = -24;
+      sc.right = 24;
+      sc.top = 24;
+      sc.bottom = -24;
+      sc.updateProjectionMatrix();
+      this.sunLight.shadow.normalBias = 0.016;
+    }
+    this.renderer.shadowMap.needsUpdate = true;
   }
 
   restoreRtsCamera(targetX?: number, targetZ?: number): void {
@@ -2347,6 +2418,24 @@ export class GameScene {
       this.camTarget.x = Math.max(-2, Math.min(MAP_W + 2, targetX));
       this.camTarget.z = Math.max(-2, Math.min(MAP_H + 2, targetZ));
     }
+
+    // Restore map-wide RTS shadow frustum & center sun light target back to map center
+    const [sx, sy, sz] = this.curSunOffset;
+    this.sunLight.target.position.set(MAP_W / 2, 0, MAP_H / 2);
+    this.sunLight.position.set(MAP_W / 2 + sx, sy, MAP_H / 2 + sz);
+    this.sunLight.target.updateMatrixWorld();
+    if (this.shadowFpvTight) {
+      this.shadowFpvTight = false;
+      const sc = this.sunLight.shadow.camera;
+      sc.left = -45;
+      sc.right = 45;
+      sc.top = 45;
+      sc.bottom = -45;
+      sc.updateProjectionMatrix();
+      this.sunLight.shadow.normalBias = 0.024;
+    }
+    this.renderer.shadowMap.needsUpdate = true;
+
     this.updateCamera();
   }
 

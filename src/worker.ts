@@ -44,6 +44,7 @@ export class GameRoom extends Server<Env> {
   world: World | null = null;
   timer: ReturnType<typeof setInterval> | null = null;
   resetTimer: ReturnType<typeof setTimeout> | null = null;
+  lastTickAt = 0;
   endSent = false;
   bots = new Map<string, AIBot>(); // player id -> AI brain, ticked once per game tick
 
@@ -100,6 +101,15 @@ export class GameRoom extends Server<Env> {
     const me = pid ? this.players.get(pid) : null;
 
     switch (m.t) {
+      case "hb":
+        if (this.resetTimer) {
+          clearTimeout(this.resetTimer);
+          this.resetTimer = null;
+        }
+        if (this.phase === "playing" && this.world && !this.timer) {
+          this.ensureLoop();
+        }
+        return;
       case "join":
         return this.handleJoin(conn, m.name, m.token);
       case "ready":
@@ -210,6 +220,7 @@ export class GameRoom extends Server<Env> {
         if (me && this.phase === "ended") {
           this.phase = "lobby";
           this.world = null;
+          this.lastTickAt = 0;
           this.endSent = false;
           // spectators who joined mid-game get real slots so they can play next
           // round — but only while a slot is free; a full room keeps them spectating
@@ -348,6 +359,7 @@ export class GameRoom extends Server<Env> {
         if (this.phase === "playing") {
           const wp = this.world?.players.get(p.slot);
           p.spectator = !wp || wp.eliminated;
+          this.ensureLoop();
         }
         this.connPlayer.set(conn.id, tok);
         this.sendInit(conn, p);
@@ -482,14 +494,47 @@ export class GameRoom extends Server<Env> {
       const p = pid ? this.players.get(pid) : null;
       if (p) this.sendInit(conn, p);
     }
-    if (this.timer) clearInterval(this.timer);
-    const tickMs = Math.max(40, Math.round(TICK_MS / (this.config.gameSpeed || 1)));
-    this.timer = setInterval(() => this.gameTick(), tickMs);
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    this.lastTickAt = Date.now();
+    this.ensureLoop();
+  }
+
+  private ensureLoop() {
+    if (this.phase === "playing" && this.world) {
+      if (!this.timer) {
+        const tickMs = Math.max(40, Math.round(TICK_MS / (this.config.gameSpeed || 1)));
+        this.timer = setInterval(() => this.gameTick(), tickMs);
+      }
+      void this.ctx.storage.setAlarm(Date.now() + 4000).catch(() => {});
+    }
+  }
+
+  async onAlarm() {
+    if (this.phase === "playing" && this.world) {
+      if (!this.timer || Date.now() - this.lastTickAt > 2000) {
+        if (this.timer) {
+          clearInterval(this.timer);
+          this.timer = null;
+        }
+        const tickMs = Math.max(40, Math.round(TICK_MS / (this.config.gameSpeed || 1)));
+        this.timer = setInterval(() => this.gameTick(), tickMs);
+        this.gameTick();
+      }
+      if (this.phase === "playing" && this.world) {
+        await this.ctx.storage.setAlarm(Date.now() + 4000).catch(() => {});
+      }
+    } else {
+      await this.ctx.storage.deleteAlarm().catch(() => {});
+    }
   }
 
   private gameTick() {
     const w = this.world;
     if (!w) return;
+    this.lastTickAt = Date.now();
     try {
       for (const [pid, bot] of this.bots) {
         const p = this.players.get(pid);
@@ -532,6 +577,7 @@ export class GameRoom extends Server<Env> {
           this.timer = null;
         }
         this.phase = "ended";
+        void this.ctx.storage.deleteAlarm().catch(() => {});
       }
     } catch {
       // Never let a transient tick exception halt the room loop
@@ -547,7 +593,9 @@ export class GameRoom extends Server<Env> {
       clearInterval(this.timer);
       this.timer = null;
     }
+    void this.ctx.storage.deleteAlarm().catch(() => {});
     this.world = null;
+    this.lastTickAt = 0;
     this.phase = "lobby";
     this.map = "crossroads";
     this.config = { ...DEFAULT_CONFIG };
@@ -561,6 +609,9 @@ export class GameRoom extends Server<Env> {
       phase: this.phase,
       players: this.players.size,
       tick: this.world?.tick ?? 0,
+      ents: this.world?.ents.size ?? 0,
+      lastTickAgeMs: this.lastTickAt ? Date.now() - this.lastTickAt : null,
+      hasTimer: !!this.timer,
     });
   }
 }

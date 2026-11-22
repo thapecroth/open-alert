@@ -6,6 +6,7 @@ export class Net {
   socket: PartySocket;
   onMsg: (m: S2C) => void = () => {};
   onStatus: (s: string) => void = () => {};
+  private hbTimer: ReturnType<typeof setInterval>;
 
   constructor(room: string) {
     const dev = location.port === "5173";
@@ -24,9 +25,24 @@ export class Net {
     this.socket.addEventListener("open", () => this.onStatus(""));
     this.socket.addEventListener("close", () => this.onStatus("reconnecting…"));
     this.socket.addEventListener("error", () => this.onStatus("connection error"));
+    // Keep NAT / Cloudflare edge WebSocket idle timers alive during passive spectating/watching
+    this.hbTimer = setInterval(() => {
+      try {
+        if (this.socket.readyState === WebSocket.OPEN) {
+          this.socket.send(JSON.stringify({ t: "hb" } satisfies C2S));
+        }
+      } catch {
+        /* ignore transient heartbeat errors */
+      }
+    }, 15000);
   }
 
   send(m: C2S) {
     this.socket.send(JSON.stringify(m));
+  }
+
+  close() {
+    clearInterval(this.hbTimer);
+    this.socket.close();
   }
 }

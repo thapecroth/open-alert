@@ -7,6 +7,7 @@ export interface AnimState {
   phase: number;
   speed: number;
   prevSpeed: number;
+  moveBlend: number;
   prevX: number;
   prevY: number;
   prevHeading: number;
@@ -56,6 +57,7 @@ export function createAnimState(e: EntSnap, animateConstruct: boolean): AnimStat
     phase: (e.id * 1.37) % (Math.PI * 2),
     speed: 0,
     prevSpeed: 0,
+    moveBlend: 0,
     prevX: e.x,
     prevY: e.y,
     prevHeading: e.d / 10,
@@ -162,11 +164,28 @@ export function stepEntityAnim(
   const dy = y - st.prevY;
   st.prevX = x;
   st.prevY = y;
-  const instSpeed = Math.hypot(dx, dy) / safeDt;
+  const dist = Math.hypot(dx, dy);
+  const instSpeed = dist > 4 ? 0 : Math.min(7.5, dist / safeDt);
   st.prevSpeed = st.speed;
-  st.speed += (Math.min(7.5, instSpeed) - st.speed) * Math.min(1, safeDt * 13);
+  // Asymmetric hysteresis: fast acceleration, gentle deceleration so brief WAN jitter
+  // never causes mid-stride leg hitches
+  const speedAlpha =
+    instSpeed >= st.speed
+      ? 1 - Math.exp(-14 * safeDt)
+      : 1 - Math.exp(-4.8 * safeDt);
+  st.speed += (instSpeed - st.speed) * speedAlpha;
   const accel = (st.speed - st.prevSpeed) / safeDt;
-  const moving = st.speed > 0.1;
+
+  // Continuous smoothstep idle <-> run blend (eliminates harsh moving/idle discontinuity)
+  const targetMove = Math.min(1, Math.max(0, (st.speed - 0.14) / 0.65));
+  const blendAlpha =
+    targetMove >= st.moveBlend
+      ? 1 - Math.exp(-12 * safeDt)
+      : 1 - Math.exp(-5.5 * safeDt);
+  st.moveBlend += (targetMove - st.moveBlend) * blendAlpha;
+  const mb = st.moveBlend;
+  const m = mb * mb * (3 - 2 * mb);
+  const moving = m > 0.08;
 
   const dYaw = angleDiff(st.prevHeading, headingRad);
   st.prevHeading = headingRad;
@@ -191,50 +210,52 @@ export function stepEntityAnim(
     rig.body.scale.set(1, 1, 1);
   }
 
-  // ---------- 1. Humanoid Infantry Animation ----------
+  // ---------- 1. Humanoid Infantry Animation (Fluid Athletic Stride & Continuous Blend) ----------
   if (k === "infantry" || k === "engineer" || k === "rocket") {
     const baseArmL = k === "infantry" ? -0.45 : k === "rocket" ? -0.3 : 0;
     const baseArmR = k === "infantry" ? -0.58 : k === "rocket" ? -0.35 : 0;
 
-    if (moving) {
-      st.phase += safeDt * (8.4 + st.speed * 4.2);
-      const s = Math.sin(st.phase);
-      const strideNorm = Math.min(1, st.speed * 0.95);
-      const stride = strideNorm * 0.74;
+    // Continuous stride frequency proportional to actual speed + independent idle breath clock
+    st.phase += safeDt * (4.8 + st.speed * 5.2);
+    const idleT = nowSec * 2.1 + last.id * 1.37;
+    const breath = Math.sin(idleT);
+    const idleBob = breath * 0.016;
+    const idleLean = breath * 0.018;
+    const idleScan = Math.sin(idleT * 0.55 + last.id) * 0.3;
+    const idleHeadPitch = Math.sin(idleT * 0.35 + last.id) * 0.05;
 
-      if (rig.legL) rig.legL.rotation.x = s * stride;
-      if (rig.legR) rig.legR.rotation.x = -s * stride;
-      if (rig.armL) rig.armL.rotation.x = baseArmL - s * stride * 0.58;
-      if (rig.armR) rig.armR.rotation.x = baseArmR + s * stride * 0.46;
+    const s = Math.sin(st.phase);
+    // Athletic asymmetric leg stride: crisp forward knee-lift (pow 0.85) + snappy rear push-off (pow 1.15)
+    const strideL = s > 0 ? Math.pow(s, 0.85) : -Math.pow(-s, 1.15);
+    const strideR = -s > 0 ? Math.pow(-s, 0.85) : -Math.pow(s, 1.15);
 
-      // Crisp bounce + forward tactical sprint lean + subtle torso counter-twist
-      rig.body.position.y = Math.abs(s) * 0.064 * strideNorm;
-      const targetLean = 0.11 + strideNorm * 0.1;
-      rig.body.rotation.x += (targetLean - rig.body.rotation.x) * Math.min(1, safeDt * 12);
-      rig.body.rotation.y = s * 0.14 * strideNorm;
-      rig.body.rotation.z = -s * 0.042 * strideNorm;
-      if (rig.head) {
-        rig.head.rotation.y = -s * 0.1 * strideNorm;
-        rig.head.rotation.x = -0.05 * strideNorm;
-      }
+    if (rig.legL) rig.legL.rotation.x = -strideL * 0.78 * m;
+    if (rig.legR) rig.legR.rotation.x = -strideR * 0.78 * m;
+
+    // Arms pump naturally in opposition (rifleman keeps pulse rifle braced steadily with subtle stride rhythm)
+    if (k === "infantry") {
+      const rifleRhythm = Math.sin(st.phase * 2) * 0.05 * m;
+      if (rig.armL) rig.armL.rotation.x = baseArmL + (s * 0.22 + rifleRhythm) * m;
+      if (rig.armR) rig.armR.rotation.x = baseArmR + (-s * 0.14 - rifleRhythm) * m;
+    } else if (k === "engineer") {
+      if (rig.armL) rig.armL.rotation.x = baseArmL + s * 0.56 * m;
+      if (rig.armR) rig.armR.rotation.x = baseArmR - s * 0.52 * m;
     } else {
-      st.phase += safeDt * 2.1;
-      const breath = Math.sin(st.phase);
-      const settle = Math.max(0, 1 - safeDt * 10);
-      if (rig.legL) rig.legL.rotation.x *= settle;
-      if (rig.legR) rig.legR.rotation.x *= settle;
-      if (rig.armL) rig.armL.rotation.x += (baseArmL - rig.armL.rotation.x) * Math.min(1, safeDt * 9);
-      if (rig.armR) rig.armR.rotation.x += (baseArmR - rig.armR.rotation.x) * Math.min(1, safeDt * 9);
+      if (rig.armL) rig.armL.rotation.x = baseArmL + s * 0.48 * m;
+      if (rig.armR) rig.armR.rotation.x = baseArmR - s * 0.48 * m;
+    }
 
-      // Subtle idle breathing & tactical head scan
-      rig.body.position.y = breath * 0.016;
-      rig.body.rotation.x += (breath * 0.018 - rig.body.rotation.x) * Math.min(1, safeDt * 8);
-      rig.body.rotation.y *= settle;
-      rig.body.rotation.z *= settle;
-      if (rig.head) {
-        rig.head.rotation.y = Math.sin(st.phase * 0.55 + last.id) * 0.3;
-        rig.head.rotation.x = Math.sin(st.phase * 0.35 + last.id) * 0.05;
-      }
+    // Smooth double-frequency athletic run bounce (peaks mid-flight, dips on foot plant) + natural counter-motion
+    const runBounce = 0.042 + 0.048 * Math.sin(st.phase * 2 - Math.PI / 2);
+    rig.body.position.y = idleBob * (1 - m) + runBounce * m;
+    rig.body.rotation.x = idleLean * (1 - m) + 0.16 * m;
+    rig.body.rotation.y = -s * 0.14 * m;
+    rig.body.rotation.z = s * 0.065 * m;
+
+    // Subtle head counter-stabilization keeps soldier's gaze locked ahead while sprinting
+    if (rig.head) {
+      rig.head.rotation.y = s * 0.08 * m + idleScan * (1 - m);
+      rig.head.rotation.x = idleHeadPitch * (1 - m) - 0.07 * m;
     }
 
     // Sharp braced kickback on weapon fire
@@ -245,7 +266,7 @@ export function stepEntityAnim(
       if (rig.armR) rig.armR.rotation.x -= kick * 0.22;
       if (rig.armL && k === "infantry") rig.armL.rotation.x -= kick * 0.14;
     } else {
-      rig.body.position.z *= Math.max(0, 1 - safeDt * 14);
+      rig.body.position.z *= Math.exp(-14 * safeDt);
     }
 
     if (rig.recoil) {
@@ -256,22 +277,21 @@ export function stepEntityAnim(
 
   // ---------- 2. Spider Drone 4-Leg Skitter Gait ----------
   else if (k === "spider" && rig.spiderLegs) {
-    if (moving) {
-      st.phase += safeDt * (12 + st.speed * 5.4);
-      rig.body.position.y = 0.032 + Math.abs(Math.sin(st.phase * 2)) * 0.045;
-      rig.body.rotation.x = 0.07;
-    } else {
-      st.phase += safeDt * 2.6;
-      rig.body.position.y = Math.sin(st.phase) * 0.02;
-      rig.body.rotation.x *= Math.max(0, 1 - safeDt * 8);
-    }
-    const amp = moving ? 0.44 : 0.065;
-    rig.spiderLegs.forEach((leg, idx) => {
+    const idleT = nowSec * 2.6 + last.id * 1.37;
+    st.phase += safeDt * (2.6 + m * (9.4 + st.speed * 5.4));
+    const idleY = Math.sin(idleT) * 0.02;
+    const skitterY = 0.036 + 0.038 * Math.sin(st.phase * 2 - Math.PI / 2);
+    rig.body.position.y = idleY * (1 - m) + skitterY * m;
+    rig.body.rotation.x = 0.075 * m;
+    rig.body.rotation.z = Math.sin(st.phase) * 0.04 * m;
+    const amp = 0.065 + (0.44 - 0.065) * m;
+    for (let idx = 0; idx < rig.spiderLegs.length; idx++) {
+      const leg = rig.spiderLegs[idx];
       const diag = idx === 0 || idx === 3 ? 0 : Math.PI;
       const wave = Math.sin(st.phase + diag);
       leg.rotation.y = wave * amp;
       leg.rotation.z = Math.max(0, Math.cos(st.phase + diag)) * amp * 0.48 * (idx % 2 === 0 ? 1 : -1);
-    });
+    }
     rig.body.position.z = st.recoil > 0 ? st.recoil * 0.2 : 0;
   }
 
@@ -279,13 +299,13 @@ export function stepEntityAnim(
   else if (k === "tank" || k === "heavy" || k === "arty" || k === "harvester") {
     const heavyScale = k === "heavy" ? 1.15 : k === "arty" ? 1.05 : 1.0;
 
-    // Suspension roll into turns & acceleration/braking pitch
-    const targetRoll = Math.max(-0.13, Math.min(0.13, yawRate * 0.055 * Math.min(1, st.speed * 0.8)));
-    st.roll += (targetRoll - st.roll) * Math.min(1, safeDt * 9);
+    // Suspension roll into turns & acceleration/braking pitch driven by jitter-free moveBlend
+    const targetRoll = Math.max(-0.13, Math.min(0.13, yawRate * 0.055 * m));
+    st.roll += (targetRoll - st.roll) * (1 - Math.exp(-9 * safeDt));
 
     const accelPitch = Math.max(-0.075, Math.min(0.085, -accel * 0.012));
-    const cruisePitch = moving ? -0.022 : 0;
-    st.pitch += (accelPitch + cruisePitch - st.pitch) * Math.min(1, safeDt * 8);
+    const cruisePitch = -0.022 * m;
+    st.pitch += (accelPitch + cruisePitch - st.pitch) * (1 - Math.exp(-8 * safeDt));
 
     // Cannon-fire damped hull suspension rock-back (oriented along turret firing vector!)
     let firePitch = 0;
@@ -298,18 +318,13 @@ export function stepEntityAnim(
       fireRoll = Math.sin(st.kickLocalYaw) * mag * 0.85;
     }
 
-    if (moving) {
-      st.phase += safeDt * (8.5 + st.speed * 3.4);
-      const rum = Math.sin(st.phase);
-      rig.body.position.y = Math.abs(rum) * 0.026 + Math.abs(firePitch) * 0.12;
-      rig.body.rotation.x = st.pitch + rum * 0.014 + firePitch;
-      rig.body.rotation.z = st.roll + Math.cos(st.phase * 0.7) * 0.012 + fireRoll;
-    } else {
-      // Subtle diesel/turbine idle hum + cannon rock-back when firing stationary
-      rig.body.position.y = Math.sin(nowSec * 6.5 + last.id) * 0.005 + Math.abs(firePitch) * 0.14;
-      rig.body.rotation.x = st.pitch + firePitch;
-      rig.body.rotation.z = st.roll + fireRoll;
-    }
+    st.phase += safeDt * (8.5 + st.speed * 3.4) * m;
+    const rum = Math.sin(st.phase);
+    const idleHumY = Math.sin(nowSec * 6.5 + last.id) * 0.005;
+    const moveRumbleY = 0.013 + 0.013 * Math.sin(st.phase * 2 - Math.PI / 2);
+    rig.body.position.y = idleHumY * (1 - m) + moveRumbleY * m + Math.abs(firePitch) * (0.14 - 0.02 * m);
+    rig.body.rotation.x = st.pitch + rum * 0.014 * m + firePitch;
+    rig.body.rotation.z = st.roll + Math.cos(st.phase * 0.7) * 0.012 * m + fireRoll;
 
     // Independent turret yaw tracking (tanks, heavy tanks, arty)
     if (rig.turret) {
@@ -321,7 +336,7 @@ export function stepEntityAnim(
       }
       const targetLocal = angleDiff(hullYaw, st.turretWorldYaw);
       const diff = angleDiff(rig.turret.rotation.y, targetLocal);
-      rig.turret.rotation.y += diff * Math.min(1, safeDt * 11);
+      rig.turret.rotation.y += diff * (1 - Math.exp(-11 * safeDt));
     }
 
     // Crisp barrel / rocket-rack recoil kickback (preserves authored baseZ)
@@ -334,7 +349,8 @@ export function stepEntityAnim(
 
     // Harvester rotating front ore scoop drum
     if (k === "harvester" && rig.spin) {
-      const spinRate = moving ? 7.2 : (last.cargo ?? 0) > 0 && (last.cargo ?? 0) < 40 ? 9.6 : 1.8;
+      const idleSpin = (last.cargo ?? 0) > 0 && (last.cargo ?? 0) < 40 ? 9.6 : 1.8;
+      const spinRate = idleSpin * (1 - m) + 7.2 * m;
       rig.spin.rotation.x += safeDt * spinRate;
     }
 
@@ -364,17 +380,17 @@ export function stepEntityAnim(
       bob = Math.sin(nowSec * 3.8 + last.id) * 0.09;
       rig.body.position.y = alt + bob;
       const targetBank = Math.max(-0.64, Math.min(0.64, yawRate * 0.2));
-      st.bank += (targetBank - st.bank) * Math.min(1, safeDt * 9);
+      st.bank += (targetBank - st.bank) * (1 - Math.exp(-9 * safeDt));
       rig.body.rotation.z = st.bank;
-      const targetPitch = moving ? -0.04 + Math.abs(st.bank) * 0.06 : 0.02;
-      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * Math.min(1, safeDt * 7);
+      const targetPitch = 0.02 * (1 - m) + (-0.04 + Math.abs(st.bank) * 0.06) * m;
+      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * (1 - Math.exp(-7 * safeDt));
     } else if (k === "chopper") {
       bob = Math.sin(nowSec * 3.2 + last.id) * 0.1 + Math.cos(nowSec * 5.6 + last.id) * 0.025;
       rig.body.position.y = alt + bob;
-      const targetPitch = moving ? Math.min(0.22, 0.08 + st.speed * 0.04) : 0.015;
-      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * Math.min(1, safeDt * 6.5);
+      const targetPitch = 0.015 * (1 - m) + Math.min(0.22, 0.08 + st.speed * 0.04) * m;
+      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * (1 - Math.exp(-6.5 * safeDt));
       const targetBank = Math.max(-0.34, Math.min(0.34, yawRate * 0.11));
-      st.bank += (targetBank - st.bank) * Math.min(1, safeDt * 7.5);
+      st.bank += (targetBank - st.bank) * (1 - Math.exp(-7.5 * safeDt));
       rig.body.rotation.z = st.bank;
       if (rig.spin) rig.spin.rotation.y += safeDt * 28; // ultra-smooth high-speed 4-blade main rotor
       if (rig.spin2) rig.spin2.rotation.x += safeDt * 38; // enclosed fenestron tail rotor
@@ -382,16 +398,16 @@ export function stepEntityAnim(
       bob = Math.sin(nowSec * 2.2 + last.id) * 0.085;
       rig.body.position.y = alt + bob;
       const targetBank = Math.max(-0.4, Math.min(0.4, yawRate * 0.15));
-      st.bank += (targetBank - st.bank) * Math.min(1, safeDt * 6.5);
+      st.bank += (targetBank - st.bank) * (1 - Math.exp(-6.5 * safeDt));
       rig.body.rotation.z = st.bank;
-      const targetPitch = moving ? -0.025 : 0.01;
-      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * Math.min(1, safeDt * 6);
+      const targetPitch = 0.01 * (1 - m) - 0.025 * m;
+      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * (1 - Math.exp(-6 * safeDt));
     } else if (k === "zeppelin") {
       // Majestic armored dirigible sway & counter-rotating twin side propellers
       bob = Math.sin(nowSec * 1.35 + last.id) * 0.16;
       rig.body.position.y = alt + bob;
       rig.body.rotation.z = Math.sin(nowSec * 0.95 + last.id) * 0.052 + Math.max(-0.08, Math.min(0.08, yawRate * 0.05));
-      rig.body.rotation.x = Math.cos(nowSec * 0.8 + last.id) * 0.028 + (moving ? 0.03 : 0);
+      rig.body.rotation.x = Math.cos(nowSec * 0.8 + last.id) * 0.028 + 0.03 * m;
       if (rig.spin) rig.spin.rotation.z += safeDt * 16;
       if (rig.spin2) rig.spin2.rotation.z -= safeDt * 16;
     }
@@ -450,19 +466,19 @@ export function stepEntityAnim(
       rig.body.position.y = st.subY + bob;
       rig.body.rotation.x = wavePitch * (last.sub ? 0.42 : 1) + divePitch;
       rig.body.rotation.z = waveRoll * (last.sub ? 0.42 : 1);
-      if (rig.spin) rig.spin.rotation.z += safeDt * (moving ? 19 : 5);
+      if (rig.spin) rig.spin.rotation.z += safeDt * (5 + 14 * m);
 
       // Smooth submerged stealth translucency on per-instance cloned sub materials
       const targetAlpha = last.sub ? 0.44 : 1.0;
       st.subAlpha += (targetAlpha - st.subAlpha) * Math.min(1, safeDt * 5.0);
       if (rig.subMats && st.matMode === "normal") {
         const isTrans = st.subAlpha < 0.98;
-        for (const m of rig.subMats) {
-          if (m.transparent !== isTrans) {
-            m.transparent = isTrans;
-            m.needsUpdate = true;
+        for (const subMat of rig.subMats) {
+          if (subMat.transparent !== isTrans) {
+            subMat.transparent = isTrans;
+            subMat.needsUpdate = true;
           }
-          m.opacity = st.subAlpha;
+          subMat.opacity = st.subAlpha;
         }
       }
     } else {
@@ -470,13 +486,13 @@ export function stepEntityAnim(
         Math.sin(nowSec * 2.15 + last.id) * (heavyShip ? 0.024 : 0.036) +
         Math.cos(nowSec * 3.1 + last.id * 1.7) * 0.01;
       const turnHeel = Math.max(-0.1, Math.min(0.1, yawRate * (k === "gunboat" ? 0.065 : 0.03)));
-      st.roll += (turnHeel - st.roll) * Math.min(1, safeDt * 6);
+      st.roll += (turnHeel - st.roll) * (1 - Math.exp(-6 * safeDt));
 
       // Naval cannon/missile firing recoil rock
       const fireRock = st.hullKick > 0 ? Math.sin((1 - st.hullKick) * Math.PI * 1.4) * st.hullKick * (heavyShip ? 0.05 : 0.035) : 0;
 
       rig.body.position.y = 0.08 + heave;
-      rig.body.rotation.x = wavePitch + (moving ? (k === "gunboat" ? -0.065 : -0.022) : 0) - fireRock;
+      rig.body.rotation.x = wavePitch + (k === "gunboat" ? -0.065 : -0.022) * m - fireRock;
       rig.body.rotation.z = waveRoll + st.roll;
 
       if (rig.turret) {
