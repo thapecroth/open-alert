@@ -1133,7 +1133,7 @@ export class FirstPersonController {
     return true;
   }
 
-  exit(reason: "dead" | "user" = "user"): void {
+  exit(reason: "dead" | "user" = "user", silent = false): void {
     if (!this.active) return;
     const prevId = this.entId;
     this.active = false;
@@ -1144,7 +1144,7 @@ export class FirstPersonController {
     this.lastFireSent = false;
     this.lastTelemetry = null;
 
-    if (reason === "user" && prevId !== null) {
+    if (!silent && reason === "user" && prevId !== null) {
       this.net.send({ t: "driveExit", id: prevId });
     }
 
@@ -1161,7 +1161,7 @@ export class FirstPersonController {
     this.pointerLocked = false;
 
     this.gs.restoreRtsCamera(this.predX, this.predY);
-    this.onExit(reason);
+    if (!silent) this.onExit(reason);
   }
 
   requestLock(): void {
@@ -1385,7 +1385,7 @@ export class FirstPersonController {
         fire: firing,
         aimX: Math.round(aim.aimX * 100) / 100,
         aimY: Math.round(aim.aimY * 100) / 100,
-        aimTarget: aim.target?.id,
+        aimTarget: aim.target?.enemy ? aim.target.id : undefined,
       });
     }
 
@@ -1417,7 +1417,7 @@ export class FirstPersonController {
   }
 
   dispose(): void {
-    if (this.active) this.exit("user");
+    if (this.active) this.exit("user", true);
     const canvas = this.gs.canvas;
     window.removeEventListener("keydown", this.boundKeyDown, true);
     window.removeEventListener("keyup", this.boundKeyUp, true);
@@ -1644,10 +1644,12 @@ export class FirstPersonController {
     this.lastMouseY = e.clientY;
 
     if (e.button === 0) {
-      this.mouseFire = true;
       if (!this.pointerLocked) {
+        // First click re-locks pointer cleanly without wasting a shot; hold/drag still aims
         this.dragLooking = true;
         this.requestLock();
+      } else {
+        this.mouseFire = true;
       }
     } else if (e.button === 2) {
       this.dragLooking = true;

@@ -2243,6 +2243,7 @@ export class GameScene {
     mk(0.05, -0.16, 0.11, 0.95, 5.1, -0.12);
     mk(-0.11, -0.13, 0.09, 0.8, 2.7, 0.16);
     const geo = mergeGeometries(shards)!;
+    shards.forEach((g) => g.dispose());
     const mat = new THREE.MeshStandardMaterial({
       color: 0xb87c18,
       emissive: 0xff9f1a,

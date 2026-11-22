@@ -144,6 +144,7 @@ function enterFpv(id: number) {
   if (phase !== "playing" || mySlot < 0 || fpv.active) return;
   if (input.placing) input.exitPlacing();
   input.armVerb(null);
+  input.disarmOrders();
   input.disarmRecon();
   input.disarmSuperweapon();
   if (!fpv.enter(id)) return;
@@ -568,6 +569,11 @@ net.socket.addEventListener("open", () => {
 
 // ---------- main loop ----------
 
+let tabVisibleAt = Date.now();
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) tabVisibleAt = Date.now();
+});
+
 gs.engine.runRenderLoop(() => {
   const dt = gs.engine.getDeltaTime() / 1000;
   input.update(dt);
@@ -579,8 +585,10 @@ gs.engine.runRenderLoop(() => {
   hud.tick(dt);
   audio.update(dt);
   if (phase === "playing") {
-    // Auto-recover half-open / silent zombie WebSockets during a live 5 Hz match
-    if (!document.hidden && Date.now() - net.lastRecvAt > 6500) {
+    // Auto-recover half-open / silent zombie WebSockets during a live 5 Hz match (with 2s Alt-Tab grace)
+    const nowMs = Date.now();
+    if (!document.hidden && nowMs - tabVisibleAt > 2000 && nowMs - net.lastRecvAt > 6500) {
+      net.lastRecvAt = nowMs;
       net.reconnect();
     }
     hud.drawMinimap(

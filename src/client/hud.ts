@@ -317,6 +317,7 @@ export class Hud {
   private pinged: { x: number; y: number; t: number } | null = null;
   private chatLines: string[] = [];
   private selSig = "";
+  private groupSig = "";
   private lastGroupClick = { n: -1, t: 0 };
   private lastSubmittedName = "";
   private displayCredits = 0;
@@ -537,7 +538,9 @@ export class Hud {
       b.addEventListener("click", () => this.clickBuild(kind));
       b.addEventListener("contextmenu", (e) => {
         e.preventDefault();
-        this.onBuildCancel();
+        if (b.dataset.busy === "1" || b.classList.contains("ready")) {
+          this.onBuildCancel();
+        }
       });
       bl.appendChild(b);
       this.buildBtns.set(kind, b);
@@ -924,6 +927,9 @@ export class Hud {
     this.targetCredits = 0;
     this.spectating = false;
     this.fpvMode = false;
+    this.groupSig = "";
+    this.readyAwaiting = null;
+    document.getElementById("ready-pill")?.classList.add("hidden");
     this.fpvLastKind = "";
     this.selSig = "";
     this.updateClock(0);
@@ -1592,15 +1598,18 @@ export class Hud {
   }
 
   toast(msg: string, info = false) {
+    const box = el("toasts");
+    while (box.children.length >= 4) box.firstChild?.remove();
     const t = document.createElement("div");
     t.className = "toast" + (info ? " info" : "");
     t.textContent = msg;
-    el("toasts").appendChild(t);
+    box.appendChild(t);
     setTimeout(() => t.remove(), 2600);
   }
 
   chat(name: string, color: string, text: string) {
     this.chatLines.push(`${name}: ${text}`);
+    if (this.chatLines.length > 30) this.chatLines.splice(0, this.chatLines.length - 30);
     const box = el("chat-lines");
     const d = document.createElement("div");
     d.innerHTML = `<b style="color:${color}">${esc(name)}</b> ${esc(text)}`;
@@ -2097,13 +2106,19 @@ export class Hud {
   updateGroups(groups: Map<number, Set<number>>, tracked: Renderer["tracked"], mySlot: number) {
     const bar = document.getElementById("groupbar");
     if (!bar) return;
-    bar.innerHTML = "";
     const nums = [...groups.keys()].sort((a, b) => a - b);
+    const entries: [number, number][] = [];
     for (const n of nums) {
       const ids = groups.get(n)!;
       let count = 0;
       for (const id of ids) if (tracked.get(id)?.last.o === mySlot) count++;
-      if (!count) continue;
+      if (count) entries.push([n, count]);
+    }
+    const sig = entries.map(([n, c]) => `${n}:${c}`).join(",");
+    if (sig === this.groupSig) return;
+    this.groupSig = sig;
+    bar.innerHTML = "";
+    for (const [n, count] of entries) {
       const b = document.createElement("button");
       b.className = "gbtn";
       b.title = `Group ${n} (${count}) — click to select, double-click to center`;

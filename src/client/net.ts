@@ -51,7 +51,6 @@ export class Net {
   }
 
   reconnect() {
-    this.lastRecvAt = Date.now();
     this.onStatus("reconnecting…");
     try {
       this.socket.reconnect();
