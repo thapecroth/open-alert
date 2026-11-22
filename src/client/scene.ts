@@ -2489,10 +2489,15 @@ export class GameScene {
   setLoop(cb: () => void) {
     let last = performance.now();
     const tick = (now: number) => {
+      // Schedule next frame first so a transient error can never halt the render loop
+      requestAnimationFrame(tick);
       this.dtMs = Math.min(100, Math.max(1, now - last));
       last = now;
-      cb();
-      requestAnimationFrame(tick);
+      try {
+        cb();
+      } catch (err) {
+        console.error("render loop error:", err);
+      }
     };
     requestAnimationFrame(tick);
   }
