@@ -127,7 +127,7 @@ export class World {
       this.spawnUnit(slot, "tank", t1.x, t1.y);
       this.spawnUnit(slot, "tank", t2.x, t2.y);
       for (let i = 0; i < 3; i++) {
-        const p = spot(i, 1);
+        const p = spot(i, 2);
         this.spawnUnit(slot, "infantry", p.x, p.y);
       }
       this.recomputePower(slot);
@@ -1029,7 +1029,9 @@ export class World {
           dy = Math.sin(ang) * 0.01;
           d2 = dx * dx + dy * dy;
         }
-        if (d2 > 0.56) continue;
+        const isVeh = (k: EntKind) => k === "tank" || k === "heavy" || k === "arty" || k === "harvester";
+        const minSep = isVeh(a.k) && isVeh(b.k) ? 1.05 : isVeh(a.k) || isVeh(b.k) ? 0.85 : 0.72;
+        if (d2 > minSep * minSep) continue;
         const crushable = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer";
         if ((a.k === "tank" || a.k === "heavy") && crushable(b.k) && a.o !== b.o) {
           this.destroy(b);
@@ -1040,7 +1042,7 @@ export class World {
           break;
         }
         const d = Math.sqrt(d2) || 0.01;
-        const push = ((0.75 - d) / d) * 0.5 * 0.35;
+        const push = ((minSep - d) / d) * 0.5 * 0.35;
         const px = dx * push,
           py = dy * push;
         if (this.passable((a.x - px) | 0, (a.y - py) | 0)) {

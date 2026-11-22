@@ -172,7 +172,8 @@ net.onMsg = (m: S2C) => {
       renderer.reset();
       input.reset();
       gs.clearOre();
-      hud.hideLobby();
+      hud.clearChat();
+      hud.hideLobby(mySlot < 0);
       hud.hideEnd();
       renderer.slotColors.clear();
       for (const p of m.players) renderer.slotColors.set(p.slot, PLAYER_COLORS[p.slot]);
@@ -187,12 +188,12 @@ net.onMsg = (m: S2C) => {
         gs.camTarget.set(MAP_W / 2, 0, MAP_H / 2);
         gs.updateCamera();
       }
-      // Render real 3D model thumbnails for the sidebar (regenerates if slot color changed)
+      // Render real 3D model thumbnails for sidebar + selection panel (incl. conyard & factory2)
       const color = mySlot >= 0 ? PLAYER_COLORS[mySlot] : "#45d6ff";
       if (iconColor !== color) {
         iconColor = color;
-        generateIcons(gs, [...BUILD_ORDER, ...TRAIN_ORDER.map((t) => t.unit)], color).then((icons) =>
-          hud.setIcons(icons),
+        generateIcons(gs, ["conyard", "factory2", ...BUILD_ORDER, ...TRAIN_ORDER.map((t) => t.unit)], color).then(
+          (icons) => hud.setIcons(icons),
         );
       }
       hud.toast(mySlot >= 0 ? "battle control online — good luck, commander" : "spectating", true);
@@ -213,7 +214,8 @@ net.onMsg = (m: S2C) => {
           const mine = ev.slot === mySlot;
           if (mine) {
             mySlot = -1;
-            if (input.placing) input.exitPlacing();
+            input.reset();
+            hud.setSpectatorMode(true);
           }
           hud.toast(mine ? "you were eliminated!" : `player ${ev.slot} eliminated`, !mine);
         } else if (ev.e === "alert" && ev.slot === mySlot) {
@@ -245,9 +247,10 @@ net.onMsg = (m: S2C) => {
     }
     case "end": {
       phase = "ended";
-      const mine = m.winner === mySlot;
-      hud.showEnd(mine ? "VICTORY!" : m.winner === null ? "DRAW" : "DEFEATED");
-      hud.toast(m.reason, mine);
+      const mine = mySlot >= 0 && m.winner === mySlot;
+      const title = mySlot < 0 ? "MATCH OVER" : mine ? "VICTORY!" : m.winner === null ? "DRAW" : "DEFEATED";
+      hud.showEnd(title, m.reason);
+      hud.toast(m.reason, mine || mySlot < 0);
       break;
     }
     case "chat":

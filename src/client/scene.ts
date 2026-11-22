@@ -168,8 +168,8 @@ export class GameScene {
     this.ground = g;
     this.scene.add(g);
 
-    // Subtle tactical command grid overlay
-    const grid = new THREE.GridHelper(MAP_W, MAP_W, 0x62b8d6, 0x3b6e80);
+    // Subtle tactical command grid overlay (uniform color so no fake center UV seam)
+    const grid = new THREE.GridHelper(MAP_W, MAP_W, 0x3b6e80, 0x3b6e80);
     (grid.material as THREE.Material).transparent = true;
     (grid.material as THREE.Material).opacity = 0.045;
     grid.position.set(MAP_W / 2, 0.018, MAP_H / 2);
@@ -206,32 +206,7 @@ export class GameScene {
   }
 
   private buildProps() {
-    // Low grounded perimeter ridges outside the playable 64x64 theater fading into fog
-    const rockGeo = new THREE.DodecahedronGeometry(1, 1);
-    const rockMat = new THREE.MeshStandardMaterial({ color: 0x262e2c, roughness: 0.95, metalness: 0.04 });
-    const count = 40;
-    const rocks = new THREE.InstancedMesh(rockGeo, rockMat, count);
-    rocks.receiveShadow = true;
-    const d = new THREE.Object3D();
-    let placed = 0;
-    for (let i = 0; i < count; i++) {
-      const ang = (i / count) * Math.PI * 2 + (i % 3) * 0.12;
-      const dist = MAP_W * 0.62 + ((i * 19) % 14);
-      const x = MAP_W / 2 + Math.cos(ang) * dist;
-      const z = MAP_H / 2 + Math.sin(ang) * dist;
-      if (x > -2.5 && x < MAP_W + 2.5 && z > -2.5 && z < MAP_H + 2.5) continue;
-      const sx = 2.8 + ((i * 7) % 10) * 0.45;
-      const sy = 0.45 + ((i * 11) % 5) * 0.18;
-      const sz = 2.6 + ((i * 13) % 9) * 0.4;
-      d.position.set(x, -0.25, z);
-      d.rotation.set(0, i * 1.1, 0);
-      d.scale.set(sx, sy, sz);
-      d.updateMatrix();
-      rocks.setMatrixAt(placed++, d.matrix);
-    }
-    rocks.count = placed;
-    rocks.instanceMatrix.needsUpdate = true;
-    this.scene.add(rocks);
+    // Clean perimeter border fades naturally into atmospheric fog without distracting blobs
   }
 
   private buildOre() {

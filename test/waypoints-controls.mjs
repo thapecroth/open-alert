@@ -49,6 +49,21 @@ try {
   await page.goto(`${HTTP}/?room=${ROOM}&name=Commander`, { waitUntil: "domcontentloaded", timeout: 30000 });
   await page.waitForFunction(() => window.__oa && window.__oa.net, { timeout: 20000 });
   await page.waitForSelector("#addbot-btn:not(.hidden)", { timeout: 15000 });
+
+  // 0. Lobby toast sits above #lobby overlay (never occluded)
+  await page.click("#start-btn");
+  await sleep(300);
+  const lobbyToast = await ev(() => {
+    const t = document.querySelector("#toasts .toast");
+    if (!t) return { found: false };
+    const r = t.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    const zToast = Number(getComputedStyle(document.getElementById("toasts")).zIndex || 0);
+    const zLobby = Number(getComputedStyle(document.getElementById("lobby")).zIndex || 0);
+    return { found: true, zOk: zToast > zLobby, text: t.textContent, hitId: hit?.id };
+  });
+  ok(lobbyToast.found && lobbyToast.zOk, "Lobby deny toast sits above #lobby overlay", JSON.stringify(lobbyToast));
+
   await page.click("#addbot-btn");
   await sleep(300);
   await page.click("#start-btn");
@@ -212,14 +227,28 @@ try {
   await page.click("#wasd-btn"); // restore Classic RTS
   ok(c0.on && c1.x > c0.x + 1.0, "WASD camera toggle pans East on D", `camX ${c0.x.toFixed(1)} -> ${c1.x.toFixed(1)}`);
 
-  // 9. Window resize updates renderer dimensions
-  await page.setViewport({ width: 1200, height: 760 });
+  // 9. Window resize updates renderer dimensions & preserves zero HUD overlap at 1024x680
+  await page.keyboard.press("q");
+  await sleep(150);
+  await page.setViewport({ width: 1024, height: 680 });
   await sleep(250);
   const resized = await ev(() => {
-    const s = new (window.__oa.gs.camTarget.constructor)();
-    return { w: window.__oa.gs.renderer.domElement.width, h: window.__oa.gs.renderer.domElement.height, cw: window.__oa.gs.canvas.clientWidth };
+    const c = document.getElementById("chat-box").getBoundingClientRect();
+    const s = document.getElementById("selinfo").getBoundingClientRect();
+    const overlap = !(c.right <= s.left || s.right <= c.left || c.bottom <= s.top || s.bottom <= c.top);
+    const imgsInsideSpans = [...document.querySelectorAll("#selinfo .si-icon")].every((img) => img.parentElement?.tagName === "SPAN");
+    return { w: window.__oa.gs.renderer.domElement.width, h: window.__oa.gs.renderer.domElement.height, cw: window.__oa.gs.canvas.clientWidth, overlap, imgsInsideSpans };
   });
-  ok(resized.cw === 1200 && resized.w >= 1200, "Window resize updates WebGL renderer", JSON.stringify(resized));
+  ok(resized.cw === 1024 && resized.w >= 1024 && !resized.overlap && resized.imgsInsideSpans, "Resize 1024x680: renderer + zero HUD overlap + inline icons", JSON.stringify(resized));
+
+  // 9b. Pressing A with empty selection does NOT leave attack-move armed
+  await page.keyboard.press("Escape");
+  await sleep(100);
+  await page.keyboard.press("a");
+  await sleep(100);
+  const emptyAmove = await ev(() => ({ armed: window.__oa.input.amoveNext, cls: document.getElementById("verb-amove")?.classList.contains("armed") }));
+  ok(!emptyAmove.armed && !emptyAmove.cls, "A with empty selection does not stay armed", JSON.stringify(emptyAmove));
+
   await page.setViewport({ width: VW, height: VH });
   await sleep(250);
 

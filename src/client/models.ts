@@ -975,7 +975,7 @@ export function makePlacementGhost(kind: EntKind): THREE.Mesh {
 export function setGhostColor(ghost: THREE.Mesh, ok: boolean) {
   (ghost.material as THREE.MeshBasicMaterial).color.setHex(ok ? 0x22e060 : 0xf03030);
   const wire = ghost.userData.wireMat as THREE.LineBasicMaterial | undefined;
-  if (wire) wire.color.setHex(ok ? 0x55ff90 : 0xff5555);
+  if (wire) wire.color.setHex(ok ? 0x55ff90 : 0xffc8c8);
 }
 
 // Keep unused-import warning away for geoCylOct
