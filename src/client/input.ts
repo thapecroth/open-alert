@@ -97,7 +97,7 @@ export class Input {
     this.exitPlacing();
     this.clearPlacePending();
     this.placingCancelled = false;
-    this.amoveNext = false;
+    this.setAmove(false);
     this.armVerb(null);
     this.selection = new Set();
     this.groups.clear();
@@ -199,7 +199,7 @@ export class Input {
         help.classList.add("hidden");
         return;
       }
-      this.amoveNext = false;
+      this.setAmove(false);
       this.armVerb(null);
       if (this.placing) {
         this.cancelPlacing();
@@ -209,8 +209,14 @@ export class Input {
     }
   }
 
+  private setAmove(on: boolean) {
+    this.amoveNext = on;
+    document.getElementById("verb-amove")?.classList.toggle("armed", on);
+  }
+
   private setSelection(sel: Set<number>) {
     this.selection = sel;
+    if (this.amoveNext) this.setAmove(false);
     this.r.setSelected(this.selection);
     this.onSelectionChange(this.selection);
   }
@@ -407,7 +413,12 @@ export class Input {
   }
 
   armAmove() {
-    this.amoveNext = true;
+    if (this.placing) return;
+    if (!this.myUnits().length) {
+      this.flashLabel("select units first", 800);
+      return;
+    }
+    this.setAmove(true);
     this.flashLabel("ATTACK-MOVE — click or right-click destination (Shift to queue)", 1400);
   }
 
@@ -416,6 +427,8 @@ export class Input {
   }
 
   armVerb(v: "sell" | "repair" | null) {
+    if (v && this.placing) return;
+    if (v) this.setAmove(false);
     this.verb = this.verb === v ? null : v;
     if (this.labelTimer) clearTimeout(this.labelTimer);
     this.onOrderLabel(this.verb ? `${this.verb.toUpperCase()} — click your building` : null, this.px + 12, this.py - 12);
@@ -538,7 +551,7 @@ export class Input {
     let target: number | undefined;
     if (this.amoveNext) {
       kind = "amove";
-      this.amoveNext = false;
+      this.setAmove(false);
     } else if (t && t.last.o !== slot && t.last.o >= 0) {
       kind = "attack";
       target = entId!;

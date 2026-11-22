@@ -247,15 +247,30 @@ export class Hud {
       : "waiting for host to start…";
   }
 
-  hideLobby() {
+  hideLobby(spectating = false) {
     el("lobby").classList.add("hidden");
-    for (const id of ["topbar", "sidebar", "minimap", "selinfo", "verbbar", "chat-box", "groupbar"]) {
+    for (const id of ["topbar", "minimap", "selinfo", "chat-box"]) {
       document.getElementById(id)?.classList.remove("hidden");
+    }
+    this.setSpectatorMode(spectating);
+  }
+
+  setSpectatorMode(spectating: boolean) {
+    for (const id of ["sidebar", "verbbar", "resign-btn", "groupbar"]) {
+      document.getElementById(id)?.classList.toggle("hidden", spectating);
     }
   }
 
-  showEnd(text: string) {
+  clearChat() {
+    this.chatLines = [];
+    const box = document.getElementById("chat-lines");
+    if (box) box.innerHTML = "";
+  }
+
+  showEnd(text: string, reason = "") {
     el("end-text").textContent = text;
+    const r = document.getElementById("end-reason");
+    if (r) r.textContent = reason;
     el("endscreen").classList.remove("hidden");
   }
 
@@ -295,7 +310,10 @@ export class Hud {
       pw.innerHTML = "";
       pw.classList.remove("low");
       wrap.innerHTML = Object.entries(spectatorStates)
-        .map(([s, p]) => `<span style="color:${PLAYER_COLORS[+s] ?? "#888"}">${fmtCost(p.credits)}</span>`)
+        .map(
+          ([s, p]) =>
+            `<span class="${p.eliminated ? "elim" : ""}" style="color:${PLAYER_COLORS[+s] ?? "#888"}">${fmtCost(p.credits)}</span>`,
+        )
         .join(" · ");
       return;
     }
@@ -447,7 +465,7 @@ export class Hud {
         .map(([k, n]) => {
           const ic = this.iconFor(k);
           const img = ic ? `<img class="si-icon" src="${ic}">` : "";
-          return `${img}<span>${n}× ${label(k as BuildingKind | UnitKind as never)}</span>`;
+          return `<span>${img}${n}× ${label(k as BuildingKind | UnitKind as never)}</span>`;
         })
         .join("");
       box.innerHTML = `<div class="si-row">${parts}</div><div class="si-hp"><i></i><span></span></div>`;

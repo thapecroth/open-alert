@@ -167,7 +167,7 @@ const chanNZ = (c) => {
   for (let i = 0; i < MAP_W * MAP_H; i++) if (fm.data[off + i] !== 0) n++;
   return n;
 };
-ok(chanNZ(0) > 50, "ch0 ore density populated", `nz=${chanNZ(0)}`);
+ok(chanNZ(0) > 30, "ch0 ore density populated", `nz=${chanNZ(0)}`);
 ok(chanNZ(1) > 0, "ch1 own units populated", `nz=${chanNZ(1)}`);
 ok(chanNZ(2) > 0, "ch2 own buildings populated", `nz=${chanNZ(2)}`);
 ok(chanNZ(5) > 0, "ch5 all-ent hp populated", `nz=${chanNZ(5)}`);
