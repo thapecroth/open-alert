@@ -215,6 +215,9 @@ export class World {
   private nextCrateId = 1;
   private astarBudget = 12; // per-tick A* path budget to prevent Durable Object CPU exhaustion
   private lastAlert = new Map<number, number>(); // slot -> tick of last under-attack alert
+  private grid: Ent[][] = Array.from({ length: 64 }, () => []); // 8x8 spatial buckets (8x8 tiles each)
+  private subDetMask = new Map<number, number>(); // sub ent id -> bitmask of slots that detect it this tick
+  private gridTick = -1;
   private names: Record<number, string>;
 
   constructor(slots: number[], opts?: WorldOpts) {
@@ -353,8 +356,52 @@ export class World {
     return e.k === "sub" && this.tick >= e.subSurfaceUntil;
   }
 
+  private rebuildSpatialGrid() {
+    for (let i = 0; i < 64; i++) this.grid[i].length = 0;
+    const subs: Ent[] = [];
+    for (const e of this.ents.values()) {
+      const gx = Math.max(0, Math.min(7, (e.x | 0) >> 3));
+      const gy = Math.max(0, Math.min(7, (e.y | 0) >> 3));
+      this.grid[(gy << 3) | gx].push(e);
+      if (e.k === "sub" && this.isSubmerged(e)) subs.push(e);
+    }
+    this.subDetMask.clear();
+    // Precompute submarine detection bitmasks once per tick using spatial grid (eliminates O(N^3) rescans)
+    for (const sub of subs) {
+      let mask = 0;
+      const x0 = Math.max(0, ((sub.x - 9.5) | 0) >> 3);
+      const x1 = Math.min(7, ((sub.x + 9.5) | 0) >> 3);
+      const y0 = Math.max(0, ((sub.y - 9.5) | 0) >> 3);
+      const y1 = Math.min(7, ((sub.y + 9.5) | 0) >> 3);
+      for (let gy = y0; gy <= y1; gy++) {
+        for (let gx = x0; gx <= x1; gx++) {
+          const cell = this.grid[(gy << 3) | gx];
+          for (let i = 0; i < cell.length; i++) {
+            const u = cell[i];
+            if (u.o < 0 || u.id === sub.id) continue;
+            const detectR = u.k === "gunboat" || u.k === "destroyer" || u.k === "sub" ? 9 : 5.5;
+            const dx = sub.x - u.x,
+              dy = sub.y - u.y;
+            if (dx * dx + dy * dy <= detectR * detectR) {
+              // Mark u.o and all of u.o's allies as detecting this sub
+              for (const p of this.players.values()) {
+                if (this.isAlly(p.slot, u.o)) mask |= 1 << p.slot;
+              }
+            }
+          }
+        }
+      }
+      this.subDetMask.set(sub.id, mask);
+    }
+    this.gridTick = this.tick;
+  }
+
   isSubDetected(sub: Ent, viewerSlot: number): boolean {
     if (!this.isSubmerged(sub)) return true;
+    if (this.gridTick === this.tick) {
+      const mask = this.subDetMask.get(sub.id);
+      if (mask !== undefined) return (mask & (1 << viewerSlot)) !== 0;
+    }
     for (const u of this.ents.values()) {
       if (u.o < 0 || !this.isAlly(viewerSlot, u.o)) continue;
       const detectR = u.k === "gunboat" || u.k === "destroyer" || u.k === "sub" ? 9 : 5.5;
@@ -1003,9 +1050,11 @@ export class World {
     this.tick++;
     this.astarBudget = 12;
     this.tickProduction();
+    this.rebuildSpatialGrid();
     for (const e of [...this.ents.values()]) {
       if (this.ents.has(e.id)) this.tickEnt(e);
     }
+    this.rebuildSpatialGrid();
     this.separate();
     this.tickCrates();
     if (this.tick % 10 === 0) {
@@ -1732,6 +1781,35 @@ export class World {
   private nearestEnemy(e: Ent, range: number) {
     let best: Ent | null = null,
       bd = range;
+    const pad = range + 2.5;
+    const x0 = Math.max(0, Math.floor(e.x - pad) >> 3);
+    const x1 = Math.min(7, Math.floor(e.x + pad) >> 3);
+    const y0 = Math.max(0, Math.floor(e.y - pad) >> 3);
+    const y1 = Math.min(7, Math.floor(e.y + pad) >> 3);
+    if (this.gridTick === this.tick) {
+      for (let gy = y0; gy <= y1; gy++) {
+        for (let gx = x0; gx <= x1; gx++) {
+          const cell = this.grid[(gy << 3) | gx];
+          for (let i = 0; i < cell.length; i++) {
+            const t = cell[i];
+            if (t.o < 0 || this.isAlly(e.o, t.o) || !this.ents.has(t.id)) continue;
+            const tp = this.players.get(t.o);
+            if (!tp || tp.eliminated) continue;
+            // Fast bounding-box reject before canAttack/sqrt
+            const dx = Math.abs(e.x - t.x);
+            const dy = Math.abs(e.y - t.y);
+            if (dx > bd + 2 || dy > bd + 2) continue;
+            if (!this.canAttack(e, t)) continue;
+            const d = entityDist(e, t);
+            if (d <= bd) {
+              bd = d;
+              best = t;
+            }
+          }
+        }
+      }
+      return best;
+    }
     for (const t of this.ents.values()) {
       if (t.o < 0 || this.isAlly(e.o, t.o)) continue;
       const tp = this.players.get(t.o);
@@ -1934,69 +2012,84 @@ export class World {
   }
 
   private separate() {
-    // soft separation between units in the SAME domain so they don't stack; tanks crush enemy infantry on contact
-    const units = [...this.ents.values()].filter((e) => !isBuilding(e.k));
+    // soft separation between units in the SAME domain (spatial 3x3 cell neighborhood); tanks crush enemy infantry
     const isVeh = (k: EntKind) => k === "tank" || k === "heavy" || k === "arty" || k === "harvester";
     const crushable = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer";
-    for (let i = 0; i < units.length; i++) {
-      const a = units[i];
-      if (!this.ents.has(a.id)) continue;
-      const aDom = domainOf(a.k);
-      for (let j = i + 1; j < units.length; j++) {
-        const b = units[j];
-        if (!this.ents.has(b.id)) continue;
-        if (domainOf(b.k) !== aDom) continue;
-        let dx = b.x - a.x,
-          dy = b.y - a.y;
-        let d2 = dx * dx + dy * dy;
-        if (d2 === 0) {
-          // perfectly stacked — push apart on a deterministic per-pair angle
-          const ang = ((a.id * 7 + b.id * 13) % 8) * (Math.PI / 4);
-          dx = Math.cos(ang) * 0.01;
-          dy = Math.sin(ang) * 0.01;
-          d2 = dx * dx + dy * dy;
-        }
-        let minSep: number;
-        if (aDom === "sea") {
-          minSep = a.k === "dreadnought" || b.k === "dreadnought" ? 1.35 : 1.1;
-        } else if (aDom === "air") {
-          minSep = a.k === "zeppelin" || b.k === "zeppelin" ? 1.25 : 0.9;
-        } else {
-          minSep = isVeh(a.k) && isVeh(b.k) ? 1.05 : isVeh(a.k) || isVeh(b.k) ? 0.85 : 0.72;
-        }
-        if (d2 > minSep * minSep) continue;
-        if (aDom === "land") {
-          if ((a.k === "tank" || a.k === "heavy") && crushable(b.k) && !this.isAlly(a.o, b.o)) {
-            this.grantXp(a, b.mhp * 0.8);
-            this.destroy(b, a.o);
-            continue;
-          }
-          if ((b.k === "tank" || b.k === "heavy") && crushable(a.k) && !this.isAlly(a.o, b.o)) {
-            this.grantXp(b, a.mhp * 0.8);
-            this.destroy(a, b.o);
-            break;
-          }
-        }
-        const d = Math.sqrt(d2) || 0.01;
-        const push = ((minSep - d) / d) * 0.5 * 0.35;
-        const px = dx * push,
-          py = dy * push;
-        const aMult = a.hold ? 0.15 : 1;
-        const bMult = b.hold ? 0.15 : 1;
-        if (aDom === "air") {
-          a.x = Math.max(0.5, Math.min(MAP_W - 0.5, a.x - px * aMult));
-          a.y = Math.max(0.5, Math.min(MAP_H - 0.5, a.y - py * aMult));
-          b.x = Math.max(0.5, Math.min(MAP_W - 0.5, b.x + px * bMult));
-          b.y = Math.max(0.5, Math.min(MAP_H - 0.5, b.y + py * bMult));
-        } else {
-          const pass = aDom === "sea" ? this.passableSea : this.passable;
-          if (pass((a.x - px * aMult) | 0, (a.y - py * aMult) | 0)) {
-            a.x -= px * aMult;
-            a.y -= py * aMult;
-          }
-          if (pass((b.x + px * bMult) | 0, (b.y + py * bMult) | 0)) {
-            b.x += px * bMult;
-            b.y += py * bMult;
+    for (let cy = 0; cy < 8; cy++) {
+      for (let cx = 0; cx < 8; cx++) {
+        const cellA = this.grid[(cy << 3) | cx];
+        for (let i = 0; i < cellA.length; i++) {
+          const a = cellA[i];
+          if (isBuilding(a.k) || !this.ents.has(a.id)) continue;
+          const aDom = domainOf(a.k);
+          const ny0 = Math.max(0, cy - 1),
+            ny1 = Math.min(7, cy + 1);
+          const nx0 = Math.max(0, cx - 1),
+            nx1 = Math.min(7, cx + 1);
+          let aDead = false;
+          for (let ny = ny0; ny <= ny1 && !aDead; ny++) {
+            for (let nx = nx0; nx <= nx1 && !aDead; nx++) {
+              const cellB = this.grid[(ny << 3) | nx];
+              for (let j = 0; j < cellB.length; j++) {
+                const b = cellB[j];
+                if (b.id <= a.id || isBuilding(b.k) || !this.ents.has(b.id)) continue;
+                if (domainOf(b.k) !== aDom) continue;
+                let dx = b.x - a.x,
+                  dy = b.y - a.y;
+                let d2 = dx * dx + dy * dy;
+                if (d2 === 0) {
+                  // perfectly stacked — push apart on a deterministic per-pair angle
+                  const ang = ((a.id * 7 + b.id * 13) % 8) * (Math.PI / 4);
+                  dx = Math.cos(ang) * 0.01;
+                  dy = Math.sin(ang) * 0.01;
+                  d2 = dx * dx + dy * dy;
+                }
+                let minSep: number;
+                if (aDom === "sea") {
+                  minSep = a.k === "dreadnought" || b.k === "dreadnought" ? 1.35 : 1.1;
+                } else if (aDom === "air") {
+                  minSep = a.k === "zeppelin" || b.k === "zeppelin" ? 1.25 : 0.9;
+                } else {
+                  minSep = isVeh(a.k) && isVeh(b.k) ? 1.05 : isVeh(a.k) || isVeh(b.k) ? 0.85 : 0.72;
+                }
+                if (d2 > minSep * minSep) continue;
+                if (aDom === "land") {
+                  if ((a.k === "tank" || a.k === "heavy") && crushable(b.k) && !this.isAlly(a.o, b.o)) {
+                    this.grantXp(a, b.mhp * 0.8);
+                    this.destroy(b, a.o);
+                    continue;
+                  }
+                  if ((b.k === "tank" || b.k === "heavy") && crushable(a.k) && !this.isAlly(a.o, b.o)) {
+                    this.grantXp(b, a.mhp * 0.8);
+                    this.destroy(a, b.o);
+                    aDead = true;
+                    break;
+                  }
+                }
+                const d = Math.sqrt(d2) || 0.01;
+                const push = ((minSep - d) / d) * 0.5 * 0.35;
+                const px = dx * push,
+                  py = dy * push;
+                const aMult = a.hold ? 0.15 : 1;
+                const bMult = b.hold ? 0.15 : 1;
+                if (aDom === "air") {
+                  a.x = Math.max(0.5, Math.min(MAP_W - 0.5, a.x - px * aMult));
+                  a.y = Math.max(0.5, Math.min(MAP_H - 0.5, a.y - py * aMult));
+                  b.x = Math.max(0.5, Math.min(MAP_W - 0.5, b.x + px * bMult));
+                  b.y = Math.max(0.5, Math.min(MAP_H - 0.5, b.y + py * bMult));
+                } else {
+                  const pass = aDom === "sea" ? this.passableSea : this.passable;
+                  if (pass((a.x - px * aMult) | 0, (a.y - py * aMult) | 0)) {
+                    a.x -= px * aMult;
+                    a.y -= py * aMult;
+                  }
+                  if (pass((b.x + px * bMult) | 0, (b.y + py * bMult) | 0)) {
+                    b.x += px * bMult;
+                    b.y += py * bMult;
+                  }
+                }
+              }
+            }
           }
         }
       }

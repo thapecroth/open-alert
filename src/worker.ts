@@ -42,7 +42,7 @@ export class GameRoom extends Server<Env> {
   players = new Map<string, PlayerRec>(); // by player id (client token)
   connPlayer = new Map<string, string>(); // conn id -> player id
   world: World | null = null;
-  timer: ReturnType<typeof setInterval> | null = null;
+  alarmActive = false;
   resetTimer: ReturnType<typeof setTimeout> | null = null;
   lastTickAt = 0;
   endSent = false;
@@ -106,7 +106,7 @@ export class GameRoom extends Server<Env> {
           clearTimeout(this.resetTimer);
           this.resetTimer = null;
         }
-        if (this.phase === "playing" && this.world && !this.timer) {
+        if (this.phase === "playing" && this.world && (!this.alarmActive || Date.now() - this.lastTickAt > 2000)) {
           this.ensureLoop();
         }
         return;
@@ -494,39 +494,42 @@ export class GameRoom extends Server<Env> {
       const p = pid ? this.players.get(pid) : null;
       if (p) this.sendInit(conn, p);
     }
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
+    if (this.phase === "playing" && this.world) {
+      this.alarmActive = true;
+      this.lastTickAt = Date.now();
+      this.ensureLoop();
     }
-    this.lastTickAt = Date.now();
-    this.ensureLoop();
+  }
+
+  private stepIntervalMs(): number {
+    return Math.max(80, Math.round((TICK_MS * SNAP_EVERY) / (this.config.gameSpeed || 1)));
   }
 
   private ensureLoop() {
+    // Pure Durable Object Alarm loop (ZERO setInterval!) — immune to cloudflare/workerd#8474
+    // where cumulative setInterval CPU silently resets a DO isolate after ~2s of CPU.
     if (this.phase === "playing" && this.world) {
-      if (!this.timer) {
-        const tickMs = Math.max(40, Math.round(TICK_MS / (this.config.gameSpeed || 1)));
-        this.timer = setInterval(() => this.gameTick(), tickMs);
-      }
-      void this.ctx.storage.setAlarm(Date.now() + 4000).catch(() => {});
+      this.alarmActive = true;
+      void this.ctx.storage.setAlarm(Date.now() + 50).catch(() => {});
     }
   }
 
   async onAlarm() {
+    if (this.phase !== "playing" || !this.world) {
+      this.alarmActive = false;
+      await this.ctx.storage.deleteAlarm().catch(() => {});
+      return;
+    }
+    // Run SNAP_EVERY (2) sim ticks per alarm invocation = 10 Hz sim + 5 Hz snapshots
+    // with a fresh per-alarm CPU budget and zero setInterval timers.
+    for (let i = 0; i < SNAP_EVERY; i++) {
+      if (this.phase !== "playing" || !this.world) break;
+      this.gameTick();
+    }
     if (this.phase === "playing" && this.world) {
-      if (!this.timer || Date.now() - this.lastTickAt > 2000) {
-        if (this.timer) {
-          clearInterval(this.timer);
-          this.timer = null;
-        }
-        const tickMs = Math.max(40, Math.round(TICK_MS / (this.config.gameSpeed || 1)));
-        this.timer = setInterval(() => this.gameTick(), tickMs);
-        this.gameTick();
-      }
-      if (this.phase === "playing" && this.world) {
-        await this.ctx.storage.setAlarm(Date.now() + 4000).catch(() => {});
-      }
+      await this.ctx.storage.setAlarm(Date.now() + this.stepIntervalMs()).catch(() => {});
     } else {
+      this.alarmActive = false;
       await this.ctx.storage.deleteAlarm().catch(() => {});
     }
   }
@@ -541,8 +544,8 @@ export class GameRoom extends Server<Env> {
         if (p && p.slot >= 0) {
           try {
             bot.tick(w, p.slot);
-          } catch {
-            // Isolate bot errors so one AI brain can never halt a match
+          } catch (err) {
+            console.error("bot tick error:", err);
           }
         }
       }
@@ -572,15 +575,12 @@ export class GameRoom extends Server<Env> {
             stats: w.getStats(names),
           } satisfies S2C),
         );
-        if (this.timer) {
-          clearInterval(this.timer);
-          this.timer = null;
-        }
+        this.alarmActive = false;
         this.phase = "ended";
         void this.ctx.storage.deleteAlarm().catch(() => {});
       }
-    } catch {
-      // Never let a transient tick exception halt the room loop
+    } catch (err) {
+      console.error("gameTick error:", err);
     }
   }
 
@@ -589,10 +589,7 @@ export class GameRoom extends Server<Env> {
       clearTimeout(this.resetTimer);
       this.resetTimer = null;
     }
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
+    this.alarmActive = false;
     void this.ctx.storage.deleteAlarm().catch(() => {});
     this.world = null;
     this.lastTickAt = 0;
@@ -611,7 +608,7 @@ export class GameRoom extends Server<Env> {
       tick: this.world?.tick ?? 0,
       ents: this.world?.ents.size ?? 0,
       lastTickAgeMs: this.lastTickAt ? Date.now() - this.lastTickAt : null,
-      hasTimer: !!this.timer,
+      hasTimer: this.alarmActive,
     });
   }
 }

@@ -1031,6 +1031,17 @@ export class Hud {
       coresBadge.textContent = `${Math.max(1, gpu.cores || 1)}T`;
       coresBadge.title = `${gpu.cores || 1} logical CPU threads · Max texture ${gpu.maxTextureSize || 0}px`;
     }
+    const dgpuTip = document.getElementById("gfx-dgpu-tip");
+    if (dgpuTip) {
+      const isIntelOrIgpu = /\b(Intel|UHD|Iris|HD\s+Graphics)\b/i.test(gpu.rendererName || "");
+      if (isIntelOrIgpu && !gpu.appleSilicon) {
+        dgpuTip.classList.remove("hidden");
+        dgpuTip.textContent =
+          "Have an NVIDIA/AMD laptop GPU? Browsers default to Intel iGPU — in Windows Settings → System → Display → Graphics, set Chrome/Edge to High Performance (NVIDIA), then restart browser.";
+      } else {
+        dgpuTip.classList.add("hidden");
+      }
+    }
 
     // Live 300ms metrics row
     const mFps = document.getElementById("gfx-m-fps");
