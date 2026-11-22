@@ -6,6 +6,8 @@ import {
   BuildingKind,
   UnitKind,
   EntKind,
+  UnitDomain,
+  ProdCat,
   MapId,
   CrateKind,
   GameConfig,
@@ -21,6 +23,7 @@ import {
   DEPOT_RANGE,
   DEPOT_HEAL,
   CAPTURE_RANGE,
+  SHIPYARD_BUILD_DIST,
   VET_XP,
   VET_DMG,
   VET_HP,
@@ -87,6 +90,7 @@ export interface Ent {
   holdUntil: number; // suppress harvester auto-resume until this tick (stop/explicit orders)
   xp: number;
   vet: number; // 0..3 veterancy rank
+  subSurfaceUntil: number; // submarine stealth: surfaced until this tick (submerged when tick >= subSurfaceUntil)
   rally?: [number, number]; // rally point on production buildings
 }
 
@@ -96,7 +100,7 @@ export interface P {
   credits: number;
   awaiting: BuildingKind | null;
   bq: { kind: BuildingKind; left: number; total: number } | null;
-  queues: { barracks?: ProdQueue; factory?: ProdQueue };
+  queues: Partial<Record<ProdCat, ProdQueue>>;
   eliminated: boolean;
   pwrHave: number;
   pwrUse: number;
@@ -116,24 +120,42 @@ export interface WorldOpts {
   config?: Partial<GameConfig>;
 }
 
+const PROD_CATS: readonly ProdCat[] = ["barracks", "factory", "airfield", "shipyard"];
 const idx = (x: number, y: number) => y * MAP_W + x;
 const inBounds = (x: number, y: number) => x >= 0 && y >= 0 && x < MAP_W && y < MAP_H;
 const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);
 const isBuilding = (k: EntKind): k is BuildingKind => k in BUILDINGS;
+const domainOf = (k: EntKind): UnitDomain =>
+  isBuilding(k) ? (k === "shipyard" ? "sea" : "land") : UNITS[k].domain;
+const canHitAirOf = (k: EntKind): boolean => (isBuilding(k) ? !!BUILDINGS[k].canHitAir : !!UNITS[k].canHitAir);
+const canHitGroundOf = (k: EntKind): boolean =>
+  isBuilding(k) ? (BUILDINGS[k].dmg ?? 0) > 0 : UNITS[k].canHitGround !== false && UNITS[k].dmg > 0;
 const isInfantry = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer";
 const isHeavyArmor = (k: EntKind) => k === "tank" || k === "heavy" || k === "harvester";
 const isVehicle = (k: EntKind) =>
   k === "tank" || k === "heavy" || k === "arty" || k === "harvester" || k === "spider";
+const isSeaShip = (k: EntKind) => !isBuilding(k) && UNITS[k].domain === "sea";
 
 const armorMult = (attacker: EntKind, target: EntKind): number => {
+  const tDom = domainOf(target);
   if (attacker === "infantry") {
+    if (tDom === "air") return 0.6;
     if (isInfantry(target)) return 1.35;
     if (isHeavyArmor(target)) return 0.7;
   } else if (attacker === "rocket") {
+    if (tDom === "air") return 1.35;
     if (isVehicle(target)) return 1.4;
     if (isInfantry(target)) return 0.75;
   } else if (attacker === "arty") {
     if (isBuilding(target)) return 1.35;
+  } else if (attacker === "sub") {
+    if (isSeaShip(target)) return 1.45;
+  } else if (attacker === "interceptor") {
+    if (tDom === "air") return 1.4;
+  } else if (attacker === "bomber" || attacker === "zeppelin" || attacker === "dreadnought") {
+    if (isBuilding(target)) return 1.3;
+  } else if (attacker === "gunboat" || attacker === "destroyer") {
+    if (tDom === "air") return 1.35;
   }
   return 1;
 };
@@ -147,11 +169,14 @@ const entityDist = (a: Ent, b: Ent) => {
   );
 };
 const weaponFxOf = (k: EntKind): WeaponFx => {
-  if (k === "tank" || k === "heavy") return "cannon";
-  if (k === "rocket") return "rocket";
+  if (k === "tank" || k === "heavy" || k === "destroyer") return "cannon";
+  if (k === "rocket" || k === "interceptor") return "rocket";
   if (k === "arty") return "arty";
   if (k === "arc") return "arc";
   if (k === "spider") return "melee";
+  if (k === "dreadnought") return "missile";
+  if (k === "sub") return "torpedo";
+  if (k === "bomber" || k === "zeppelin") return "bomb";
   return "bullet";
 };
 const weaponOf = (e: Ent) =>
@@ -172,6 +197,8 @@ export class World {
 
   private block = new Uint8Array(MAP_W * MAP_H); // 1 = building footprint
   private cliff = new Uint8Array(MAP_W * MAP_H); // 1 = impassable rocky cliff
+  private water = new Uint8Array(MAP_W * MAP_H); // 1 = navigable water
+  private waterCount = 0;
   private bld = new Int32Array(MAP_W * MAP_H).fill(-1); // ent id per tile
   private ore = new Int16Array(MAP_W * MAP_H); // remaining per tile
   private nextId = 1;
@@ -186,6 +213,15 @@ export class World {
     const layout = getMapLayout(this.map);
     for (const [cx, cy] of layout.cliffs) {
       if (inBounds(cx, cy)) this.cliff[idx(cx, cy)] = 1;
+    }
+    for (const [wx, wy] of layout.water) {
+      if (inBounds(wx, wy)) {
+        const i = idx(wx, wy);
+        if (!this.cliff[i] && !this.water[i]) {
+          this.water[i] = 1;
+          this.waterCount++;
+        }
+      }
     }
 
     this.genOre(slots);
@@ -268,7 +304,7 @@ export class World {
       for (let y = Math.max(0, cy - r); y <= Math.min(MAP_H - 1, cy + r); y++)
         for (let x = Math.max(0, cx - r); x <= Math.min(MAP_W - 1, cx + r); x++) {
           const i = idx(x, y);
-          if (this.cliff[i] || this.block[i]) continue;
+          if (this.cliff[i] || this.block[i] || this.water[i]) continue;
           const d = dist(x, y, cx, cy);
           if (d <= r && Math.random() > d / (r + 1)) this.ore[i] = 25 + ((Math.random() * 35) | 0);
         }
@@ -292,7 +328,54 @@ export class World {
     return out;
   }
 
-  passable = (x: number, y: number) => inBounds(x, y) && this.block[idx(x, y)] === 0 && this.cliff[idx(x, y)] === 0;
+  hasWater(): boolean {
+    return this.waterCount > 0;
+  }
+
+  isWater(x: number, y: number): boolean {
+    const ix = Math.floor(x),
+      iy = Math.floor(y);
+    return inBounds(ix, iy) && this.water[idx(ix, iy)] === 1;
+  }
+
+  isSubmerged(e: Ent): boolean {
+    return e.k === "sub" && this.tick >= e.subSurfaceUntil;
+  }
+
+  isSubDetected(sub: Ent, viewerSlot: number): boolean {
+    if (!this.isSubmerged(sub)) return true;
+    for (const u of this.ents.values()) {
+      if (u.o < 0 || !this.isAlly(viewerSlot, u.o)) continue;
+      const detectR = u.k === "gunboat" || u.k === "destroyer" || u.k === "sub" ? 9 : 5.5;
+      if (dist(sub.x, sub.y, u.x, u.y) <= detectR) return true;
+    }
+    return false;
+  }
+
+  canAttack(attacker: Ent, target: Ent): boolean {
+    if (this.isAlly(attacker.o, target.o)) return false;
+    if (attacker.k === "engineer") {
+      return isBuilding(target.k);
+    }
+    const w = weaponOf(attacker);
+    if (w.dmg <= 0 || w.range <= 0) return false;
+    const tDom = domainOf(target.k);
+    if (tDom === "air") {
+      if (!canHitAirOf(attacker.k)) return false;
+    } else {
+      if (!canHitGroundOf(attacker.k)) return false;
+    }
+    if (target.k === "sub" && this.isSubmerged(target)) {
+      if (!this.isSubDetected(target, attacker.o)) return false;
+    }
+    return true;
+  }
+
+  passable = (x: number, y: number) =>
+    inBounds(x, y) && this.block[idx(x, y)] === 0 && this.cliff[idx(x, y)] === 0 && this.water[idx(x, y)] === 0;
+
+  passableSea = (x: number, y: number) =>
+    inBounds(x, y) && this.block[idx(x, y)] === 0 && this.cliff[idx(x, y)] === 0 && this.water[idx(x, y)] === 1;
 
   footprint(kind: BuildingKind, tx: number, ty: number) {
     const d = BUILDINGS[kind];
@@ -328,6 +411,7 @@ export class World {
       holdUntil: 0,
       xp: 0,
       vet: 0,
+      subSurfaceUntil: 0,
     };
     this.ents.set(e.id, e);
     for (let y = ty; y < ty + d.h; y++)
@@ -362,6 +446,7 @@ export class World {
       holdUntil: 0,
       xp: 0,
       vet: 0,
+      subSurfaceUntil: 0,
     };
     this.ents.set(e.id, e);
     this.events.push({ e: "spawn", id: e.id });
@@ -372,12 +457,45 @@ export class World {
     const def = BUILDINGS[b.k as BuildingKind];
     const bx = b.x - def.w / 2,
       by = b.y - def.h / 2;
+    const uDomain = UNITS[kind].domain;
     const occupied = (x: number, y: number) => {
       for (const u of this.ents.values())
-        if (!isBuilding(u.k) && Math.floor(u.x) === x && Math.floor(u.y) === y) return true;
+        if (!isBuilding(u.k) && domainOf(u.k) === uDomain && Math.floor(u.x) === x && Math.floor(u.y) === y) return true;
       return false;
     };
-    // first empty passable tile on an expanding ring below the building
+    if (uDomain === "air") {
+      // Air units spawn right over or around the airfield (ignoring buildings/cliffs/water)
+      const cx = Math.floor(b.x),
+        cy = Math.floor(b.y);
+      for (let r = 0; r <= 6; r++) {
+        for (let dy = -r; dy <= r; dy++)
+          for (let dx = -r; dx <= r; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+            const x = cx + dx,
+              y = cy + dy;
+            if (inBounds(x, y) && !occupied(x, y)) return this.spawnUnit(slot, kind, x, y);
+          }
+      }
+      return this.spawnUnit(slot, kind, Math.max(0, Math.min(MAP_W - 1, cx)), Math.max(0, Math.min(MAP_H - 1, cy)));
+    }
+    if (uDomain === "sea") {
+      // Sea units spawn on the nearest navigable water tile around the shipyard
+      const cx = Math.floor(b.x),
+        cy = Math.floor(b.y);
+      for (let r = 1; r <= 8; r++) {
+        for (let dy = -r; dy <= r; dy++)
+          for (let dx = -r; dx <= r; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+            const x = cx + dx,
+              y = cy + dy;
+            if (this.passableSea(x, y) && !occupied(x, y)) return this.spawnUnit(slot, kind, x, y);
+          }
+      }
+      const spot = nearestPassable(cx, cy, (x, y) => this.passableSea(x, y) && !occupied(x, y), 14);
+      if (spot) return this.spawnUnit(slot, kind, spot.x, spot.y);
+      return null;
+    }
+    // Land: first empty passable tile on an expanding ring below the building
     for (let r = 1; r <= 6; r++) {
       for (let dy = -1; dy <= r; dy++)
         for (let dx = -r; dx <= r; dx++) {
@@ -401,16 +519,24 @@ export class World {
         const i = idx(x, y);
         if (this.cliff[i]) return "blocked by terrain";
         if (this.block[i]) return "blocked";
-        if (this.ore[i] > 0) return "can't build on ore";
+        if (d.waterOnly) {
+          if (!this.water[i]) return "must build on water";
+        } else {
+          if (this.water[i]) return "can't build on water";
+          if (this.ore[i] > 0) return "can't build on ore";
+        }
       }
-    // no units standing inside the footprint
+    // no same-domain units standing inside the footprint (aircraft overhead don't block construction)
+    const bDomain: UnitDomain = d.waterOnly ? "sea" : "land";
     for (const u of this.ents.values()) {
       if (isBuilding(u.k)) continue;
+      if (domainOf(u.k) !== bDomain) continue;
       const ux = Math.floor(u.x),
         uy = Math.floor(u.y);
       if (ux >= tx && ux < tx + d.w && uy >= ty && uy < ty + d.h) return "units in the way";
     }
-    // adjacency: some own building within 2 tiles of the new footprint
+    // adjacency: own building within gap <= 2 (or SHIPYARD_BUILD_DIST for waterOnly)
+    const maxGap = d.waterOnly ? SHIPYARD_BUILD_DIST : 2;
     for (const b of this.ents.values()) {
       if (b.o !== slot || !isBuilding(b.k)) continue;
       const bd = BUILDINGS[b.k];
@@ -418,9 +544,9 @@ export class World {
         by = b.y - bd.h / 2;
       const gapX = Math.max(bx - (tx + d.w), tx - (bx + bd.w));
       const gapY = Math.max(by - (ty + d.h), ty - (by + bd.h));
-      if (Math.max(gapX, gapY) <= 2) return null;
+      if (Math.max(gapX, gapY) <= maxGap) return null;
     }
-    return "must build next to your base";
+    return d.waterOnly ? "too far from base" : "must build next to your base";
   }
 
   cmdOrder(slot: number, ids: number[], kind: OrderKind, x: number, y: number, target?: number, queue = false): string | null {
@@ -450,7 +576,7 @@ export class World {
         ord = { kind: "move", x: gx, y: gy };
       } else if (kind === "attack") {
         const tgt = Number.isFinite(target) ? this.ents.get(target as number) : null;
-        if (!tgt || this.isAlly(slot, tgt.o)) continue;
+        if (!tgt || !this.canAttack(e, tgt)) continue;
         ord = { kind, x: tgt.x, y: tgt.y, target };
       } else if (kind === "harvest") {
         const t = Math.floor(x) + Math.floor(y) * MAP_W;
@@ -508,7 +634,7 @@ export class World {
       const next = e.orderQueue.shift()!;
       if (next.kind === "attack" && next.target != null) {
         const tgt = this.ents.get(next.target);
-        if (!tgt || this.isAlly(e.o, tgt.o)) continue;
+        if (!tgt || !this.canAttack(e, tgt)) continue;
       }
       if (next.kind === "harvest" && e.k === "harvester") {
         const t = Math.floor(next.x) + Math.floor(next.y) * MAP_W;
@@ -575,6 +701,7 @@ export class World {
     const d = BUILDINGS[kind];
     if (d.noBuild) return "can't build that";
     if (kind === "superweapon" && !this.config.superweapons) return "superweapons disabled";
+    if (d.waterOnly && !this.hasWater()) return "no water on this map";
     if (d.requires) for (const r of d.requires) if (!this.hasBuilding(slot, r)) return `need a ${r}`;
     if (d.limit != null) {
       let count = 0;
@@ -623,6 +750,7 @@ export class World {
     if (p.credits < cost) return "insufficient funds";
     p.credits -= cost;
     e.hp = e.mhp;
+    if (BUILDINGS[e.k].power > 0) this.recomputePower(slot);
     return null;
   }
 
@@ -647,7 +775,11 @@ export class World {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return "bad coords";
     if (!inBounds(Math.floor(x), Math.floor(y))) return "off map";
     const e = this.ents.get(id);
-    if (!e || e.o !== slot || (e.k !== "barracks" && e.k !== "factory" && e.k !== "factory2")) {
+    if (
+      !e ||
+      e.o !== slot ||
+      (e.k !== "barracks" && e.k !== "factory" && e.k !== "factory2" && e.k !== "airfield" && e.k !== "shipyard")
+    ) {
       return "can't set rally";
     }
     e.rally = [Math.round(x * 10) / 10, Math.round(y * 10) / 10];
@@ -660,6 +792,7 @@ export class World {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return "bad coords";
     if (!inBounds(Math.floor(x), Math.floor(y))) return "off map";
     if (!this.hasBuilding(slot, "superweapon")) return "need a superweapon";
+    if (p.lowPower) return "low power";
     if (p.swLeft > 0 || p.swLeft < 0) return "superweapon charging";
     p.swLeft = SW_CHARGE_TICKS;
     for (const e of [...this.ents.values()]) {
@@ -672,6 +805,7 @@ export class World {
       this.events.push({ e: "hit", id: e.id });
       if (e.o >= 0) this.alertVictim(e.o, e.x, e.y);
       if (e.hp <= 0) this.destroy(e, slot);
+      else if (isBuilding(e.k) && BUILDINGS[e.k].power > 0) this.recomputePower(e.o);
     }
     this.events.push({ e: "superweapon", x, y, slot });
     this.events.push({ e: "boom", x, y, r: SW_RADIUS });
@@ -785,7 +919,7 @@ export class World {
     return out;
   }
 
-  private prodBoostOf(slot: number, cat: "barracks" | "factory"): number {
+  private prodBoostOf(slot: number, cat: ProdCat): number {
     const cnt = this.buildingsOf(slot, cat).length;
     return Math.min(2.0, 1 + Math.max(0, cnt - 1) * 0.25);
   }
@@ -798,8 +932,11 @@ export class World {
     for (const e of this.ents.values()) {
       if (e.o !== slot || !isBuilding(e.k)) continue;
       const pw = BUILDINGS[e.k].power;
-      if (pw > 0) have += pw;
-      else use -= pw;
+      if (pw > 0) {
+        have += e.hp < e.mhp ? Math.round(pw * (0.35 + 0.65 * Math.max(0, e.hp / e.mhp))) : pw;
+      } else {
+        use -= pw;
+      }
     }
     p.pwrHave = have;
     p.pwrUse = use;
@@ -828,6 +965,7 @@ export class World {
   private tickDepots() {
     for (const d of this.ents.values()) {
       if (d.k !== "depot" || d.o < 0) continue;
+      if (this.players.get(d.o)?.lowPower) continue;
       for (const e of this.ents.values())
         if (this.isAlly(d.o, e.o) && !isBuilding(e.k) && e.hp < e.mhp && dist(e.x, e.y, d.x, d.y) <= DEPOT_RANGE)
           e.hp = Math.min(e.mhp, e.hp + DEPOT_HEAL);
@@ -1009,7 +1147,7 @@ export class World {
       }
       if (this.hasBuilding(p.slot, "superweapon")) {
         if (p.swLeft < 0) p.swLeft = SW_CHARGE_TICKS;
-        else if (p.swLeft > 0) p.swLeft = Math.max(0, p.swLeft - rate);
+        else if (p.swLeft > 0 && !p.lowPower) p.swLeft = Math.max(0, p.swLeft - rate);
       } else {
         p.swLeft = -1;
       }
@@ -1019,7 +1157,7 @@ export class World {
       } else {
         p.reconLeft = -1;
       }
-      for (const cat of ["barracks", "factory"] as const) {
+      for (const cat of PROD_CATS) {
         const q = p.queues[cat];
         if (!q) continue;
         const blds = this.buildingsOf(p.slot, cat);
@@ -1062,7 +1200,7 @@ export class World {
     const o = e.order;
     if (o?.kind === "attack" && o.target != null) {
       const tgt = this.ents.get(o.target);
-      if (!tgt || this.isAlly(e.o, tgt.o)) {
+      if (!tgt || !this.canAttack(e, tgt)) {
         this.advanceOrder(e);
       } else if (e.k === "engineer" && isBuilding(tgt.k)) {
         // engineers don't shoot — they walk in and take the building
@@ -1093,10 +1231,10 @@ export class World {
         if (e.k === "engineer" && isBuilding(enemy.k)) {
           // attack-moving engineers capture buildings they reach
           if (!this.tryCapture(e, enemy)) {
+            e.agro = enemy.id;
             if (e.repath-- <= 0) {
               e.repath = 12;
               this.pathNear(e, enemy);
-              e.agro = enemy.id;
             }
             this.stepAlong(e);
           }
@@ -1106,10 +1244,10 @@ export class World {
             this.face(e, enemy.x, enemy.y);
             this.tryFire(e, enemy);
           } else {
+            e.agro = enemy.id;
             if (e.repath-- <= 0) {
               e.repath = 12;
               this.pathNear(e, enemy);
-              e.agro = enemy.id;
             }
             this.stepAlong(e);
           }
@@ -1336,6 +1474,7 @@ export class World {
       if (t.o < 0 || this.isAlly(e.o, t.o)) continue;
       const tp = this.players.get(t.o);
       if (!tp || tp.eliminated) continue;
+      if (!this.canAttack(e, t)) continue;
       const d = entityDist(e, t);
       if (d <= bd) {
         bd = d;
@@ -1354,7 +1493,9 @@ export class World {
     const w = weaponOf(e);
     if (w.range <= 0) return;
     if (isBuilding(e.k) && this.players.get(e.o)?.lowPower) return; // powered defenses offline
+    if (!this.canAttack(e, tgt)) return;
     e.cd = w.rof;
+    if (e.k === "sub") e.subSurfaceUntil = this.tick + 45; // surfaces for 4.5s while firing
     const baseDmg = w.dmg * VET_DMG[e.vet];
     const directDmg = baseDmg * armorMult(e.k, tgt.k);
     const tx = tgt.x,
@@ -1374,12 +1515,14 @@ export class World {
     this.grantXp(e, directDmg * 0.5);
     this.alertVictim(tgt.o, tx, ty);
 
-    // Splash damage to non-ally targets within SPLASH_RADIUS
+    // Splash damage to non-ally targets within SPLASH_RADIUS (ground-only splash skips air targets)
     const splashR = SPLASH_RADIUS[e.k];
     if (splashR) {
+      const hitAir = canHitAirOf(e.k);
       for (const other of [...this.ents.values()]) {
         if (other.id === tgt.id || !this.ents.has(other.id)) continue;
         if (this.isAlly(e.o, other.o)) continue;
+        if (!hitAir && domainOf(other.k) === "air") continue;
         const d = dist(tx, ty, other.x, other.y);
         if (d > splashR) continue;
         const falloff = 1 - d / splashR;
@@ -1392,6 +1535,8 @@ export class World {
         if (other.hp <= 0) {
           this.grantXp(e, other.mhp * 0.8);
           this.destroy(other, e.o);
+        } else if (isBuilding(other.k) && BUILDINGS[other.k].power > 0) {
+          this.recomputePower(other.o);
         }
       }
     }
@@ -1399,6 +1544,8 @@ export class World {
     if (tgt.hp <= 0 && this.ents.has(tgt.id)) {
       this.grantXp(e, tgt.mhp * 0.8);
       this.destroy(tgt, e.o);
+    } else if (this.ents.has(tgt.id) && isBuilding(tgt.k) && BUILDINGS[tgt.k].power > 0) {
+      this.recomputePower(tgt.o);
     }
   }
 
@@ -1431,25 +1578,65 @@ export class World {
   }
 
   private pathNear(e: Ent, tgt: Ent, r = 0) {
-    // path to the tile nearest the target's edge for buildings
+    const dom = domainOf(e.k);
+    if (dom === "air") return; // aircraft fly directly in stepAlong
+    const pass = dom === "sea" ? this.passableSea : this.passable;
     const gx = tgt.x | 0,
       gy = tgt.y | 0;
-    const spot = nearestPassable(gx, gy, this.passable, 10) ?? { x: gx, y: gy };
-    e.path = findPath(e.x | 0, e.y | 0, spot.x, spot.y, this.passable);
+    const searchR = dom === "sea" ? 24 : 10;
+    const spot = nearestPassable(gx, gy, pass, searchR);
+    if (!spot) {
+      e.path = [];
+      return;
+    }
+    e.path = findPath(e.x | 0, e.y | 0, spot.x, spot.y, pass);
     if (!e.path?.length && r > 0) e.path = [];
   }
 
   // advance along path; returns true when arrived (within `arriveR` of final goal).
   // null path = "needs compute"; empty path = "gave up" (avoids re-running A* every tick)
   private stepAlong(e: Ent, arriveR = 0.35): boolean {
+    const dom = domainOf(e.k);
+    if (dom === "air") {
+      // Air units fly in a smooth straight line ignoring cliffs, buildings, and water
+      const o = e.order;
+      if (!o) return true;
+      let gx = o.x,
+        gy = o.y;
+      if (o.kind === "attack" && o.target != null) {
+        const tgt = this.ents.get(o.target);
+        if (tgt) {
+          gx = tgt.x;
+          gy = tgt.y;
+        }
+      } else if (e.agro != null) {
+        const tgt = this.ents.get(e.agro);
+        if (tgt) {
+          gx = tgt.x;
+          gy = tgt.y;
+        }
+      }
+      gx = Math.max(0.5, Math.min(MAP_W - 0.5, gx));
+      gy = Math.max(0.5, Math.min(MAP_H - 0.5, gy));
+      const d = dist(e.x, e.y, gx, gy);
+      if (d <= arriveR) return true;
+      const speed = UNITS[e.k as UnitKind].speed;
+      const step = Math.min(speed, d);
+      e.x += ((gx - e.x) / d) * step;
+      e.y += ((gy - e.y) / d) * step;
+      e.d = Math.atan2(gy - e.y, gx - e.x);
+      return false;
+    }
+    const pass = dom === "sea" ? this.passableSea : this.passable;
+    const searchR = dom === "sea" ? 24 : 12;
     if (e.path === null) {
       const o = e.order;
       if (!o) {
         e.path = [];
         return true;
       }
-      const goal = nearestPassable(Math.floor(o.x), Math.floor(o.y), this.passable, 12);
-      e.path = goal ? (findPath(e.x | 0, e.y | 0, goal.x, goal.y, this.passable) ?? []) : [];
+      const goal = nearestPassable(Math.floor(o.x), Math.floor(o.y), pass, searchR);
+      e.path = goal ? (findPath(e.x | 0, e.y | 0, goal.x, goal.y, pass) ?? []) : [];
     }
     if (!e.path.length) return true;
     const wp = e.path[0];
@@ -1462,12 +1649,12 @@ export class World {
       e.path.shift();
       return e.path.length === 0;
     }
-    if (!this.passable(wp.x, wp.y)) {
+    if (!pass(wp.x, wp.y)) {
       // path invalidated by new construction — repath once
       const o = e.order;
       if (!o) return true;
-      const goal = nearestPassable(Math.floor(o.x), Math.floor(o.y), this.passable, 12);
-      e.path = goal ? (findPath(e.x | 0, e.y | 0, goal.x, goal.y, this.passable) ?? []) : [];
+      const goal = nearestPassable(Math.floor(o.x), Math.floor(o.y), pass, searchR);
+      e.path = goal ? (findPath(e.x | 0, e.y | 0, goal.x, goal.y, pass) ?? []) : [];
       return e.path.length === 0;
     }
     const step = Math.min(speed, d);
@@ -1478,14 +1665,18 @@ export class World {
   }
 
   private separate() {
-    // soft separation between units so they don't stack; tanks crush enemy infantry on contact
+    // soft separation between units in the SAME domain so they don't stack; tanks crush enemy infantry on contact
     const units = [...this.ents.values()].filter((e) => !isBuilding(e.k));
+    const isVeh = (k: EntKind) => k === "tank" || k === "heavy" || k === "arty" || k === "harvester";
+    const crushable = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer";
     for (let i = 0; i < units.length; i++) {
       const a = units[i];
       if (!this.ents.has(a.id)) continue;
+      const aDom = domainOf(a.k);
       for (let j = i + 1; j < units.length; j++) {
         const b = units[j];
         if (!this.ents.has(b.id)) continue;
+        if (domainOf(b.k) !== aDom) continue;
         let dx = b.x - a.x,
           dy = b.y - a.y;
         let d2 = dx * dx + dy * dy;
@@ -1496,19 +1687,26 @@ export class World {
           dy = Math.sin(ang) * 0.01;
           d2 = dx * dx + dy * dy;
         }
-        const isVeh = (k: EntKind) => k === "tank" || k === "heavy" || k === "arty" || k === "harvester";
-        const minSep = isVeh(a.k) && isVeh(b.k) ? 1.05 : isVeh(a.k) || isVeh(b.k) ? 0.85 : 0.72;
-        if (d2 > minSep * minSep) continue;
-        const crushable = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer";
-        if ((a.k === "tank" || a.k === "heavy") && crushable(b.k) && !this.isAlly(a.o, b.o)) {
-          this.grantXp(a, b.mhp * 0.8);
-          this.destroy(b, a.o);
-          continue;
+        let minSep: number;
+        if (aDom === "sea") {
+          minSep = a.k === "dreadnought" || b.k === "dreadnought" ? 1.35 : 1.1;
+        } else if (aDom === "air") {
+          minSep = a.k === "zeppelin" || b.k === "zeppelin" ? 1.25 : 0.9;
+        } else {
+          minSep = isVeh(a.k) && isVeh(b.k) ? 1.05 : isVeh(a.k) || isVeh(b.k) ? 0.85 : 0.72;
         }
-        if ((b.k === "tank" || b.k === "heavy") && crushable(a.k) && !this.isAlly(a.o, b.o)) {
-          this.grantXp(b, a.mhp * 0.8);
-          this.destroy(a, b.o);
-          break;
+        if (d2 > minSep * minSep) continue;
+        if (aDom === "land") {
+          if ((a.k === "tank" || a.k === "heavy") && crushable(b.k) && !this.isAlly(a.o, b.o)) {
+            this.grantXp(a, b.mhp * 0.8);
+            this.destroy(b, a.o);
+            continue;
+          }
+          if ((b.k === "tank" || b.k === "heavy") && crushable(a.k) && !this.isAlly(a.o, b.o)) {
+            this.grantXp(b, a.mhp * 0.8);
+            this.destroy(a, b.o);
+            break;
+          }
         }
         const d = Math.sqrt(d2) || 0.01;
         const push = ((minSep - d) / d) * 0.5 * 0.35;
@@ -1516,13 +1714,21 @@ export class World {
           py = dy * push;
         const aMult = a.hold ? 0.15 : 1;
         const bMult = b.hold ? 0.15 : 1;
-        if (this.passable((a.x - px * aMult) | 0, (a.y - py * aMult) | 0)) {
-          a.x -= px * aMult;
-          a.y -= py * aMult;
-        }
-        if (this.passable((b.x + px * bMult) | 0, (b.y + py * bMult) | 0)) {
-          b.x += px * bMult;
-          b.y += py * bMult;
+        if (aDom === "air") {
+          a.x = Math.max(0.5, Math.min(MAP_W - 0.5, a.x - px * aMult));
+          a.y = Math.max(0.5, Math.min(MAP_H - 0.5, a.y - py * aMult));
+          b.x = Math.max(0.5, Math.min(MAP_W - 0.5, b.x + px * bMult));
+          b.y = Math.max(0.5, Math.min(MAP_H - 0.5, b.y + py * bMult));
+        } else {
+          const pass = aDom === "sea" ? this.passableSea : this.passable;
+          if (pass((a.x - px * aMult) | 0, (a.y - py * aMult) | 0)) {
+            a.x -= px * aMult;
+            a.y -= py * aMult;
+          }
+          if (pass((b.x + px * bMult) | 0, (b.y + py * bMult) | 0)) {
+            b.x += px * bMult;
+            b.y += py * bMult;
+          }
         }
       }
     }
@@ -1574,6 +1780,7 @@ export class World {
       if (e.k === "harvester") s.cargo = e.cargo;
       if (e.vet > 0) s.vet = e.vet;
       if (e.hold) s.hold = true;
+      if (this.isSubmerged(e)) s.sub = true;
       if (e.rally) s.rally = [e.rally[0], e.rally[1]];
       if (!isBuilding(e.k) && (e.order || e.orderQueue.length)) {
         const wp: [number, number, OrderKind][] = [];
@@ -1597,6 +1804,8 @@ export class World {
     }
     const players: Record<number, PlayerState> = {};
     for (const p of this.players.values()) {
+      const qCopy: Partial<Record<ProdCat, ProdQueue>> = {};
+      for (const cat of PROD_CATS) if (p.queues[cat]) qCopy[cat] = { ...p.queues[cat]! };
       const ps: PlayerState = {
         slot: p.slot,
         credits: Math.floor(p.credits),
@@ -1606,11 +1815,11 @@ export class World {
         eliminated: p.eliminated,
         awaiting: p.awaiting,
         bq: p.bq ? { ...p.bq } : null,
-        queues: { ...p.queues },
+        queues: qCopy,
         team: p.team,
       };
       if (p.swLeft >= 0) {
-        ps.swReady = p.swLeft <= 0;
+        ps.swReady = p.swLeft <= 0 && !p.lowPower;
         ps.swLeft = Math.ceil(p.swLeft);
         ps.swTotal = SW_CHARGE_TICKS;
       }
@@ -1622,6 +1831,8 @@ export class World {
       ps.prodBoost = {
         barracks: this.prodBoostOf(p.slot, "barracks"),
         factory: this.prodBoostOf(p.slot, "factory"),
+        airfield: this.prodBoostOf(p.slot, "airfield"),
+        shipyard: this.prodBoostOf(p.slot, "shipyard"),
       };
       players[p.slot] = ps;
     }

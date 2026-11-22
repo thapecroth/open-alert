@@ -1,4 +1,4 @@
-import type { BuildingKind, UnitKind, EntKind, MapId, BotDiff, BotProfile, CrateKind, GameConfig } from "./gamedefs";
+import type { BuildingKind, UnitKind, EntKind, MapId, BotDiff, BotProfile, CrateKind, GameConfig, ProdCat } from "./gamedefs";
 
 // ---------- client -> server ----------
 export type C2S =
@@ -32,7 +32,7 @@ export type C2S =
   | { t: "rematch" };
 
 export type OrderKind = "move" | "amove" | "attack" | "harvest" | "patrol";
-export type WeaponFx = "bullet" | "cannon" | "rocket" | "arty" | "arc" | "melee";
+export type WeaponFx = "bullet" | "cannon" | "rocket" | "arty" | "arc" | "melee" | "missile" | "torpedo" | "bomb";
 
 // ---------- server -> client ----------
 export interface LobbyPlayer {
@@ -62,6 +62,7 @@ export interface EntSnap {
   cargo?: number;
   vet?: number; // 0..3 veterancy rank
   hold?: boolean; // unit holding position (fires in range, will not chase)
+  sub?: boolean; // submarine currently submerged (stealth)
   rally?: [number, number]; // rally point on production buildings
   wp?: [number, number, OrderKind][]; // active + queued waypoints
 }
@@ -89,7 +90,7 @@ export interface PlayerState {
   eliminated: boolean;
   awaiting: BuildingKind | null; // building finished, waiting for placement
   bq: { kind: BuildingKind; left: number; total: number } | null;
-  queues: Partial<Record<"barracks" | "factory", ProdQueue>>;
+  queues: Partial<Record<ProdCat, ProdQueue>>;
   team?: number;
   swReady?: boolean;
   swLeft?: number; // ticks remaining on Ion Uplink
@@ -97,7 +98,7 @@ export interface PlayerState {
   reconReady?: boolean;
   reconLeft?: number; // ticks remaining on Radar Recon Scan
   reconTotal?: number;
-  prodBoost?: { barracks: number; factory: number }; // speed multiplier (1.0 .. 2.0)
+  prodBoost?: Partial<Record<ProdCat, number>>; // speed multiplier (1.0 .. 2.0)
 }
 
 export interface MatchStats {

@@ -6,40 +6,78 @@ import { isBuildingKind } from "./util";
 export interface AnimState {
   phase: number;
   speed: number;
+  prevSpeed: number;
   prevX: number;
   prevY: number;
+  prevHeading: number;
+  bank: number;
+  roll: number;
+  pitch: number;
   recoil: number;
+  hullKick: number;
+  kickLocalYaw: number;
   turretWorldYaw: number;
   turretHold: number;
   buildAge: number;
   isNewBuilding: boolean;
   smokeCd: number;
+  wakeCd: number;
+  dustCd: number;
+  contrailCd: number;
+  subY: number;
+  subAlpha: number;
   hitFlash: number;
   flashing: boolean;
+  matMode: "normal" | "hit" | "holo";
 }
 
 const HIT_FLASH_MAT = new THREE.MeshStandardMaterial({
   color: 0xfff2e0,
   emissive: 0xffffff,
-  emissiveIntensity: 0.58,
-  roughness: 0.42,
+  emissiveIntensity: 0.62,
+  roughness: 0.4,
   metalness: 0.2,
 });
 
+const HOLO_BUILD_MAT = new THREE.MeshStandardMaterial({
+  color: 0x4ae0ff,
+  emissive: 0x1eb8ff,
+  emissiveIntensity: 0.85,
+  roughness: 0.2,
+  metalness: 0.35,
+  transparent: true,
+  opacity: 0.56,
+  depthWrite: false,
+});
+
 export function createAnimState(e: EntSnap, animateConstruct: boolean): AnimState {
+  const newBld = animateConstruct && isBuildingKind(e.k);
   return {
     phase: (e.id * 1.37) % (Math.PI * 2),
     speed: 0,
+    prevSpeed: 0,
     prevX: e.x,
     prevY: e.y,
+    prevHeading: e.d / 10,
+    bank: 0,
+    roll: 0,
+    pitch: 0,
     recoil: 0,
+    hullKick: 0,
+    kickLocalYaw: 0,
     turretWorldYaw: Math.PI / 2 - e.d / 10,
     turretHold: 0,
-    buildAge: animateConstruct && isBuildingKind(e.k) ? 0 : 1,
-    isNewBuilding: animateConstruct && isBuildingKind(e.k),
+    buildAge: newBld ? 0 : 1,
+    isNewBuilding: newBld,
     smokeCd: 0.4 + ((e.id * 0.13) % 0.6),
+    wakeCd: 0.14 + ((e.id * 0.07) % 0.14),
+    dustCd: 0.12 + ((e.id * 0.09) % 0.12),
+    contrailCd: 0.05 + ((e.id * 0.03) % 0.05),
+    subY: e.sub ? -0.18 : 0.06,
+    subAlpha: e.sub ? 0.42 : 1,
     hitFlash: 0,
     flashing: false,
+    matMode: "normal",
   };
 }
 
@@ -56,9 +94,48 @@ function angleDiff(a: number, b: number) {
 
 export function triggerFireAnim(st: AnimState, fx: number, fy: number, tx: number, ty: number) {
   st.recoil = 1;
+  st.hullKick = 1;
   const worldAngle = Math.PI / 2 - Math.atan2(ty - fy, tx - fx);
   st.turretWorldYaw = worldAngle;
   st.turretHold = 2.6;
+  const hullYaw = Math.PI / 2 - st.prevHeading;
+  st.kickLocalYaw = angleDiff(hullYaw, worldAngle);
+}
+
+function setBodyMatMode(body: THREE.Group, st: AnimState, target: "normal" | "hit" | "holo") {
+  if (st.matMode === target) return;
+  if (target === "normal") {
+    body.traverse((o) => {
+      if (o instanceof THREE.Mesh && o.userData._origMat) {
+        o.material = o.userData._origMat as THREE.Material | THREE.Material[];
+        delete o.userData._origMat;
+      }
+    });
+  } else {
+    const override = target === "hit" ? HIT_FLASH_MAT : HOLO_BUILD_MAT;
+    body.traverse((o) => {
+      if (o instanceof THREE.Mesh && !o.userData.isBar) {
+        if (!o.userData._origMat) o.userData._origMat = o.material;
+        o.material = override;
+      }
+    });
+  }
+  st.matMode = target;
+  st.flashing = target === "hit";
+}
+
+function getBaseRecoilZ(recoil: THREE.Group, fallback: number): number {
+  if (recoil.userData.baseZ === undefined) {
+    recoil.userData.baseZ = recoil.position.z || fallback;
+  }
+  return recoil.userData.baseZ as number;
+}
+
+function getBaseRecoilY(recoil: THREE.Group, fallback: number): number {
+  if (recoil.userData.baseY === undefined) {
+    recoil.userData.baseY = recoil.position.y || fallback;
+  }
+  return recoil.userData.baseY as number;
 }
 
 export function stepEntityAnim(
@@ -71,194 +148,482 @@ export function stepEntityAnim(
   dt: number,
   nowSec: number,
   emitSmoke?: (x: number, y: number, z: number, dark: boolean) => void,
+  emitWake?: (x: number, z: number, scale?: number) => void,
+  lowPower = false,
+  emitDust?: (x: number, z: number, scale?: number) => void,
+  emitContrail?: (x: number, y: number, z: number, scale?: number) => void,
 ) {
   const rig = vis.rig;
   const k = vis.kind;
+  const safeDt = Math.max(0.0005, Math.min(0.1, dt));
 
-  // Measure actual frame velocity for gait & suspension
+  // Measure frame linear velocity, acceleration & heading angular velocity
   const dx = x - st.prevX;
   const dy = y - st.prevY;
   st.prevX = x;
   st.prevY = y;
-  const instSpeed = dt > 0.0001 ? Math.hypot(dx, dy) / dt : 0;
-  st.speed += (Math.min(6, instSpeed) - st.speed) * Math.min(1, dt * 12);
-  const moving = st.speed > 0.12;
+  const instSpeed = Math.hypot(dx, dy) / safeDt;
+  st.prevSpeed = st.speed;
+  st.speed += (Math.min(7.5, instSpeed) - st.speed) * Math.min(1, safeDt * 13);
+  const accel = (st.speed - st.prevSpeed) / safeDt;
+  const moving = st.speed > 0.1;
 
-  // Decay recoil impulse smoothly
-  if (st.recoil > 0.001) st.recoil = Math.max(0, st.recoil - dt * 5.2);
+  const dYaw = angleDiff(st.prevHeading, headingRad);
+  st.prevHeading = headingRad;
+  const yawRate = dYaw / safeDt;
+
+  // Smoothly decay recoil & hull suspension kick impulses
+  if (st.recoil > 0.001) st.recoil = Math.max(0, st.recoil - safeDt * 5.0);
   else st.recoil = 0;
 
-  // Construction rise-up for newly placed buildings
+  if (st.hullKick > 0.001) st.hullKick = Math.max(0, st.hullKick - safeDt * 3.1);
+  else st.hullKick = 0;
+
+  // Holographic rising construction animation for newly placed buildings
+  let holoConstruct = false;
   if (st.isNewBuilding && st.buildAge < 1) {
-    st.buildAge = Math.min(1, st.buildAge + dt * 2.2);
+    st.buildAge = Math.min(1, st.buildAge + safeDt * 1.9);
     const ease = 1 - Math.pow(1 - st.buildAge, 3);
-    rig.body.scale.set(1, Math.max(0.08, ease), 1);
+    const pulseXZ = st.buildAge < 0.85 ? 1 + 0.015 * Math.sin(nowSec * 24) : 1;
+    rig.body.scale.set(pulseXZ, Math.max(0.06, ease), pulseXZ);
+    holoConstruct = st.buildAge < 0.86;
   } else if (isBuildingKind(k)) {
     rig.body.scale.set(1, 1, 1);
   }
 
-  // ---------- Humanoid Infantry Animation ----------
+  // ---------- 1. Humanoid Infantry Animation ----------
   if (k === "infantry" || k === "engineer" || k === "rocket") {
+    const baseArmL = k === "infantry" ? -0.45 : k === "rocket" ? -0.3 : 0;
+    const baseArmR = k === "infantry" ? -0.58 : k === "rocket" ? -0.35 : 0;
+
     if (moving) {
-      st.phase += dt * (7.5 + st.speed * 3.8);
+      st.phase += safeDt * (8.4 + st.speed * 4.2);
       const s = Math.sin(st.phase);
-      const stride = Math.min(1, st.speed * 0.9) * 0.7;
+      const strideNorm = Math.min(1, st.speed * 0.95);
+      const stride = strideNorm * 0.74;
+
       if (rig.legL) rig.legL.rotation.x = s * stride;
       if (rig.legR) rig.legR.rotation.x = -s * stride;
-      if (rig.armL) rig.armL.rotation.x = (k === "infantry" ? -0.45 : 0) - s * stride * 0.55;
-      if (rig.armR) rig.armR.rotation.x = (k === "infantry" ? -0.55 : 0) + s * stride * 0.45;
-      rig.body.position.y = Math.abs(Math.sin(st.phase)) * 0.055;
-      rig.body.rotation.x = 0.1;
+      if (rig.armL) rig.armL.rotation.x = baseArmL - s * stride * 0.58;
+      if (rig.armR) rig.armR.rotation.x = baseArmR + s * stride * 0.46;
+
+      // Crisp bounce + forward tactical sprint lean + subtle torso counter-twist
+      rig.body.position.y = Math.abs(s) * 0.064 * strideNorm;
+      const targetLean = 0.11 + strideNorm * 0.1;
+      rig.body.rotation.x += (targetLean - rig.body.rotation.x) * Math.min(1, safeDt * 12);
+      rig.body.rotation.y = s * 0.14 * strideNorm;
+      rig.body.rotation.z = -s * 0.042 * strideNorm;
+      if (rig.head) {
+        rig.head.rotation.y = -s * 0.1 * strideNorm;
+        rig.head.rotation.x = -0.05 * strideNorm;
+      }
     } else {
-      st.phase += dt * 2.2;
-      const idle = Math.sin(st.phase) * 0.015;
-      if (rig.legL) rig.legL.rotation.x *= Math.max(0, 1 - dt * 10);
-      if (rig.legR) rig.legR.rotation.x *= Math.max(0, 1 - dt * 10);
-      if (rig.armL) rig.armL.rotation.x += ((k === "infantry" ? -0.45 : 0) - rig.armL.rotation.x) * Math.min(1, dt * 8);
-      if (rig.armR) rig.armR.rotation.x += ((k === "infantry" ? -0.55 : 0) - rig.armR.rotation.x) * Math.min(1, dt * 8);
-      rig.body.position.y = idle;
-      rig.body.rotation.x *= Math.max(0, 1 - dt * 8);
-      if (rig.head) rig.head.rotation.y = Math.sin(st.phase * 0.6) * 0.25;
+      st.phase += safeDt * 2.1;
+      const breath = Math.sin(st.phase);
+      const settle = Math.max(0, 1 - safeDt * 10);
+      if (rig.legL) rig.legL.rotation.x *= settle;
+      if (rig.legR) rig.legR.rotation.x *= settle;
+      if (rig.armL) rig.armL.rotation.x += (baseArmL - rig.armL.rotation.x) * Math.min(1, safeDt * 9);
+      if (rig.armR) rig.armR.rotation.x += (baseArmR - rig.armR.rotation.x) * Math.min(1, safeDt * 9);
+
+      // Subtle idle breathing & tactical head scan
+      rig.body.position.y = breath * 0.016;
+      rig.body.rotation.x += (breath * 0.018 - rig.body.rotation.x) * Math.min(1, safeDt * 8);
+      rig.body.rotation.y *= settle;
+      rig.body.rotation.z *= settle;
+      if (rig.head) {
+        rig.head.rotation.y = Math.sin(st.phase * 0.55 + last.id) * 0.3;
+        rig.head.rotation.x = Math.sin(st.phase * 0.35 + last.id) * 0.05;
+      }
     }
+
+    // Sharp braced kickback on weapon fire
+    if (st.recoil > 0) {
+      const kick = Math.sin(st.recoil * Math.PI * 0.5);
+      rig.body.rotation.x -= kick * 0.16;
+      rig.body.position.z = -kick * 0.055;
+      if (rig.armR) rig.armR.rotation.x -= kick * 0.22;
+      if (rig.armL && k === "infantry") rig.armL.rotation.x -= kick * 0.14;
+    } else {
+      rig.body.position.z *= Math.max(0, 1 - safeDt * 14);
+    }
+
     if (rig.recoil) {
-      rig.recoil.position.z = (k === "infantry" ? 0.15 : 0) - st.recoil * 0.12;
+      const baseZ = getBaseRecoilZ(rig.recoil, k === "infantry" ? 0.15 : 0);
+      rig.recoil.position.z = baseZ - st.recoil * 0.13;
     }
   }
 
-  // ---------- Spider Drone 4-Leg Skitter Gait ----------
+  // ---------- 2. Spider Drone 4-Leg Skitter Gait ----------
   else if (k === "spider" && rig.spiderLegs) {
     if (moving) {
-      st.phase += dt * (11 + st.speed * 5.2);
-      rig.body.position.y = 0.03 + Math.abs(Math.sin(st.phase * 2)) * 0.04;
+      st.phase += safeDt * (12 + st.speed * 5.4);
+      rig.body.position.y = 0.032 + Math.abs(Math.sin(st.phase * 2)) * 0.045;
+      rig.body.rotation.x = 0.07;
     } else {
-      st.phase += dt * 2.5;
-      rig.body.position.y = Math.sin(st.phase) * 0.018;
+      st.phase += safeDt * 2.6;
+      rig.body.position.y = Math.sin(st.phase) * 0.02;
+      rig.body.rotation.x *= Math.max(0, 1 - safeDt * 8);
     }
-    const amp = moving ? 0.42 : 0.06;
+    const amp = moving ? 0.44 : 0.065;
     rig.spiderLegs.forEach((leg, idx) => {
       const diag = idx === 0 || idx === 3 ? 0 : Math.PI;
       const wave = Math.sin(st.phase + diag);
       leg.rotation.y = wave * amp;
-      leg.rotation.z = Math.max(0, Math.cos(st.phase + diag)) * amp * 0.45 * (idx % 2 === 0 ? 1 : -1);
+      leg.rotation.z = Math.max(0, Math.cos(st.phase + diag)) * amp * 0.48 * (idx % 2 === 0 ? 1 : -1);
     });
-    if (st.recoil > 0) {
-      rig.body.position.z = st.recoil * 0.18;
-    } else {
-      rig.body.position.z = 0;
-    }
+    rig.body.position.z = st.recoil > 0 ? st.recoil * 0.2 : 0;
   }
 
-  // ---------- Tracked / Wheeled Vehicles ----------
+  // ---------- 3. Tracked / Wheeled Vehicles (Suspension, Hull Rock-Back & Dust Plumes) ----------
   else if (k === "tank" || k === "heavy" || k === "arty" || k === "harvester") {
-    if (moving) {
-      st.phase += dt * (8 + st.speed * 3);
-      rig.body.position.y = Math.abs(Math.sin(st.phase)) * 0.024;
-      rig.body.rotation.x = -0.025 + Math.sin(st.phase * 0.5) * 0.015;
-    } else {
-      rig.body.position.y = Math.sin(nowSec * 6 + last.id) * 0.005; // engine idle hum
-      rig.body.rotation.x *= Math.max(0, 1 - dt * 8);
+    const heavyScale = k === "heavy" ? 1.15 : k === "arty" ? 1.05 : 1.0;
+
+    // Suspension roll into turns & acceleration/braking pitch
+    const targetRoll = Math.max(-0.13, Math.min(0.13, yawRate * 0.055 * Math.min(1, st.speed * 0.8)));
+    st.roll += (targetRoll - st.roll) * Math.min(1, safeDt * 9);
+
+    const accelPitch = Math.max(-0.075, Math.min(0.085, -accel * 0.012));
+    const cruisePitch = moving ? -0.022 : 0;
+    st.pitch += (accelPitch + cruisePitch - st.pitch) * Math.min(1, safeDt * 8);
+
+    // Cannon-fire damped hull suspension rock-back (oriented along turret firing vector!)
+    let firePitch = 0;
+    let fireRoll = 0;
+    if (st.hullKick > 0 && k !== "harvester") {
+      // Damped oscillation: sharp kick back then quick spring settle
+      const osc = Math.sin((1 - st.hullKick) * Math.PI * 1.45 + 0.35) * st.hullKick;
+      const mag = (k === "heavy" ? 0.115 : k === "arty" ? 0.13 : 0.095) * osc;
+      firePitch = -Math.cos(st.kickLocalYaw) * mag;
+      fireRoll = Math.sin(st.kickLocalYaw) * mag * 0.85;
     }
 
-    // Independent turret yaw tracking (tanks & heavy tanks)
+    if (moving) {
+      st.phase += safeDt * (8.5 + st.speed * 3.4);
+      const rum = Math.sin(st.phase);
+      rig.body.position.y = Math.abs(rum) * 0.026 + Math.abs(firePitch) * 0.12;
+      rig.body.rotation.x = st.pitch + rum * 0.014 + firePitch;
+      rig.body.rotation.z = st.roll + Math.cos(st.phase * 0.7) * 0.012 + fireRoll;
+    } else {
+      // Subtle diesel/turbine idle hum + cannon rock-back when firing stationary
+      rig.body.position.y = Math.sin(nowSec * 6.5 + last.id) * 0.005 + Math.abs(firePitch) * 0.14;
+      rig.body.rotation.x = st.pitch + firePitch;
+      rig.body.rotation.z = st.roll + fireRoll;
+    }
+
+    // Independent turret yaw tracking (tanks, heavy tanks, arty)
     if (rig.turret) {
       const hullYaw = Math.PI / 2 - headingRad;
       if (st.turretHold > 0) {
-        st.turretHold -= dt;
+        st.turretHold -= safeDt;
       } else {
         st.turretWorldYaw = hullYaw;
       }
       const targetLocal = angleDiff(hullYaw, st.turretWorldYaw);
       const diff = angleDiff(rig.turret.rotation.y, targetLocal);
-      rig.turret.rotation.y += diff * Math.min(1, dt * 10);
+      rig.turret.rotation.y += diff * Math.min(1, safeDt * 11);
     }
 
-    // Barrel / launcher recoil kickback
+    // Crisp barrel / rocket-rack recoil kickback (preserves authored baseZ)
     if (rig.recoil) {
-      if (k === "arty") {
-        rig.recoil.position.z = -0.26 - st.recoil * 0.24;
-      } else {
-        const baseZ = k === "heavy" ? 0.42 : 0.35;
-        rig.recoil.position.z = baseZ - st.recoil * 0.28;
-      }
+      const fallbackZ = k === "arty" ? -0.26 : k === "heavy" ? 0.42 : 0.35;
+      const baseZ = getBaseRecoilZ(rig.recoil, fallbackZ);
+      const kickDist = k === "heavy" ? 0.32 : k === "arty" ? 0.24 : 0.28;
+      rig.recoil.position.z = baseZ - st.recoil * kickDist;
     }
 
-    // Harvester rotating front ore scoop drum (spins faster while mining/moving)
+    // Harvester rotating front ore scoop drum
     if (k === "harvester" && rig.spin) {
-      const spinRate = moving ? 6.5 : (last.cargo ?? 0) > 0 && (last.cargo ?? 0) < 40 ? 9.0 : 1.8;
-      rig.spin.rotation.x += dt * spinRate;
+      const spinRate = moving ? 7.2 : (last.cargo ?? 0) > 0 && (last.cargo ?? 0) < 40 ? 9.6 : 1.8;
+      rig.spin.rotation.x += safeDt * spinRate;
+    }
+
+    // Warm earth dust trail puffs kicked up behind moving tracked/wheeled vehicles
+    if (emitDust && moving && vis.root.visible) {
+      st.dustCd -= safeDt;
+      if (st.dustCd <= 0) {
+        st.dustCd = Math.max(0.09, 0.21 - st.speed * 0.025);
+        const rearDist = k === "heavy" || k === "harvester" ? 0.92 : 0.78;
+        const treadHalf = k === "heavy" ? 0.62 : 0.46;
+        const cosH = Math.cos(headingRad);
+        const sinH = Math.sin(headingRad);
+        const side = Math.random() > 0.5 ? treadHalf : -treadHalf;
+        const dxW = x - cosH * rearDist + sinH * side;
+        const dzW = y - sinH * rearDist - cosH * side;
+        emitDust(dxW, dzW, heavyScale * (0.78 + Math.random() * 0.32));
+      }
     }
   }
 
-  // ---------- Buildings Idle Loops ----------
+  // ---------- 4. Air Force (Smooth Banking, Hover Float, Rotors & Wingtip Contrails) ----------
+  else if (k === "interceptor" || k === "chopper" || k === "bomber" || k === "zeppelin") {
+    const alt = rig.altitude ?? 3.2;
+    let bob = 0;
+
+    if (k === "interceptor") {
+      bob = Math.sin(nowSec * 3.8 + last.id) * 0.09;
+      rig.body.position.y = alt + bob;
+      const targetBank = Math.max(-0.64, Math.min(0.64, yawRate * 0.2));
+      st.bank += (targetBank - st.bank) * Math.min(1, safeDt * 9);
+      rig.body.rotation.z = st.bank;
+      const targetPitch = moving ? -0.04 + Math.abs(st.bank) * 0.06 : 0.02;
+      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * Math.min(1, safeDt * 7);
+    } else if (k === "chopper") {
+      bob = Math.sin(nowSec * 3.2 + last.id) * 0.1 + Math.cos(nowSec * 5.6 + last.id) * 0.025;
+      rig.body.position.y = alt + bob;
+      const targetPitch = moving ? Math.min(0.22, 0.08 + st.speed * 0.04) : 0.015;
+      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * Math.min(1, safeDt * 6.5);
+      const targetBank = Math.max(-0.34, Math.min(0.34, yawRate * 0.11));
+      st.bank += (targetBank - st.bank) * Math.min(1, safeDt * 7.5);
+      rig.body.rotation.z = st.bank;
+      if (rig.spin) rig.spin.rotation.y += safeDt * 28; // ultra-smooth high-speed 4-blade main rotor
+      if (rig.spin2) rig.spin2.rotation.x += safeDt * 38; // enclosed fenestron tail rotor
+    } else if (k === "bomber") {
+      bob = Math.sin(nowSec * 2.2 + last.id) * 0.085;
+      rig.body.position.y = alt + bob;
+      const targetBank = Math.max(-0.4, Math.min(0.4, yawRate * 0.15));
+      st.bank += (targetBank - st.bank) * Math.min(1, safeDt * 6.5);
+      rig.body.rotation.z = st.bank;
+      const targetPitch = moving ? -0.025 : 0.01;
+      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * Math.min(1, safeDt * 6);
+    } else if (k === "zeppelin") {
+      // Majestic armored dirigible sway & counter-rotating twin side propellers
+      bob = Math.sin(nowSec * 1.35 + last.id) * 0.16;
+      rig.body.position.y = alt + bob;
+      rig.body.rotation.z = Math.sin(nowSec * 0.95 + last.id) * 0.052 + Math.max(-0.08, Math.min(0.08, yawRate * 0.05));
+      rig.body.rotation.x = Math.cos(nowSec * 0.8 + last.id) * 0.028 + (moving ? 0.03 : 0);
+      if (rig.spin) rig.spin.rotation.z += safeDt * 16;
+      if (rig.spin2) rig.spin2.rotation.z -= safeDt * 16;
+    }
+
+    // Subtle ground shadow breathing tied to hover altitude
+    if (rig.shadow && rig.shadow.userData.baseShadowScale) {
+      const baseSh = rig.shadow.userData.baseShadowScale as THREE.Vector3;
+      const shScale = 1 - bob * 0.12;
+      rig.shadow.scale.set(baseSh.x * shScale, 1, baseSh.z * shScale);
+    }
+
+    // Crisp faint white-cyan wingtip jet contrails behind moving Valkyrie Jets & Tempest Bombers
+    if (emitContrail && (k === "interceptor" || k === "bomber") && moving && vis.root.visible) {
+      st.contrailCd -= safeDt;
+      if (st.contrailCd <= 0) {
+        st.contrailCd = k === "interceptor" ? 0.042 : 0.055;
+        const span = k === "bomber" ? 1.28 : 0.92;
+        const trailZ = k === "bomber" ? -0.44 : -0.5;
+        const cosH = Math.cos(headingRad);
+        const sinH = Math.sin(headingRad);
+        const cosB = Math.cos(st.bank);
+        const sinB = Math.sin(st.bank);
+        const cScale = k === "bomber" ? 1.15 : 0.88;
+        for (const sx of [-1, 1]) {
+          const lx = sx * span * cosB;
+          const ly = sx * span * sinB;
+          const wx = x + lx * sinH + trailZ * cosH;
+          const wy = rig.body.position.y + ly;
+          const wz = y - lx * cosH + trailZ * sinH;
+          emitContrail(wx, wy, wz, cScale);
+        }
+      }
+    }
+  }
+
+  // ---------- 5. Navy (Organic Ocean Swells, Naval Turrets, Submarine Dive & Wakes) ----------
+  else if (k === "gunboat" || k === "destroyer" || k === "sub" || k === "dreadnought") {
+    const heavyShip = k === "dreadnought";
+    const wavePitch =
+      Math.sin(nowSec * 2.0 + last.id) * (heavyShip ? 0.018 : 0.032) +
+      Math.sin(nowSec * 3.3 + last.id * 2.1) * (heavyShip ? 0.008 : 0.014);
+    const waveRoll =
+      Math.cos(nowSec * 1.55 + last.id * 1.3) * (heavyShip ? 0.022 : 0.04) +
+      Math.sin(nowSec * 2.6 + last.id * 0.7) * (heavyShip ? 0.009 : 0.016);
+
+    if (k === "sub") {
+      const targetY = last.sub ? -0.2 : 0.06;
+      const prevSubY = st.subY;
+      st.subY += (targetY - st.subY) * Math.min(1, safeDt * 4.2);
+      const diveVel = (st.subY - prevSubY) / safeDt;
+      const divePitch = Math.max(-0.22, Math.min(0.22, -diveVel * 0.35));
+
+      const bob = last.sub
+        ? Math.sin(nowSec * 1.35 + last.id) * 0.012
+        : Math.sin(nowSec * 2.1 + last.id) * 0.026;
+      rig.body.position.y = st.subY + bob;
+      rig.body.rotation.x = wavePitch * (last.sub ? 0.42 : 1) + divePitch;
+      rig.body.rotation.z = waveRoll * (last.sub ? 0.42 : 1);
+      if (rig.spin) rig.spin.rotation.z += safeDt * (moving ? 19 : 5);
+
+      // Smooth submerged stealth translucency on per-instance cloned sub materials
+      const targetAlpha = last.sub ? 0.44 : 1.0;
+      st.subAlpha += (targetAlpha - st.subAlpha) * Math.min(1, safeDt * 5.0);
+      if (rig.subMats && st.matMode === "normal") {
+        const isTrans = st.subAlpha < 0.98;
+        for (const m of rig.subMats) {
+          if (m.transparent !== isTrans) {
+            m.transparent = isTrans;
+            m.needsUpdate = true;
+          }
+          m.opacity = st.subAlpha;
+        }
+      }
+    } else {
+      const heave =
+        Math.sin(nowSec * 2.15 + last.id) * (heavyShip ? 0.024 : 0.036) +
+        Math.cos(nowSec * 3.1 + last.id * 1.7) * 0.01;
+      const turnHeel = Math.max(-0.1, Math.min(0.1, yawRate * (k === "gunboat" ? 0.065 : 0.03)));
+      st.roll += (turnHeel - st.roll) * Math.min(1, safeDt * 6);
+
+      // Naval cannon/missile firing recoil rock
+      const fireRock = st.hullKick > 0 ? Math.sin((1 - st.hullKick) * Math.PI * 1.4) * st.hullKick * (heavyShip ? 0.05 : 0.035) : 0;
+
+      rig.body.position.y = 0.08 + heave;
+      rig.body.rotation.x = wavePitch + (moving ? (k === "gunboat" ? -0.065 : -0.022) : 0) - fireRock;
+      rig.body.rotation.z = waveRoll + st.roll;
+
+      if (rig.turret) {
+        const hullYaw = Math.PI / 2 - headingRad;
+        if (st.turretHold > 0) st.turretHold -= safeDt;
+        else st.turretWorldYaw = hullYaw;
+        const targetLocal = angleDiff(hullYaw, st.turretWorldYaw);
+        const diff = angleDiff(rig.turret.rotation.y, targetLocal);
+        rig.turret.rotation.y += diff * Math.min(1, safeDt * 10);
+      }
+
+      if (rig.recoil) {
+        if (k === "dreadnought") {
+          const baseZ = getBaseRecoilZ(rig.recoil, 0.46);
+          const baseY = getBaseRecoilY(rig.recoil, 0.68);
+          rig.recoil.position.z = baseZ - st.recoil * 0.24;
+          rig.recoil.position.y = baseY - st.recoil * 0.1;
+        } else {
+          const baseZ = getBaseRecoilZ(rig.recoil, k === "destroyer" ? 0.24 : 0.18);
+          rig.recoil.position.z = baseZ - st.recoil * 0.22;
+        }
+      }
+      if (rig.spin) {
+        rig.spin.rotation.y += safeDt * (heavyShip ? 1.25 : 2.0);
+      }
+    }
+
+    // Smooth ocean bow-wave & stern wakes behind sailing vessels
+    if (emitWake && moving && vis.root.visible) {
+      st.wakeCd -= safeDt;
+      if (st.wakeCd <= 0) {
+        st.wakeCd = k === "gunboat" ? 0.13 : k === "dreadnought" ? 0.24 : 0.18;
+        const cosH = Math.cos(headingRad);
+        const sinH = Math.sin(headingRad);
+        const sternOff = k === "dreadnought" ? 1.42 : k === "destroyer" ? 1.08 : k === "sub" ? 0.96 : 0.74;
+        const wakeScale =
+          k === "dreadnought"
+            ? 1.5
+            : k === "destroyer"
+              ? 1.1
+              : k === "sub"
+                ? last.sub
+                  ? 0.52
+                  : 0.84
+                : 0.8;
+        emitWake(x - cosH * sternOff, y - sinH * sternOff, wakeScale);
+        // Subtle bow-wave crest for fast surface warships
+        if (k !== "sub") {
+          const bowOff = k === "dreadnought" ? 1.55 : k === "destroyer" ? 1.25 : 0.85;
+          emitWake(x + cosH * bowOff, y + sinH * bowOff, wakeScale * 0.56);
+        }
+      }
+    }
+  }
+
+  // ---------- 6. Buildings Idle Loops & Low-Power Dimming ----------
   else if (isBuildingKind(k)) {
+    const offlineDef = lowPower && (k === "turret" || k === "arc");
+    const powerSpeed = lowPower ? 0.28 : 1.0;
+
     if (k === "turret" && rig.turret) {
-      const targetYaw = Math.PI / 2 - headingRad;
-      const diff = angleDiff(rig.turret.rotation.y, targetYaw);
-      rig.turret.rotation.y += diff * Math.min(1, dt * 12);
-      if (rig.recoil) rig.recoil.position.z = 0.26 - st.recoil * 0.16;
+      if (!offlineDef) {
+        const targetYaw = Math.PI / 2 - headingRad;
+        const diff = angleDiff(rig.turret.rotation.y, targetYaw);
+        rig.turret.rotation.y += diff * Math.min(1, safeDt * 12);
+      }
+      if (rig.recoil) {
+        const baseZ = getBaseRecoilZ(rig.recoil, 0.26);
+        rig.recoil.position.z = baseZ - st.recoil * 0.18;
+      }
     }
     if (rig.spin) {
-      const rate = k === "superweapon" ? 1.55 + 0.55 * Math.sin(nowSec * 0.9) : k === "techlab" ? 1.4 : 0.9;
-      rig.spin.rotation.y += dt * rate;
+      const rate =
+        (k === "superweapon"
+          ? 1.6 + 0.55 * Math.sin(nowSec * 0.9)
+          : k === "techlab" || k === "airfield"
+            ? 1.5
+            : k === "shipyard"
+              ? 1.3
+              : 0.95) * powerSpeed;
+      rig.spin.rotation.y += safeDt * rate;
     }
     if (rig.spin2) {
-      const rate2 = k === "superweapon" ? 2.75 + 0.85 * Math.sin(nowSec * 1.4) : 1.9;
-      rig.spin2.rotation.y -= dt * rate2;
+      const rate2 = (k === "superweapon" ? 2.8 + 0.85 * Math.sin(nowSec * 1.4) : 1.95) * powerSpeed;
+      rig.spin2.rotation.y -= safeDt * rate2;
     }
     if (rig.flag) {
-      rig.flag.rotation.y = Math.sin(nowSec * 3.8 + last.id) * 0.22;
+      rig.flag.rotation.y = Math.sin(nowSec * 3.8 + last.id) * 0.24;
     }
     if (rig.crane) {
       if (k === "depot") rig.crane.position.x = Math.sin(nowSec * 1.1 + last.id) * 0.55;
+      else if (k === "shipyard") rig.crane.position.z = 0.1 + Math.sin(nowSec * 0.85 + last.id) * 0.68;
       else if (k === "derrick") {
-        // Classic nodding industrial horsehead walking-beam (faster when captured & actively pumping)
-        const pumpSpeed = last.o >= 0 ? 2.4 : 1.15;
-        rig.crane.rotation.x = Math.sin(nowSec * pumpSpeed + last.id) * 0.27;
+        const pumpSpeed = last.o >= 0 ? 2.45 : 1.15;
+        rig.crane.rotation.x = Math.sin(nowSec * pumpSpeed + last.id) * 0.28;
       } else {
-        rig.crane.rotation.y = Math.sin(nowSec * 0.65 + last.id) * 0.18;
+        rig.crane.rotation.y = Math.sin(nowSec * 0.65 + last.id) * 0.2;
+      }
+    }
+
+    // Visual low-power dimming & slow offline pulse for powered buildings/defenses
+    if (rig.powerGlow && st.matMode === "normal") {
+      const dimmed = offlineDef || (lowPower && (k === "radar" || k === "superweapon" || k === "techlab"));
+      const dimFactor = dimmed ? 0.18 + 0.08 * Math.sin(nowSec * 2.4 + last.id) : 1.0;
+      for (const gm of rig.powerGlow) {
+        const mat = gm.material;
+        const origCol = gm.userData.origColor as THREE.Color | undefined;
+        const origEm = gm.userData.origEmissive as THREE.Color | undefined;
+        if (mat instanceof THREE.MeshBasicMaterial && origCol) {
+          mat.color.copy(origCol).multiplyScalar(dimFactor);
+        } else if (mat instanceof THREE.MeshStandardMaterial) {
+          if (origEm) mat.emissive.copy(origEm).multiplyScalar(dimmed ? dimFactor * 0.45 : 1.0);
+          if (origCol) mat.color.copy(origCol).multiplyScalar(dimmed ? 0.58 : 1.0);
+        }
       }
     }
   }
 
-  // Subtle energy core / beacon breathing pulse (relative to each mesh's authored baseScale)
+  // ---------- 7. Pulsing Energy Cores, Afterburners & Navigation Beacons ----------
   if (rig.pulse) {
-    const freq = k === "superweapon" ? 5.2 : 3.6;
-    const amp = k === "superweapon" ? 0.18 : 0.14;
-    const s = 0.92 + amp * Math.sin(nowSec * freq + last.id);
+    const offlinePulse = lowPower && (k === "turret" || k === "arc" || k === "radar");
+    const isJetBurner = k === "interceptor" || k === "bomber";
+    const freq = isJetBurner ? 18.0 : k === "superweapon" ? 5.2 : 3.6;
+    const amp = isJetBurner ? 0.16 : k === "superweapon" ? 0.18 : 0.14;
+    const s = offlinePulse
+      ? 0.78 + 0.04 * Math.sin(nowSec * 2.4 + last.id)
+      : 0.94 + amp * Math.sin(nowSec * freq + last.id);
     for (const p of rig.pulse) {
       const base = p.userData.baseScale as THREE.Vector3 | undefined;
       if (base) p.scale.set(base.x * s, base.y * s, base.z * s);
     }
   }
 
-  // Brief 110ms tactile emissive hit-flash (isolated to this entity's body meshes)
+  // ---------- 8. Unified Material Override (Hit-Flash > Holographic Construction > Normal) ----------
   if (st.hitFlash > 0) {
-    st.hitFlash = Math.max(0, st.hitFlash - dt);
-    if (!st.flashing) {
-      st.flashing = true;
-      rig.body.traverse((o) => {
-        if (o instanceof THREE.Mesh && !o.userData.isBar) {
-          o.userData._origMat = o.material;
-          o.material = HIT_FLASH_MAT;
-        }
-      });
-    }
-  } else if (st.flashing) {
-    st.flashing = false;
-    rig.body.traverse((o) => {
-      if (o instanceof THREE.Mesh && o.userData._origMat) {
-        o.material = o.userData._origMat as THREE.Material | THREE.Material[];
-        delete o.userData._origMat;
-      }
-    });
+    st.hitFlash = Math.max(0, st.hitFlash - safeDt);
   }
+  const desiredMode: "normal" | "hit" | "holo" =
+    st.hitFlash > 0 ? "hit" : holoConstruct ? "holo" : "normal";
+  setBodyMatMode(rig.body, st, desiredMode);
 
-  // Damaged smoke & industrial exhaust emitter
+  // ---------- 9. Damaged Smoke & Industrial Exhaust Emitter ----------
   if (emitSmoke && rig.smokePos && vis.root.visible) {
     const damaged = last.hp < last.mhp * 0.55;
     const isStack = k === "factory" || k === "factory2" || k === "refinery" || k === "power";
     if (damaged || isStack) {
-      st.smokeCd -= dt;
+      st.smokeCd -= safeDt;
       if (st.smokeCd <= 0) {
         st.smokeCd = damaged ? 0.28 + Math.random() * 0.2 : 0.9 + Math.random() * 0.5;
         emitSmoke(x + rig.smokePos.x * 0.5, rig.smokePos.y, y + rig.smokePos.z * 0.5, damaged);

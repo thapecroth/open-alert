@@ -11,9 +11,9 @@
 //   const pixels = env.rgbFrame(3);                           // 192x192x3 RGB image
 
 import { World } from "./world";
-import { MAP_W, MAP_H, BUILDINGS, UNITS, ORE_CELL_MAX, PLAYER_COLORS } from "../shared/gamedefs";
-import type { BuildingKind, UnitKind, EntKind } from "../shared/gamedefs";
-import type { OrderKind, PlayerState } from "../shared/protocol";
+import { MAP_W, MAP_H, BUILDINGS, UNITS, ORE_CELL_MAX, PLAYER_COLORS, SHIPYARD_BUILD_DIST } from "../shared/gamedefs";
+import type { BuildingKind, UnitKind, EntKind, ProdCat } from "../shared/gamedefs";
+import type { OrderKind, PlayerState, ProdQueue } from "../shared/protocol";
 
 const hasOwn = (o: object, k: unknown): boolean =>
   typeof k === "string" && Object.prototype.hasOwnProperty.call(o, k);
@@ -138,7 +138,7 @@ export class GymEnv {
           },
           train: {
             anyOf: [{ type: "string", enum: Object.keys(UNITS) }, { type: "null" }],
-            description: "queue one unit: infantry→barracks, tank→factory, harvester→factory(+refinery)",
+            description: "queue one unit: land→barracks/factory, air→airfield, sea→shipyard",
           },
           cancelTrain: {
             anyOf: [{ type: "string", enum: Object.keys(UNITS) }, { type: "null" }],
@@ -320,6 +320,10 @@ export class GymEnv {
       if (e.k === "harvester") s.cargo = e.cargo;
       ents.push(s);
     }
+    const queues: Partial<Record<ProdCat, ProdQueue>> = {};
+    for (const cat of ["barracks", "factory", "airfield", "shipyard"] as const) {
+      if (p.queues[cat]) queues[cat] = { ...p.queues[cat]! };
+    }
     return {
       tick: this.w.tick,
       you: {
@@ -331,7 +335,7 @@ export class GymEnv {
         eliminated: p.eliminated,
         bq: p.bq ? { ...p.bq } : null,
         awaiting: p.awaiting,
-        queues: { ...p.queues },
+        queues,
       },
       ents,
       ore: this.w.oreSnapshot(),
@@ -389,11 +393,15 @@ export class GymEnv {
       const i = (py * W + px) * 3;
       img[i] = r; img[i + 1] = g; img[i + 2] = b;
     };
-    // terrain: dark slate with a deterministic per-tile hash for texture
+    // terrain: dark slate (or ocean blue for water tiles) with a deterministic per-tile hash for texture
     for (let y = 0; y < MAP_H; y++)
       for (let x = 0; x < MAP_W; x++) {
         const v = 12 + (((x * 73856093) ^ (y * 19349663)) >>> 0) % 10;
-        for (let dy = 0; dy < scale; dy++) for (let dx = 0; dx < scale; dx++) put(x * scale + dx, y * scale + dy, v, v + 3, v + 2);
+        const isW = this.w.isWater(x, y);
+        const r = isW ? 8 : v,
+          g = isW ? 28 + (v % 6) : v + 3,
+          b = isW ? 58 + (v % 10) : v + 2;
+        for (let dy = 0; dy < scale; dy++) for (let dx = 0; dx < scale; dx++) put(x * scale + dx, y * scale + dy, r, g, b);
       }
     // ore: amber, brightness by density
     for (const [x, y, amt] of this.w.oreSnapshot()) {
@@ -485,12 +493,13 @@ export class GymEnv {
   /** Nearest valid placement tile around own buildings, ring search like the client bot. */
   private findSpot(slot: number, kind: BuildingKind): { tx: number; ty: number } | null {
     const d = BUILDINGS[kind];
+    const maxR = d.waterOnly ? SHIPYARD_BUILD_DIST + 2 : 4;
     for (const b of this.w.ents.values()) {
       if (b.o !== slot || !isB(b.k)) continue;
       const bd = BUILDINGS[b.k];
       const bx = Math.round(b.x - bd.w / 2),
         by = Math.round(b.y - bd.h / 2);
-      for (let r = 1; r <= 4; r++)
+      for (let r = 1; r <= maxR; r++)
         for (let y = by - r - d.h + 1; y < by + bd.h + r; y++)
           for (let x = bx - r - d.w + 1; x < bx + bd.w + r; x++)
             if (this.w.canPlace(slot, kind, x, y) === null) return { tx: x, ty: y };

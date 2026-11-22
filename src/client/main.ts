@@ -16,6 +16,7 @@ import {
   BUILD_ORDER,
   TRAIN_ORDER,
   DEFAULT_CONFIG,
+  SHIPYARD_BUILD_DIST,
   BuildingKind,
   MapId,
   GameConfig,
@@ -67,6 +68,7 @@ let latestState: PlayerState | null = null;
 const oreCells = new Set<number>();
 const allies = new Set<number>();
 let prevAwaiting: string | null = null;
+let prevLowPower = false;
 let iconColor = "";
 let lastTrainSfx = 0;
 let lastHoverMs = 0;
@@ -78,13 +80,20 @@ hud.setAudioState(audio.muted, audio.musicOn);
 
 // ---------- placement validity (exact client parity with server canPlace) ----------
 
-function placeReason(tx: number, ty: number, w: number, h: number): string | null {
+function placeReason(tx: number, ty: number, w: number, h: number, kind?: BuildingKind): string | null {
   if (tx < 0 || ty < 0 || tx + w > MAP_W || ty + h > MAP_H) return "off map";
+  const waterOnly = !!(kind && BUILDINGS[kind].waterOnly);
   for (let y = ty; y < ty + h; y++)
     for (let x = tx; x < tx + w; x++) {
       if (gs.isCliff(x, y)) return "blocked by terrain";
+      if (waterOnly) {
+        if (!gs.isWater(x, y)) return "must build on water";
+      } else {
+        if (gs.isWater(x, y)) return "can't build on water";
+      }
       if (oreCells.has(y * MAP_W + x)) return "can't build on ore";
     }
+  const maxGap = waterOnly ? SHIPYARD_BUILD_DIST : 2;
   let adj = false;
   for (const t of renderer.tracked.values()) {
     if (!isBuildingKind(t.last.k)) {
@@ -100,7 +109,7 @@ function placeReason(tx: number, ty: number, w: number, h: number): string | nul
     if (t.last.o === mySlot) {
       const gapX = Math.max(bx - (tx + w), tx - (bx + d.w));
       const gapY = Math.max(by - (ty + h), ty - (by + d.h));
-      if (Math.max(gapX, gapY) <= 2) adj = true;
+      if (Math.max(gapX, gapY) <= maxGap) adj = true;
     }
   }
   return adj ? null : "too far from your base";
@@ -167,12 +176,13 @@ hud.onTrain = (u) => {
   }
 };
 hud.onTrainCancel = (u) => net.send({ t: "trainCancel", unit: u });
+hud.onBuildBlocked = () => audio.playUi("deny");
 hud.onUpgrade = (id) => {
   net.send({ t: "upgrade", id });
   audio.playUi("upgrade");
 };
 hud.onSuperweaponClick = () => {
-  if (latestState?.swReady) input.armSuperweapon();
+  if (latestState?.swReady && !latestState.lowPower) input.armSuperweapon();
 };
 hud.onReconClick = () => {
   if (latestState?.reconReady && !latestState.lowPower) input.armRecon();
@@ -247,6 +257,7 @@ net.onMsg = (m: S2C) => {
       currentConfig = m.config ? { ...DEFAULT_CONFIG, ...m.config } : { ...DEFAULT_CONFIG };
       phase = "playing";
       prevAwaiting = null;
+      prevLowPower = false;
       latestState = null;
       myTeam = m.players.find((p) => p.slot === mySlot)?.team ?? 0;
       allies.clear();
@@ -293,6 +304,7 @@ net.onMsg = (m: S2C) => {
     case "snap": {
       if (phase !== "playing") break;
       renderer.pushSnap(m.ents, m.crates);
+      renderer.setPlayerPower(m.players);
       renderer.applyVisibility(currentConfig.fog ? mySlot : -1, allies);
       renderer.applyEvents(m.events, mySlot);
       let shotSfx = 0;
@@ -330,6 +342,7 @@ net.onMsg = (m: S2C) => {
           const mine = ev.slot === mySlot;
           if (mine) {
             mySlot = -1;
+            prevLowPower = false;
             input.reset();
             hud.setSpectatorMode(true);
             audio.playUi("lose");
@@ -356,13 +369,26 @@ net.onMsg = (m: S2C) => {
         }
       }
       latestState = mySlot >= 0 ? m.players[mySlot] ?? null : null;
-      if (!latestState?.swReady && input.swArmed) input.disarmSuperweapon();
+      if (mySlot >= 0 && latestState) {
+        const curLow = !!latestState.lowPower;
+        if (curLow && !prevLowPower) {
+          hud.toast("⚡ LOW POWER! Build a Reactor Plant — defenses, radar & superweapon offline!");
+          audio.playUi("powerDown");
+        } else if (!curLow && prevLowPower) {
+          hud.toast("Power restored — systems online", true);
+          audio.playUi("powerUp");
+        }
+        prevLowPower = curLow;
+      } else {
+        prevLowPower = false;
+      }
+      if ((!latestState?.swReady || latestState?.lowPower) && input.swArmed) input.disarmSuperweapon();
       if ((!latestState?.reconReady || latestState?.lowPower) && input.reconArmed) input.disarmRecon();
       hud.updateClock(m.tick);
       hud.updateTop(latestState, mySlot < 0 ? m.players : undefined);
       hud.updateRecon(latestState, input.reconArmed);
       hud.updateSuperweapon(latestState, input.swArmed);
-      hud.updateSidebar(latestState, has, countOf, currentConfig);
+      hud.updateSidebar(latestState, has, countOf, currentConfig, gs.hasWater());
       hud.updateSelInfo(input.selection, renderer.tracked, mySlot, latestState, has);
       hud.updateGroups(input.groups, renderer.tracked, mySlot);
       if (mySlot >= 0) {

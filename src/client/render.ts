@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { CrateSnap, EntSnap, GameEvent, OrderKind } from "../shared/protocol";
+import type { CrateSnap, EntSnap, GameEvent, OrderKind, PlayerState } from "../shared/protocol";
 import type { CrateKind } from "../shared/gamedefs";
 import { makeEntVis, makeCrateVis, setVetBadge, tagEntity, applyFacing, EntVis, CrateVis } from "./models";
 import { createAnimState, stepEntityAnim, triggerFireAnim, triggerHitFlash, AnimState } from "./anim";
@@ -121,16 +121,43 @@ export class Renderer {
   private swShakeTimers: ReturnType<typeof setTimeout>[] = [];
   private lastAllies?: Set<number>;
   private lastVisSlot = -1;
+  private playerLowPower = new Map<number, boolean>();
 
   constructor(private gs: GameScene) {
     this.vfx = new VfxSystem(gs.scene);
     this.waypoints = new WaypointOverlay(gs.scene);
   }
 
+  setPlayerPower(players: Record<number, PlayerState>): void {
+    this.playerLowPower.clear();
+    for (const [key, p] of Object.entries(players)) {
+      if (!p) continue;
+      this.playerLowPower.set(p.slot ?? Number(key), Boolean(p.lowPower));
+    }
+  }
+
+  private disposeVis(vis: EntVis) {
+    if (vis.rig.subMats) {
+      for (const m of vis.rig.subMats) m.dispose();
+    }
+    if (vis.rig.powerGlow) {
+      for (const gm of vis.rig.powerGlow) {
+        const m = (gm.userData._origMat as THREE.Material | THREE.Material[] | undefined) ?? gm.material;
+        if (Array.isArray(m)) m.forEach((x) => x.dispose());
+        else m.dispose();
+      }
+    }
+    (vis.ring.material as THREE.Material).dispose();
+    (vis.barBg.material as THREE.Material).dispose();
+    (vis.barFg.material as THREE.Material).dispose();
+    (vis.vetBadge.material as THREE.Material).dispose();
+  }
+
   reset() {
     const scene = this.gs.scene;
     for (const t of this.tracked.values()) {
       scene.remove(t.vis.root);
+      this.disposeVis(t.vis);
     }
     this.tracked.clear();
     for (const cv of this.crateVis.values()) {
@@ -147,6 +174,7 @@ export class Renderer {
     this.hasInitialSnap = false;
     this.lastAllies = undefined;
     this.lastVisSlot = -1;
+    this.playerLowPower.clear();
     for (const tm of this.swShakeTimers) clearTimeout(tm);
     this.swShakeTimers = [];
     this.vfx.clear();
@@ -166,6 +194,7 @@ export class Renderer {
     for (const [id, t] of this.tracked) {
       if (!map.has(id)) {
         scene.remove(t.vis.root);
+        this.disposeVis(t.vis);
         const i = this.gs.pickables.indexOf(t.vis.root);
         if (i >= 0) this.gs.pickables.splice(i, 1);
         this.tracked.delete(id);
@@ -231,6 +260,7 @@ export class Renderer {
         const scene = this.gs.scene;
         const wasVisible = t.vis.root.visible;
         scene.remove(t.vis.root);
+        this.disposeVis(t.vis);
         const i = this.gs.pickables.indexOf(t.vis.root);
         if (i >= 0) this.gs.pickables.splice(i, 1);
         const color = this.slotColors.get(e.o) ?? "#888888";
@@ -245,6 +275,7 @@ export class Renderer {
         t.holdInd = undefined;
         t.anim.flashing = false;
         t.anim.hitFlash = 0;
+        t.anim.matMode = "normal";
         if (ownerChanged) {
           this.selection.delete(id);
           this.onOwnerLost?.(id);
@@ -316,6 +347,10 @@ export class Renderer {
   update(dt = 0.016) {
     const nowSec = performance.now() / 1000;
     const emitSmoke = (x: number, y: number, z: number, dark: boolean) => this.vfx.spawnSmoke(x, y, z, dark);
+    const emitWake = (x: number, z: number, scale?: number) => this.vfx.spawnWake(x, z, scale);
+    const emitDust = (x: number, z: number, scale?: number) => this.vfx.spawnDust(x, z, scale);
+    const emitContrail = (x: number, y: number, z: number, scale?: number) =>
+      this.vfx.spawnContrail(x, y, z, scale);
     const wpEntries: { x: number; y: number; wp: [number, number, OrderKind][] }[] = [];
     const rallyEntries: { x: number; y: number; rx: number; ry: number }[] = [];
 
@@ -327,7 +362,22 @@ export class Renderer {
       if (!isBuildingKind(t.last.k)) {
         applyFacing(t.vis.root, p.d);
       }
-      stepEntityAnim(t.vis, t.anim, t.last, p.x, p.y, p.d, dt, nowSec, emitSmoke);
+      const lowPwr = this.playerLowPower.get(t.last.o) === true;
+      stepEntityAnim(
+        t.vis,
+        t.anim,
+        t.last,
+        p.x,
+        p.y,
+        p.d,
+        dt,
+        nowSec,
+        emitSmoke,
+        emitWake,
+        lowPwr,
+        emitDust,
+        emitContrail,
+      );
 
       if (this.selection.has(id) && t.vis.root.visible) {
         if (t.last.wp?.length) {
@@ -335,7 +385,11 @@ export class Renderer {
         }
         if (
           t.last.rally &&
-          (t.last.k === "barracks" || t.last.k === "factory" || t.last.k === "factory2")
+          (t.last.k === "barracks" ||
+            t.last.k === "factory" ||
+            t.last.k === "factory2" ||
+            t.last.k === "airfield" ||
+            t.last.k === "shipyard")
         ) {
           rallyEntries.push({ x: p.x, y: p.y, rx: t.last.rally[0], ry: t.last.rally[1] });
         }
@@ -360,11 +414,17 @@ export class Renderer {
   applyEvents(events: GameEvent[], mySlot = -1) {
     for (const ev of events) {
       if (ev.e === "shot") {
-        this.vfx.spawnShot(ev.fx, ev.fy, ev.tx, ev.ty, ev.w ?? "bullet", ev.vet ?? 0);
-        if (ev.src != null) {
-          const shooter = this.tracked.get(ev.src);
-          if (shooter) triggerFireAnim(shooter.anim, ev.fx, ev.fy, ev.tx, ev.ty);
-        }
+        const shooter = ev.src != null ? this.tracked.get(ev.src) : undefined;
+        this.vfx.spawnShot(
+          ev.fx,
+          ev.fy,
+          ev.tx,
+          ev.ty,
+          ev.w ?? "bullet",
+          ev.vet ?? 0,
+          shooter?.vis.rig.altitude,
+        );
+        if (shooter) triggerFireAnim(shooter.anim, ev.fx, ev.fy, ev.tx, ev.ty);
       } else if (ev.e === "boom") {
         this.vfx.spawnBoom(ev.x, ev.y, ev.r);
         if (ev.r >= 1.5) {
@@ -448,11 +508,13 @@ export class Renderer {
     }
 
     const isFriendly = (o: number) => o === mySlot || (allies?.has(o) ?? false);
-    const visionSources: { x: number; y: number; r: number }[] = [];
+    const visionSources: { x: number; y: number; r: number; subDetectR: number }[] = [];
     for (const t of this.tracked.values()) {
       if (isFriendly(t.last.o)) {
-        const r = t.last.k === "radar" || t.last.k === "superweapon" ? 17 : 14;
-        visionSources.push({ x: t.last.x, y: t.last.y, r });
+        const k = t.last.k;
+        const r = k === "radar" || k === "superweapon" ? 17 : 14;
+        const subDetectR = k === "gunboat" || k === "destroyer" || k === "sub" ? 9 : 5.5;
+        visionSources.push({ x: t.last.x, y: t.last.y, r, subDetectR });
       }
     }
     const reconZones = this.gs.getActiveReconReveals();
@@ -463,11 +525,13 @@ export class Renderer {
         if (!t.vis.root.visible) t.vis.root.visible = true;
         continue;
       }
+      const isStealthedSub = e.k === "sub" && Boolean(e.sub);
       let vis = false;
       for (const m of visionSources) {
         const dx = m.x - e.x;
         const dy = m.y - e.y;
-        if (dx * dx + dy * dy <= m.r * m.r) {
+        const lim = isStealthedSub ? m.subDetectR : m.r;
+        if (dx * dx + dy * dy <= lim * lim) {
           vis = true;
           break;
         }
@@ -498,7 +562,8 @@ export class Renderer {
     const t = this.tracked.get(id);
     if (!t || !t.vis.root.visible) return null;
     const v = t.vis.root.position.clone();
-    v.y = 0.5;
+    // Air units project at an averaged mid-height between ground ring & flying hull for reliable drag-box selection
+    v.y = t.vis.rig.altitude ? t.vis.rig.altitude * 0.42 : 0.5;
     v.project(this.gs.camera);
     // Reject entities behind or clipped outside camera frustum
     if (v.z < -1 || v.z > 1) return null;

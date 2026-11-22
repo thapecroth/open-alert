@@ -44,150 +44,386 @@ function valueNoise2D(seed: number) {
     sample(x, y) * 0.55 + sample(x * 2.1 + 13.7, y * 2.1 + 7.3) * 0.3 + sample(x * 4.3 + 29.1, y * 4.3 + 19.4) * 0.15;
 }
 
-// ---------- Shared surface detail maps ----------
+// Compute a crisp OpenGL tangent-space normal map from a normalized [0..1] heightfield via 3x3 Sobel gradient
+function heightBufferToNormalCanvas(
+  heights: Float32Array,
+  w: number,
+  h: number,
+  strength: number,
+  tileable = true,
+): HTMLCanvasElement {
+  const [nc, nctx] = makeCanvas(w, h);
+  const nimg = nctx.createImageData(w, h);
+  const nd = nimg.data;
 
-let armorBumpTex: THREE.CanvasTexture | null = null;
+  const sample = (x: number, y: number): number => {
+    const sx = tileable ? ((x % w) + w) % w : Math.max(0, Math.min(w - 1, x));
+    const sy = tileable ? ((y % h) + h) % h : Math.max(0, Math.min(h - 1, y));
+    return heights[sy * w + sx];
+  };
+
+  for (let py = 0; py < h; py++) {
+    for (let px = 0; px < w; px++) {
+      const tl = sample(px - 1, py - 1);
+      const t = sample(px, py - 1);
+      const tr = sample(px + 1, py - 1);
+      const l = sample(px - 1, py);
+      const r = sample(px + 1, py);
+      const bl = sample(px - 1, py + 1);
+      const b = sample(px, py + 1);
+      const br = sample(px + 1, py + 1);
+
+      const dx = tr + 2 * r + br - (tl + 2 * l + bl);
+      const dy = bl + 2 * b + br - (tl + 2 * t + tr);
+
+      // CanvasTexture flipY=true maps +px -> +U (+T) and -py -> +V (+B)
+      let nx = -dx * strength;
+      let ny = dy * strength;
+      let nz = 1.0;
+      const invLen = 1 / Math.hypot(nx, ny, nz);
+      nx *= invLen;
+      ny *= invLen;
+      nz *= invLen;
+
+      const idx = (py * w + px) * 4;
+      nd[idx] = Math.max(0, Math.min(255, Math.round((nx * 0.5 + 0.5) * 255)));
+      nd[idx + 1] = Math.max(0, Math.min(255, Math.round((ny * 0.5 + 0.5) * 255)));
+      nd[idx + 2] = Math.max(0, Math.min(255, Math.round((nz * 0.5 + 0.5) * 255)));
+      nd[idx + 3] = 255;
+    }
+  }
+  nctx.putImageData(nimg, 0, 0);
+  return nc;
+}
+
+function canvasToNormalCanvas(src: HTMLCanvasElement, strength: number, tileable = true): HTMLCanvasElement {
+  const w = src.width;
+  const h = src.height;
+  const ctx = src.getContext("2d")!;
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const heights = new Float32Array(w * h);
+  for (let i = 0; i < heights.length; i++) {
+    heights[i] = data[i * 4] / 255;
+  }
+  return heightBufferToNormalCanvas(heights, w, h, strength, tileable);
+}
+
+// ---------- Shared 512x512 Next-Gen PBR Armor Detail Maps ----------
+
+let armorNormalTex: THREE.CanvasTexture | null = null;
 let armorRoughTex: THREE.CanvasTexture | null = null;
+let armorDetailTex: THREE.CanvasTexture | null = null;
 let concreteDiffTex: THREE.CanvasTexture | null = null;
-let concreteBumpTex: THREE.CanvasTexture | null = null;
+let concreteNormalTex: THREE.CanvasTexture | null = null;
+let concreteRoughTex: THREE.CanvasTexture | null = null;
 let treadTex: THREE.CanvasTexture | null = null;
+let treadNormalTex: THREE.CanvasTexture | null = null;
 
 function ensureArmorDetail() {
-  if (armorBumpTex && armorRoughTex) return;
-  const S = 256;
-  const [bc, bctx] = makeCanvas(S, S);
+  if (armorNormalTex && armorRoughTex && armorDetailTex) return;
+  const S = 512;
+  const [hc, hctx] = makeCanvas(S, S);
   const [rc, rctx] = makeCanvas(S, S);
+  const [ac, actx] = makeCanvas(S, S);
   const rand = mulberry32(4201);
 
-  // Base brushed metal grain
-  bctx.fillStyle = "#808080";
-  bctx.fillRect(0, 0, S, S);
-  rctx.fillStyle = "#7c7c7c";
+  // Neutral mid-height plate, balanced satin-matte roughness (~0.88 multiplier), near-white subtle AO map
+  hctx.fillStyle = "#888888";
+  hctx.fillRect(0, 0, S, S);
+  rctx.fillStyle = "#dedede";
   rctx.fillRect(0, 0, S, S);
+  actx.fillStyle = "#f4f4f4";
+  actx.fillRect(0, 0, S, S);
 
-  for (let i = 0; i < 900; i++) {
+  // Fine brushed titanium / composite directional micro-grain
+  for (let i = 0; i < 2800; i++) {
     const x = rand() * S;
     const y = rand() * S;
-    const len = 8 + rand() * 34;
-    const v = 112 + ((rand() * 34) | 0);
-    bctx.fillStyle = `rgb(${v},${v},${v})`;
-    bctx.fillRect(x, y, len, 1);
-    const rv = 105 + ((rand() * 48) | 0);
+    const len = 14 + rand() * 58;
+    const hv = 128 + ((rand() - 0.5) * 20) | 0;
+    hctx.fillStyle = `rgb(${hv},${hv},${hv})`;
+    hctx.fillRect(x, y, len, 1);
+
+    const rv = 212 + ((rand() - 0.5) * 38) | 0;
     rctx.fillStyle = `rgb(${rv},${rv},${rv})`;
-    rctx.fillRect(x, y, len, 1.5);
+    rctx.fillRect(x, y, len, 1.4);
+
+    const av = 240 + ((rand() - 0.5) * 18) | 0;
+    actx.fillStyle = `rgb(${av},${av},${av})`;
+    actx.fillRect(x, y, len, 1.2);
   }
 
-  // Armor panel seams
-  const panels = [
-    [0, 0, S / 2, S / 2],
-    [S / 2, 0, S / 2, S / 2],
-    [0, S / 2, S / 2, S / 2],
-    [S / 2, S / 2, S / 2, S / 2],
-  ];
-  for (const [px, py, pw, ph] of panels) {
-    // Dark recessed seam
-    bctx.strokeStyle = "#363636";
-    bctx.lineWidth = 3;
-    bctx.strokeRect(px + 2, py + 2, pw - 4, ph - 4);
-    // Subtle bevel highlight inside seam
-    bctx.strokeStyle = "#adadad";
-    bctx.lineWidth = 1;
-    bctx.strokeRect(px + 4, py + 4, pw - 8, ph - 8);
-    // Edge wear (shinier metal along seams)
-    rctx.strokeStyle = "#525252";
-    rctx.lineWidth = 2;
-    rctx.strokeRect(px + 4, py + 4, pw - 8, ph - 8);
+  // Subtle composite surface mottle patches for organic weathering
+  for (let i = 0; i < 70; i++) {
+    const cx = rand() * S;
+    const cy = rand() * S;
+    const rad = 18 + rand() * 54;
+    const darker = rand() > 0.45;
+    const g = rctx.createRadialGradient(cx, cy, 2, cx, cy, rad);
+    g.addColorStop(0, darker ? "rgba(255,255,255,0.12)" : "rgba(155,155,155,0.12)");
+    g.addColorStop(1, "rgba(220,220,220,0)");
+    rctx.fillStyle = g;
+    rctx.beginPath();
+    rctx.arc(cx, cy, rad, 0, Math.PI * 2);
+    rctx.fill();
 
-    // Corner rivets
-    for (const [rx, ry] of [
-      [px + 12, py + 12],
-      [px + pw - 12, py + 12],
-      [px + 12, py + ph - 12],
-      [px + pw - 12, py + ph - 12],
-    ]) {
-      bctx.fillStyle = "#c8c8c8";
-      bctx.beginPath();
-      bctx.arc(rx, ry, 2.6, 0, Math.PI * 2);
-      bctx.fill();
-      bctx.fillStyle = "#484848";
-      bctx.beginPath();
-      bctx.arc(rx + 0.8, ry + 0.8, 1.2, 0, Math.PI * 2);
-      bctx.fill();
+    const ag = actx.createRadialGradient(cx, cy, 2, cx, cy, rad);
+    ag.addColorStop(0, darker ? "rgba(210,210,210,0.14)" : "rgba(255,255,255,0.08)");
+    ag.addColorStop(1, "rgba(244,244,244,0)");
+    actx.fillStyle = ag;
+    actx.beginPath();
+    actx.arc(cx, cy, rad, 0, Math.PI * 2);
+    actx.fill();
+  }
+
+  // Precision beveled hull armor plates (2x2 main layout + recessed tactical inspection hatch)
+  const panels: [number, number, number, number, boolean][] = [
+    [0, 0, 256, 256, true],
+    [256, 0, 256, 256, true],
+    [0, 256, 256, 256, true],
+    [256, 256, 256, 256, true],
+    [32, 32, 116, 84, false], // Recessed maintenance hatch on upper-left plate
+  ];
+
+  for (const [px, py, pw, ph, withRivets] of panels) {
+    // Soft outer AO halo along panel seam
+    actx.strokeStyle = "rgba(110, 110, 110, 0.32)";
+    actx.lineWidth = 10;
+    actx.strokeRect(px + 2, py + 2, pw - 4, ph - 4);
+
+    // Wide beveled shoulder (smooth height ramp so Sobel generates gleaming 45-deg edge highlights)
+    hctx.strokeStyle = "#b4b4b4";
+    hctx.lineWidth = 9;
+    hctx.strokeRect(px + 6, py + 6, pw - 12, ph - 12);
+
+    hctx.strokeStyle = "#d2d2d2";
+    hctx.lineWidth = 3;
+    hctx.strokeRect(px + 9, py + 9, pw - 18, ph - 18);
+
+    // Crisp recessed dark panel seam groove
+    hctx.strokeStyle = "#262626";
+    hctx.lineWidth = 4;
+    hctx.strokeRect(px + 2, py + 2, pw - 4, ph - 4);
+
+    // AO darkening directly inside seam + subtle metallic edge highlight along bevel lip
+    actx.strokeStyle = "#8a8a8a";
+    actx.lineWidth = 3.5;
+    actx.strokeRect(px + 2, py + 2, pw - 4, ph - 4);
+    actx.strokeStyle = "rgba(255, 255, 255, 0.55)";
+    actx.lineWidth = 1.5;
+    actx.strokeRect(px + 7, py + 7, pw - 14, ph - 14);
+
+    // Roughness variation: rougher grime in recessed seam, sleeker burnished metal along beveled edge
+    rctx.strokeStyle = "#fafafa";
+    rctx.lineWidth = 5;
+    rctx.strokeRect(px + 2, py + 2, pw - 4, ph - 4);
+    rctx.strokeStyle = "#9e9e9e";
+    rctx.lineWidth = 4;
+    rctx.strokeRect(px + 8, py + 8, pw - 16, ph - 16);
+
+    // Precision recessed hex fasteners / rivets around main armor plates
+    if (withRivets) {
+      const inset = 22;
+      const fasteners: [number, number][] = [
+        [px + inset, py + inset],
+        [px + pw - inset, py + inset],
+        [px + inset, py + ph - inset],
+        [px + pw - inset, py + ph - inset],
+        [px + pw * 0.5, py + inset],
+        [px + pw * 0.5, py + ph - inset],
+        [px + inset, py + ph * 0.5],
+        [px + pw - inset, py + ph * 0.5],
+      ];
+      for (const [rx, ry] of fasteners) {
+        // Countersunk collar recess
+        hctx.fillStyle = "#484848";
+        hctx.beginPath();
+        hctx.arc(rx, ry, 5.4, 0, Math.PI * 2);
+        hctx.fill();
+
+        // Raised domed bolt head
+        const rg = hctx.createRadialGradient(rx - 0.8, ry - 0.8, 0.4, rx, ry, 3.8);
+        rg.addColorStop(0, "#ededed");
+        rg.addColorStop(0.65, "#bcbcbc");
+        rg.addColorStop(1, "#666666");
+        hctx.fillStyle = rg;
+        hctx.beginPath();
+        hctx.arc(rx, ry, 3.8, 0, Math.PI * 2);
+        hctx.fill();
+
+        // Subtle dark AO ring around fastener + metallic specular dot
+        actx.strokeStyle = "rgba(115, 115, 115, 0.58)";
+        actx.lineWidth = 1.8;
+        actx.beginPath();
+        actx.arc(rx, ry, 5.1, 0, Math.PI * 2);
+        actx.stroke();
+
+        rctx.fillStyle = "#989898";
+        rctx.beginPath();
+        rctx.arc(rx, ry, 3.6, 0, Math.PI * 2);
+        rctx.fill();
+      }
     }
   }
 
-  // Louver vents on lower-right plate
-  for (let y = S / 2 + 24; y < S - 24; y += 10) {
-    bctx.fillStyle = "#323232";
-    bctx.fillRect(S / 2 + 24, y, S / 2 - 48, 4);
-    rctx.fillStyle = "#b0b0b0";
-    rctx.fillRect(S / 2 + 24, y, S / 2 - 48, 4);
+  // Recessed armored radiator louver grille on lower-right plate
+  const gx = 296;
+  const gy = 304;
+  const gw = 176;
+  const gh = 160;
+  hctx.fillStyle = "#4c4c4c";
+  hctx.fillRect(gx - 6, gy - 6, gw + 12, gh + 12);
+  actx.fillStyle = "#bcbcbc";
+  actx.fillRect(gx - 4, gy - 4, gw + 8, gh + 8);
+  rctx.fillStyle = "#f5f5f5";
+  rctx.fillRect(gx - 4, gy - 4, gw + 8, gh + 8);
+
+  for (let sy = gy + 6; sy < gy + gh - 8; sy += 16) {
+    // Deep recessed slot
+    hctx.fillStyle = "#1c1c1c";
+    hctx.fillRect(gx + 6, sy, gw - 12, 6);
+    // Angled metal slat lip
+    hctx.fillStyle = "#d0d0d0";
+    hctx.fillRect(gx + 6, sy + 6, gw - 12, 5);
+    actx.fillStyle = "#727272";
+    actx.fillRect(gx + 6, sy, gw - 12, 6);
+    actx.fillStyle = "#f2f2f2";
+    actx.fillRect(gx + 6, sy + 6, gw - 12, 4);
+    rctx.fillStyle = "#aeaeae";
+    rctx.fillRect(gx + 6, sy + 6, gw - 12, 5);
   }
 
-  armorBumpTex = new THREE.CanvasTexture(bc);
-  armorBumpTex.wrapS = armorBumpTex.wrapT = THREE.RepeatWrapping;
+  // Tactical surface micro-scratches (catch sharp specular highlights along wear lines)
+  for (let i = 0; i < 110; i++) {
+    const sx = rand() * S;
+    const sy = rand() * S;
+    const ang = (rand() - 0.5) * 0.9 + (rand() > 0.5 ? 0 : Math.PI * 0.5);
+    const len = 10 + rand() * 44;
+    const ex = sx + Math.cos(ang) * len;
+    const ey = sy + Math.sin(ang) * len;
+
+    hctx.strokeStyle = rand() > 0.35 ? "rgba(70,70,70,0.55)" : "rgba(215,215,215,0.4)";
+    hctx.lineWidth = 0.8 + rand() * 0.9;
+    hctx.beginPath();
+    hctx.moveTo(sx, sy);
+    hctx.lineTo(ex, ey);
+    hctx.stroke();
+
+    // Scratches expose shinier bare alloy beneath paint
+    rctx.strokeStyle = "rgba(118,118,118,0.55)";
+    rctx.lineWidth = 1.0 + rand() * 0.8;
+    rctx.beginPath();
+    rctx.moveTo(sx, sy);
+    rctx.lineTo(ex, ey);
+    rctx.stroke();
+
+    actx.strokeStyle = "rgba(255,255,255,0.28)";
+    actx.lineWidth = 0.9;
+    actx.beginPath();
+    actx.moveTo(sx, sy);
+    actx.lineTo(ex, ey);
+    actx.stroke();
+  }
+
+  const normalCanvas = canvasToNormalCanvas(hc, 1.45, true);
+  armorNormalTex = new THREE.CanvasTexture(normalCanvas);
+  armorNormalTex.wrapS = armorNormalTex.wrapT = THREE.RepeatWrapping;
+  armorNormalTex.anisotropy = 4;
+
   armorRoughTex = new THREE.CanvasTexture(rc);
   armorRoughTex.wrapS = armorRoughTex.wrapT = THREE.RepeatWrapping;
+  armorRoughTex.anisotropy = 4;
+
+  armorDetailTex = new THREE.CanvasTexture(ac);
+  armorDetailTex.colorSpace = THREE.SRGBColorSpace;
+  armorDetailTex.wrapS = armorDetailTex.wrapT = THREE.RepeatWrapping;
+  armorDetailTex.anisotropy = 4;
 }
 
 function ensureConcrete() {
-  if (concreteDiffTex && concreteBumpTex) return;
-  const S = 256;
+  if (concreteDiffTex && concreteNormalTex && concreteRoughTex) return;
+  const S = 512;
   const [dc, dctx] = makeCanvas(S, S);
-  const [bc, bctx] = makeCanvas(S, S);
+  const [hc, hctx] = makeCanvas(S, S);
+  const [rc, rctx] = makeCanvas(S, S);
   const rand = mulberry32(9012);
 
-  dctx.fillStyle = "#4c5358";
+  dctx.fillStyle = "#52595f";
   dctx.fillRect(0, 0, S, S);
-  bctx.fillStyle = "#808080";
-  bctx.fillRect(0, 0, S, S);
+  hctx.fillStyle = "#808080";
+  hctx.fillRect(0, 0, S, S);
+  rctx.fillStyle = "#d8d8d8";
+  rctx.fillRect(0, 0, S, S);
 
-  // Aggregate speckles
-  for (let i = 0; i < 3500; i++) {
+  // Crisp concrete aggregate speckles & surface pitting
+  for (let i = 0; i < 8500; i++) {
     const x = rand() * S;
     const y = rand() * S;
-    const s = 1 + rand() * 2.5;
-    const delta = ((rand() - 0.5) * 32) | 0;
-    const r = Math.max(40, Math.min(120, 76 + delta));
-    const g = Math.max(44, Math.min(126, 83 + delta));
-    const b = Math.max(48, Math.min(132, 88 + delta));
+    const s = 1 + rand() * 3.2;
+    const delta = ((rand() - 0.5) * 34) | 0;
+    const r = Math.max(46, Math.min(132, 82 + delta));
+    const g = Math.max(50, Math.min(138, 89 + delta));
+    const b = Math.max(54, Math.min(144, 95 + delta));
     dctx.fillStyle = `rgb(${r},${g},${b})`;
     dctx.fillRect(x, y, s, s);
-    const bv = Math.max(50, Math.min(200, 128 + delta * 2));
-    bctx.fillStyle = `rgb(${bv},${bv},${bv})`;
-    bctx.fillRect(x, y, s, s);
+    const hv = Math.max(42, Math.min(212, 128 + delta * 2.1));
+    hctx.fillStyle = `rgb(${hv},${hv},${hv})`;
+    hctx.fillRect(x, y, s, s);
+    const rv = Math.max(170, Math.min(252, 220 - delta));
+    rctx.fillStyle = `rgb(${rv},${rv},${rv})`;
+    rctx.fillRect(x, y, s, s);
   }
 
-  // Expansion joints
-  dctx.strokeStyle = "#2b3035";
-  dctx.lineWidth = 3;
-  dctx.strokeRect(4, 4, S - 8, S - 8);
+  // Subtle oil & tire weathering marks
+  for (let i = 0; i < 24; i++) {
+    const cx = rand() * S;
+    const cy = rand() * S;
+    const rad = 18 + rand() * 52;
+    const g = dctx.createRadialGradient(cx, cy, 2, cx, cy, rad);
+    g.addColorStop(0, "rgba(32, 36, 40, 0.22)");
+    g.addColorStop(1, "rgba(32, 36, 40, 0)");
+    dctx.fillStyle = g;
+    dctx.beginPath();
+    dctx.arc(cx, cy, rad, 0, Math.PI * 2);
+    dctx.fill();
+  }
+
+  // Deep concrete expansion joints
+  dctx.strokeStyle = "#292e33";
+  dctx.lineWidth = 5;
+  dctx.strokeRect(8, 8, S - 16, S - 16);
   dctx.beginPath();
-  dctx.moveTo(S / 2, 4);
-  dctx.lineTo(S / 2, S - 4);
-  dctx.moveTo(4, S / 2);
-  dctx.lineTo(S - 4, S / 2);
+  dctx.moveTo(S / 2, 8);
+  dctx.lineTo(S / 2, S - 8);
+  dctx.moveTo(8, S / 2);
+  dctx.lineTo(S - 8, S / 2);
   dctx.stroke();
 
-  bctx.strokeStyle = "#303030";
-  bctx.lineWidth = 3;
-  bctx.strokeRect(4, 4, S - 8, S - 8);
+  hctx.strokeStyle = "#282828";
+  hctx.lineWidth = 6;
+  hctx.strokeRect(8, 8, S - 16, S - 16);
+  hctx.beginPath();
+  hctx.moveTo(S / 2, 8);
+  hctx.lineTo(S / 2, S - 8);
+  hctx.moveTo(8, S / 2);
+  hctx.lineTo(S - 8, S / 2);
+  hctx.stroke();
 
   // Industrial hazard trim strips along the perimeter edge
   dctx.save();
   dctx.beginPath();
-  dctx.rect(6, 6, S - 12, 11);
-  dctx.rect(6, S - 17, S - 12, 11);
+  dctx.rect(12, 12, S - 24, 22);
+  dctx.rect(12, S - 34, S - 24, 22);
   dctx.clip();
-  dctx.fillStyle = "#232629";
+  dctx.fillStyle = "#222529";
   dctx.fillRect(0, 0, S, S);
-  dctx.fillStyle = "#c89626";
-  for (let x = -S; x < S * 2; x += 22) {
+  dctx.fillStyle = "#cf9b26";
+  for (let x = -S; x < S * 2; x += 44) {
     dctx.beginPath();
     dctx.moveTo(x, 0);
-    dctx.lineTo(x + 11, 0);
-    dctx.lineTo(x - 10, S);
-    dctx.lineTo(x - 21, S);
+    dctx.lineTo(x + 22, 0);
+    dctx.lineTo(x - 20, S);
+    dctx.lineTo(x - 42, S);
     dctx.closePath();
     dctx.fill();
   }
@@ -196,28 +432,142 @@ function ensureConcrete() {
   concreteDiffTex = new THREE.CanvasTexture(dc);
   concreteDiffTex.colorSpace = THREE.SRGBColorSpace;
   concreteDiffTex.anisotropy = 4;
-  concreteBumpTex = new THREE.CanvasTexture(bc);
+
+  concreteNormalTex = new THREE.CanvasTexture(canvasToNormalCanvas(hc, 1.35, true));
+  concreteNormalTex.anisotropy = 4;
+
+  concreteRoughTex = new THREE.CanvasTexture(rc);
+  concreteRoughTex.anisotropy = 4;
 }
 
 export function getTreadTexture(): THREE.CanvasTexture {
   if (treadTex) return treadTex;
-  const [c, ctx] = makeCanvas(64, 128);
-  ctx.fillStyle = "#171a1d";
-  ctx.fillRect(0, 0, 64, 128);
-  for (let y = 0; y < 128; y += 16) {
-    ctx.fillStyle = "#2b3035";
-    ctx.fillRect(4, y + 2, 56, 9);
-    ctx.fillStyle = "#0e1012";
-    ctx.fillRect(28, y + 2, 8, 9);
+  const [c, ctx] = makeCanvas(128, 256);
+  const [hc, hctx] = makeCanvas(128, 256);
+  ctx.fillStyle = "#181c20";
+  ctx.fillRect(0, 0, 128, 256);
+  hctx.fillStyle = "#303030";
+  hctx.fillRect(0, 0, 128, 256);
+
+  for (let y = 0; y < 256; y += 32) {
+    // Raised armored track grouser pads
+    ctx.fillStyle = "#32383f";
+    ctx.fillRect(8, y + 4, 112, 18);
+    ctx.fillStyle = "#48505a";
+    ctx.fillRect(10, y + 5, 108, 4);
+    ctx.fillStyle = "#101316";
+    ctx.fillRect(54, y + 4, 20, 18);
+
+    hctx.fillStyle = "#d8d8d8";
+    hctx.fillRect(8, y + 4, 112, 18);
+    hctx.fillStyle = "#424242";
+    hctx.fillRect(54, y + 4, 20, 18);
   }
   treadTex = new THREE.CanvasTexture(c);
   treadTex.colorSpace = THREE.SRGBColorSpace;
   treadTex.wrapS = treadTex.wrapT = THREE.RepeatWrapping;
   treadTex.repeat.set(1, 3);
+  treadTex.anisotropy = 4;
+
+  treadNormalTex = new THREE.CanvasTexture(canvasToNormalCanvas(hc, 1.8, true));
+  treadNormalTex.wrapS = treadNormalTex.wrapT = THREE.RepeatWrapping;
+  treadNormalTex.repeat.set(1, 3);
   return treadTex;
 }
 
-// ---------- Material caches ----------
+// ---------- Next-Gen 2026 PBR Material Caches ----------
+
+const chassisMatCache = new Map<string, THREE.MeshStandardMaterial>();
+export function getChassisMat(hex = "#3d4752", roughness = 0.44, metalness = 0.62): THREE.MeshStandardMaterial {
+  ensureArmorDetail();
+  const key = `${hex}|${roughness}|${metalness}`;
+  let m = chassisMatCache.get(key);
+  if (!m) {
+    m = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(hex),
+      map: armorDetailTex!,
+      normalMap: armorNormalTex!,
+      normalScale: new THREE.Vector2(0.88, 0.88),
+      roughnessMap: armorRoughTex!,
+      roughness,
+      metalness,
+      envMapIntensity: 1.12,
+    });
+    chassisMatCache.set(key, m);
+  }
+  return m;
+}
+
+const accentMatCache = new Map<string, THREE.MeshStandardMaterial>();
+export function getAccentMat(hex: string): THREE.MeshStandardMaterial {
+  ensureArmorDetail();
+  let m = accentMatCache.get(hex);
+  if (!m) {
+    const c = new THREE.Color(hex);
+    const hsl = { h: 0, s: 0, l: 0 };
+    c.getHSL(hsl);
+    // Deepen & refine faction hue by ~14% toward rich tactical military composite paint
+    hsl.s = Math.max(0, Math.min(1, hsl.s * 0.86));
+    hsl.l = hsl.l > 0.4 ? hsl.l * 0.91 : hsl.l * 0.96;
+    c.setHSL(hsl.h, hsl.s, hsl.l);
+
+    m = new THREE.MeshStandardMaterial({
+      color: c,
+      map: armorDetailTex!,
+      normalMap: armorNormalTex!,
+      normalScale: new THREE.Vector2(0.76, 0.76),
+      roughnessMap: armorRoughTex!,
+      metalness: 0.38,
+      roughness: 0.42,
+      envMapIntensity: 1.05,
+    });
+    accentMatCache.set(hex, m);
+  }
+  return m;
+}
+
+const glassMatCache = new Map<string, THREE.MeshStandardMaterial>();
+export function getGlassMat(tint = "#66d4ff"): THREE.MeshStandardMaterial {
+  let m = glassMatCache.get(tint);
+  if (!m) {
+    const c = new THREE.Color(tint);
+    m = new THREE.MeshStandardMaterial({
+      color: c,
+      roughness: 0.1,
+      metalness: 0.85,
+      emissive: c.clone().multiplyScalar(0.28),
+      envMapIntensity: 1.45,
+    });
+    glassMatCache.set(tint, m);
+  }
+  return m;
+}
+
+let contactShadowTexCache: THREE.CanvasTexture | null = null;
+export function getContactShadowTex(): THREE.CanvasTexture {
+  if (contactShadowTexCache) return contactShadowTexCache;
+  const S = 128;
+  const [c, ctx] = makeCanvas(S, S);
+  const cx = S / 2;
+  const cy = S / 2;
+  ctx.clearRect(0, 0, S, S);
+
+  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, S * 0.5);
+  grad.addColorStop(0.0, "rgba(4, 8, 12, 0.58)");
+  grad.addColorStop(0.36, "rgba(4, 8, 12, 0.44)");
+  grad.addColorStop(0.66, "rgba(4, 8, 12, 0.2)");
+  grad.addColorStop(0.86, "rgba(4, 8, 12, 0.05)");
+  grad.addColorStop(1.0, "rgba(4, 8, 12, 0)");
+
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, S, S);
+
+  contactShadowTexCache = new THREE.CanvasTexture(c);
+  contactShadowTexCache.colorSpace = THREE.SRGBColorSpace;
+  return contactShadowTexCache;
+}
+
+// ---------- Legacy-Compatible Shared Material Caches (Upgraded to Tangent-Space Normals) ----------
 
 const armorMatCache = new Map<string, THREE.MeshStandardMaterial>();
 export function getArmorMat(hex: string, metalness = 0.45, roughness = 0.56, emissive = 0): THREE.MeshStandardMaterial {
@@ -228,12 +578,14 @@ export function getArmorMat(hex: string, metalness = 0.45, roughness = 0.56, emi
     const c = new THREE.Color(hex);
     m = new THREE.MeshStandardMaterial({
       color: c,
+      map: armorDetailTex!,
       metalness,
       roughness,
-      bumpMap: armorBumpTex!,
-      bumpScale: 0.035,
+      normalMap: armorNormalTex!,
+      normalScale: new THREE.Vector2(0.75, 0.75),
       roughnessMap: armorRoughTex!,
       emissive: emissive > 0 ? c.clone().multiplyScalar(emissive) : new THREE.Color(0x000000),
+      envMapIntensity: 1.05,
     });
     armorMatCache.set(key, m);
   }
@@ -246,10 +598,12 @@ export function getConcreteMat(): THREE.MeshStandardMaterial {
   if (!concreteMatCache) {
     concreteMatCache = new THREE.MeshStandardMaterial({
       map: concreteDiffTex!,
-      bumpMap: concreteBumpTex!,
-      bumpScale: 0.04,
+      normalMap: concreteNormalTex!,
+      normalScale: new THREE.Vector2(0.7, 0.7),
+      roughnessMap: concreteRoughTex!,
       roughness: 0.88,
       metalness: 0.08,
+      envMapIntensity: 0.65,
     });
   }
   return concreteMatCache;
@@ -258,10 +612,13 @@ export function getConcreteMat(): THREE.MeshStandardMaterial {
 let treadMatCache: THREE.MeshStandardMaterial | null = null;
 export function getTreadMat(): THREE.MeshStandardMaterial {
   if (!treadMatCache) {
+    const map = getTreadTexture();
     treadMatCache = new THREE.MeshStandardMaterial({
-      map: getTreadTexture(),
-      roughness: 0.85,
-      metalness: 0.25,
+      map,
+      normalMap: treadNormalTex!,
+      normalScale: new THREE.Vector2(0.85, 0.85),
+      roughness: 0.82,
+      metalness: 0.28,
     });
   }
   return treadMatCache;
@@ -281,20 +638,18 @@ export function getGlowMat(hex: string, intensity = 1.25): THREE.MeshBasicMateri
 
 // ---------- Stratified Rock & Scorch Crater Textures ----------
 
-let rockBumpTex: THREE.CanvasTexture | null = null;
+let rockNormalTex: THREE.CanvasTexture | null = null;
 let rockRoughTex: THREE.CanvasTexture | null = null;
 
 function ensureRockDetail() {
-  if (rockBumpTex && rockRoughTex) return;
+  if (rockNormalTex && rockRoughTex) return;
   const S = 256;
-  const [bc, bctx] = makeCanvas(S, S);
   const [rc, rctx] = makeCanvas(S, S);
   const noise = valueNoise2D(8821);
   const rand = mulberry32(6143);
 
-  const bimg = bctx.createImageData(S, S);
+  const heights = new Float32Array(S * S);
   const rimg = rctx.createImageData(S, S);
-  const bd = bimg.data;
   const rd = rimg.data;
 
   for (let py = 0; py < S; py++) {
@@ -306,23 +661,24 @@ function ensureRockDetail() {
     for (let px = 0; px < S; px++) {
       const n = noise((px / S) * 10, (py / S) * 14);
       const crack = Math.abs(noise((px / S) * 22 + 4.1, (py / S) * 8 + 9.2) - 0.5);
-      const fissure = crack < 0.045 ? -58 : 0;
-      const grain = (rand() - 0.5) * 26;
-      const bv = Math.max(15, Math.min(245, 128 + strata * 44 + (n - 0.5) * 76 + fissure + grain));
-      const rv = Math.max(130, Math.min(245, 198 - strata * 16 + (rand() - 0.5) * 28));
+      const fissure = crack < 0.045 ? -0.24 : 0;
+      const grain = (rand() - 0.5) * 0.09;
+      const h = Math.max(0.05, Math.min(0.96, 0.5 + strata * 0.18 + (n - 0.5) * 0.32 + fissure + grain));
+      heights[py * S + px] = h;
+
+      const rv = Math.max(130, Math.min(248, 202 - strata * 16 + (rand() - 0.5) * 28));
       const idx = (py * S + px) * 4;
-      bd[idx] = bd[idx + 1] = bd[idx + 2] = bv;
-      bd[idx + 3] = 255;
       rd[idx] = rd[idx + 1] = rd[idx + 2] = rv;
       rd[idx + 3] = 255;
     }
   }
-  bctx.putImageData(bimg, 0, 0);
   rctx.putImageData(rimg, 0, 0);
 
-  rockBumpTex = new THREE.CanvasTexture(bc);
-  rockBumpTex.wrapS = rockBumpTex.wrapT = THREE.RepeatWrapping;
-  rockBumpTex.repeat.set(2, 2);
+  rockNormalTex = new THREE.CanvasTexture(heightBufferToNormalCanvas(heights, S, S, 2.2, true));
+  rockNormalTex.wrapS = rockNormalTex.wrapT = THREE.RepeatWrapping;
+  rockNormalTex.repeat.set(2, 2);
+  rockNormalTex.anisotropy = 4;
+
   rockRoughTex = new THREE.CanvasTexture(rc);
   rockRoughTex.wrapS = rockRoughTex.wrapT = THREE.RepeatWrapping;
   rockRoughTex.repeat.set(2, 2);
@@ -389,8 +745,8 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
       boulder: 0x84aac7,
       foliage: 0x224642,
       trunk: 0x3d3028,
-      wallRough: 0.44,
-      capRough: 0.52,
+      wallRough: 0.42,
+      capRough: 0.5,
       wallMetal: 0.16,
       capMetal: 0.1,
       accent: 0xe6f4ff,
@@ -437,38 +793,85 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
       trunk: 0x6e4d30,
       accent: 0x3ba64a,
     },
+    archipelago: {
+      // Pacific Atoll: dark volcanic basalt crags, tropical emerald palms & turquoise ocean
+      wall: 0x2d3238,
+      cap: 0x455348,
+      boulder: 0x3c4347,
+      foliage: 0x24943e,
+      trunk: 0x6b4c30,
+      wallRough: 0.84,
+      capRough: 0.78,
+      wallMetal: 0.08,
+      accent: 0x38ba54,
+      water: 0x16a8b8,
+    },
+    coastline: {
+      // Storm Coast: rugged wet granite sea-cliffs, stormy spruce & slate-blue North Sea
+      wall: 0x37444f,
+      cap: 0x52636b,
+      boulder: 0x46545e,
+      foliage: 0x1f4d3a,
+      trunk: 0x3f332a,
+      wallRough: 0.66,
+      capRough: 0.62,
+      wallMetal: 0.14,
+      water: 0x154768,
+    },
   };
   const p = palette[mapId] ?? palette.crossroads;
+
+  let cliffWaterMat: THREE.MeshStandardMaterial | undefined;
+  if (p.water !== undefined) {
+    const cliffWaterNorm = new THREE.CanvasTexture(ensureWaterNormalCanvas());
+    cliffWaterNorm.wrapS = cliffWaterNorm.wrapT = THREE.RepeatWrapping;
+    cliffWaterMat = new THREE.MeshStandardMaterial({
+      color: p.water,
+      emissive: 0x0a384c,
+      emissiveIntensity: 0.35,
+      normalMap: cliffWaterNorm,
+      normalScale: new THREE.Vector2(0.45, 0.45),
+      roughness: 0.14,
+      metalness: 0.32,
+      transparent: true,
+      opacity: 0.88,
+      envMapIntensity: 1.25,
+    });
+  }
 
   const mats: CliffBiomeMats = {
     wall: new THREE.MeshStandardMaterial({
       color: p.wall,
-      bumpMap: rockBumpTex!,
-      bumpScale: 0.14,
+      normalMap: rockNormalTex!,
+      normalScale: new THREE.Vector2(1.15, 1.15),
       roughnessMap: rockRoughTex!,
-      roughness: p.wallRough ?? 0.92,
+      roughness: p.wallRough ?? 0.9,
       metalness: p.wallMetal ?? 0.06,
+      envMapIntensity: mapId === "tundra" ? 0.95 : 0.6,
     }),
     cap: new THREE.MeshStandardMaterial({
       color: p.cap,
-      bumpMap: rockBumpTex!,
-      bumpScale: 0.08,
+      normalMap: rockNormalTex!,
+      normalScale: new THREE.Vector2(0.75, 0.75),
       roughnessMap: rockRoughTex!,
-      roughness: p.capRough ?? 0.88,
+      roughness: p.capRough ?? 0.86,
       metalness: p.capMetal ?? 0.05,
+      envMapIntensity: mapId === "tundra" ? 0.9 : 0.55,
     }),
     boulder: new THREE.MeshStandardMaterial({
       color: p.boulder,
-      bumpMap: rockBumpTex!,
-      bumpScale: 0.12,
+      normalMap: rockNormalTex!,
+      normalScale: new THREE.Vector2(0.95, 0.95),
       roughness: p.wallRough ? Math.min(0.86, p.wallRough + 0.15) : 0.9,
       metalness: p.wallMetal ?? 0.08,
+      envMapIntensity: 0.55,
     }),
     foliage: new THREE.MeshStandardMaterial({
       color: p.foliage,
-      roughness: 0.86,
+      roughness: 0.84,
       metalness: 0.03,
       flatShading: true,
+      envMapIntensity: 0.55,
     }),
     trunk: new THREE.MeshStandardMaterial({
       color: p.trunk,
@@ -479,23 +882,13 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
       p.accent !== undefined
         ? new THREE.MeshStandardMaterial({
             color: p.accent,
-            roughness: mapId === "tundra" ? 0.45 : 0.78,
-            metalness: mapId === "tundra" ? 0.12 : 0.08,
+            roughness: mapId === "tundra" ? 0.38 : 0.78,
+            metalness: mapId === "tundra" ? 0.16 : 0.08,
             flatShading: true,
+            envMapIntensity: mapId === "tundra" ? 1.15 : 0.6,
           })
         : undefined,
-    water:
-      p.water !== undefined
-        ? new THREE.MeshStandardMaterial({
-            color: p.water,
-            emissive: 0x0a384c,
-            emissiveIntensity: 0.45,
-            roughness: 0.22,
-            metalness: 0.28,
-            transparent: true,
-            opacity: 0.9,
-          })
-        : undefined,
+    water: cliffWaterMat,
   };
   cliffMatsCache.set(mapId, mats);
   return mats;
@@ -571,6 +964,63 @@ export function getCraterTexture(): THREE.CanvasTexture {
   return craterTexCache;
 }
 
+// ---------- Animated Shimmering Ocean Water Material (Tangent-Space Wave Normals) ----------
+
+let waterNormalBase: HTMLCanvasElement | null = null;
+
+function ensureWaterNormalCanvas(): HTMLCanvasElement {
+  if (waterNormalBase) return waterNormalBase;
+  const S = 256;
+  const heights = new Float32Array(S * S);
+  const TAU = Math.PI * 2;
+  for (let py = 0; py < S; py++) {
+    const v = py / S;
+    for (let px = 0; px < S; px++) {
+      const u = px / S;
+      // Seamless multi-directional ocean swells + crisp capillary wave harmonics
+      const w1 = Math.sin((u * 2 + v * 3) * TAU) * 1.0;
+      const w2 = Math.sin((u * 4 - v * 3) * TAU + 1.1) * 0.68;
+      const w3 = Math.cos((u * 3 + v * 6) * TAU + 2.3) * 0.48;
+      const w4 = Math.sin((u * 7 + v * 5) * TAU + 0.7) * 0.3;
+      const w5 = Math.cos((u * 5 - v * 9) * TAU + 1.9) * 0.22;
+      const w6 = Math.sin((u * 11 + v * 8) * TAU + 3.1) * 0.14;
+      const w7 = Math.cos((u * 13 - v * 11) * TAU + 0.4) * 0.1;
+      const h = (w1 + w2 + w3 + w4 + w5 + w6 + w7) / 2.92;
+      heights[py * S + px] = 0.5 + h * 0.46;
+    }
+  }
+  waterNormalBase = heightBufferToNormalCanvas(heights, S, S, 2.35, true);
+  return waterNormalBase;
+}
+
+export function createOceanWaterMaterial(mapId: MapId): THREE.MeshStandardMaterial {
+  const normalMap = new THREE.CanvasTexture(ensureWaterNormalCanvas());
+  normalMap.wrapS = normalMap.wrapT = THREE.RepeatWrapping;
+  normalMap.repeat.set(0.42, 0.42);
+  normalMap.anisotropy = 4;
+
+  const cfg: Record<string, { color: number; emissive: number; ei: number; normalScale: number }> = {
+    archipelago: { color: 0x16a8be, emissive: 0x0a5668, ei: 0.28, normalScale: 0.58 },
+    coastline: { color: 0x184e72, emissive: 0x082438, ei: 0.22, normalScale: 0.72 },
+    islands: { color: 0x1680a2, emissive: 0x083c52, ei: 0.26, normalScale: 0.62 },
+  };
+  const c = cfg[mapId] ?? cfg.islands;
+
+  return new THREE.MeshStandardMaterial({
+    color: c.color,
+    emissive: c.emissive,
+    emissiveIntensity: c.ei,
+    normalMap,
+    normalScale: new THREE.Vector2(c.normalScale, c.normalScale),
+    roughness: 0.1,
+    metalness: 0.34,
+    envMapIntensity: 1.45,
+    transparent: true,
+    opacity: 0.85,
+    depthWrite: false,
+  });
+}
+
 // ---------- Procedural Battlefield Terrain Map ----------
 
 interface BiomePalette {
@@ -584,6 +1034,9 @@ interface BiomePalette {
   cliff: [number, number, number];
   talus: [number, number, number];
   trackStroke: string;
+  beach?: [number, number, number];
+  seabedShallow?: [number, number, number];
+  seabedDeep?: [number, number, number];
 }
 
 const BIOMES: Record<MapId, BiomePalette> = {
@@ -591,11 +1044,11 @@ const BIOMES: Record<MapId, BiomePalette> = {
     // Olive-ochre European steppe
     seedA: 1337,
     seedB: 7331,
-    base: [84, 80, 56],
-    altDelta: [-20, 14, -8],
+    base: [84, 82, 56],
+    altDelta: [-20, 16, -8],
     noiseAmp: [24, 22, 14],
-    road: [118, 104, 80],
-    spawn: [92, 94, 88],
+    road: [120, 106, 82],
+    spawn: [94, 96, 90],
     cliff: [56, 54, 50],
     talus: [68, 64, 54],
     trackStroke: "rgba(42, 36, 26, 0.15)",
@@ -604,11 +1057,11 @@ const BIOMES: Record<MapId, BiomePalette> = {
     // Arid red-sandstone mesa theater
     seedA: 2459,
     seedB: 8417,
-    base: [132, 84, 54],
+    base: [136, 86, 54],
     altDelta: [22, 16, 4],
     noiseAmp: [26, 18, 12],
-    road: [158, 118, 82],
-    spawn: [114, 96, 82],
+    road: [160, 120, 84],
+    spawn: [116, 98, 84],
     cliff: [92, 46, 32],
     talus: [112, 62, 42],
     trackStroke: "rgba(68, 34, 20, 0.16)",
@@ -617,11 +1070,11 @@ const BIOMES: Record<MapId, BiomePalette> = {
     // Dark alpine volcanic basin
     seedA: 3911,
     seedB: 9173,
-    base: [58, 66, 68],
+    base: [60, 68, 70],
     altDelta: [-10, 12, 6],
     noiseAmp: [18, 20, 22],
-    road: [84, 90, 94],
-    spawn: [74, 80, 86],
+    road: [86, 92, 96],
+    spawn: [76, 82, 88],
     cliff: [36, 42, 49],
     talus: [48, 54, 60],
     trackStroke: "rgba(22, 28, 34, 0.18)",
@@ -643,11 +1096,11 @@ const BIOMES: Record<MapId, BiomePalette> = {
     // Sun-baked ochre desert plateau with weathered sandstone & fortified dark stone
     seedA: 5113,
     seedB: 6329,
-    base: [154, 126, 84],
+    base: [156, 128, 86],
     altDelta: [-18, -14, -10],
     noiseAmp: [22, 18, 12],
-    road: [132, 114, 88],
-    spawn: [110, 106, 98],
+    road: [134, 116, 90],
+    spawn: [112, 108, 100],
     cliff: [74, 66, 56],
     talus: [104, 92, 72],
     trackStroke: "rgba(56, 44, 30, 0.17)",
@@ -656,46 +1109,82 @@ const BIOMES: Record<MapId, BiomePalette> = {
     // Deep lush emerald tropical valley floor with mossy dark basalt ridges
     seedA: 6427,
     seedB: 2909,
-    base: [42, 84, 48],
+    base: [44, 88, 50],
     altDelta: [14, 26, -4],
     noiseAmp: [16, 24, 14],
-    road: [98, 86, 60],
-    spawn: [72, 86, 66],
+    road: [100, 88, 62],
+    spawn: [74, 88, 68],
     cliff: [32, 46, 36],
     talus: [42, 64, 44],
     trackStroke: "rgba(28, 24, 16, 0.2)",
   },
   islands: {
-    // Deep blue-teal riverland terrain with coastal sandbars & wet slate chasms
+    // Deep blue-teal riverland terrain with coastal sandbars & navigable river channels
     seedA: 7219,
     seedB: 4093,
-    base: [60, 96, 88],
+    base: [62, 98, 90],
     altDelta: [26, 18, -4],
     noiseAmp: [18, 20, 18],
-    road: [144, 130, 100],
-    spawn: [96, 108, 106],
+    road: [146, 132, 102],
+    spawn: [98, 110, 108],
     cliff: [20, 74, 98],
     talus: [152, 138, 104],
     trackStroke: "rgba(38, 50, 48, 0.16)",
+    beach: [186, 166, 122],
+    seabedShallow: [32, 122, 138],
+    seabedDeep: [12, 52, 74],
   },
   oasis: {
     // Warm golden Sahara sand dunes with terracotta rock spurs & palm-green oasis accents
     seedA: 8369,
     seedB: 3541,
-    base: [184, 144, 84],
+    base: [186, 146, 86],
     altDelta: [20, 14, -8],
     noiseAmp: [22, 18, 12],
-    road: [158, 120, 74],
-    spawn: [142, 122, 92],
+    road: [160, 122, 76],
+    spawn: [144, 124, 94],
     cliff: [128, 72, 46],
     talus: [154, 104, 62],
     trackStroke: "rgba(84, 52, 26, 0.16)",
+  },
+  archipelago: {
+    // Pacific Atoll: lush volcanic emerald atolls, golden sandy beaches & turquoise tropical ocean
+    seedA: 9413,
+    seedB: 5741,
+    base: [64, 122, 62],
+    altDelta: [20, 26, -6],
+    noiseAmp: [16, 22, 14],
+    road: [178, 156, 110],
+    spawn: [122, 134, 104],
+    cliff: [44, 48, 54],
+    talus: [76, 82, 68],
+    trackStroke: "rgba(48, 44, 28, 0.15)",
+    beach: [220, 192, 130],
+    seabedShallow: [38, 174, 180],
+    seabedDeep: [12, 76, 108],
+  },
+  coastline: {
+    // Storm Coast: moody North Sea ocean, stormy green coastal shores & rugged granite cliffs
+    seedA: 8747,
+    seedB: 6151,
+    base: [52, 82, 66],
+    altDelta: [-10, 14, 8],
+    noiseAmp: [16, 18, 16],
+    road: [110, 108, 96],
+    spawn: [84, 94, 92],
+    cliff: [48, 58, 68],
+    talus: [70, 78, 82],
+    trackStroke: "rgba(26, 36, 40, 0.18)",
+    beach: [142, 136, 114],
+    seabedShallow: [26, 80, 108],
+    seabedDeep: [10, 32, 54],
   },
 };
 
 export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
   map: THREE.CanvasTexture;
   bumpMap: THREE.CanvasTexture;
+  normalMap: THREE.CanvasTexture;
 } {
   const S = 1024;
   const [dc, dctx] = makeCanvas(S, S);
@@ -703,13 +1192,29 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
   const bio = BIOMES[mapId] ?? BIOMES.crossroads;
   const noiseA = valueNoise2D(bio.seedA);
   const noiseB = valueNoise2D(bio.seedB);
+  const noiseC = valueNoise2D(bio.seedA ^ (bio.seedB + 193));
   const rand = mulberry32(5519 + bio.seedA);
   const layout = getMapLayout(mapId);
 
-  // Precompute tile-level cliff mask and soft distance field (in tiles) for rocky cliff footprints
+  const isSandy = mapId === "oasis" || mapId === "canyon" || mapId === "fortress";
+  const isTundra = mapId === "tundra";
+  const isGrassy =
+    mapId === "crossroads" ||
+    mapId === "jungle" ||
+    mapId === "archipelago" ||
+    mapId === "coastline" ||
+    mapId === "islands";
+
+  // Precompute tile-level cliff and navigable water masks
   const cliffGrid = new Uint8Array(MAP_W * MAP_H);
   for (const [cx, cy] of layout.cliffs) {
     if (cx >= 0 && cy >= 0 && cx < MAP_W && cy < MAP_H) cliffGrid[cy * MAP_W + cx] = 1;
+  }
+
+  const waterGrid = new Uint8Array(MAP_W * MAP_H);
+  const hasWater = layout.water.length > 0;
+  for (const [wx0, wy0] of layout.water) {
+    if (wx0 >= 0 && wy0 >= 0 && wx0 < MAP_W && wy0 < MAP_H) waterGrid[wy0 * MAP_W + wx0] = 1;
   }
 
   const cliffNear = (wx: number, wy: number): { inside: boolean; dist: number } => {
@@ -735,10 +1240,51 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
     return { inside: false, dist: minD };
   };
 
+  const waterNear = (wx: number, wy: number): { inside: boolean; dist: number; landDist: number } => {
+    if (!hasWater) return { inside: false, dist: 99, landDist: 0 };
+    const tx = Math.floor(wx);
+    const ty = Math.floor(wy);
+    const inW = tx >= 0 && ty >= 0 && tx < MAP_W && ty < MAP_H && waterGrid[ty * MAP_W + tx] === 1;
+    const rad = 3;
+    const x0 = Math.max(0, tx - rad);
+    const x1 = Math.min(MAP_W - 1, tx + rad);
+    const y0 = Math.max(0, ty - rad);
+    const y1 = Math.min(MAP_H - 1, ty + rad);
+    let minD = 99;
+    if (inW) {
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          if (waterGrid[y * MAP_W + x]) continue;
+          const dx = Math.max(x - wx, 0, wx - (x + 1));
+          const dy = Math.max(y - wy, 0, wy - (y + 1));
+          const dd = Math.hypot(dx, dy);
+          if (dd < minD) minD = dd;
+        }
+      }
+      return { inside: true, dist: 0, landDist: minD };
+    }
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        if (!waterGrid[y * MAP_W + x]) continue;
+        const dx = Math.max(x - wx, 0, wx - (x + 1));
+        const dy = Math.max(y - wy, 0, wy - (y + 1));
+        const dd = Math.hypot(dx, dy);
+        if (dd < minD) minD = dd;
+      }
+    }
+    return { inside: false, dist: minD, landDist: 0 };
+  };
+
+  const beachCol = bio.beach ?? [180, 162, 118];
+  const seaShallow = bio.seabedShallow ?? [28, 114, 134];
+  const seaDeep = bio.seabedDeep ?? [12, 48, 72];
+  const beachSpan = mapId === "archipelago" ? 2.45 : mapId === "coastline" ? 1.85 : 2.05;
+
   const img = dctx.createImageData(S, S);
   const bimg = bctx.createImageData(S, S);
   const d = img.data;
   const b = bimg.data;
+  const heightField = new Float32Array(S * S);
 
   // Compute natural worn convoy road factor between corners and center
   const roadDist = (wx: number, wy: number) => {
@@ -768,14 +1314,50 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
       const n1 = noiseA(wx * 0.14, wy * 0.14);
       const n2 = noiseB(wx * 0.42, wy * 0.42);
       const n3 = noiseA(wx * 0.14 + 0.18, wy * 0.14 + 0.18);
-      const slopeShade = 1 + (n1 - n3) * 0.32;
-      const fine = (rand() - 0.5) * 14;
+      const micro = noiseC(wx * 1.65, wy * 1.65);
+      const slopeShade = 1 + (n1 - n3) * 0.34;
+      const fine = (rand() - 0.5) * 12;
 
       const altMix = Math.max(0, Math.min(1, (n1 - 0.34) * 2.4));
       let r = bio.base[0] + altMix * bio.altDelta[0] + n2 * bio.noiseAmp[0];
       let g = bio.base[1] + altMix * bio.altDelta[1] + n2 * bio.noiseAmp[1];
       let bl = bio.base[2] + altMix * bio.altDelta[2] + n2 * bio.noiseAmp[2];
-      let bumpExtra = 0;
+      let bumpExtra = (micro - 0.5) * 28;
+
+      // Biome-specific high-frequency micro-relief & surface storytelling
+      if (isSandy) {
+        // Wind-swept sand dune ripples catching raking golden sunlight
+        const ripplePhase = (wx * 2.8 + wy * 1.9 + n2 * 4.2 + micro * 0.9) * Math.PI;
+        const ripple = Math.sin(ripplePhase);
+        const crest = ripple * ripple * (ripple > 0 ? 1 : -0.65);
+        r += crest * 9;
+        g += crest * 7;
+        bl += crest * 4;
+        bumpExtra += ripple * 16;
+      } else if (isTundra) {
+        // Wind-scoured arctic sastrugi snow ridges & glistening ice-crust highlights
+        const sastrugi = Math.sin((wx * 1.9 - wy * 1.1 + n2 * 3.4) * Math.PI);
+        const sparkle = micro > 0.78 && rand() > 0.65 ? 16 : 0;
+        r += sastrugi * 7 + sparkle;
+        g += sastrugi * 9 + sparkle;
+        bl += sastrugi * 12 + sparkle * 1.1;
+        bumpExtra += sastrugi * 14 + (sparkle > 0 ? 10 : 0);
+      } else if (isGrassy) {
+        // Crisp dry-grass streaks & mossy tuft micro-variation
+        const streak = noiseC(wx * 3.1 + n2 * 1.4, wy * 0.95);
+        const dryMix = Math.max(0, streak - 0.56) * 2.2;
+        r += dryMix * 16;
+        g += dryMix * 10 - (micro - 0.5) * 12;
+        bl -= dryMix * 6;
+        bumpExtra += (streak - 0.5) * 18;
+      } else {
+        // Volcanic basalt scree ridges on Basin
+        const ridge = Math.abs(micro - 0.5) * 2;
+        r -= (1 - ridge) * 8;
+        g -= (1 - ridge) * 7;
+        bl -= (1 - ridge) * 5;
+        bumpExtra += ridge * 20 - 10;
+      }
 
       // Worn convoy roads
       const rd = roadDist(wx, wy) + (n2 - 0.5) * 1.4;
@@ -785,6 +1367,8 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
         r = r * (1 - s) + bio.road[0] * s;
         g = g * (1 - s) + bio.road[1] * s;
         bl = bl * (1 - s) + bio.road[2] * s;
+        // Subtle compacted wheel-rut depression along road
+        bumpExtra = bumpExtra * (1 - s * 0.55) - s * 10;
       }
 
       // Flattened compacted gravel clearings at each spawn base
@@ -796,6 +1380,7 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
           r = r * (1 - s) + bio.spawn[0] * s;
           g = g * (1 - s) + bio.spawn[1] * s;
           bl = bl * (1 - s) + bio.spawn[2] * s;
+          bumpExtra *= 1 - s * 0.45;
         }
       }
 
@@ -833,47 +1418,147 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
         r = bio.cliff[0] + strata;
         g = bio.cliff[1] + strata * 0.9;
         bl = bio.cliff[2] + strata * 0.85;
-        bumpExtra = mapId === "islands" ? -28 : 55;
-      } else if (cf.dist < (mapId === "islands" ? 2.1 : 1.5)) {
-        const range = mapId === "islands" ? 2.1 : 1.5;
-        const k = Math.max(0, 1 - cf.dist / range);
-        const scree = k * k * (mapId === "islands" ? 0.82 : 0.72);
-        const ao = 1 - k * k * (mapId === "islands" ? 0.14 : 0.34);
+        bumpExtra = 58 + strata;
+      } else if (cf.dist < 1.5) {
+        const k = Math.max(0, 1 - cf.dist / 1.5);
+        const scree = k * k * 0.72;
+        const ao = 1 - k * k * 0.34;
         r = (r * (1 - scree) + bio.talus[0] * scree) * ao;
         g = (g * (1 - scree) + bio.talus[1] * scree) * ao;
         bl = (bl * (1 - scree) + bio.talus[2] * scree) * ao;
-        bumpExtra = mapId === "islands" ? -k * 12 : k * 34;
+        bumpExtra += k * 36;
+      }
+
+      // Navigable ocean / river seabed & golden wet-to-dry sandy coastal shorelines
+      if (hasWater) {
+        const wf = waterNear(wx, wy);
+        if (wf.inside) {
+          const depthT = Math.min(1, Math.max(0, (wf.landDist + (n2 - 0.5) * 0.65) / 2.6));
+          const smoothD = depthT * depthT * (3 - 2 * depthT);
+          const caustic = Math.sin((wx * 1.9 + wy * 1.4 + n2 * 3.1) * 2.1) * 9 * (1 - smoothD * 0.62);
+          r = seaShallow[0] * (1 - smoothD) + seaDeep[0] * smoothD + caustic * 0.55;
+          g = seaShallow[1] * (1 - smoothD) + seaDeep[1] * smoothD + caustic * 0.95;
+          bl = seaShallow[2] * (1 - smoothD) + seaDeep[2] * smoothD + caustic * 1.05;
+          bumpExtra = -36 - smoothD * 24 + caustic * 0.7;
+        } else if (wf.dist < beachSpan) {
+          const k = Math.max(0, 1 - (wf.dist + (n2 - 0.5) * 0.45) / beachSpan);
+          const sandMix = Math.min(1, k * k * 1.15);
+          // Rich wet-sand shoreline transition darkening + subtle shore ripple near water edge
+          const wetFactor = wf.dist < 0.62 ? 1 - Math.pow(1 - wf.dist / 0.62, 1.5) * 0.32 : 1;
+          const shoreRipple = Math.sin(wf.dist * 12 + n2 * 3) * 4 * k;
+          r = (r * (1 - sandMix) + (beachCol[0] + shoreRipple) * sandMix) * wetFactor;
+          g = (g * (1 - sandMix) + (beachCol[1] + shoreRipple * 0.9) * sandMix) * wetFactor;
+          bl = (bl * (1 - sandMix) + (beachCol[2] + shoreRipple * 0.7) * sandMix) * wetFactor;
+          bumpExtra = bumpExtra * (1 - sandMix * 0.65) - k * 16 + shoreRipple * 1.2;
+        }
       }
 
       // Subtle tactical vignette near map border
       const edge = Math.min(wx, wy, MAP_W - wx, MAP_H - wy);
       const edgeDark = edge < 2.5 ? 0.72 + (edge / 2.5) * 0.28 : 1;
-      const maxC = mapId === "tundra" ? 238 : 225;
+      const maxC = isTundra ? 238 : 228;
 
-      const idx4 = (py * S + px) * 4;
-      d[idx4] = Math.max(16, Math.min(maxC, (r * slopeShade + fine) * edgeDark));
-      d[idx4 + 1] = Math.max(16, Math.min(maxC, (g * slopeShade + fine) * edgeDark));
+      const idx = py * S + px;
+      const idx4 = idx * 4;
+      d[idx4] = Math.max(10, Math.min(maxC, (r * slopeShade + fine) * edgeDark));
+      d[idx4 + 1] = Math.max(14, Math.min(maxC, (g * slopeShade + fine) * edgeDark));
       d[idx4 + 2] = Math.max(14, Math.min(maxC, (bl * slopeShade + fine) * edgeDark));
       d[idx4 + 3] = 255;
 
-      const bv = Math.max(25, Math.min(238, 120 + (n2 - 0.5) * 92 + bumpExtra + fine * 2.5));
+      const bv = Math.max(12, Math.min(244, 124 + (n2 - 0.5) * 86 + bumpExtra + fine * 1.6));
       b[idx4] = b[idx4 + 1] = b[idx4 + 2] = bv;
       b[idx4 + 3] = 255;
+      heightField[idx] = bv / 255;
     }
   }
   dctx.putImageData(img, 0, 0);
   bctx.putImageData(bimg, 0, 0);
 
-  // Faint road track marks
+  // Scattered deterministic surface pebbles & dry grass tufts (baked into albedo + heightfield for crisp relief)
+  const pebbleCount = isTundra ? 650 : 1400;
+  for (let i = 0; i < pebbleCount; i++) {
+    const px = Math.floor(rand() * S);
+    const py = Math.floor(rand() * S);
+    const tx = Math.min(MAP_W - 1, Math.floor((px / S) * MAP_W));
+    const ty = Math.min(MAP_H - 1, Math.floor((py / S) * MAP_H));
+    if (waterGrid[ty * MAP_W + tx]) continue;
+
+    const rad = 1.0 + rand() * 2.1;
+    const bright = rand() > 0.45;
+    dctx.fillStyle = isTundra
+      ? bright
+        ? "rgba(235, 246, 255, 0.35)"
+        : "rgba(130, 158, 184, 0.32)"
+      : isSandy
+        ? bright
+          ? "rgba(218, 184, 134, 0.32)"
+          : "rgba(104, 72, 44, 0.34)"
+        : bright
+          ? "rgba(154, 150, 136, 0.32)"
+          : "rgba(42, 44, 38, 0.35)";
+    dctx.beginPath();
+    dctx.arc(px, py, rad, 0, Math.PI * 2);
+    dctx.fill();
+
+    // Raise pebble micro-height in heightField so tangent-space normalMap catches sunlight
+    const ir = Math.ceil(rad);
+    const dh = bright ? 0.085 : 0.055;
+    for (let oy = -ir; oy <= ir; oy++) {
+      const ny = py + oy;
+      if (ny < 0 || ny >= S) continue;
+      for (let ox = -ir; ox <= ir; ox++) {
+        const nx = px + ox;
+        if (nx < 0 || nx >= S) continue;
+        const dd = Math.hypot(ox, oy);
+        if (dd <= rad) {
+          const idx = ny * S + nx;
+          heightField[idx] = Math.min(1, heightField[idx] + dh * (1 - dd / (rad + 0.2)));
+        }
+      }
+    }
+  }
+
+  // Faint road track marks (clipped to land tiles on naval maps so tracks never cross open ocean)
   dctx.strokeStyle = bio.trackStroke;
   dctx.lineWidth = 3;
   dctx.setLineDash([12, 10]);
   for (const sp of SPAWNS) {
-    dctx.beginPath();
-    dctx.moveTo(((sp.x + 1.5) / MAP_W) * S, ((sp.y + 1.5) / MAP_H) * S);
-    dctx.lineTo(S / 2, S / 2);
-    dctx.stroke();
+    const sx = sp.x + 1.5;
+    const sy = sp.y + 1.5;
+    const ex = MAP_W / 2;
+    const ey = MAP_H / 2;
+    if (!hasWater) {
+      dctx.beginPath();
+      dctx.moveTo((sx / MAP_W) * S, (sy / MAP_H) * S);
+      dctx.lineTo((ex / MAP_W) * S, (ey / MAP_H) * S);
+      dctx.stroke();
+    } else {
+      const steps = 40;
+      let drawing = false;
+      dctx.beginPath();
+      for (let i = 0; i <= steps; i++) {
+        const u = i / steps;
+        const wx = sx + (ex - sx) * u;
+        const wy = sy + (ey - sy) * u;
+        const tx = Math.max(0, Math.min(MAP_W - 1, Math.floor(wx)));
+        const ty = Math.max(0, Math.min(MAP_H - 1, Math.floor(wy)));
+        const dry = !waterGrid[ty * MAP_W + tx];
+        if (dry) {
+          if (!drawing) {
+            dctx.moveTo((wx / MAP_W) * S, (wy / MAP_H) * S);
+            drawing = true;
+          } else {
+            dctx.lineTo((wx / MAP_W) * S, (wy / MAP_H) * S);
+          }
+        } else {
+          drawing = false;
+        }
+      }
+      dctx.stroke();
+    }
   }
+
+  const normalCanvas = heightBufferToNormalCanvas(heightField, S, S, 1.55, false);
 
   const map = new THREE.CanvasTexture(dc);
   map.colorSpace = THREE.SRGBColorSpace;
@@ -882,5 +1567,8 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
   const bumpMap = new THREE.CanvasTexture(bc);
   bumpMap.anisotropy = 4;
 
-  return { map, bumpMap };
+  const normalMap = new THREE.CanvasTexture(normalCanvas);
+  normalMap.anisotropy = 8;
+
+  return { map, bumpMap, normalMap };
 }

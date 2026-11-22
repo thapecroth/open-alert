@@ -28,26 +28,36 @@ import { Renderer } from "./render";
 
 const TOOLTIPS: Record<string, string> = {
   conyard: "Construction Yard — the heart of your base.",
-  power: "Reactor Plant — +100 power. Your base slows without it.",
+  power: "Reactor Plant — powers your base; keeps defenses, radar & superweapon online.",
   refinery: "Ore Refinery — unlocks harvesters; deploys one free.",
   barracks: "Barracks — trains infantry: Riflemen, Sappers, Rocket Troopers.",
-  radar: "Radar Uplink — reveals the minimap; unlocks rockets, siege, arc coils.",
+  radar: "Radar Uplink — reveals the minimap; unlocks rockets, siege, air command & arc coils.",
   factory: "War Factory — builds vehicles. Upgrade it to unlock heavies.",
-  techlab: "Tech Lab — unlocks the Ore Purifier, Ion Uplink, and War Factory upgrades.",
-  turret: "Sentry Turret — automated base defense. Needs power.",
-  arc: "Arc Coil — heavy zap defense in every direction. Needs power + radar.",
+  airfield: "Air Command — deploys Air Force aircraft that fly over cliffs & water. Needs Radar.",
+  shipyard: "Naval Shipyard — builds warships; must be placed on navigable water near your base.",
+  techlab: "Tech Lab — unlocks heavy air/sea units, Ore Purifier, Ion Uplink & War Factory II.",
+  turret: "Sentry Turret — automated ground & anti-air (AA) base defense. Needs power.",
+  arc: "Arc Coil — heavy ground & anti-air (AA) zap defense in every direction. Needs power + radar.",
   purifier: "Ore Purifier — +25% on every harvester deposit.",
   depot: "Service Depot — repairs nearby vehicles automatically.",
-  superweapon: "Ion Uplink — charges an Orbital Ion Cannon strike (90s). Limit 1.",
+  superweapon: "Ion Uplink — charges an Orbital Ion Cannon strike (90s). Needs power. Limit 1.",
   derrick: "Oil Derrick — capture with a Sapper for +$500 bonus & +$25/s income.",
-  infantry: "Rifleman — cheap, fast, good vs infantry.",
+  infantry: "Rifleman — cheap, fast, anti-infantry & light AA.",
   engineer: "Sapper — captures enemy buildings & Oil Derricks on contact. Unarmed.",
-  rocket: "Rocket Trooper — long-range anti-armor infantry. Needs radar.",
+  rocket: "Rocket Trooper — long-range anti-armor & anti-air (AA) infantry. Needs radar.",
   tank: "Battle Tank — armored punch. Crushes infantry.",
-  arty: "Siege Launcher — long-range artillery. Fragile. Needs radar.",
+  arty: "Siege Launcher — long-range splash artillery. Fragile. Needs radar.",
   heavy: "Mastodon Tank — twin-cannon monster. Needs War Factory II.",
   spider: "Spider Drone — fast melee scout. Needs War Factory II.",
   harvester: "Ore Harvester — collects ore; a full load is worth $1000.",
+  interceptor: "Valkyrie Jet — supersonic Air Force fighter (Air + Ground, AA).",
+  chopper: "Hornet Gunship — agile Air Force gunship (Air + Ground, AA).",
+  bomber: "Tempest Bomber — heavy Air Force splash strike bomber vs ground & ships. Needs Tech Lab.",
+  zeppelin: "Leviathan Airship — armored Air Force flying dreadnought with massive splash bombs. Needs Tech Lab.",
+  gunboat: "Viper Hydrofoil — fast Navy patrol & anti-air (AA) picket craft.",
+  destroyer: "Aegis Destroyer — versatile Navy warship with heavy cannons & anti-air (AA) defense.",
+  sub: "Kraken Sub — stealth Navy submarine; submerges unseen to launch torpedoes. Needs Radar.",
+  dreadnought: "Poseidon Dreadnought — long-range Navy bombardment cruiser with splash cruise missiles. Needs Tech Lab.",
 };
 
 const MAP_PREVIEW_PALETTES: Record<MapId, { bg: string; grid: string; cliff: string; cliffEdge: string }> = {
@@ -57,12 +67,83 @@ const MAP_PREVIEW_PALETTES: Record<MapId, { bg: string; grid: string; cliff: str
   tundra: { bg: "#2e4656", grid: "rgba(210,240,255,0.1)", cliff: "#88b3ca", cliffEdge: "#b0d5e8" }, // Arctic (icy)
   fortress: { bg: "#4d3f2a", grid: "rgba(235,210,160,0.08)", cliff: "#85704f", cliffEdge: "#a38d68" }, // Desert (sandy)
   jungle: { bg: "#1c3828", grid: "rgba(150,225,175,0.08)", cliff: "#3e5e47", cliffEdge: "#567d61" }, // Jungle (emerald)
-  islands: { bg: "#1d3d44", grid: "rgba(155,225,240,0.08)", cliff: "#10232d", cliffEdge: "#2e6576" }, // Riverland (teal)
+  islands: { bg: "#2b4a3e", grid: "rgba(165,225,205,0.08)", cliff: "#4a5c58", cliffEdge: "#68807b" }, // Riverland (emerald/water)
   oasis: { bg: "#574323", grid: "rgba(250,215,145,0.09)", cliff: "#947542", cliffEdge: "#b39259" }, // Sahara (golden)
+  archipelago: { bg: "#3a5c36", grid: "rgba(185,235,195,0.08)", cliff: "#524942", cliffEdge: "#756a60" }, // Pacific tropical ocean/atoll
+  coastline: { bg: "#33424a", grid: "rgba(175,215,235,0.08)", cliff: "#4d5c66", cliffEdge: "#6c7f8c" }, // Stormy slate ocean/shore
 };
 
 function fmtBoost(mult: number): string {
   return `×${Number(mult.toFixed(2))}`;
+}
+
+const SHORT_BUILDING_NAMES: Record<BuildingKind, string> = {
+  conyard: "ConYard",
+  power: "Reactor",
+  refinery: "Refinery",
+  barracks: "Barracks",
+  radar: "Radar",
+  factory: "War Factory",
+  factory2: "Factory II",
+  airfield: "Air Command",
+  shipyard: "Shipyard",
+  techlab: "Tech Lab",
+  turret: "Turret",
+  arc: "Arc Coil",
+  purifier: "Purifier",
+  depot: "Depot",
+  superweapon: "Ion Uplink",
+  derrick: "Oil Derrick",
+};
+
+const COMPACT_BUILDING_NAMES: Record<BuildingKind, string> = {
+  conyard: "ConYard",
+  power: "Reactor",
+  refinery: "Refinery",
+  barracks: "Barracks",
+  radar: "Radar",
+  factory: "Factory",
+  factory2: "Factory II",
+  airfield: "Air Cmd",
+  shipyard: "Shipyard",
+  techlab: "Tech Lab",
+  turret: "Turret",
+  arc: "Arc Coil",
+  purifier: "Purifier",
+  depot: "Depot",
+  superweapon: "Ion Uplink",
+  derrick: "Derrick",
+};
+
+function prereqsOf(k: BuildingKind): BuildingKind[] {
+  if (k === "factory2") return ["techlab", "factory"];
+  return BUILDINGS[k]?.requires ?? [];
+}
+
+/**
+ * Resolves the exact ordered list of missing buildings you must construct FIRST
+ * (topological order, dependencies before dependents) to satisfy `reqs`.
+ */
+export function missingPrereqChain(reqs: BuildingKind[], has: (k: string) => boolean): BuildingKind[] {
+  const out: BuildingKind[] = [];
+  const seen = new Set<BuildingKind>();
+  const visit = (k: BuildingKind) => {
+    if (seen.has(k) || has(k)) return;
+    seen.add(k);
+    for (const dep of prereqsOf(k)) visit(dep);
+    out.push(k);
+  };
+  for (const r of reqs) visit(r);
+  return out;
+}
+
+function formatShortNeed(missing: BuildingKind[]): string {
+  if (missing.length === 1) return `Need ${SHORT_BUILDING_NAMES[missing[0]]}`;
+  return `Need ${missing.map((k) => COMPACT_BUILDING_NAMES[k]).join(" + ")}`;
+}
+
+function formatChainSteps(chain: BuildingKind[]): string[] {
+  return chain.map((k) => (k === "factory2" ? "Upgrade War Factory → MKII" : BUILDING_NAMES[k]));
 }
 
 export class Hud {
@@ -83,6 +164,7 @@ export class Hud {
   onPlaceMode: (k: BuildingKind) => void = () => {};
   onTrain: (u: UnitKind) => void = () => {};
   onTrainCancel: (u: UnitKind) => void = () => {};
+  onBuildBlocked?: (msg: string) => void;
   onMinimapNav: (x: number, y: number) => void = () => {};
   onMinimapPing: (x: number, y: number) => void = () => {};
   onMinimapOrder?: (x: number, y: number, shift: boolean) => boolean;
@@ -99,6 +181,9 @@ export class Hud {
   private icons = new Map<string, string>();
   private buildBtns = new Map<BuildingKind, HTMLButtonElement>();
   private trainBtns = new Map<UnitKind, HTMLButtonElement>();
+  private trainGroupHeaders = new Map<"land" | "air" | "sea", HTMLElement>();
+  private hoveredBtn: HTMLButtonElement | null = null;
+  private lastBlockedToast = { msg: "", t: 0 };
   private minimap = el<HTMLCanvasElement>("minimap");
   private mmCtx = this.minimap.getContext("2d")!;
   private mmLast = 0;
@@ -196,7 +281,7 @@ export class Hud {
       for (const m of MAP_LIST) {
         const opt = document.createElement("option");
         opt.value = m.id;
-        opt.textContent = `${m.name} · ${m.biome}`;
+        opt.textContent = `${m.name} · ${m.biome}${m.naval ? " ⚓" : ""}`;
         mapSelect.appendChild(opt);
       }
       mapSelect.addEventListener("change", () => {
@@ -235,7 +320,7 @@ export class Hud {
       b.className = "sbtn";
       b.dataset.kind = kind;
       b.title = this.buildTooltip(kind);
-      b.innerHTML = `<span class="icon" data-kind="${kind}"></span><span class="sname">${BUILDING_NAMES[kind]}</span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span>`;
+      b.innerHTML = `<span class="icon" data-kind="${kind}"></span><span class="slabel"><span class="sname">${BUILDING_NAMES[kind]}</span><span class="req-tag"></span></span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span>`;
       b.addEventListener("click", () => this.clickBuild(kind));
       b.addEventListener("contextmenu", (e) => {
         e.preventDefault();
@@ -246,13 +331,28 @@ export class Hud {
     }
 
     const tl = el("train-list");
-    for (const { unit, label: l } of TRAIN_ORDER) {
+    const groupLabels: Record<"land" | "air" | "sea", string> = {
+      land: "LAND",
+      air: "AIR FORCE",
+      sea: "NAVY",
+    };
+    let curGroup: "land" | "air" | "sea" | null = null;
+    for (const { unit, label: l, group } of TRAIN_ORDER) {
+      if (group !== curGroup) {
+        curGroup = group;
+        const sep = document.createElement("div");
+        sep.className = "sub-title";
+        sep.dataset.group = group;
+        sep.textContent = groupLabels[group];
+        tl.appendChild(sep);
+        this.trainGroupHeaders.set(group, sep);
+      }
       const d = UNITS[unit];
       const b = document.createElement("button");
       b.className = "sbtn";
       b.dataset.unit = unit;
       b.title = `${TOOLTIPS[unit] ?? l} · ${d.buildTicks / 10}s to train · Shift+click = ×5`;
-      b.innerHTML = `<span class="icon" data-kind="${unit}"></span><span class="sname">${l}</span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span>`;
+      b.innerHTML = `<span class="icon" data-kind="${unit}"></span><span class="slabel"><span class="sname">${l}</span><span class="req-tag"></span></span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span>`;
       b.addEventListener("click", (e) => {
         const count = e.shiftKey ? 5 : 1;
         for (let i = 0; i < count; i++) this.onTrain(unit);
@@ -264,6 +364,36 @@ export class Hud {
       tl.appendChild(b);
       this.trainBtns.set(unit, b);
     }
+
+    // Sidebar tech-chain inspector + click-on-locked feedback (works on disabled buttons too!)
+    const sidebar = el("sidebar");
+    const inSideInfo = (x: number, y: number) => {
+      const info = document.getElementById("side-info");
+      if (!info || info.classList.contains("hidden")) return false;
+      const ir = info.getBoundingClientRect();
+      return x >= ir.left && x <= ir.right && y >= ir.top && y <= ir.bottom;
+    };
+    sidebar.addEventListener("pointermove", (e) => {
+      if (inSideInfo(e.clientX, e.clientY)) return;
+      const btn = this.findSidebarBtnAt(e.clientX, e.clientY);
+      if (btn) this.showSideInfo(btn);
+      else this.hideSideInfo();
+    });
+    sidebar.addEventListener("pointerleave", () => this.hideSideInfo());
+    sidebar.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || inSideInfo(e.clientX, e.clientY)) return;
+      const btn = this.findSidebarBtnAt(e.clientX, e.clientY);
+      if (!btn || !btn.disabled) return;
+      this.showSideInfo(btn);
+      const reason = btn.dataset.reason;
+      if (!reason) return;
+      const now = performance.now();
+      if (this.lastBlockedToast.msg !== reason || now - this.lastBlockedToast.t > 280) {
+        this.lastBlockedToast = { msg: reason, t: now };
+        this.toast(reason);
+        this.onBuildBlocked?.(reason);
+      }
+    });
 
     // Minimap navigation, orders & pings
     const nav = (e: PointerEvent) => {
@@ -315,6 +445,23 @@ export class Hud {
     ctx.fillStyle = pal.bg;
     ctx.fillRect(0, 0, w, h);
 
+    // Navigable ocean / river water tiles with subtle wave glints
+    const cs = Math.ceil(s);
+    if (layout.water.length) {
+      ctx.fillStyle = "#19587a";
+      for (let i = 0; i < layout.water.length; i++) {
+        const [wx, wy] = layout.water[i];
+        ctx.fillRect(wx * s, wy * s, cs, cs);
+      }
+      ctx.fillStyle = "rgba(130, 222, 255, 0.3)";
+      for (let i = 0; i < layout.water.length; i++) {
+        const [wx, wy] = layout.water[i];
+        if (((wx * 13 + wy * 29) & 15) === 0) {
+          ctx.fillRect(wx * s, wy * s, Math.max(1.5, s * 1.15), Math.max(1, s * 0.45));
+        }
+      }
+    }
+
     // Subtle quadrant tactical grid
     ctx.strokeStyle = pal.grid;
     ctx.lineWidth = 1;
@@ -349,8 +496,7 @@ export class Hud {
       }
     }
 
-    // Impassable cliff mesas / river channels
-    const cs = Math.ceil(s);
+    // Impassable cliff mesas / rock outcrops
     ctx.fillStyle = pal.cliff;
     for (let i = 0; i < layout.cliffs.length; i++) {
       const [cx, cy] = layout.cliffs[i];
@@ -427,6 +573,7 @@ export class Hud {
     this.selSig = "";
     this.updateClock(0);
     this.hideHoverTip();
+    this.hideSideInfo();
     const sw = document.getElementById("sw-hud");
     if (sw) sw.classList.add("hidden");
     const recon = document.getElementById("recon-hud");
@@ -458,7 +605,8 @@ export class Hud {
 
   private buildTooltip(kind: BuildingKind, missing?: BuildingKind[]) {
     const d = BUILDINGS[kind];
-    const base = `${TOOLTIPS[kind] ?? BUILDING_NAMES[kind]} · ${d.buildTicks / 10}s to build`;
+    const pwr = d.power !== 0 ? `${d.power > 0 ? "+" : ""}${d.power}⚡ · ` : "";
+    const base = `${TOOLTIPS[kind] ?? BUILDING_NAMES[kind]} · ${pwr}${d.buildTicks / 10}s to build`;
     if (missing?.length) return `${base} · Requires: ${missing.map((m) => BUILDING_NAMES[m]).join(", ")}`;
     return base;
   }
@@ -514,6 +662,7 @@ export class Hud {
 
   showLobby(players: LobbyPlayer[], you: string, mapId: MapId = "crossroads", config: GameConfig = DEFAULT_CONFIG) {
     this.hideHoverTip();
+    this.hideSideInfo();
     el("lobby").classList.remove("hidden");
     el("endscreen").classList.add("hidden");
     const me = players.find((p) => p.id === you);
@@ -671,6 +820,7 @@ export class Hud {
       document.getElementById(id)?.classList.toggle("hidden", spectating);
     }
     if (spectating) {
+      this.hideSideInfo();
       document.getElementById("sw-hud")?.classList.add("hidden");
       document.getElementById("recon-hud")?.classList.add("hidden");
     }
@@ -684,6 +834,7 @@ export class Hud {
 
   showEnd(text: string, reason = "", stats?: MatchStats[], durationSec?: number) {
     this.hideHoverTip();
+    this.hideSideInfo();
     el("end-text").textContent = text;
     const r = document.getElementById("end-reason");
     if (r) r.textContent = reason;
@@ -768,7 +919,8 @@ export class Hud {
       this.spectating = true;
       cr.textContent = "";
       pw.innerHTML = "";
-      pw.classList.remove("low");
+      pw.title = "";
+      pw.classList.remove("low", "warn");
       wrap.innerHTML = Object.entries(spectatorStates)
         .map(
           ([s, p]) =>
@@ -788,9 +940,18 @@ export class Hud {
     } else {
       this.targetCredits = state.credits;
     }
-    const pct = state.pwrHave > 0 ? Math.min(1, state.pwrUse / state.pwrHave) : state.pwrUse > 0 ? 1 : 0;
-    pw.innerHTML = `PWR <b>${state.pwrHave - state.pwrUse >= 0 ? "+" : ""}${state.pwrHave - state.pwrUse}</b><i style="width:${Math.round(pct * 34)}px"></i>`;
+    const net = state.pwrHave - state.pwrUse;
+    const rawReserve = state.pwrHave > 0 ? net / state.pwrHave : 0;
+    const fillPct = state.lowPower
+      ? 100
+      : state.pwrHave === 0
+        ? 0
+        : Math.round(Math.max(0.12, Math.min(1, rawReserve)) * 100);
+    const warn = !state.lowPower && state.pwrHave > 0 && rawReserve < 0.25;
+    pw.title = `Power output: ${state.pwrHave} ⚡ · Drain: ${state.pwrUse} ⚡ · Net: ${net >= 0 ? "+" : ""}${net}`;
+    pw.innerHTML = `PWR <b>${net >= 0 ? "+" : ""}${net}</b>${state.lowPower ? ' <span class="pwr-tag">(LOW)</span>' : ""}<span class="pwr-track"><span class="pwr-fill" style="width:${fillPct}%"></span></span>`;
     pw.classList.toggle("low", state.lowPower);
+    pw.classList.toggle("warn", warn);
   }
 
   updateRecon(state: PlayerState | null, reconArmed = false) {
@@ -836,22 +997,30 @@ export class Hud {
     if (!btn) return;
     if (!state || this.spectating || state.swLeft === undefined || state.swLeft < 0) {
       btn.classList.add("hidden");
-      btn.classList.remove("ready", "armed");
+      btn.classList.remove("ready", "armed", "offline");
       return;
     }
     btn.classList.remove("hidden");
     const prog = btn.querySelector<HTMLElement>(".sw-prog");
     const txt = btn.querySelector<HTMLElement>(".sw-txt");
     const total = state.swTotal && state.swTotal > 0 ? state.swTotal : SW_CHARGE_TICKS;
-    if (state.swReady) {
+    if (state.lowPower) {
+      btn.disabled = true;
+      btn.classList.remove("ready", "armed");
+      btn.classList.add("offline");
+      const pct = Math.max(0, Math.min(100, (1 - state.swLeft / total) * 100));
+      if (prog) prog.style.width = `${pct.toFixed(1)}%`;
+      if (txt) txt.textContent = "ION OFFLINE (LOW PWR)";
+    } else if (state.swReady) {
       btn.disabled = false;
+      btn.classList.remove("offline");
       btn.classList.add("ready");
       btn.classList.toggle("armed", swArmed);
       if (prog) prog.style.width = "100%";
       if (txt) txt.textContent = swArmed ? "TARGET STRIKE — CLICK MAP" : "⚡ ION CANNON READY — CLICK TO FIRE";
     } else {
       btn.disabled = true;
-      btn.classList.remove("ready", "armed");
+      btn.classList.remove("ready", "armed", "offline");
       const sec = Math.max(0, Math.ceil(state.swLeft / 10));
       const m = Math.floor(sec / 60);
       const s = String(sec % 60).padStart(2, "0");
@@ -861,12 +1030,127 @@ export class Hud {
     }
   }
 
+  private findSidebarBtnAt(x: number, y: number): HTMLButtonElement | null {
+    const sidebar = document.getElementById("sidebar");
+    if (!sidebar || sidebar.classList.contains("hidden")) return null;
+    const sr = sidebar.getBoundingClientRect();
+    if (x < sr.left || x > sr.right || y < sr.top || y > sr.bottom) return null;
+    if (typeof document.elementsFromPoint === "function") {
+      for (const node of document.elementsFromPoint(x, y)) {
+        if (node instanceof HTMLButtonElement && node.classList.contains("sbtn") && sidebar.contains(node)) {
+          return node;
+        }
+        const parent = node instanceof Element ? node.closest<HTMLButtonElement>("#sidebar .sbtn") : null;
+        if (parent) return parent;
+      }
+    }
+    for (const b of this.buildBtns.values()) {
+      const r = b.getBoundingClientRect();
+      if (r.width > 0 && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return b;
+    }
+    for (const b of this.trainBtns.values()) {
+      const r = b.getBoundingClientRect();
+      if (r.width > 0 && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return b;
+    }
+    return null;
+  }
+
+  private showSideInfo(btn: HTMLButtonElement) {
+    const box = document.getElementById("side-info");
+    if (!box) return;
+    if (this.hoveredBtn && this.hoveredBtn !== btn) {
+      this.hoveredBtn.classList.remove("inspected");
+    }
+    this.hoveredBtn = btn;
+    btn.classList.add("inspected");
+
+    const kind = btn.dataset.kind as BuildingKind | undefined;
+    const unit = btn.dataset.unit as UnitKind | undefined;
+    const reason = btn.dataset.reason ?? "";
+    const reasonKind = btn.dataset.reasonKind ?? "";
+    const status = btn.dataset.status ?? "";
+    const statusText = btn.dataset.statusText ?? "";
+
+    let title = "";
+    let chipsHtml = "";
+    let desc = "";
+
+    if (kind) {
+      const d = BUILDINGS[kind];
+      title = BUILDING_NAMES[kind];
+      const pwrHtml =
+        d.power !== 0
+          ? `<span class="${d.power > 0 ? "si-pwr-pos" : "si-pwr-neg"}">${d.power > 0 ? "+" : ""}${d.power}⚡</span>`
+          : "";
+      chipsHtml = `<span class="si-cost">${fmtCost(d.cost)}</span><span class="si-time">${d.buildTicks / 10}s</span>${pwrHtml}`;
+      desc = TOOLTIPS[kind] ?? title;
+    } else if (unit) {
+      const d = UNITS[unit];
+      title = label(unit);
+      const bt = btn.querySelector<HTMLElement>(".btime")?.textContent ?? `${d.buildTicks / 10}s`;
+      const timeLabel = bt === "NO SEA" ? `${d.buildTicks / 10}s` : bt;
+      chipsHtml = `<span class="si-cost">${fmtCost(d.cost)}</span><span class="si-time">${timeLabel}</span><span class="si-time">${SHORT_BUILDING_NAMES[d.trainsAt]}</span>`;
+      desc = TOOLTIPS[unit] ?? title;
+    } else {
+      box.classList.add("hidden");
+      return;
+    }
+
+    let calloutCls = "si-callout";
+    let calloutText = "";
+    if (reason) {
+      calloutCls += " blocked" + (reasonKind === "funds" || reasonKind === "busy" ? " funds" : "");
+      calloutText = reason;
+    } else if (status === "building" || status === "training") {
+      calloutCls += " busy";
+      calloutText = statusText;
+    } else {
+      calloutCls += " ready";
+      calloutText = statusText || (kind ? "Ready to build — click to start." : "Click to train · Shift+click ×5.");
+    }
+
+    box.innerHTML =
+      `<div class="si-head"><span class="si-name">${esc(title)}</span></div>` +
+      `<div class="si-chips">${chipsHtml}</div>` +
+      `<div class="si-desc">${esc(desc)}</div>` +
+      `<div class="${calloutCls}">${esc(calloutText)}</div>`;
+    box.classList.remove("hidden");
+  }
+
+  hideSideInfo() {
+    if (this.hoveredBtn) {
+      this.hoveredBtn.classList.remove("inspected");
+      this.hoveredBtn = null;
+    }
+    document.getElementById("side-info")?.classList.add("hidden");
+  }
+
   updateSidebar(
     state: PlayerState | null,
     has: (k: string) => boolean,
     countOf?: (k: BuildingKind) => number,
     config: GameConfig = DEFAULT_CONFIG,
+    hasWater = true,
   ) {
+    const applyReason = (
+      b: HTMLButtonElement,
+      shortReason: string,
+      detail: string,
+      reasonKind: "" | "lock" | "funds" | "busy" | "limit",
+      status: "ready" | "building" | "training" | "avail" | "blocked",
+      statusText = "",
+    ) => {
+      const tag = b.querySelector<HTMLElement>(".req-tag");
+      if (tag) tag.textContent = shortReason;
+      if (detail) b.dataset.reason = detail;
+      else delete b.dataset.reason;
+      if (reasonKind) b.dataset.reasonKind = reasonKind;
+      else delete b.dataset.reasonKind;
+      b.dataset.status = status;
+      if (statusText) b.dataset.statusText = statusText;
+      else delete b.dataset.statusText;
+    };
+
     for (const [kind, b] of this.buildBtns) {
       const d = BUILDINGS[kind];
       b.classList.remove("ready", "locked");
@@ -880,61 +1164,126 @@ export class Hud {
         b.classList.add("locked");
         b.disabled = true;
         bt.textContent = "OFF";
-        b.title = "Superweapons disabled in match settings";
+        const detail = "Superweapons are disabled in match settings.";
+        b.title = detail;
+        applyReason(b, "Disabled", detail, "limit", "blocked");
         continue;
       }
-      if (!state || !has("conyard")) {
+      if (d.waterOnly && !hasWater) {
+        b.classList.add("locked");
         b.disabled = true;
+        bt.textContent = "NO WATER";
+        const detail =
+          "Naval Shipyard requires navigable water — pick a naval map (Bridgehead Crossing, Pacific Atoll, Storm Coast).";
+        b.title = `${this.buildTooltip(kind)} · ${detail}`;
+        applyReason(b, "No water", detail, "lock", "blocked");
+        continue;
+      }
+      if (!state) {
+        b.disabled = true;
+        b.title = this.buildTooltip(kind);
+        applyReason(b, "", "", "", "blocked");
+        continue;
+      }
+      if (!has("conyard")) {
+        b.classList.add("locked");
+        b.disabled = true;
+        const detail = "Lost Construction Yard — cannot build structures.";
+        b.title = `${this.buildTooltip(kind)} · ${detail}`;
+        applyReason(b, "Need ConYard", detail, "busy", "blocked");
         continue;
       }
       if (state.awaiting === kind) {
         b.classList.add("ready");
         bt.textContent = "RDY";
+        b.title = this.buildTooltip(kind);
+        applyReason(b, "", "", "", "ready", "Finished — click to place on the map (right-click to cancel).");
         continue;
       }
       if (state.bq?.kind === kind) {
         b.dataset.busy = "1";
         prog.style.width = `${(1 - state.bq.left / state.bq.total) * 100}%`;
         bt.textContent = `${(state.bq.left / 10).toFixed(1)}s`;
+        b.title = this.buildTooltip(kind);
+        applyReason(b, "", "", "", "building", "Constructing — right-click to cancel & refund.");
         continue;
       }
       if (d.limit !== undefined && countOf && countOf(kind) >= d.limit) {
         b.disabled = true;
         bt.textContent = "MAX";
-        b.title = this.buildTooltip(kind);
+        const detail = `Limit reached — you can only have ${d.limit} ${BUILDING_NAMES[kind]} at a time.`;
+        b.title = `${this.buildTooltip(kind)} · ${detail}`;
+        applyReason(b, `Max ${d.limit} built`, detail, "limit", "blocked");
         continue;
       }
       const missing = d.requires?.filter((r) => !has(r)) ?? [];
       b.title = this.buildTooltip(kind, missing);
       if (missing.length) {
+        const chain = missingPrereqChain(d.requires ?? [], has);
+        const detail = `Locked — Build first: ${formatChainSteps(chain).join(" → ")}.`;
         b.classList.add("locked");
         b.disabled = true;
+        applyReason(b, formatShortNeed(missing), detail, "lock", "blocked");
         continue;
       }
-      if (state.bq || state.awaiting || state.credits < d.cost) b.disabled = true;
+      if (state.awaiting) {
+        b.disabled = true;
+        const awaitingName = BUILDING_NAMES[state.awaiting];
+        const detail = `Place your finished ${awaitingName} on the map first (or right-click to cancel).`;
+        applyReason(b, `Place ${SHORT_BUILDING_NAMES[state.awaiting]}`, detail, "lock", "blocked");
+        continue;
+      }
+      if (state.bq) {
+        b.disabled = true;
+        const bqName = BUILDING_NAMES[state.bq.kind];
+        const detail = `Construction Yard is busy building ${bqName}.`;
+        applyReason(b, "Queue busy", detail, "busy", "blocked");
+        continue;
+      }
+      if (state.credits < d.cost) {
+        b.disabled = true;
+        const detail = `Insufficient funds — need ${fmtCost(d.cost)} (have ${fmtCost(Math.floor(state.credits))}). Build Refineries/Harvesters or capture Oil Derricks.`;
+        applyReason(b, `Need ${fmtCost(d.cost)}`, detail, "funds", "blocked");
+        continue;
+      }
+      applyReason(b, "", "", "", "avail", "Ready to build — click to start.");
     }
 
-    // Multi-factory production speed badge on ARMY header
+    // Multi-factory production speed badge on ARMY header (all 4 production categories)
     const boostEl = document.getElementById("prod-boost");
     const bBoost = state?.prodBoost?.barracks ?? 1;
     const fBoost = state?.prodBoost?.factory ?? 1;
+    const aBoost = state?.prodBoost?.airfield ?? 1;
+    const sBoost = state?.prodBoost?.shipyard ?? 1;
     if (boostEl) {
-      if (bBoost > 1.01 || fBoost > 1.01) {
-        if (bBoost > 1.01 && fBoost > 1.01) {
-          boostEl.textContent =
-            Math.abs(bBoost - fBoost) < 0.01 ? fmtBoost(bBoost) : `B ${fmtBoost(bBoost)} · F ${fmtBoost(fBoost)}`;
-          boostEl.title = `Multi-structure speed bonus: Barracks ${fmtBoost(bBoost)}, War Factory ${fmtBoost(fBoost)}`;
-        } else if (bBoost > 1.01) {
-          boostEl.textContent = `INF ${fmtBoost(bBoost)}`;
-          boostEl.title = `Multiple Barracks: infantry train ${fmtBoost(bBoost)} faster`;
+      const active: { short: string; key: string; name: string; mult: number }[] = [];
+      if (bBoost > 1.01) active.push({ short: "INF", key: "B", name: "Barracks", mult: bBoost });
+      if (fBoost > 1.01) active.push({ short: "VEH", key: "F", name: "War Factory", mult: fBoost });
+      if (aBoost > 1.01) active.push({ short: "AIR", key: "A", name: "Air Command", mult: aBoost });
+      if (sBoost > 1.01) active.push({ short: "SEA", key: "S", name: "Naval Shipyard", mult: sBoost });
+      if (active.length) {
+        const allEqual = active.every((x) => Math.abs(x.mult - active[0].mult) < 0.01);
+        if (active.length === 1) {
+          boostEl.textContent = `${active[0].short} ${fmtBoost(active[0].mult)}`;
+        } else if (allEqual) {
+          boostEl.textContent = fmtBoost(active[0].mult);
+        } else if (active.length === 2) {
+          boostEl.textContent = active.map((x) => `${x.key} ${fmtBoost(x.mult)}`).join(" · ");
         } else {
-          boostEl.textContent = `VEH ${fmtBoost(fBoost)}`;
-          boostEl.title = `Multiple War Factories: vehicles build ${fmtBoost(fBoost)} faster`;
+          const maxMult = Math.max(...active.map((x) => x.mult));
+          boostEl.textContent = `${active.length}× ${fmtBoost(maxMult)}`;
         }
+        boostEl.title = `Multi-structure speed bonus: ${active.map((x) => `${x.name} ${fmtBoost(x.mult)}`).join(", ")}`;
         boostEl.classList.remove("hidden");
       } else {
         boostEl.classList.add("hidden");
       }
+    }
+
+    const seaHdr = this.trainGroupHeaders.get("sea");
+    if (seaHdr) {
+      seaHdr.classList.toggle("no-water", !hasWater);
+      seaHdr.textContent = hasWater ? "NAVY" : "NAVY · NO WATER";
     }
 
     for (const [unit, b] of this.trainBtns) {
@@ -942,15 +1291,43 @@ export class Hud {
       const prog = b.querySelector<HTMLElement>(".prog")!;
       const bt = b.querySelector<HTMLElement>(".btime")!;
       const cat = d.trainsAt;
-      const mult = cat === "barracks" ? bBoost : fBoost;
+      const mult = state?.prodBoost?.[cat] ?? 1;
       prog.style.width = "0%";
-      bt.textContent = mult > 1.01 ? `${(d.buildTicks / 10 / mult).toFixed(1)}s` : `${d.buildTicks / 10}s`;
       b.querySelector(".qcount")?.remove();
       b.classList.remove("locked");
       b.disabled = true;
-      if (!state) continue;
+      if (d.domain === "sea" && !hasWater) {
+        b.classList.add("locked");
+        bt.textContent = "NO SEA";
+        const detail = "Navy units require a Naval Shipyard on a naval map.";
+        b.title = `${TOOLTIPS[unit] ?? label(unit)} · ${detail}`;
+        applyReason(b, "No water", detail, "lock", "blocked");
+        continue;
+      }
+      const baseTitle = `${TOOLTIPS[unit] ?? label(unit)} · ${d.buildTicks / 10}s to train · Shift+click = ×5`;
+      b.title = baseTitle;
+      bt.textContent = mult > 1.01 ? `${(d.buildTicks / 10 / mult).toFixed(1)}s` : `${d.buildTicks / 10}s`;
+      if (!state) {
+        applyReason(b, "", "", "", "blocked");
+        continue;
+      }
       if (!has(cat) || (d.requires && !has(d.requires))) {
         b.classList.add("locked");
+        const directReqs: BuildingKind[] =
+          d.requires === "factory2" ? ["factory2"] : d.requires ? [cat, d.requires] : [cat];
+        const directMissing = directReqs.filter((r) => !has(r));
+        const chain = missingPrereqChain(directReqs, has);
+        let detail: string;
+        if (chain.includes("factory2")) {
+          const beforeUpgrade = chain.filter((k) => k !== "factory2");
+          detail = beforeUpgrade.length
+            ? `Locked — Build first: ${beforeUpgrade.map((k) => BUILDING_NAMES[k]).join(" → ")} → then select War Factory and click UPGRADE → WAR FACTORY II (${fmtCost(UPGRADE_COST)}).`
+            : `Locked — Select your War Factory and click UPGRADE → WAR FACTORY II (${fmtCost(UPGRADE_COST)}).`;
+        } else {
+          detail = `Locked — Build first: ${formatChainSteps(chain).join(" → ")}.`;
+        }
+        b.title = `${baseTitle} · Requires: ${directMissing.map((m) => BUILDING_NAMES[m]).join(", ")}`;
+        applyReason(b, formatShortNeed(directMissing), detail, "lock", "blocked");
         continue;
       }
       const q = state.queues[cat];
@@ -961,8 +1338,44 @@ export class Hud {
         c.className = "qcount";
         c.textContent = "×" + q.count;
         b.appendChild(c);
-      } else if (q) continue;
-      b.disabled = state.credits < d.cost;
+        if (q.count >= 9) {
+          applyReason(b, "Queue full", "Production queue full (max 9).", "busy", "blocked");
+          continue;
+        }
+        if (state.credits < d.cost) {
+          const detail = `Insufficient funds — need ${fmtCost(d.cost)} (have ${fmtCost(Math.floor(state.credits))}).`;
+          applyReason(b, `Need ${fmtCost(d.cost)}`, detail, "funds", "blocked");
+          continue;
+        }
+        b.disabled = false;
+        applyReason(
+          b,
+          "",
+          "",
+          "",
+          "training",
+          `Training (×${q.count}) — click to queue more · Shift+click ×5 · Right-click to cancel.`,
+        );
+        continue;
+      }
+      if (q) {
+        const prodName = BUILDING_NAMES[cat];
+        const qUnitName = label(q.unit);
+        const detail = `${prodName} is training ${qUnitName}. Right-click ${qUnitName} to cancel.`;
+        applyReason(b, "Queue busy", detail, "busy", "blocked");
+        continue;
+      }
+      if (state.credits < d.cost) {
+        const detail = `Insufficient funds — need ${fmtCost(d.cost)} (have ${fmtCost(Math.floor(state.credits))}).`;
+        applyReason(b, `Need ${fmtCost(d.cost)}`, detail, "funds", "blocked");
+        continue;
+      }
+      b.disabled = false;
+      applyReason(b, "", "", "", "avail", "Click to train · Shift+click ×5.");
+    }
+
+    if (this.hoveredBtn && this.hoveredBtn.isConnected) {
+      this.showSideInfo(this.hoveredBtn);
     }
   }
 
@@ -1063,9 +1476,17 @@ export class Hud {
         const b = document.createElement("button");
         b.className = "sbtn si-upgrade";
         b.disabled = !hasTech || !canAfford;
+        const techChain = !hasTech && has ? missingPrereqChain(["techlab"], has) : [];
         b.textContent = !hasTech
           ? `UPGRADE → MKII (NEEDS TECH LAB)`
           : `UPGRADE → ${BUILDING_NAMES.factory2.toUpperCase()} (${fmtCost(UPGRADE_COST)})`;
+        b.title = !hasTech
+          ? techChain.length
+            ? `Locked — Build first: ${formatChainSteps(techChain).join(" → ")}.`
+            : "Locked — Build a Tech Lab first."
+          : !canAfford
+            ? `Insufficient funds — need ${fmtCost(UPGRADE_COST)} (have ${fmtCost(Math.floor(state?.credits ?? 0))}).`
+            : "Upgrade War Factory to MKII — unlocks Mastodon Tank & Spider Drone.";
         b.addEventListener("click", () => this.onUpgrade?.(singleId!));
         box.appendChild(b);
       } else if (singleId !== null && singleKind === "factory2") {
@@ -1098,7 +1519,8 @@ export class Hud {
         const name = esc(label(ent.k));
         const vet = (ent.vet ?? 0) > 0 ? `<span class="ht-vet">${"★".repeat(Math.min(3, ent.vet!))}</span>` : "";
         const hold = ent.hold ? `<span class="ht-hold">[HOLD]</span>` : "";
-        tip.innerHTML = `<span class="ht-dot" style="background:${col}"></span><span>${name}</span>${vet}${hold}<span class="ht-meta">· HP ${Math.round(ent.hp)}/${ent.mhp}</span>`;
+        const sub = ent.sub ? `<span class="ht-hold">[SUB]</span>` : "";
+        tip.innerHTML = `<span class="ht-dot" style="background:${col}"></span><span>${name}</span>${vet}${hold}${sub}<span class="ht-meta">· HP ${Math.round(ent.hp)}/${ent.mhp}</span>`;
       }
     } else if (crate) {
       tip.innerHTML = `<span class="ht-dot" style="background:#ffc43d"></span><span>Supply Crate — Walk unit over to collect</span>`;
@@ -1161,10 +1583,18 @@ export class Hud {
       ctx.fillText("RADAR OFFLINE", 80, 89);
       return;
     }
-    // Impassable rocky cliff plateaus
-    const cliffs = getMapLayout(mapId).cliffs;
-    ctx.fillStyle = "#2a343d";
+    const layout = getMapLayout(mapId);
     const cs = Math.ceil(s);
+    // Navigable ocean / river water channels
+    if (layout.water.length) {
+      ctx.fillStyle = "#19587a";
+      for (let i = 0; i < layout.water.length; i++) {
+        ctx.fillRect(layout.water[i][0] * s, layout.water[i][1] * s, cs, cs);
+      }
+    }
+    // Impassable rocky cliff plateaus
+    const cliffs = layout.cliffs;
+    ctx.fillStyle = "#2a343d";
     for (let i = 0; i < cliffs.length; i++) {
       ctx.fillRect(cliffs[i][0] * s, cliffs[i][1] * s, cs, cs);
     }

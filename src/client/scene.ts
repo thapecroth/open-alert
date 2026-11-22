@@ -3,10 +3,325 @@ import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
-import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { MAP_W, MAP_H, MapId, getMapLayout } from "../shared/gamedefs";
-import { createBattlefieldTextures, getCliffRockMaterials } from "./textures";
+import { createBattlefieldTextures, createOceanWaterMaterial, getCliffRockMaterials } from "./textures";
+
+interface BiomeAtmosphere {
+  zenith: number;
+  midSky: number;
+  horizon: number;
+  groundBounce: number;
+  sunColor: number;
+  sunIntensity: number;
+  sunOffset: [number, number, number];
+  hemiSky: number;
+  hemiGround: number;
+  hemiIntensity: number;
+  rimColor: number;
+  rimIntensity: number;
+  skirt: number;
+  fogColor: number;
+  fogDensity: number;
+  cloudTint: number;
+  cloudOpacity: number;
+  groundRoughness: number;
+  groundEnv: number;
+}
+
+const BIOME_ATMOSPHERE: Record<MapId, BiomeAtmosphere> = {
+  crossroads: {
+    // Golden-hour sunlit blue-amber steppe
+    zenith: 0x24568c,
+    midSky: 0x5c96c8,
+    horizon: 0xe6c592,
+    groundBounce: 0x4b4636,
+    sunColor: 0xfff0d4,
+    sunIntensity: 2.45,
+    sunOffset: [-42, 58, 28],
+    hemiSky: 0xaad2f5,
+    hemiGround: 0x544a38,
+    hemiIntensity: 1.0,
+    rimColor: 0x6cb8ec,
+    rimIntensity: 0.56,
+    skirt: 0x3b4034,
+    fogColor: 0x9fb2c2,
+    fogDensity: 0.0028,
+    cloudTint: 0xfff2dc,
+    cloudOpacity: 0.24,
+    groundRoughness: 0.9,
+    groundEnv: 0.45,
+  },
+  oasis: {
+    // Sun-drenched golden Sahara daylight
+    zenith: 0x1e5ea0,
+    midSky: 0x5da0d6,
+    horizon: 0xf4d29a,
+    groundBounce: 0x80603c,
+    sunColor: 0xffebd0,
+    sunIntensity: 2.52,
+    sunOffset: [-38, 62, 24],
+    hemiSky: 0xb8dcf8,
+    hemiGround: 0x8c6942,
+    hemiIntensity: 1.05,
+    rimColor: 0x7ac4f2,
+    rimIntensity: 0.52,
+    skirt: 0x765a38,
+    fogColor: 0xd0b794,
+    fogDensity: 0.0029,
+    cloudTint: 0xfff4e0,
+    cloudOpacity: 0.16,
+    groundRoughness: 0.88,
+    groundEnv: 0.48,
+  },
+  fortress: {
+    // Golden-hour sunlit sandstone citadel
+    zenith: 0x225288,
+    midSky: 0x5e90c2,
+    horizon: 0xe8c08a,
+    groundBounce: 0x68543a,
+    sunColor: 0xffe8c6,
+    sunIntensity: 2.45,
+    sunOffset: [-44, 54, 30],
+    hemiSky: 0xadd0f0,
+    hemiGround: 0x6e5a3e,
+    hemiIntensity: 1.0,
+    rimColor: 0x6cb4e6,
+    rimIntensity: 0.55,
+    skirt: 0x66533b,
+    fogColor: 0xbea98e,
+    fogDensity: 0.0028,
+    cloudTint: 0xffeeda,
+    cloudOpacity: 0.2,
+    groundRoughness: 0.9,
+    groundEnv: 0.45,
+  },
+  canyon: {
+    // Warm canyon dusk / red-rock sunset
+    zenith: 0x2a3868,
+    midSky: 0x805a72,
+    horizon: 0xee965c,
+    groundBounce: 0x643826,
+    sunColor: 0xffcfa0,
+    sunIntensity: 2.45,
+    sunOffset: [-48, 44, 28],
+    hemiSky: 0xc8a4bc,
+    hemiGround: 0x723e2a,
+    hemiIntensity: 0.96,
+    rimColor: 0x6aaee4,
+    rimIntensity: 0.6,
+    skirt: 0x5a3424,
+    fogColor: 0xb68066,
+    fogDensity: 0.0031,
+    cloudTint: 0xffc69a,
+    cloudOpacity: 0.28,
+    groundRoughness: 0.89,
+    groundEnv: 0.46,
+  },
+  tundra: {
+    // Crisp bright arctic zenith
+    zenith: 0x2660a4,
+    midSky: 0x78b4e6,
+    horizon: 0xdceeff,
+    groundBounce: 0x6a849e,
+    sunColor: 0xf6fbff,
+    sunIntensity: 2.32,
+    sunOffset: [-36, 54, 32],
+    hemiSky: 0xcce6ff,
+    hemiGround: 0x6e88a2,
+    hemiIntensity: 1.05,
+    rimColor: 0x88d2ff,
+    rimIntensity: 0.55,
+    skirt: 0x6c869e,
+    fogColor: 0xb6d0e4,
+    fogDensity: 0.0029,
+    cloudTint: 0xf4faff,
+    cloudOpacity: 0.22,
+    groundRoughness: 0.72,
+    groundEnv: 0.65,
+  },
+  archipelago: {
+    // Lush sunlit tropical Pacific azure
+    zenith: 0x1468b8,
+    midSky: 0x4ab6ea,
+    horizon: 0xcaeffa,
+    groundBounce: 0x26686c,
+    sunColor: 0xfff6e6,
+    sunIntensity: 2.5,
+    sunOffset: [-34, 66, 22],
+    hemiSky: 0xa0e2ff,
+    hemiGround: 0x2e6e68,
+    hemiIntensity: 1.1,
+    rimColor: 0x6cdaf2,
+    rimIntensity: 0.56,
+    skirt: 0x166a82,
+    fogColor: 0x8ccce0,
+    fogDensity: 0.0024,
+    cloudTint: 0xffffff,
+    cloudOpacity: 0.26,
+    groundRoughness: 0.88,
+    groundEnv: 0.5,
+  },
+  jungle: {
+    // Sunlit tropical emerald valley
+    zenith: 0x1c629c,
+    midSky: 0x52a6ca,
+    horizon: 0xbae0ca,
+    groundBounce: 0x2a4c30,
+    sunColor: 0xfff1d4,
+    sunIntensity: 2.45,
+    sunOffset: [-38, 62, 26],
+    hemiSky: 0x9ad8ea,
+    hemiGround: 0x2f5432,
+    hemiIntensity: 1.04,
+    rimColor: 0x64c6da,
+    rimIntensity: 0.54,
+    skirt: 0x26442c,
+    fogColor: 0x7ba896,
+    fogDensity: 0.0031,
+    cloudTint: 0xf0faf4,
+    cloudOpacity: 0.28,
+    groundRoughness: 0.87,
+    groundEnv: 0.48,
+  },
+  islands: {
+    // Sunlit coastal archipelago & maritime sky
+    zenith: 0x1c5c9c,
+    midSky: 0x5aa4d6,
+    horizon: 0xd0e6f2,
+    groundBounce: 0x2c565e,
+    sunColor: 0xfff4e0,
+    sunIntensity: 2.45,
+    sunOffset: [-40, 60, 26],
+    hemiSky: 0xaadcf6,
+    hemiGround: 0x30585e,
+    hemiIntensity: 1.05,
+    rimColor: 0x70c6ee,
+    rimIntensity: 0.55,
+    skirt: 0x1c5268,
+    fogColor: 0x8eb8cc,
+    fogDensity: 0.0026,
+    cloudTint: 0xf6fbff,
+    cloudOpacity: 0.24,
+    groundRoughness: 0.88,
+    groundEnv: 0.5,
+  },
+  coastline: {
+    // Dramatic storm-silver North Sea sky
+    zenith: 0x22364c,
+    midSky: 0x54728a,
+    horizon: 0xa6bccb,
+    groundBounce: 0x2c3c46,
+    sunColor: 0xecf4ff,
+    sunIntensity: 2.32,
+    sunOffset: [-44, 52, 30],
+    hemiSky: 0x9ebad2,
+    hemiGround: 0x2e3e46,
+    hemiIntensity: 1.0,
+    rimColor: 0x6cb0da,
+    rimIntensity: 0.62,
+    skirt: 0x1f3a4c,
+    fogColor: 0x748d9e,
+    fogDensity: 0.0033,
+    cloudTint: 0xd2e0ea,
+    cloudOpacity: 0.4,
+    groundRoughness: 0.84,
+    groundEnv: 0.56,
+  },
+  basin: {
+    // Dramatic storm-silver alpine volcanic caldera
+    zenith: 0x1f3246,
+    midSky: 0x4e687e,
+    horizon: 0x9eb4c4,
+    groundBounce: 0x2e363e,
+    sunColor: 0xeef5ff,
+    sunIntensity: 2.36,
+    sunOffset: [-42, 56, 28],
+    hemiSky: 0x9ab8d6,
+    hemiGround: 0x323a42,
+    hemiIntensity: 1.0,
+    rimColor: 0x6ab2e4,
+    rimIntensity: 0.62,
+    skirt: 0x2b343e,
+    fogColor: 0x708596,
+    fogDensity: 0.0032,
+    cloudTint: 0xcfdce6,
+    cloudOpacity: 0.38,
+    groundRoughness: 0.86,
+    groundEnv: 0.54,
+  },
+};
+
+const SKY_VERT = /* glsl */ `
+  varying vec3 vWorldDir;
+  void main() {
+    vec4 wp = modelMatrix * vec4(position, 1.0);
+    vWorldDir = normalize(position);
+    gl_Position = projectionMatrix * viewMatrix * wp;
+  }
+`;
+
+const SKY_FRAG = /* glsl */ `
+  uniform vec3 uZenith;
+  uniform vec3 uMidSky;
+  uniform vec3 uHorizon;
+  uniform vec3 uGround;
+  uniform vec3 uSunDir;
+  uniform vec3 uSunColor;
+  uniform vec3 uCloudTint;
+  uniform float uCloudOpacity;
+  uniform float uSunBoost;
+  varying vec3 vWorldDir;
+
+  float hash2(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+  }
+  float noise2(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash2(i);
+    float b = hash2(i + vec2(1.0, 0.0));
+    float c = hash2(i + vec2(0.0, 1.0));
+    float d = hash2(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+  }
+
+  void main() {
+    vec3 dir = normalize(vWorldDir);
+    float h = dir.y;
+
+    // Smooth atmospheric Rayleigh vertical gradient
+    vec3 sky;
+    if (h >= 0.0) {
+      float tMid = smoothstep(0.0, 0.28, h);
+      float tZen = smoothstep(0.18, 0.88, h);
+      sky = mix(uHorizon, uMidSky, tMid);
+      sky = mix(sky, uZenith, tZen);
+    } else {
+      sky = mix(uHorizon, uGround, smoothstep(0.0, -0.35, h));
+    }
+
+    // Mie forward-scattering solar glow & crisp sun disc
+    float sunDot = max(dot(dir, normalize(uSunDir)), 0.0);
+    float halo = pow(sunDot, 6.0) * 0.28 + pow(sunDot, 42.0) * 0.42;
+    float disc = smoothstep(0.9965, 0.9994, sunDot) * uSunBoost;
+    sky += uSunColor * (halo + disc) * smoothstep(-0.08, 0.08, h);
+
+    // Subtle wispy high-altitude clouds in upper hemisphere
+    if (h > 0.03 && uCloudOpacity > 0.01) {
+      vec2 uv = dir.xz / (h + 0.16) * 1.45;
+      float c1 = noise2(uv * 1.8 + vec2(2.3, 4.1));
+      float c2 = noise2(uv * 3.7 - vec2(1.4, 2.7)) * 0.5;
+      float c3 = noise2(uv * 7.5 + vec2(5.1, 0.8)) * 0.25;
+      float cloud = smoothstep(0.92, 1.42, c1 + c2 + c3);
+      float fade = smoothstep(0.03, 0.24, h) * (1.0 - smoothstep(0.75, 0.98, h) * 0.35);
+      sky = mix(sky, uCloudTint, cloud * fade * uCloudOpacity);
+    }
+
+    gl_FragColor = vec4(sky, 1.0);
+  }
+`;
 
 // Facade preserving the legacy engine API expected by main.ts / input.ts / tests
 class EngineShim {
@@ -67,10 +382,25 @@ export class GameScene {
   private static ORE_MAX = 4096;
   private dummy = new THREE.Object3D();
 
-  // Map cliffs & biome terrain
+  // Cinematic 3-point biome lighting, procedural sky & PMREM environment
+  private hemiLight!: THREE.HemisphereLight;
+  private sunLight!: THREE.DirectionalLight;
+  private rimLight!: THREE.DirectionalLight;
+  private skyMat!: THREE.ShaderMaterial;
+  private envSkyMat!: THREE.ShaderMaterial;
+  private envScene!: THREE.Scene;
+  private pmrem!: THREE.PMREMGenerator;
+  private envRT: THREE.WebGLRenderTarget | null = null;
+
+  // Map cliffs, navigable water & biome terrain
   private mapId: MapId = "crossroads";
   private cliffSet = new Set<number>();
+  private waterSet = new Set<number>();
   private mapGroup: THREE.Group | null = null;
+  private waterMat: THREE.MeshStandardMaterial | null = null;
+  private foamMat: THREE.MeshBasicMaterial | null = null;
+  private waterTime = 0;
+  private waterBaseEmissive = 0.28;
 
   // Live 64x64 Fog of War shroud plane
   private fogMesh!: THREE.Mesh;
@@ -100,54 +430,47 @@ export class GameScene {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
+    this.renderer.toneMappingExposure = 1.18;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0d1520);
-    this.scene.fog = new THREE.FogExp2(0x0d1520, 0.0042);
+    this.scene.background = new THREE.Color(0x9fb2c2);
+    this.scene.fog = new THREE.FogExp2(0x9fb2c2, 0.0028);
 
     this.camera = new THREE.PerspectiveCamera(48, 1, 0.5, 700);
     this.updateCamera();
 
-    // Tactical daylight-dusk lighting: warm sun key + cool sky bounce + soft rim
-    const hemi = new THREE.HemisphereLight(0xa6c4e6, 0x3b352a, 1.05);
-    this.scene.add(hemi);
+    // Cinematic 3-point sunlit biome lighting (tuned per theater in loadMap)
+    this.hemiLight = new THREE.HemisphereLight(0xaad2f5, 0x544a38, 1.0);
+    this.scene.add(this.hemiLight);
 
-    const dir = new THREE.DirectionalLight(0xffe7c2, 2.05);
-    dir.position.set(-28, 60, 42);
-    dir.target.position.set(MAP_W / 2, 0, MAP_H / 2);
-    dir.castShadow = true;
-    dir.shadow.mapSize.set(2048, 2048);
-    dir.shadow.camera.left = -48;
-    dir.shadow.camera.right = 48;
-    dir.shadow.camera.top = 48;
-    dir.shadow.camera.bottom = -48;
-    dir.shadow.camera.near = 10;
-    dir.shadow.camera.far = 180;
-    dir.shadow.bias = -0.0004;
-    dir.shadow.normalBias = 0.03;
-    this.scene.add(dir, dir.target);
+    this.sunLight = new THREE.DirectionalLight(0xfff0d4, 2.45);
+    this.sunLight.position.set(MAP_W / 2 - 42, 58, MAP_H / 2 + 28);
+    this.sunLight.target.position.set(MAP_W / 2, 0, MAP_H / 2);
+    this.sunLight.castShadow = true;
+    this.sunLight.shadow.mapSize.set(2048, 2048);
+    this.sunLight.shadow.camera.left = -45;
+    this.sunLight.shadow.camera.right = 45;
+    this.sunLight.shadow.camera.top = 45;
+    this.sunLight.shadow.camera.bottom = -45;
+    this.sunLight.shadow.camera.near = 12;
+    this.sunLight.shadow.camera.far = 165;
+    this.sunLight.shadow.bias = -0.0003;
+    this.sunLight.shadow.normalBias = 0.024;
+    this.scene.add(this.sunLight, this.sunLight.target);
 
-    // Subtle cool counter-fill so shaded sides stay legible
-    const rim = new THREE.DirectionalLight(0x52a8dc, 0.45);
-    rim.position.set(55, 28, -35);
-    this.scene.add(rim);
+    // Crisp cool counter-rim light so shaded metallic facets & silhouettes stay razor-sharp
+    this.rimLight = new THREE.DirectionalLight(0x6cb8ec, 0.56);
+    this.rimLight.position.set(MAP_W / 2 + 48, 28, MAP_H / 2 - 36);
+    this.scene.add(this.rimLight);
 
-    // HDRI environment for metallic specular reflections
-    new RGBELoader().load("/tex/satara_night_1k.hdr", (hdr) => {
-      const pmrem = new THREE.PMREMGenerator(this.renderer);
-      const env = pmrem.fromEquirectangular(hdr).texture;
-      this.scene.environment = env;
-      this.scene.environmentIntensity = 0.5;
-      hdr.dispose();
-      pmrem.dispose();
-      this.envReady = true;
-    });
+    // Biome-matched procedural PMREM environment generator for gleaming metallic & glass reflections
+    this.pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environmentIntensity = 0.78;
 
-    // Calibrated bloom: crisp weapon flashes & energy cores without blowing out meshes
+    // Restrained filmic bloom: silhouettes stay razor-sharp while afterburners, beams & explosions pop
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(1024, 1024), 0.34, 0.48, 0.92);
+    const bloom = new UnrealBloomPass(new THREE.Vector2(1024, 1024), 0.28, 0.4, 0.96);
     this.composer.addPass(bloom);
     this.composer.addPass(new OutputPass());
 
@@ -175,27 +498,94 @@ export class GameScene {
 
   // ---------- environment pieces ----------
 
-  private buildSky() {
-    const geo = new THREE.SphereGeometry(420, 24, 16);
-    const mat = new THREE.MeshBasicMaterial({ color: 0x162436, side: THREE.BackSide, fog: false, depthWrite: false });
-    new THREE.TextureLoader().load("/tex/sky.png", (t) => {
-      t.colorSpace = THREE.SRGBColorSpace;
-      mat.map = t;
-      mat.color.setHex(0xffffff);
-      mat.needsUpdate = true;
+  private makeSkyMaterial(sunBoost: number): THREE.ShaderMaterial {
+    return new THREE.ShaderMaterial({
+      vertexShader: SKY_VERT,
+      fragmentShader: SKY_FRAG,
+      side: THREE.BackSide,
+      fog: false,
+      depthWrite: false,
+      uniforms: {
+        uZenith: { value: new THREE.Color(0x24568c) },
+        uMidSky: { value: new THREE.Color(0x5c96c8) },
+        uHorizon: { value: new THREE.Color(0xe6c592) },
+        uGround: { value: new THREE.Color(0x4b4636) },
+        uSunDir: { value: new THREE.Vector3(-42, 58, 28).normalize() },
+        uSunColor: { value: new THREE.Color(0xfff0d4) },
+        uCloudTint: { value: new THREE.Color(0xfff2dc) },
+        uCloudOpacity: { value: 0.24 },
+        uSunBoost: { value: sunBoost },
+      },
     });
-    const sky = new THREE.Mesh(geo, mat);
+  }
+
+  private buildSky() {
+    const geo = new THREE.SphereGeometry(420, 32, 20);
+    this.skyMat = this.makeSkyMaterial(1.1);
+    const sky = new THREE.Mesh(geo, this.skyMat);
+    sky.position.set(MAP_W / 2, 0, MAP_H / 2);
     sky.renderOrder = -10;
     this.scene.add(sky);
+
+    // Lightweight offscreen sky dome with heightened HDR sun specular for PMREM reflections
+    this.envScene = new THREE.Scene();
+    this.envSkyMat = this.makeSkyMaterial(3.2);
+    const envDome = new THREE.Mesh(new THREE.SphereGeometry(20, 24, 16), this.envSkyMat);
+    this.envScene.add(envDome);
+  }
+
+  private applyBiomeAtmosphere(atm: BiomeAtmosphere) {
+    // Update 3-point sunlit lighting
+    this.hemiLight.color.setHex(atm.hemiSky);
+    this.hemiLight.groundColor.setHex(atm.hemiGround);
+    this.hemiLight.intensity = atm.hemiIntensity;
+
+    const [sx, sy, sz] = atm.sunOffset;
+    this.sunLight.color.setHex(atm.sunColor);
+    this.sunLight.intensity = atm.sunIntensity;
+    this.sunLight.position.set(MAP_W / 2 + sx, sy, MAP_H / 2 + sz);
+
+    this.rimLight.color.setHex(atm.rimColor);
+    this.rimLight.intensity = atm.rimIntensity;
+    this.rimLight.position.set(MAP_W / 2 - sx * 1.15, Math.max(22, sy * 0.48), MAP_H / 2 - sz * 1.25);
+
+    // Update sky shader uniforms & matching PMREM radiance map
+    const sunDir = new THREE.Vector3(sx, sy, sz).normalize();
+    for (const mat of [this.skyMat, this.envSkyMat]) {
+      mat.uniforms.uZenith.value.setHex(atm.zenith);
+      mat.uniforms.uMidSky.value.setHex(atm.midSky);
+      mat.uniforms.uHorizon.value.setHex(atm.horizon);
+      mat.uniforms.uGround.value.setHex(atm.groundBounce);
+      mat.uniforms.uSunDir.value.copy(sunDir);
+      mat.uniforms.uSunColor.value.setHex(atm.sunColor);
+      mat.uniforms.uCloudTint.value.setHex(atm.cloudTint);
+      mat.uniforms.uCloudOpacity.value = atm.cloudOpacity;
+    }
+
+    const prevEnvRT = this.envRT;
+    this.envRT = this.pmrem.fromScene(this.envScene, 0.03);
+    this.scene.environment = this.envRT.texture;
+    this.scene.environmentIntensity = 0.78;
+    prevEnvRT?.dispose();
+    this.envReady = true;
+
+    // Atmospheric horizon haze & grounded outer skirt
+    (this.scene.background as THREE.Color).setHex(atm.fogColor);
+    if (this.scene.fog instanceof THREE.FogExp2) {
+      this.scene.fog.color.setHex(atm.fogColor);
+      this.scene.fog.density = atm.fogDensity;
+    }
+    this.skirtMat.color.setHex(atm.skirt);
   }
 
   private buildGround() {
     const geo = new THREE.PlaneGeometry(MAP_W, MAP_H);
     geo.rotateX(-Math.PI / 2);
     this.groundMat = new THREE.MeshStandardMaterial({
-      bumpScale: 0.14,
-      roughness: 0.92,
-      metalness: 0.04,
+      normalScale: new THREE.Vector2(0.88, 0.88),
+      roughness: 0.9,
+      metalness: 0.03,
+      envMapIntensity: 0.45,
     });
     const g = new THREE.Mesh(geo, this.groundMat);
     g.position.set(MAP_W / 2, 0, MAP_H / 2);
@@ -216,9 +606,10 @@ export class GameScene {
     const skirtGeo = new THREE.PlaneGeometry(MAP_W * 4, MAP_H * 4);
     skirtGeo.rotateX(-Math.PI / 2);
     this.skirtMat = new THREE.MeshStandardMaterial({
-      color: 0x1e2524,
-      roughness: 0.96,
+      color: 0x3b4034,
+      roughness: 0.95,
       metalness: 0.02,
+      envMapIntensity: 0.35,
     });
     const skirt = new THREE.Mesh(skirtGeo, this.skirtMat);
     skirt.position.set(MAP_W / 2, -0.18, MAP_H / 2);
@@ -244,35 +635,25 @@ export class GameScene {
 
   loadMap(mapId: MapId): void {
     this.mapId = mapId;
+    const atm = BIOME_ATMOSPHERE[mapId] ?? BIOME_ATMOSPHERE.crossroads;
     const prevMap = this.groundMat.map;
+    const prevNormal = this.groundMat.normalMap;
     const prevBump = this.groundMat.bumpMap;
-    const { map, bumpMap } = createBattlefieldTextures(mapId);
+    const { map, bumpMap, normalMap } = createBattlefieldTextures(mapId);
+    bumpMap.dispose();
     this.groundMat.map = map;
-    this.groundMat.bumpMap = bumpMap;
+    this.groundMat.normalMap = normalMap;
+    this.groundMat.bumpMap = null;
+    this.groundMat.roughness = atm.groundRoughness;
+    this.groundMat.envMapIntensity = atm.groundEnv;
     this.groundMat.needsUpdate = true;
     prevMap?.dispose();
+    prevNormal?.dispose();
     prevBump?.dispose();
 
-    // Biome atmosphere tuning across all 8 theaters
-    const atm: Record<MapId, { bg: number; skirt: number; fogDensity: number }> = {
-      crossroads: { bg: 0x0d1520, skirt: 0x1e2524, fogDensity: 0.0042 },
-      canyon: { bg: 0x1d1310, skirt: 0x2f1e17, fogDensity: 0.0045 },
-      basin: { bg: 0x0b121b, skirt: 0x181f27, fogDensity: 0.0046 },
-      tundra: { bg: 0x142233, skirt: 0x3a4d5f, fogDensity: 0.0048 },
-      fortress: { bg: 0x1c1711, skirt: 0x362b1f, fogDensity: 0.004 },
-      jungle: { bg: 0x0a1a13, skirt: 0x172b1d, fogDensity: 0.0048 },
-      islands: { bg: 0x0a1c26, skirt: 0x113142, fogDensity: 0.0042 },
-      oasis: { bg: 0x221810, skirt: 0x422f1d, fogDensity: 0.0044 },
-    };
-    const a = atm[mapId] ?? atm.crossroads;
-    (this.scene.background as THREE.Color).setHex(a.bg);
-    if (this.scene.fog instanceof THREE.FogExp2) {
-      this.scene.fog.color.setHex(a.bg);
-      this.scene.fog.density = a.fogDensity;
-    }
-    this.skirtMat.color.setHex(a.skirt);
+    this.applyBiomeAtmosphere(atm);
 
-    // Clear previous 3D cliff mesas & props
+    // Clear previous 3D cliff mesas, water surfaces & props
     if (this.mapGroup) {
       this.scene.remove(this.mapGroup);
       this.mapGroup.traverse((o) => {
@@ -282,11 +663,25 @@ export class GameScene {
       });
       this.mapGroup = null;
     }
+    if (this.waterMat) {
+      this.waterMat.normalMap?.dispose();
+      this.waterMat.bumpMap?.dispose();
+      this.waterMat.dispose();
+      this.waterMat = null;
+    }
+    if (this.foamMat) {
+      this.foamMat.dispose();
+      this.foamMat = null;
+    }
 
     const layout = getMapLayout(mapId);
     this.cliffSet.clear();
     for (const [cx, cy] of layout.cliffs) {
       this.cliffSet.add(cy * MAP_W + cx);
+    }
+    this.waterSet.clear();
+    for (const [wx, wy] of layout.water) {
+      this.waterSet.add(wy * MAP_W + wx);
     }
 
     const group = new THREE.Group();
@@ -301,6 +696,8 @@ export class GameScene {
       const isTundra = mapId === "tundra";
       const isJungle = mapId === "jungle";
       const isOasis = mapId === "oasis";
+      const isArchipelago = mapId === "archipelago";
+      const isCoastline = mapId === "coastline";
 
       // 1) Tapered rocky/glacial/citadel base wall blocks
       const wallGeo = isFortress
@@ -457,9 +854,21 @@ export class GameScene {
         }
 
         // Biome-specific trees / palms / jungle canopy / scrub placement
-        const treeThresh = isJungle ? 0.28 : isFortress ? 0.82 : isIslands ? 0.64 : isOasis ? 0.52 : 0.56;
+        const treeThresh = isJungle
+          ? 0.28
+          : isArchipelago
+            ? 0.36
+            : isFortress
+              ? 0.82
+              : isIslands
+                ? 0.64
+                : isCoastline
+                  ? 0.48
+                  : isOasis
+                    ? 0.52
+                    : 0.56;
         if (buildCrag && h3 > treeThresh) {
-          const count = isJungle ? (h1 > 0.45 ? 2 : 1) : h1 > 0.65 ? 2 : 1;
+          const count = isJungle || isArchipelago ? (h1 > 0.45 ? 2 : 1) : h1 > 0.65 ? 2 : 1;
           for (let ti = 0; ti < count; ti++) {
             const ox = (tileHash(tx, ty, 31 + ti) - 0.5) * 0.52;
             const oz = (tileHash(tx, ty, 47 + ti) - 0.5) * 0.52;
@@ -468,10 +877,10 @@ export class GameScene {
                 ? 0.52
                 : isJungle
                   ? 0.92
-                  : isOasis
-                    ? 0.86
-                    : isIslands
-                      ? 0.66
+                  : isOasis || isArchipelago
+                    ? 0.88
+                    : isIslands || isCoastline
+                      ? 0.72
                       : 0.72;
             const sc = scBase + tileHash(tx, ty, 59 + ti) * 0.42;
             treeTransforms.push({
@@ -530,10 +939,11 @@ export class GameScene {
         group.add(accInst);
       }
 
-      // Stylized biome foliage: conifer pines, snow-frosted spruce, desert palms, lush jungle canopies, or canyon scrub
+      // Stylized biome foliage: conifer pines, snow-frosted spruce, desert/tropical palms, lush jungle canopies, or canyon scrub
       if (treeTransforms.length > 0) {
-        const trunkH = isOasis ? 0.88 : isJungle ? 0.56 : 0.34;
-        const trunkGeo = new THREE.CylinderGeometry(isOasis ? 0.042 : 0.055, isOasis ? 0.078 : 0.085, trunkH, 6);
+        const isPalm = isOasis || isArchipelago;
+        const trunkH = isPalm ? 0.88 : isJungle ? 0.56 : 0.34;
+        const trunkGeo = new THREE.CylinderGeometry(isPalm ? 0.042 : 0.055, isPalm ? 0.078 : 0.085, trunkH, 6);
         trunkGeo.translate(0, trunkH * 0.5, 0);
         const trunkInst = new THREE.InstancedMesh(trunkGeo, mats.trunk, treeTransforms.length);
         trunkInst.castShadow = true;
@@ -550,7 +960,7 @@ export class GameScene {
           canopyGeo = mergeGeometries([s1, s2])!;
           s1.dispose();
           s2.dispose();
-        } else if (isOasis) {
+        } else if (isPalm) {
           // Iconic Sahara palm crown (radiating arched fronds)
           const fronds: THREE.BufferGeometry[] = [];
           for (let fi = 0; fi < 6; fi++) {
@@ -629,7 +1039,115 @@ export class GameScene {
       }
     }
 
-    // Never add mapGroup to this.pickables so terrain never blocks unit selection!
+    // Animated 3D Navigable Ocean Water Surface + Coastal Shoreline Foam
+    const waterTiles = layout.water;
+    if (waterTiles.length > 0) {
+      const nTiles = waterTiles.length;
+      const pos = new Float32Array(nTiles * 4 * 3);
+      const norm = new Float32Array(nTiles * 4 * 3);
+      const uv = new Float32Array(nTiles * 4 * 2);
+      const indices = new Uint32Array(nTiles * 6);
+      const uvScale = 0.22;
+      const yWater = 0.03;
+
+      const hasWaterTile = (tx: number, ty: number) =>
+        tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H ? true : this.waterSet.has(ty * MAP_W + tx);
+
+      const foamEdges: { x: number; z: number; ry: number }[] = [];
+
+      for (let i = 0; i < nTiles; i++) {
+        const [tx, ty] = waterTiles[i];
+        const x0 = tx - 0.008;
+        const x1 = tx + 1.008;
+        const z0 = ty - 0.008;
+        const z1 = ty + 1.008;
+        const vOff = i * 4;
+        const pOff = vOff * 3;
+        const uOff = vOff * 2;
+        const iOff = i * 6;
+
+        // Quad lying flat in XZ with upward +Y normal and continuous world-space UVs
+        pos[pOff] = x0;
+        pos[pOff + 1] = yWater;
+        pos[pOff + 2] = z0;
+        pos[pOff + 3] = x0;
+        pos[pOff + 4] = yWater;
+        pos[pOff + 5] = z1;
+        pos[pOff + 6] = x1;
+        pos[pOff + 7] = yWater;
+        pos[pOff + 8] = z1;
+        pos[pOff + 9] = x1;
+        pos[pOff + 10] = yWater;
+        pos[pOff + 11] = z0;
+
+        for (let k = 0; k < 4; k++) {
+          norm[pOff + k * 3] = 0;
+          norm[pOff + k * 3 + 1] = 1;
+          norm[pOff + k * 3 + 2] = 0;
+        }
+
+        uv[uOff] = x0 * uvScale;
+        uv[uOff + 1] = z0 * uvScale;
+        uv[uOff + 2] = x0 * uvScale;
+        uv[uOff + 3] = z1 * uvScale;
+        uv[uOff + 4] = x1 * uvScale;
+        uv[uOff + 5] = z1 * uvScale;
+        uv[uOff + 6] = x1 * uvScale;
+        uv[uOff + 7] = z0 * uvScale;
+
+        indices[iOff] = vOff;
+        indices[iOff + 1] = vOff + 1;
+        indices[iOff + 2] = vOff + 2;
+        indices[iOff + 3] = vOff;
+        indices[iOff + 4] = vOff + 2;
+        indices[iOff + 5] = vOff + 3;
+
+        // Shoreline white foam strips along every border between water and dry land
+        if (!hasWaterTile(tx, ty - 1)) foamEdges.push({ x: tx + 0.5, z: ty + 0.12, ry: 0 });
+        if (!hasWaterTile(tx, ty + 1)) foamEdges.push({ x: tx + 0.5, z: ty + 0.88, ry: Math.PI });
+        if (!hasWaterTile(tx - 1, ty)) foamEdges.push({ x: tx + 0.12, z: ty + 0.5, ry: Math.PI / 2 });
+        if (!hasWaterTile(tx + 1, ty)) foamEdges.push({ x: tx + 0.88, z: ty + 0.5, ry: -Math.PI / 2 });
+      }
+
+      const waterGeo = new THREE.BufferGeometry();
+      waterGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      waterGeo.setAttribute("normal", new THREE.BufferAttribute(norm, 3));
+      waterGeo.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+      waterGeo.setIndex(new THREE.BufferAttribute(indices, 1));
+
+      this.waterMat = createOceanWaterMaterial(mapId);
+      this.waterBaseEmissive = this.waterMat.emissiveIntensity;
+      const waterMesh = new THREE.Mesh(waterGeo, this.waterMat);
+      waterMesh.receiveShadow = true;
+      waterMesh.renderOrder = 1;
+      group.add(waterMesh);
+
+      if (foamEdges.length > 0) {
+        const foamGeo = new THREE.PlaneGeometry(1.06, 0.22);
+        foamGeo.rotateX(-Math.PI / 2);
+        this.foamMat = new THREE.MeshBasicMaterial({
+          color: mapId === "archipelago" ? 0xd8fcff : mapId === "coastline" ? 0xb4dce8 : 0xc8f0f8,
+          transparent: true,
+          opacity: 0.42,
+          depthWrite: false,
+        });
+        const foamInst = new THREE.InstancedMesh(foamGeo, this.foamMat, foamEdges.length);
+        foamInst.renderOrder = 1;
+        const d = this.dummy;
+        for (let i = 0; i < foamEdges.length; i++) {
+          const f = foamEdges[i];
+          d.position.set(f.x, 0.033, f.z);
+          d.rotation.set(0, f.ry, 0);
+          d.scale.set(1, 1, 1);
+          d.updateMatrix();
+          foamInst.setMatrixAt(i, d.matrix);
+        }
+        foamInst.instanceMatrix.needsUpdate = true;
+        group.add(foamInst);
+      }
+    }
+
+    // Never add mapGroup to this.pickables so terrain & water never block unit selection!
     this.mapGroup = group;
     this.scene.add(group);
     this.resetFog();
@@ -640,6 +1158,17 @@ export class GameScene {
     const ty = Math.floor(y);
     if (tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H) return false;
     return this.cliffSet.has(ty * MAP_W + tx);
+  }
+
+  isWater(x: number, y: number): boolean {
+    const tx = Math.floor(x);
+    const ty = Math.floor(y);
+    if (tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H) return false;
+    return this.waterSet.has(ty * MAP_W + tx);
+  }
+
+  hasWater(): boolean {
+    return this.waterSet.size > 0;
   }
 
   // ---------- Live Fog of War Shroud ----------
@@ -661,7 +1190,7 @@ export class GameScene {
       fog: false,
     });
     this.fogMesh = new THREE.Mesh(geo, mat);
-    this.fogMesh.position.set(MAP_W / 2, 0.035, MAP_H / 2);
+    this.fogMesh.position.set(MAP_W / 2, 0.038, MAP_H / 2);
     this.fogMesh.renderOrder = 2;
     this.fogMesh.visible = false;
     this.scene.add(this.fogMesh);
@@ -960,19 +1489,19 @@ export class GameScene {
     return this.raycaster.ray.intersectPlane(this.groundPlane, out) ? out : null;
   }
 
-  // screen -> visible entity pick (ignores fog-hidden roots, health bars, and selection rings)
+  // screen -> visible entity pick (ignores fog-hidden roots, health bars, and selection rings; allows air ground shadows)
   pickEntity(): number | null {
     const p = this.ndc();
     this.raycaster.setFromCamera(new THREE.Vector2(p.x, p.y), this.camera);
     const visibleRoots = this.pickables.filter((r) => r.visible);
     const hits = this.raycaster.intersectObjects(visibleRoots, true);
     for (const h of hits) {
-      if (h.object.userData?.isBar) continue;
+      if (h.object.userData?.isBar && !h.object.userData?.isAirShadow) continue;
       let o: THREE.Object3D | null = h.object;
       let hidden = false;
       let foundId: number | undefined;
       while (o) {
-        if (!o.visible || o.userData?.isBar) {
+        if (!o.visible || (o.userData?.isBar && !o.userData?.isAirShadow)) {
           hidden = true;
           break;
         }
@@ -1067,8 +1596,20 @@ export class GameScene {
   }
 
   render() {
+    const dt = Math.min(0.05, this.dtMs / 1000);
+    if (this.waterMat) {
+      this.waterTime += dt;
+      const t = this.waterTime;
+      const waveMap = this.waterMat.normalMap ?? this.waterMat.bumpMap;
+      if (waveMap) {
+        waveMap.offset.set(t * 0.036 + Math.sin(t * 0.48) * 0.018, t * 0.025 + Math.cos(t * 0.37) * 0.016);
+      }
+      this.waterMat.emissiveIntensity = this.waterBaseEmissive + Math.sin(t * 1.85) * 0.06;
+      if (this.foamMat) {
+        this.foamMat.opacity = 0.36 + 0.16 * Math.sin(t * 2.3);
+      }
+    }
     if (this.shakeAmp > 0.004) {
-      const dt = Math.min(0.05, this.dtMs / 1000);
       this.shakePhase += dt * 48;
       this.shakeAmp *= Math.exp(-dt * 6.2);
       this.shakeOffset.set(
