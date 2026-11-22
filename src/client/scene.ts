@@ -961,18 +961,22 @@ export class GameScene {
           s1.dispose();
           s2.dispose();
         } else if (isPalm) {
-          // Iconic Sahara palm crown (radiating arched fronds)
+          // Iconic Sahara / tropical palm crown (radiating arched fronds)
           const fronds: THREE.BufferGeometry[] = [];
           for (let fi = 0; fi < 6; fi++) {
             const ang = (fi / 6) * Math.PI * 2;
-            const f = new THREE.BoxGeometry(0.12, 0.03, 0.52);
+            const raw = new THREE.BoxGeometry(0.12, 0.03, 0.52);
+            const f = raw.index ? raw.toNonIndexed() : raw;
+            if (f !== raw) raw.dispose();
             f.rotateX(0.32);
             f.translate(0, 0, 0.24);
             f.rotateY(ang);
             f.translate(0, trunkH + 0.02, 0);
             fronds.push(f);
           }
-          const crown = new THREE.DodecahedronGeometry(0.12, 0);
+          const rawCrown = new THREE.DodecahedronGeometry(0.12, 0);
+          const crown = rawCrown.index ? rawCrown.toNonIndexed() : rawCrown;
+          if (crown !== rawCrown) rawCrown.dispose();
           crown.translate(0, trunkH + 0.05, 0);
           fronds.push(crown);
           canopyGeo = mergeGeometries(fronds)!;
