@@ -8,6 +8,18 @@ export type C2S =
   | { t: "order"; ids: number[]; kind: OrderKind; x: number; y: number; target?: number; queue?: boolean }
   | { t: "stop"; ids: number[] }
   | { t: "hold"; ids: number[] } // toggle Hold Position stance on selected units
+  | {
+      t: "drive";
+      id: number;
+      fwd: number; // -1..1 forward/back input
+      strafe: number; // -1..1 strafe/turn input
+      yaw: number; // facing angle in radians (server map coords)
+      fire: boolean;
+      aimX?: number;
+      aimY?: number;
+      aimTarget?: number;
+    } // direct first-person WASD + aim/fire control
+  | { t: "driveExit"; id: number } // exit first-person control
   | { t: "recon"; x: number; y: number } // fire Radar Uplink Recon Scan (reveals fog)
   | { t: "build"; kind: BuildingKind } // start building production
   | { t: "buildCancel" }

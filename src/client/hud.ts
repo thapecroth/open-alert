@@ -6,6 +6,7 @@ import {
   TRAIN_ORDER,
   BUILDING_NAMES,
   UPGRADE_COST,
+  CAPTURE_RANGE,
   PLAYER_COLORS,
   SPAWNS,
   SW_CHARGE_TICKS,
@@ -16,6 +17,7 @@ import {
   getMapLayout,
   BuildingKind,
   UnitKind,
+  EntKind,
   MapId,
   BotDiff,
   BotProfile,
@@ -25,6 +27,7 @@ import {
 } from "../shared/gamedefs";
 import { el, fmtCost, isBuildingKind } from "./util";
 import { Renderer } from "./render";
+import type { FpvTelemetry } from "./fpv";
 
 const TOOLTIPS: Record<string, string> = {
   conyard: "Construction Yard — the heart of your base.",
@@ -172,6 +175,8 @@ export class Hud {
   onReconClick: () => void = () => {};
   onVerb: (v: "amove" | "patrol" | "hold" | "stop" | "sell" | "repair") => void = () => {};
   onUpgrade?: (id: number) => void;
+  onEnterFpv?: (id: number) => void;
+  onExitFpv?: () => void;
   onGroupClick?: (n: number, dbl: boolean) => void;
   onToggleWasd?: () => void;
   onToggleMute?: () => void;
@@ -196,6 +201,8 @@ export class Hud {
   private targetCredits = 0;
   private creditsInit = false;
   private spectating = false;
+  private fpvMode = false;
+  private fpvLastKind = "";
 
   constructor() {
     el("ready-btn").addEventListener("click", () => {
@@ -244,6 +251,7 @@ export class Hud {
     document.getElementById("music-btn")?.addEventListener("click", () => this.onToggleMusic?.());
     document.getElementById("sw-hud")?.addEventListener("click", () => this.onSuperweaponClick());
     document.getElementById("recon-hud")?.addEventListener("click", () => this.onReconClick());
+    document.getElementById("fpv-exit")?.addEventListener("click", () => this.onExitFpv?.());
 
     // Lobby callsign input
     const nameInput = document.getElementById("name-input") as HTMLInputElement | null;
@@ -570,10 +578,13 @@ export class Hud {
     this.displayCredits = 0;
     this.targetCredits = 0;
     this.spectating = false;
+    this.fpvMode = false;
+    this.fpvLastKind = "";
     this.selSig = "";
     this.updateClock(0);
     this.hideHoverTip();
     this.hideSideInfo();
+    document.getElementById("fpv-hud")?.classList.add("hidden");
     const sw = document.getElementById("sw-hud");
     if (sw) sw.classList.add("hidden");
     const recon = document.getElementById("recon-hud");
@@ -661,6 +672,8 @@ export class Hud {
   }
 
   showLobby(players: LobbyPlayer[], you: string, mapId: MapId = "crossroads", config: GameConfig = DEFAULT_CONFIG) {
+    this.fpvMode = false;
+    document.getElementById("fpv-hud")?.classList.add("hidden");
     this.hideHoverTip();
     this.hideSideInfo();
     el("lobby").classList.remove("hidden");
@@ -817,12 +830,196 @@ export class Hud {
   setSpectatorMode(spectating: boolean) {
     this.spectating = spectating;
     for (const id of ["sidebar", "verbbar", "resign-btn", "groupbar"]) {
-      document.getElementById(id)?.classList.toggle("hidden", spectating);
+      document.getElementById(id)?.classList.toggle("hidden", spectating || this.fpvMode);
     }
     if (spectating) {
       this.hideSideInfo();
       document.getElementById("sw-hud")?.classList.add("hidden");
       document.getElementById("recon-hud")?.classList.add("hidden");
+    }
+  }
+
+  setFpvMode(active: boolean, spectating = this.spectating) {
+    this.fpvMode = active;
+    const fpvHud = document.getElementById("fpv-hud");
+    if (active) {
+      this.fpvLastKind = "";
+      this.hideHoverTip();
+      this.hideSideInfo();
+      for (const id of [
+        "sidebar",
+        "verbbar",
+        "selinfo",
+        "groupbar",
+        "placement-hint",
+        "hover-tip",
+        "order-label",
+        "chat-box",
+        "recon-hud",
+        "sw-hud",
+      ]) {
+        document.getElementById(id)?.classList.add("hidden");
+      }
+      fpvHud?.classList.remove("hidden");
+    } else {
+      fpvHud?.classList.add("hidden");
+      document.getElementById("selinfo")?.classList.remove("hidden");
+      document.getElementById("chat-box")?.classList.remove("hidden");
+      this.setSpectatorMode(spectating);
+    }
+  }
+
+  updateFpv(tel: FpvTelemetry | null) {
+    if (!this.fpvMode || !tel) return;
+    const udef = !isBuildingKind(tel.kind) ? UNITS[tel.kind as UnitKind] : null;
+    const domain = tel.domain ?? udef?.domain ?? "land";
+    const isInf = udef?.trainsAt === "barracks";
+
+    // Top-center banner (pointer lock state)
+    const banner = document.getElementById("fpv-banner");
+    if (banner) {
+      const locked = tel.pointerLocked || document.pointerLockElement != null;
+      banner.textContent = locked
+        ? "FIRST-PERSON POV · WASD MOVE · MOUSE AIM · LMB FIRE · E / ESC EXIT"
+        : "FIRST-PERSON POV · CLICK TO LOCK MOUSE · E / ESC TO EXIT";
+    }
+
+    // Center tactical reticle domain style + lock-on state
+    const reticle = document.getElementById("fpv-reticle");
+    if (reticle) {
+      const domCls = isInf ? "fpv-inf" : domain === "air" ? "fpv-air" : domain === "sea" ? "fpv-sea" : "fpv-land";
+      reticle.classList.remove("fpv-inf", "fpv-land", "fpv-air", "fpv-sea");
+      reticle.classList.add(domCls);
+      const tgt = tel.target;
+      reticle.classList.toggle("locked", Boolean(tgt && tgt.enemy && tgt.inRange));
+
+      const tgtEl = document.getElementById("fpv-target");
+      if (tgtEl) {
+        if (tgt) {
+          const tgtName = label(tgt.kind).toUpperCase();
+          const tHp = Math.max(0, Math.round(tgt.hp));
+          const tMhp = Math.max(1, Math.round(tgt.mhp));
+          const distM = Math.round(tgt.dist * 10);
+          tgtEl.classList.remove("range-only");
+          if (tgt.enemy) {
+            const rangeTag = tgt.inRange ? "IN RANGE" : "OUT OF RANGE";
+            tgtEl.textContent = `TARGET: ${tgtName} · HP ${tHp}/${tMhp} · ${distM}m · ${rangeTag}`;
+            tgtEl.classList.toggle("out-of-range", !tgt.inRange);
+          } else {
+            tgtEl.textContent = `${tgtName} · HP ${tHp}/${tMhp} · ${distM}m`;
+            tgtEl.classList.remove("out-of-range");
+          }
+          tgtEl.classList.remove("hidden");
+        } else if (tel.aimDist > 0) {
+          tgtEl.textContent = `${Math.round(tel.aimDist * 10)}m`;
+          tgtEl.classList.remove("out-of-range");
+          tgtEl.classList.add("range-only");
+          tgtEl.classList.remove("hidden");
+        } else {
+          tgtEl.classList.add("hidden");
+          tgtEl.classList.remove("out-of-range", "range-only");
+        }
+      }
+    }
+
+    // Bottom-left unit telemetry card
+    if (tel.kind !== this.fpvLastKind) {
+      this.fpvLastKind = tel.kind;
+      const nameEl = document.getElementById("fpv-unit-name");
+      if (nameEl) nameEl.textContent = label(tel.kind).toUpperCase();
+      const iconEl = document.getElementById("fpv-unit-icon");
+      if (iconEl) {
+        const ic = this.iconFor(tel.kind);
+        iconEl.style.backgroundImage = ic ? `url(${ic})` : "";
+        iconEl.classList.toggle("has-icon", Boolean(ic));
+      }
+      const domBadge = document.getElementById("fpv-domain-badge");
+      if (domBadge) {
+        domBadge.textContent = isInf
+          ? "INFANTRY"
+          : domain === "air"
+            ? "AIRCRAFT"
+            : domain === "sea"
+              ? "NAVAL"
+              : "ARMOR";
+      }
+    }
+
+    const vetEl = document.getElementById("fpv-unit-vet");
+    if (vetEl) {
+      const vet = Math.max(0, Math.min(3, Math.floor(tel.vet)));
+      vetEl.textContent = vet > 0 ? "★".repeat(vet) : "";
+    }
+
+    const subBadge = document.getElementById("fpv-sub-badge");
+    if (subBadge) {
+      subBadge.classList.toggle("hidden", !tel.submerged);
+    }
+
+    const hp = Math.max(0, tel.hp);
+    const mhp = Math.max(1, tel.mhp);
+    const hpPct = Math.max(0, Math.min(100, (hp / mhp) * 100));
+    const hpFill = document.getElementById("fpv-hp-fill");
+    if (hpFill) {
+      hpFill.style.width = `${hpPct.toFixed(1)}%`;
+      hpFill.classList.toggle("warn", hpPct < 55 && hpPct >= 28);
+      hpFill.classList.toggle("crit", hpPct < 28);
+    }
+    const hpText = document.getElementById("fpv-hp-text");
+    if (hpText) hpText.textContent = `HP ${Math.round(hp)} / ${Math.round(mhp)}`;
+
+    const spdEl = document.getElementById("fpv-spd");
+    if (spdEl) {
+      const spdVal = Math.round(Math.abs(tel.speed) * 10);
+      const unitSuffix = domain === "sea" ? "kt" : "m/s";
+      spdEl.textContent = `SPD ${spdVal} ${unitSuffix}`;
+    }
+
+    const hdgEl = document.getElementById("fpv-hdg");
+    if (hdgEl) {
+      const deg = ((Math.round(tel.headingDeg) % 360) + 360) % 360;
+      hdgEl.textContent = `HDG ${String(deg).padStart(3, "0")}°`;
+    }
+
+    const altEl = document.getElementById("fpv-alt");
+    if (altEl) {
+      if (domain === "air") {
+        altEl.textContent = `ALT ${Math.round(tel.altitude)}m`;
+        altEl.classList.remove("hidden");
+      } else {
+        altEl.classList.add("hidden");
+      }
+    }
+
+    // Bottom-right weapon & reload panel
+    const wpnStatus = document.getElementById("fpv-wpn-status");
+    const wpnRange = document.getElementById("fpv-wpn-range");
+    const reloadFill = document.getElementById("fpv-reload-fill");
+    if (wpnStatus && reloadFill) {
+      if (tel.kind === "engineer") {
+        wpnStatus.textContent = "CAPTURE RANGE — CLICK BUILDING";
+        wpnStatus.className = "utility";
+        reloadFill.style.width = "100%";
+        reloadFill.className = "utility";
+        if (wpnRange) wpnRange.textContent = `RNG ${Math.round(CAPTURE_RANGE * 10)}m`;
+      } else if (tel.kind === "harvester") {
+        wpnStatus.textContent = "MINING MODE";
+        wpnStatus.className = "utility";
+        reloadFill.style.width = "100%";
+        reloadFill.className = "utility";
+        if (wpnRange) wpnRange.textContent = "ORE RIG";
+      } else {
+        const readyFrac = Math.max(0, Math.min(1, 1 - tel.reloading));
+        const ready = tel.reloading <= 0.01;
+        wpnStatus.textContent = ready ? "WEAPON READY" : "RELOADING...";
+        wpnStatus.className = ready ? "" : "reloading";
+        reloadFill.style.width = `${(readyFrac * 100).toFixed(1)}%`;
+        reloadFill.className = ready ? "" : "reloading";
+        if (wpnRange) {
+          const rngM = udef && udef.range > 0 ? Math.round(udef.range * 10) : 0;
+          wpnRange.textContent = rngM > 0 ? `RNG ${rngM}m` : "";
+        }
+      }
     }
   }
 
@@ -833,6 +1030,8 @@ export class Hud {
   }
 
   showEnd(text: string, reason = "", stats?: MatchStats[], durationSec?: number) {
+    this.fpvMode = false;
+    document.getElementById("fpv-hud")?.classList.add("hidden");
     this.hideHoverTip();
     this.hideSideInfo();
     el("end-text").textContent = text;
@@ -957,7 +1156,7 @@ export class Hud {
   updateRecon(state: PlayerState | null, reconArmed = false) {
     const btn = document.getElementById("recon-hud") as HTMLButtonElement | null;
     if (!btn) return;
-    if (!state || this.spectating || state.reconLeft === undefined || state.reconLeft < 0) {
+    if (this.fpvMode || !state || this.spectating || state.reconLeft === undefined || state.reconLeft < 0) {
       btn.classList.add("hidden");
       btn.classList.remove("ready", "armed", "offline");
       return;
@@ -995,7 +1194,7 @@ export class Hud {
   updateSuperweapon(state: PlayerState | null, swArmed = false) {
     const btn = document.getElementById("sw-hud") as HTMLButtonElement | null;
     if (!btn) return;
-    if (!state || this.spectating || state.swLeft === undefined || state.swLeft < 0) {
+    if (this.fpvMode || !state || this.spectating || state.swLeft === undefined || state.swLeft < 0) {
       btn.classList.add("hidden");
       btn.classList.remove("ready", "armed", "offline");
       return;
@@ -1424,7 +1623,7 @@ export class Hud {
       maxVet = 0,
       anyHold = false;
     let singleId: number | null = null;
-    let singleKind: string | null = null;
+    let singleKind: EntKind | null = null;
     for (const id of sel) {
       const t = tracked.get(id);
       if (!t) continue;
@@ -1494,6 +1693,24 @@ export class Hud {
         d.className = "si-mk2";
         d.textContent = "★ MKII";
         box.appendChild(d);
+      } else if (singleId !== null && singleKind !== null && !isBuildingKind(singleKind)) {
+        const uk = singleKind as UnitKind;
+        const udef = UNITS[uk];
+        const b = document.createElement("button");
+        b.id = "fpv-btn";
+        b.type = "button";
+        b.className = "sbtn si-fpv";
+        b.textContent =
+          udef?.domain === "air"
+            ? "▶ PILOT AIRCRAFT [E]"
+            : udef?.domain === "sea"
+              ? "▶ COMMAND VESSEL [E]"
+              : udef?.trainsAt === "barracks"
+                ? "▶ FIRST-PERSON FPS [E]"
+                : "▶ DRIVE VEHICLE [E]";
+        b.title = "Enter First-Person POV (E) — WASD move, Mouse aim, Left-Click fire, E/Esc exit";
+        b.addEventListener("click", () => this.onEnterFpv?.(singleId!));
+        box.appendChild(b);
       }
     }
 
