@@ -43,10 +43,11 @@ export class GameRoom extends Server<Env> {
   connPlayer = new Map<string, string>(); // conn id -> player id
   world: World | null = null;
   timer: ReturnType<typeof setInterval> | null = null;
+  resetTimer: ReturnType<typeof setTimeout> | null = null;
   endSent = false;
   bots = new Map<string, AIBot>(); // player id -> AI brain, ticked once per game tick
 
-  onClose(conn: Connection) {
+  onClose(conn: Connection, code?: number) {
     const pid = this.connPlayer.get(conn.id);
     this.connPlayer.delete(conn.id);
     if (!pid) return;
@@ -59,8 +60,24 @@ export class GameRoom extends Server<Env> {
       p.connected = false;
       p.connId = null;
     }
-    if ([...this.players.values()].every((x) => x.bot || !x.connected)) this.resetRoom();
-    else this.broadcastLobby();
+    const noHumans = [...this.players.values()].every((x) => x.bot || !x.connected);
+    if (noHumans) {
+      // On abnormal mid-game WS drops (Wi-Fi blip / edge reroute), hold the match for 12s so PartySocket can reconnect!
+      // Clean closes (1000/1001/undefined) or lobby rooms reset immediately.
+      const abnormalDrop = this.phase === "playing" && typeof code === "number" && code !== 1000 && code !== 1001;
+      if (abnormalDrop) {
+        if (!this.resetTimer) {
+          this.resetTimer = setTimeout(() => {
+            this.resetTimer = null;
+            if ([...this.players.values()].every((x) => x.bot || !x.connected)) this.resetRoom();
+          }, 12000);
+        }
+      } else {
+        this.resetRoom();
+      }
+    } else {
+      this.broadcastLobby();
+    }
   }
 
   onMessage(conn: Connection, raw: string | ArrayBuffer) {
@@ -317,6 +334,10 @@ export class GameRoom extends Server<Env> {
     if (tok) {
       const p = this.players.get(tok);
       if (p) {
+        if (this.resetTimer) {
+          clearTimeout(this.resetTimer);
+          this.resetTimer = null;
+        }
         if (p.connId && p.connId !== conn.id) {
           for (const c of this.getConnections()) if (c.id === p.connId) c.close(4000, "replaced");
           this.connPlayer.delete(p.connId);
@@ -393,7 +414,8 @@ export class GameRoom extends Server<Env> {
     const players = this.lobbyList();
     for (const conn of this.getConnections()) {
       const pid = this.connPlayer.get(conn.id);
-      if (pid) send(conn, { t: "lobby", players, you: pid, room: this.name, map: this.map, config: this.config });
+      if (pid)
+        send(conn, { t: "lobby", players, you: pid, room: this.name, map: this.map, phase: this.phase, config: this.config });
     }
   }
 
@@ -468,45 +490,59 @@ export class GameRoom extends Server<Env> {
   private gameTick() {
     const w = this.world;
     if (!w) return;
-    for (const [pid, bot] of this.bots) {
-      const p = this.players.get(pid);
-      if (p && p.slot >= 0) bot.tick(w, p.slot);
-    }
-    w.step();
-    if (w.tick % SNAP_EVERY === 0) {
-      const snap = w.snapshot();
-      this.broadcast(JSON.stringify({ t: "snap", tick: w.tick, ...snap } satisfies S2C));
-    }
-    if (w.winner !== null && !this.endSent) {
-      this.endSent = true;
-      const names: Record<number, string> = {};
-      for (const p of this.players.values()) if (!p.spectator && p.slot >= 0) names[p.slot] = p.name;
-      const wp = [...this.players.values()].find((p) => p.slot === w.winner);
-      const reason =
-        w.winnerTeam && w.winnerTeam > 0
-          ? `Team ${w.winnerTeam} wins!`
-          : wp
-            ? `${wp.name} wins!`
-            : "draw";
-      this.broadcast(
-        JSON.stringify({
-          t: "end",
-          winner: w.winner,
-          winnerTeam: w.winnerTeam,
-          reason,
-          durationSec: Math.round((w.tick * TICK_MS) / 1000),
-          stats: w.getStats(names),
-        } satisfies S2C),
-      );
-      if (this.timer) {
-        clearInterval(this.timer);
-        this.timer = null;
+    try {
+      for (const [pid, bot] of this.bots) {
+        const p = this.players.get(pid);
+        if (p && p.slot >= 0) {
+          try {
+            bot.tick(w, p.slot);
+          } catch {
+            // Isolate bot errors so one AI brain can never halt a match
+          }
+        }
       }
-      this.phase = "ended";
+      w.step();
+      if (w.tick % SNAP_EVERY === 0) {
+        const snap = w.snapshot();
+        this.broadcast(JSON.stringify({ t: "snap", tick: w.tick, ...snap } satisfies S2C));
+      }
+      if (w.winner !== null && !this.endSent) {
+        this.endSent = true;
+        const names: Record<number, string> = {};
+        for (const p of this.players.values()) if (!p.spectator && p.slot >= 0) names[p.slot] = p.name;
+        const wp = [...this.players.values()].find((p) => p.slot === w.winner);
+        const reason =
+          w.winnerTeam && w.winnerTeam > 0
+            ? `Team ${w.winnerTeam} wins!`
+            : wp
+              ? `${wp.name} wins!`
+              : "draw";
+        this.broadcast(
+          JSON.stringify({
+            t: "end",
+            winner: w.winner,
+            winnerTeam: w.winnerTeam,
+            reason,
+            durationSec: Math.round((w.tick * TICK_MS) / 1000),
+            stats: w.getStats(names),
+          } satisfies S2C),
+        );
+        if (this.timer) {
+          clearInterval(this.timer);
+          this.timer = null;
+        }
+        this.phase = "ended";
+      }
+    } catch {
+      // Never let a transient tick exception halt the room loop
     }
   }
 
   private resetRoom() {
+    if (this.resetTimer) {
+      clearTimeout(this.resetTimer);
+      this.resetTimer = null;
+    }
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;

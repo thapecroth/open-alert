@@ -297,6 +297,17 @@ net.onMsg = (m: S2C) => {
       if (phase === "ended") {
         phase = "lobby";
         hud.hideEnd();
+      } else if (phase === "playing" && m.phase === "lobby") {
+        // Server room restarted (e.g. deploy or idle reset) — recover cleanly to lobby instead of freezing!
+        if (fpv.active) fpv.exit("user");
+        phase = "lobby";
+        mySlot = -1;
+        latestState = null;
+        renderer.reset();
+        input.reset();
+        hud.resetMatch();
+        hud.hideEnd();
+        hud.toast("Server updated / room reset — returned to lobby", true);
       }
       if (phase === "lobby") hud.showLobby(m.players, m.you, currentMap, currentConfig);
       break;

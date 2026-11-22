@@ -139,7 +139,7 @@ export type GameEvent =
   | { e: "hit"; id: number };
 
 export type S2C =
-  | { t: "lobby"; players: LobbyPlayer[]; you: string; room: string; map: MapId; config?: GameConfig }
+  | { t: "lobby"; players: LobbyPlayer[]; you: string; room: string; map: MapId; phase?: "lobby" | "playing" | "ended"; config?: GameConfig }
   | {
       t: "init";
       you: string;
