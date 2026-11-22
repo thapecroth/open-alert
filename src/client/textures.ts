@@ -818,6 +818,73 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
       wallMetal: 0.14,
       water: 0x154768,
     },
+    atlantis: {
+      // Mythic Sea: teal coral stone pylons, pale marble-gold ancient temple caps & luminous turquoise reef
+      wall: 0x3c8492,
+      cap: 0xe0d6bc,
+      boulder: 0x4c8a90,
+      foliage: 0x1fa67a,
+      trunk: 0x7c745e,
+      wallRough: 0.48,
+      capRough: 0.36,
+      wallMetal: 0.16,
+      capMetal: 0.24,
+      accent: 0xe4be58,
+      water: 0x18c4d6,
+    },
+    shipwreck: {
+      // Abyssal: wet dark granite reefs, weathered kelp-slate caps & deep stormy teal-slate ocean
+      wall: 0x26353e,
+      cap: 0x3b4d52,
+      boulder: 0x31414a,
+      foliage: 0x1a463a,
+      trunk: 0x362d26,
+      wallRough: 0.5,
+      capRough: 0.56,
+      wallMetal: 0.2,
+      water: 0x114256,
+    },
+    volcano: {
+      // Volcanic: charcoal-basalt obsidian spires with glowing molten orange-amber caldera fissures
+      wall: 0x242022,
+      cap: 0x3a3234,
+      boulder: 0x2d2729,
+      foliage: 0x3e2a20,
+      trunk: 0x261d1a,
+      wallRough: 0.62,
+      capRough: 0.72,
+      wallMetal: 0.24,
+      capMetal: 0.14,
+      accent: 0xff5a14,
+      water: 0x1a3e50,
+    },
+    oilrig: {
+      // Deep Sea: riveted industrial steel offshore bulkheads, concrete decks & yellow safety accents
+      wall: 0x3c4854,
+      cap: 0x5c6670,
+      boulder: 0x46525c,
+      foliage: 0x2c6c56,
+      trunk: 0x4e4238,
+      wallRough: 0.44,
+      capRough: 0.52,
+      wallMetal: 0.64,
+      capMetal: 0.42,
+      accent: 0xe4ae24,
+      water: 0x104478,
+    },
+    cybergrid: {
+      // Orbital: sleek dark carbon-titanium monolith walls with luminous cyan energy inlays
+      wall: 0x1c2432,
+      cap: 0x2d3a4e,
+      boulder: 0x232f40,
+      foliage: 0x20d8ff,
+      trunk: 0x1a222e,
+      wallRough: 0.28,
+      capRough: 0.24,
+      wallMetal: 0.82,
+      capMetal: 0.86,
+      accent: 0x28ecff,
+    },
   };
   const p = palette[mapId] ?? palette.crossroads;
 
@@ -839,24 +906,29 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
     });
   }
 
+  const isGlowingVolcano = mapId === "volcano";
+  const isGlowingCyber = mapId === "cybergrid";
+  const isAtlantis = mapId === "atlantis";
+  const isMetallicBiome = mapId === "cybergrid" || mapId === "oilrig";
+
   const mats: CliffBiomeMats = {
     wall: new THREE.MeshStandardMaterial({
       color: p.wall,
       normalMap: rockNormalTex!,
-      normalScale: new THREE.Vector2(1.15, 1.15),
+      normalScale: new THREE.Vector2(isMetallicBiome ? 0.65 : 1.15, isMetallicBiome ? 0.65 : 1.15),
       roughnessMap: rockRoughTex!,
       roughness: p.wallRough ?? 0.9,
       metalness: p.wallMetal ?? 0.06,
-      envMapIntensity: mapId === "tundra" ? 0.95 : 0.6,
+      envMapIntensity: mapId === "tundra" ? 0.95 : isMetallicBiome ? 1.25 : isAtlantis ? 0.9 : 0.6,
     }),
     cap: new THREE.MeshStandardMaterial({
       color: p.cap,
       normalMap: rockNormalTex!,
-      normalScale: new THREE.Vector2(0.75, 0.75),
+      normalScale: new THREE.Vector2(isMetallicBiome ? 0.45 : 0.75, isMetallicBiome ? 0.45 : 0.75),
       roughnessMap: rockRoughTex!,
       roughness: p.capRough ?? 0.86,
       metalness: p.capMetal ?? 0.05,
-      envMapIntensity: mapId === "tundra" ? 0.9 : 0.55,
+      envMapIntensity: mapId === "tundra" ? 0.9 : isMetallicBiome ? 1.2 : isAtlantis ? 0.95 : 0.55,
     }),
     boulder: new THREE.MeshStandardMaterial({
       color: p.boulder,
@@ -864,28 +936,36 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
       normalScale: new THREE.Vector2(0.95, 0.95),
       roughness: p.wallRough ? Math.min(0.86, p.wallRough + 0.15) : 0.9,
       metalness: p.wallMetal ?? 0.08,
-      envMapIntensity: 0.55,
+      envMapIntensity: isMetallicBiome ? 1.1 : 0.55,
     }),
     foliage: new THREE.MeshStandardMaterial({
       color: p.foliage,
-      roughness: 0.84,
-      metalness: 0.03,
+      roughness: isGlowingCyber ? 0.25 : 0.84,
+      metalness: isGlowingCyber ? 0.4 : 0.03,
+      emissive: isGlowingCyber ? new THREE.Color(0x16c8ff) : new THREE.Color(0x000000),
+      emissiveIntensity: isGlowingCyber ? 0.95 : 0,
       flatShading: true,
       envMapIntensity: 0.55,
     }),
     trunk: new THREE.MeshStandardMaterial({
       color: p.trunk,
-      roughness: 0.94,
-      metalness: 0.02,
+      roughness: isMetallicBiome ? 0.45 : 0.94,
+      metalness: isMetallicBiome ? 0.65 : 0.02,
     }),
     accent:
       p.accent !== undefined
         ? new THREE.MeshStandardMaterial({
             color: p.accent,
-            roughness: mapId === "tundra" ? 0.38 : 0.78,
-            metalness: mapId === "tundra" ? 0.16 : 0.08,
+            roughness: mapId === "tundra" ? 0.38 : isAtlantis ? 0.28 : isGlowingVolcano || isGlowingCyber ? 0.22 : 0.78,
+            metalness: mapId === "tundra" ? 0.16 : isAtlantis ? 0.58 : isGlowingCyber ? 0.45 : 0.08,
+            emissive: isGlowingVolcano
+              ? new THREE.Color(0xff4a08)
+              : isGlowingCyber
+                ? new THREE.Color(0x18e0ff)
+                : new THREE.Color(0x000000),
+            emissiveIntensity: isGlowingVolcano ? 1.55 : isGlowingCyber ? 1.45 : 0,
             flatShading: true,
-            envMapIntensity: mapId === "tundra" ? 1.15 : 0.6,
+            envMapIntensity: mapId === "tundra" || isAtlantis || isGlowingCyber ? 1.2 : 0.6,
           })
         : undefined,
     water: cliffWaterMat,
@@ -999,10 +1079,14 @@ export function createOceanWaterMaterial(mapId: MapId): THREE.MeshStandardMateri
   normalMap.repeat.set(0.42, 0.42);
   normalMap.anisotropy = 4;
 
-  const cfg: Record<string, { color: number; emissive: number; ei: number; normalScale: number }> = {
+  const cfg: Record<string, { color: number; emissive: number; ei: number; normalScale: number; opacity?: number }> = {
     archipelago: { color: 0x16a8be, emissive: 0x0a5668, ei: 0.28, normalScale: 0.58 },
     coastline: { color: 0x184e72, emissive: 0x082438, ei: 0.22, normalScale: 0.72 },
     islands: { color: 0x1680a2, emissive: 0x083c52, ei: 0.26, normalScale: 0.62 },
+    atlantis: { color: 0x16c8da, emissive: 0x0d7488, ei: 0.36, normalScale: 0.52, opacity: 0.82 },
+    shipwreck: { color: 0x103f52, emissive: 0x061d28, ei: 0.2, normalScale: 0.78, opacity: 0.88 },
+    volcano: { color: 0x1a3e50, emissive: 0x102834, ei: 0.24, normalScale: 0.68, opacity: 0.86 },
+    oilrig: { color: 0x0f4478, emissive: 0x061f42, ei: 0.22, normalScale: 0.7, opacity: 0.87 },
   };
   const c = cfg[mapId] ?? cfg.islands;
 
@@ -1012,11 +1096,11 @@ export function createOceanWaterMaterial(mapId: MapId): THREE.MeshStandardMateri
     emissiveIntensity: c.ei,
     normalMap,
     normalScale: new THREE.Vector2(c.normalScale, c.normalScale),
-    roughness: 0.1,
-    metalness: 0.34,
-    envMapIntensity: 1.45,
+    roughness: 0.08,
+    metalness: 0.36,
+    envMapIntensity: 1.5,
     transparent: true,
-    opacity: 0.85,
+    opacity: c.opacity ?? 0.85,
     depthWrite: false,
   });
 }
@@ -1179,6 +1263,83 @@ const BIOMES: Record<MapId, BiomePalette> = {
     seabedShallow: [26, 80, 108],
     seabedDeep: [10, 32, 54],
   },
+  atlantis: {
+    // Mythic Sea: luminous turquoise tropical reef ocean, pale marble-gold ancient temple causeways & teal coral pylons
+    seedA: 9127,
+    seedB: 4483,
+    base: [184, 174, 148],
+    altDelta: [18, 14, -8],
+    noiseAmp: [14, 14, 12],
+    road: [216, 194, 136],
+    spawn: [176, 174, 160],
+    cliff: [56, 132, 142],
+    talus: [110, 156, 150],
+    trackStroke: "rgba(130, 108, 60, 0.18)",
+    beach: [228, 212, 168],
+    seabedShallow: [48, 208, 214],
+    seabedDeep: [10, 86, 118],
+  },
+  shipwreck: {
+    // Abyssal: moody deep teal-slate stormy ocean, weathered dark kelp-sand shoals & wet dark granite reefs
+    seedA: 7853,
+    seedB: 3259,
+    base: [58, 72, 68],
+    altDelta: [-12, 10, 8],
+    noiseAmp: [16, 18, 16],
+    road: [92, 96, 88],
+    spawn: [74, 84, 84],
+    cliff: [36, 48, 56],
+    talus: [52, 62, 66],
+    trackStroke: "rgba(20, 30, 34, 0.2)",
+    beach: [112, 116, 100],
+    seabedShallow: [22, 74, 92],
+    seabedDeep: [8, 26, 42],
+  },
+  volcano: {
+    // Volcanic: charcoal-basalt obsidian ash earth, glowing molten lava caldera fissures & steaming slate ocean border
+    seedA: 6679,
+    seedB: 2819,
+    base: [44, 38, 40],
+    altDelta: [12, 6, 4],
+    noiseAmp: [16, 12, 12],
+    road: [74, 62, 56],
+    spawn: [62, 56, 58],
+    cliff: [32, 26, 28],
+    talus: [92, 42, 22],
+    trackStroke: "rgba(16, 12, 12, 0.24)",
+    beach: [68, 60, 58],
+    seabedShallow: [26, 62, 80],
+    seabedDeep: [10, 24, 40],
+  },
+  oilrig: {
+    // Deep Sea: deep sapphire North Atlantic ocean around riveted steel/concrete offshore platform decks
+    seedA: 5381,
+    seedB: 7919,
+    base: [82, 90, 98],
+    altDelta: [-10, -8, -4],
+    noiseAmp: [12, 12, 14],
+    road: [108, 114, 120],
+    spawn: [96, 102, 110],
+    cliff: [56, 66, 76],
+    talus: [74, 80, 88],
+    trackStroke: "rgba(30, 36, 42, 0.22)",
+    beach: [100, 106, 114],
+    seabedShallow: [18, 66, 116],
+    seabedDeep: [7, 24, 58],
+  },
+  cybergrid: {
+    // Orbital: sleek dark carbon-titanium sci-fi battle deck with luminous cyan circuit/grid inlays
+    seedA: 4217,
+    seedB: 9643,
+    base: [26, 33, 45],
+    altDelta: [8, 12, 18],
+    noiseAmp: [10, 12, 16],
+    road: [38, 52, 70],
+    spawn: [34, 48, 66],
+    cliff: [18, 26, 38],
+    talus: [24, 60, 82],
+    trackStroke: "rgba(38, 214, 248, 0.22)",
+  },
 };
 
 export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
@@ -1198,6 +1359,11 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
 
   const isSandy = mapId === "oasis" || mapId === "canyon" || mapId === "fortress";
   const isTundra = mapId === "tundra";
+  const isAtlantis = mapId === "atlantis";
+  const isVolcano = mapId === "volcano";
+  const isOilrig = mapId === "oilrig";
+  const isCyber = mapId === "cybergrid";
+  const isShipwreck = mapId === "shipwreck";
   const isGrassy =
     mapId === "crossroads" ||
     mapId === "jungle" ||
@@ -1278,7 +1444,16 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
   const beachCol = bio.beach ?? [180, 162, 118];
   const seaShallow = bio.seabedShallow ?? [28, 114, 134];
   const seaDeep = bio.seabedDeep ?? [12, 48, 72];
-  const beachSpan = mapId === "archipelago" ? 2.45 : mapId === "coastline" ? 1.85 : 2.05;
+  const beachSpan =
+    mapId === "archipelago"
+      ? 2.45
+      : isAtlantis
+        ? 2.2
+        : isOilrig
+          ? 0.9
+          : mapId === "coastline" || isShipwreck
+            ? 1.85
+            : 2.05;
 
   const img = dctx.createImageData(S, S);
   const bimg = bctx.createImageData(S, S);
@@ -1315,8 +1490,8 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
       const n2 = noiseB(wx * 0.42, wy * 0.42);
       const n3 = noiseA(wx * 0.14 + 0.18, wy * 0.14 + 0.18);
       const micro = noiseC(wx * 1.65, wy * 1.65);
-      const slopeShade = 1 + (n1 - n3) * 0.34;
-      const fine = (rand() - 0.5) * 12;
+      const slopeShade = isOilrig || isCyber ? 1 + (n1 - n3) * 0.14 : 1 + (n1 - n3) * 0.34;
+      const fine = (rand() - 0.5) * (isOilrig || isCyber ? 6 : 12);
 
       const altMix = Math.max(0, Math.min(1, (n1 - 0.34) * 2.4));
       let r = bio.base[0] + altMix * bio.altDelta[0] + n2 * bio.noiseAmp[0];
@@ -1342,6 +1517,100 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
         g += sastrugi * 9 + sparkle;
         bl += sastrugi * 12 + sparkle * 1.1;
         bumpExtra += sastrugi * 14 + (sparkle > 0 ? 10 : 0);
+      } else if (isAtlantis) {
+        // Ancient Atlantean marble flagstones with subtle golden inlaid grout lines
+        const fx = ((wx * 0.5) % 1 + 1) % 1;
+        const fy = ((wy * 0.5) % 1 + 1) % 1;
+        const seam = fx < 0.045 || fy < 0.045;
+        const goldInlay = (Math.abs(fx - 0.5) < 0.025 || Math.abs(fy - 0.5) < 0.025) && n1 > 0.45;
+        if (seam) {
+          r -= 24;
+          g -= 22;
+          bl -= 18;
+          bumpExtra -= 22;
+        } else if (goldInlay) {
+          r = r * 0.45 + 216 * 0.55;
+          g = g * 0.45 + 182 * 0.55;
+          bl = bl * 0.45 + 88 * 0.55;
+          bumpExtra += 8;
+        } else {
+          const vein = Math.sin((wx * 2.1 + wy * 1.7 + n2 * 4.5) * 1.8) * 6;
+          r += vein;
+          g += vein * 0.9;
+          bl += vein * 0.75;
+        }
+      } else if (isShipwreck) {
+        // Wet dark kelp-sand shoal ripples & weathered tidal detritus
+        const kelp = noiseC(wx * 2.4 + n2 * 1.8, wy * 2.4 - n1 * 1.4);
+        const kelpPatch = Math.max(0, kelp - 0.58) * 2.3;
+        r -= kelpPatch * 14;
+        g += kelpPatch * 8;
+        bl -= kelpPatch * 4;
+        bumpExtra += (kelp - 0.5) * 22;
+      } else if (isVolcano) {
+        // Jagged obsidian-basalt ash ridges & glowing magma micro-cracks
+        const ridge = Math.abs(micro - 0.5) * 2;
+        const crackNoise = Math.abs(noiseC(wx * 1.2 + n2 * 1.6, wy * 1.2 - n1 * 1.4) - 0.5);
+        r -= (1 - ridge) * 10;
+        g -= (1 - ridge) * 9;
+        bl -= (1 - ridge) * 8;
+        bumpExtra += ridge * 24 - 12;
+        if (crackNoise < 0.022 && Math.hypot(wx - MAP_W / 2, wy - MAP_H / 2) < 22) {
+          const glow = 1 - crackNoise / 0.022;
+          r = r * (1 - glow) + 245 * glow;
+          g = g * (1 - glow) + 112 * glow;
+          bl = bl * (1 - glow) + 22 * glow;
+          bumpExtra -= glow * 18;
+        }
+      } else if (isOilrig) {
+        // Riveted industrial steel/concrete offshore deck plating seams
+        const gx = ((wx * 0.5) % 1 + 1) % 1;
+        const gy = ((wy * 0.5) % 1 + 1) % 1;
+        const seam = gx < 0.04 || gy < 0.04;
+        const subSeam = Math.abs(gx - 0.5) < 0.018 || Math.abs(gy - 0.5) < 0.018;
+        if (seam) {
+          r -= 28;
+          g -= 30;
+          bl -= 32;
+          bumpExtra = -26;
+        } else if (subSeam) {
+          r -= 12;
+          g -= 13;
+          bl -= 14;
+          bumpExtra = -10;
+        } else {
+          // Subtle anti-slip diamond plate micro-texture
+          const plate = Math.sin(wx * 18) * Math.sin(wy * 18);
+          r += plate * 4;
+          g += plate * 4;
+          bl += plate * 4.5;
+          bumpExtra = plate * 10;
+        }
+      } else if (isCyber) {
+        // Sleek carbon-titanium battle deck with precision panel joints & luminous cyan circuit inlays
+        const gx = ((wx * 0.5) % 1 + 1) % 1;
+        const gy = ((wy * 0.5) % 1 + 1) % 1;
+        const major = ((wx * 0.125) % 1 + 1) % 1;
+        const majorY = ((wy * 0.125) % 1 + 1) % 1;
+        const seam = gx < 0.035 || gy < 0.035;
+        const circuit = major < 0.018 || majorY < 0.018;
+        if (circuit) {
+          r = 28;
+          g = 216;
+          bl = 248;
+          bumpExtra = 14;
+        } else if (seam) {
+          r -= 10;
+          g -= 11;
+          bl -= 13;
+          bumpExtra = -18;
+        } else {
+          const hex = Math.sin((wx + wy) * 6.2) * Math.cos((wx - wy) * 6.2);
+          r += hex * 3;
+          g += hex * 4;
+          bl += hex * 6;
+          bumpExtra = hex * 8;
+        }
       } else if (isGrassy) {
         // Crisp dry-grass streaks & mossy tuft micro-variation
         const streak = noiseC(wx * 3.1 + n2 * 1.4, wy * 0.95);
@@ -1360,7 +1629,7 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
       }
 
       // Worn convoy roads
-      const rd = roadDist(wx, wy) + (n2 - 0.5) * 1.4;
+      const rd = roadDist(wx, wy) + (n2 - 0.5) * (isOilrig || isCyber ? 0.35 : 1.4);
       if (rd < 2.2) {
         const k = Math.max(0, 1 - rd / 2.2);
         const s = k * k * 0.62;
@@ -1369,6 +1638,11 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
         bl = bl * (1 - s) + bio.road[2] * s;
         // Subtle compacted wheel-rut depression along road
         bumpExtra = bumpExtra * (1 - s * 0.55) - s * 10;
+        if (isCyber && Math.abs(rd - 1.55) < 0.14) {
+          r = 34;
+          g = 212;
+          bl = 248;
+        }
       }
 
       // Flattened compacted gravel clearings at each spawn base
@@ -1419,6 +1693,15 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
         g = bio.cliff[1] + strata * 0.9;
         bl = bio.cliff[2] + strata * 0.85;
         bumpExtra = 58 + strata;
+        if (isVolcano) {
+          const lavaVein = Math.abs(Math.sin((wx * 2.2 - wy * 1.9 + n2 * 3.8) * 1.7));
+          if (lavaVein < 0.14) {
+            const lv = 1 - lavaVein / 0.14;
+            r = r * (1 - lv) + 252 * lv;
+            g = g * (1 - lv) + 118 * lv;
+            bl = bl * (1 - lv) + 24 * lv;
+          }
+        }
       } else if (cf.dist < 1.5) {
         const k = Math.max(0, 1 - cf.dist / 1.5);
         const scree = k * k * 0.72;
@@ -1427,19 +1710,48 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
         g = (g * (1 - scree) + bio.talus[1] * scree) * ao;
         bl = (bl * (1 - scree) + bio.talus[2] * scree) * ao;
         bumpExtra += k * 36;
+        if (isVolcano) {
+          // Glowing molten orange-amber lava fissures ringing the volcanic caldera cliffs
+          const fissure = Math.abs(Math.sin((wx * 2.5 + wy * 2.1 + n2 * 3.4) * 1.5));
+          if (fissure < 0.16 && cf.dist < 1.15) {
+            const lv = (1 - fissure / 0.16) * (1 - cf.dist / 1.15);
+            r = r * (1 - lv) + 250 * lv;
+            g = g * (1 - lv) + 120 * lv;
+            bl = bl * (1 - lv) + 24 * lv;
+          }
+        } else if (isCyber && cf.dist < 0.45) {
+          const glow = 1 - cf.dist / 0.45;
+          r = r * (1 - glow * 0.65) + 32 * glow * 0.65;
+          g = g * (1 - glow * 0.65) + 220 * glow * 0.65;
+          bl = bl * (1 - glow * 0.65) + 250 * glow * 0.65;
+        }
       }
 
-      // Navigable ocean / river seabed & golden wet-to-dry sandy coastal shorelines
+      // Navigable ocean / river seabed & golden wet-to-dry sandy coastal shorelines (or Oilrig hazard deck trim)
       if (hasWater) {
         const wf = waterNear(wx, wy);
         if (wf.inside) {
           const depthT = Math.min(1, Math.max(0, (wf.landDist + (n2 - 0.5) * 0.65) / 2.6));
           const smoothD = depthT * depthT * (3 - 2 * depthT);
-          const caustic = Math.sin((wx * 1.9 + wy * 1.4 + n2 * 3.1) * 2.1) * 9 * (1 - smoothD * 0.62);
+          const caustic = Math.sin((wx * 1.9 + wy * 1.4 + n2 * 3.1) * 2.1) * (isAtlantis ? 13 : 9) * (1 - smoothD * 0.62);
           r = seaShallow[0] * (1 - smoothD) + seaDeep[0] * smoothD + caustic * 0.55;
           g = seaShallow[1] * (1 - smoothD) + seaDeep[1] * smoothD + caustic * 0.95;
           bl = seaShallow[2] * (1 - smoothD) + seaDeep[2] * smoothD + caustic * 1.05;
           bumpExtra = -36 - smoothD * 24 + caustic * 0.7;
+        } else if (isOilrig && wf.dist < 0.58) {
+          // Crisp yellow-and-black industrial hazard safety striping along offshore platform edges!
+          const stripe = Math.floor((wx + wy) * 3.0) % 2 === 0;
+          if (wf.dist < 0.36) {
+            r = stripe ? 228 : 34;
+            g = stripe ? 176 : 38;
+            bl = stripe ? 32 : 42;
+            bumpExtra = 12;
+          } else {
+            r = 56;
+            g = 62;
+            bl = 68;
+            bumpExtra = -8;
+          }
         } else if (wf.dist < beachSpan) {
           const k = Math.max(0, 1 - (wf.dist + (n2 - 0.5) * 0.45) / beachSpan);
           const sandMix = Math.min(1, k * k * 1.15);
@@ -1456,7 +1768,7 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
       // Subtle tactical vignette near map border
       const edge = Math.min(wx, wy, MAP_W - wx, MAP_H - wy);
       const edgeDark = edge < 2.5 ? 0.72 + (edge / 2.5) * 0.28 : 1;
-      const maxC = isTundra ? 238 : 228;
+      const maxC = isVolcano || isCyber ? 250 : isTundra || isAtlantis ? 238 : 228;
 
       const idx = py * S + px;
       const idx4 = idx * 4;
@@ -1475,7 +1787,7 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
   bctx.putImageData(bimg, 0, 0);
 
   // Scattered deterministic surface pebbles & dry grass tufts (baked into albedo + heightfield for crisp relief)
-  const pebbleCount = isTundra ? 650 : 1400;
+  const pebbleCount = isCyber || isOilrig ? 0 : isTundra ? 650 : isAtlantis ? 420 : 1400;
   for (let i = 0; i < pebbleCount; i++) {
     const px = Math.floor(rand() * S);
     const py = Math.floor(rand() * S);
@@ -1489,13 +1801,21 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
       ? bright
         ? "rgba(235, 246, 255, 0.35)"
         : "rgba(130, 158, 184, 0.32)"
-      : isSandy
+      : isAtlantis
         ? bright
-          ? "rgba(218, 184, 134, 0.32)"
-          : "rgba(104, 72, 44, 0.34)"
-        : bright
-          ? "rgba(154, 150, 136, 0.32)"
-          : "rgba(42, 44, 38, 0.35)";
+          ? "rgba(238, 224, 182, 0.3)"
+          : "rgba(128, 154, 146, 0.25)"
+        : isVolcano
+          ? bright
+            ? "rgba(245, 118, 32, 0.28)"
+            : "rgba(24, 20, 22, 0.45)"
+          : isSandy
+            ? bright
+              ? "rgba(218, 184, 134, 0.32)"
+              : "rgba(104, 72, 44, 0.34)"
+            : bright
+              ? "rgba(154, 150, 136, 0.32)"
+              : "rgba(42, 44, 38, 0.35)";
     dctx.beginPath();
     dctx.arc(px, py, rad, 0, Math.PI * 2);
     dctx.fill();

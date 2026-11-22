@@ -60,7 +60,31 @@ export type MapId =
   | "islands"
   | "oasis"
   | "archipelago"
-  | "coastline";
+  | "coastline"
+  | "atlantis"
+  | "shipwreck"
+  | "volcano"
+  | "oilrig"
+  | "cybergrid";
+
+export type ArtifactKind =
+  | "shipwreck"
+  | "lighthouse"
+  | "buoy"
+  | "obelisk"
+  | "seagate"
+  | "oilrig_tower"
+  | "lava_vent"
+  | "monolith"
+  | "seastack";
+
+export interface MapArtifact {
+  kind: ArtifactKind;
+  x: number;
+  y: number;
+  rot?: number;
+  scale?: number;
+}
 
 export type BotDiff = "easy" | "normal" | "brutal";
 export type BotProfile = "balanced" | "rusher" | "turtle" | "tech";
@@ -278,7 +302,7 @@ export const SPAWNS: { x: number; y: number }[] = [
   { x: 5, y: MAP_H - 8 },
 ];
 
-// ---------- Deterministic Handcrafted Maps (10 Biomes & Tactical Layouts, incl. Naval Theaters) ----------
+// ---------- Deterministic Handcrafted Maps (15 Biomes & Creative Ocean/Artifact Theaters) ----------
 export const MAP_LIST: { id: MapId; name: string; biome: string; naval?: boolean; desc: string }[] = [
   { id: "crossroads", name: "Twin Crossroads", biome: "Steppe", desc: "Balanced flank mesas & twin contested Oil Derricks" },
   { id: "canyon", name: "Iron Canyon", biome: "Canyon", desc: "Twin sandstone canyon walls channeling fights across 3 lanes" },
@@ -286,17 +310,23 @@ export const MAP_LIST: { id: MapId; name: string; biome: string; naval?: boolean
   { id: "tundra", name: "Frostbite Pass", biome: "Arctic", desc: "Frozen glacial divide with wide north/south bypasses & rich center ice field" },
   { id: "fortress", name: "Citadel Bastion", biome: "Desert", desc: "Walled central citadel with 4 gates guarding a mega ore cache" },
   { id: "jungle", name: "Emerald Valley", biome: "Jungle", desc: "Diagonal ridge corridors built for ambushes & flanking raids" },
-  { id: "islands", name: "Bridgehead Crossing", biome: "Riverland", naval: true, desc: "Navigable river channels & bridges — full Land, Air & Sea theater" },
+  { id: "islands", name: "Bridgehead Crossing", biome: "Riverland", naval: true, desc: "Navigable river channels, lighthouses & bridges — Land, Air & Sea" },
   { id: "oasis", name: "Scorched Oasis", biome: "Sahara", desc: "Golden dune ring with fast open flank tank lanes & twin oasis passes" },
-  { id: "archipelago", name: "Pacific Atoll", biome: "Ocean", naval: true, desc: "4 corner islands & a central volcanic atoll — naval & air supremacy" },
-  { id: "coastline", name: "Storm Coast", biome: "Coastal", naval: true, desc: "Wide ocean straits with island Oil Derricks & dreadnought bombardment lanes" },
+  { id: "archipelago", name: "Pacific Atoll", biome: "Ocean", naval: true, desc: "4 corner islands & volcanic atoll with sea-stacks & blinking buoys" },
+  { id: "coastline", name: "Storm Coast", biome: "Coastal", naval: true, desc: "Stormy North Sea straits with coastal lighthouses & dreadnought lanes" },
+  { id: "atlantis", name: "Sunken Atlantis", biome: "Mythic Sea", naval: true, desc: "Ancient submerged crystal obelisks, glowing sea-gates & golden causeways" },
+  { id: "shipwreck", name: "Titan Graveyard", biome: "Abyssal", naval: true, desc: "Colossal sunken dreadnought wrecks, reefs & salvage ore shoals" },
+  { id: "volcano", name: "Caldera Forge", biome: "Volcanic", naval: true, desc: "Steaming coastal sea ringing a glowing molten caldera & obsidian bridges" },
+  { id: "oilrig", name: "Offshore Megarig", biome: "Deep Sea", naval: true, desc: "Open-ocean platform bridges converging on a giant central oil megastructure" },
+  { id: "cybergrid", name: "Neon Megastructure", biome: "Orbital", desc: "High-tech titanium battle deck with floating crystal monoliths & energy trenches" },
 ];
 
 export interface MapLayout {
-  cliffs: [number, number][]; // impassable elevated rocky/glacial tiles (aircraft fly over!)
+  cliffs: [number, number][]; // impassable elevated rocky/glacial/lava/monolith tiles (aircraft fly over!)
   water: [number, number][]; // navigable ocean/river tiles (ships sail on, aircraft fly over!)
   derricks: [number, number][]; // top-left 2x2 tile of neutral Oil Derricks
   extraOre?: [number, number, number][]; // optional [cx, cy, radius] bonus ore blobs
+  artifacts?: MapArtifact[]; // 3D visual landmarks & ocean artifacts
 }
 
 const mapCache = new Map<MapId, MapLayout>();
@@ -322,6 +352,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
   };
   let derricks: [number, number][] = [];
   let extraOre: [number, number, number][] | undefined;
+  let artifacts: MapArtifact[] | undefined;
 
   if (id === "crossroads") {
     addRect(cliffSet, 22, 16, 4, 3);
@@ -427,27 +458,30 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [14, 21, 2],
       [48, 42, 2],
     ];
+    artifacts = [
+      { kind: "lighthouse", x: 25, y: 12, scale: 1.0 },
+      { kind: "lighthouse", x: 39, y: 52, scale: 1.0 },
+      { kind: "buoy", x: 32, y: 6 },
+      { kind: "buoy", x: 32, y: 58 },
+      { kind: "buoy", x: 6, y: 32 },
+      { kind: "buoy", x: 58, y: 32 },
+    ];
   } else if (id === "archipelago") {
     // Pacific Atoll: Open ocean surrounding 4 generous corner islands + central volcanic ore atoll + narrow causeways
     addRect(waterSet, 0, 0, MAP_W, MAP_H);
-    // 4 generous corner base islands (18x18 each)
     clearRect(waterSet, 0, 0, 18, 18);
     clearRect(waterSet, 46, 0, 18, 18);
     clearRect(waterSet, 0, 46, 18, 18);
     clearRect(waterSet, 46, 46, 18, 18);
-    // Central volcanic ore atoll (14x14)
     clearRect(waterSet, 25, 25, 14, 14);
-    // 4 shallow coastal sandbar bridges so land forces can still contest center
     clearRect(waterSet, 30, 14, 4, 12);
     clearRect(waterSet, 30, 38, 4, 12);
     clearRect(waterSet, 14, 30, 12, 4);
     clearRect(waterSet, 38, 30, 12, 4);
-    // 4 small flanking derrick islets
     clearRect(waterSet, 29, 7, 6, 7);
     clearRect(waterSet, 29, 50, 6, 7);
     clearRect(waterSet, 7, 29, 7, 6);
     clearRect(waterSet, 50, 29, 7, 6);
-    // Volcanic rocks framing the central atoll
     addRect(cliffSet, 26, 26, 2, 2);
     addRect(cliffSet, 36, 26, 2, 2);
     addRect(cliffSet, 26, 36, 2, 2);
@@ -459,19 +493,26 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [53, 31],
     ];
     extraOre = [[32, 32, 4]];
+    artifacts = [
+      { kind: "seastack", x: 22, y: 12, scale: 1.2 },
+      { kind: "seastack", x: 42, y: 52, scale: 1.2 },
+      { kind: "shipwreck", x: 42, y: 14, rot: 0.7, scale: 1.0 },
+      { kind: "shipwreck", x: 22, y: 50, rot: -2.2, scale: 1.0 },
+      { kind: "lighthouse", x: 17, y: 17, scale: 0.95 },
+      { kind: "lighthouse", x: 47, y: 47, scale: 0.95 },
+      { kind: "buoy", x: 24, y: 20 },
+      { kind: "buoy", x: 40, y: 44 },
+    ];
   } else if (id === "coastline") {
     // Storm Coast: Wide open ocean channels along the top, bottom & mid-strait with 2 wide coastal continents
     addRect(waterSet, 23, 0, 18, MAP_H);
-    // Wide north, center, and south land bridges across the strait
     clearRect(waterSet, 23, 12, 18, 5);
     clearRect(waterSet, 23, 29, 18, 6);
     clearRect(waterSet, 23, 47, 18, 5);
-    // Coastal harbors reaching toward all 4 spawns
     addRect(waterSet, 14, 0, 9, 8);
     addRect(waterSet, 41, 0, 9, 8);
     addRect(waterSet, 14, 56, 9, 8);
     addRect(waterSet, 41, 56, 9, 8);
-    // Coastal cliffs guarding the approaches
     addRect(cliffSet, 18, 22, 3, 5);
     addRect(cliffSet, 43, 22, 3, 5);
     addRect(cliffSet, 18, 37, 3, 5);
@@ -483,6 +524,205 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     extraOre = [
       [15, 32, 3],
       [48, 32, 3],
+    ];
+    artifacts = [
+      { kind: "lighthouse", x: 22, y: 12, scale: 1.05 },
+      { kind: "lighthouse", x: 42, y: 52, scale: 1.05 },
+      { kind: "shipwreck", x: 32, y: 22, rot: 0.35, scale: 1.1 },
+      { kind: "shipwreck", x: 32, y: 41, rot: -2.6, scale: 1.1 },
+      { kind: "buoy", x: 28, y: 5 },
+      { kind: "buoy", x: 36, y: 59 },
+    ];
+  } else if (id === "atlantis") {
+    // Sunken Atlantis: Turquoise ocean with sunken crystal obelisks, glowing sea-gates & golden causeways
+    addRect(waterSet, 0, 0, MAP_W, MAP_H);
+    clearRect(waterSet, 0, 0, 19, 19);
+    clearRect(waterSet, 45, 0, 19, 19);
+    clearRect(waterSet, 0, 45, 19, 19);
+    clearRect(waterSet, 45, 45, 19, 19);
+    // Central sunken temple plaza + 4 diagonal/cardinal golden causeways
+    clearRect(waterSet, 24, 24, 16, 16);
+    clearRect(waterSet, 19, 29, 6, 6);
+    clearRect(waterSet, 39, 29, 6, 6);
+    clearRect(waterSet, 29, 19, 6, 6);
+    clearRect(waterSet, 29, 39, 6, 6);
+    clearRect(waterSet, 14, 19, 5, 12);
+    clearRect(waterSet, 45, 33, 5, 12);
+    clearRect(waterSet, 45, 19, 5, 12);
+    clearRect(waterSet, 14, 33, 5, 12);
+    // Ancient temple pylons (impassable cliff blocks anchoring obelisks)
+    addRect(cliffSet, 25, 25, 2, 2);
+    addRect(cliffSet, 37, 25, 2, 2);
+    addRect(cliffSet, 25, 37, 2, 2);
+    addRect(cliffSet, 37, 37, 2, 2);
+    derricks = [
+      [28, 28],
+      [34, 34],
+      [21, 31],
+      [41, 31],
+    ];
+    extraOre = [
+      [32, 32, 3],
+      [32, 21, 2],
+      [32, 43, 2],
+    ];
+    artifacts = [
+      { kind: "seagate", x: 32, y: 10, rot: 0, scale: 1.35 },
+      { kind: "seagate", x: 32, y: 54, rot: 0, scale: 1.35 },
+      { kind: "seagate", x: 7, y: 32, rot: Math.PI / 2, scale: 1.25 },
+      { kind: "seagate", x: 57, y: 32, rot: Math.PI / 2, scale: 1.25 },
+      { kind: "obelisk", x: 26, y: 26, scale: 1.2 },
+      { kind: "obelisk", x: 38, y: 26, scale: 1.2 },
+      { kind: "obelisk", x: 26, y: 38, scale: 1.2 },
+      { kind: "obelisk", x: 38, y: 38, scale: 1.2 },
+      { kind: "obelisk", x: 22, y: 12, scale: 1.0 },
+      { kind: "obelisk", x: 42, y: 52, scale: 1.0 },
+    ];
+  } else if (id === "shipwreck") {
+    // Titan Graveyard: Stormy abyssal sea littered with colossal sunken dreadnought wrecks & salvage shoals
+    addRect(waterSet, 0, 0, MAP_W, MAP_H);
+    clearRect(waterSet, 0, 0, 18, 18);
+    clearRect(waterSet, 46, 0, 18, 18);
+    clearRect(waterSet, 0, 46, 18, 18);
+    clearRect(waterSet, 46, 46, 18, 18);
+    // Salvage sandbar cross & central wreck shoal
+    clearRect(waterSet, 25, 25, 14, 14);
+    clearRect(waterSet, 15, 29, 34, 6);
+    clearRect(waterSet, 29, 15, 6, 34);
+    // Reef rocks beside wrecks
+    addRect(cliffSet, 22, 20, 3, 2);
+    addRect(cliffSet, 39, 42, 3, 2);
+    addRect(cliffSet, 39, 20, 3, 2);
+    addRect(cliffSet, 22, 42, 3, 2);
+    derricks = [
+      [18, 31],
+      [44, 31],
+      [31, 18],
+      [31, 44],
+    ];
+    extraOre = [
+      [32, 32, 4],
+      [21, 32, 2],
+      [43, 32, 2],
+    ];
+    artifacts = [
+      { kind: "shipwreck", x: 22, y: 10, rot: 0.4, scale: 1.5 },
+      { kind: "shipwreck", x: 42, y: 54, rot: -2.7, scale: 1.5 },
+      { kind: "shipwreck", x: 43, y: 11, rot: -0.6, scale: 1.4 },
+      { kind: "shipwreck", x: 21, y: 53, rot: 2.5, scale: 1.4 },
+      { kind: "shipwreck", x: 10, y: 32, rot: 1.45, scale: 1.3 },
+      { kind: "shipwreck", x: 54, y: 32, rot: -1.65, scale: 1.3 },
+      { kind: "seastack", x: 23, y: 21, scale: 1.1 },
+      { kind: "seastack", x: 40, y: 43, scale: 1.1 },
+      { kind: "buoy", x: 32, y: 8 },
+      { kind: "buoy", x: 32, y: 56 },
+    ];
+  } else if (id === "volcano") {
+    // Caldera Forge: Steaming sea border + glowing volcanic caldera crater ring with obsidian bridges
+    addRect(waterSet, 0, 0, MAP_W, 5);
+    addRect(waterSet, 0, 59, MAP_W, 5);
+    addRect(waterSet, 0, 0, 5, MAP_H);
+    addRect(waterSet, 59, 0, 5, MAP_H);
+    // Keep 4 corner spawn harbors clean while giving easy Shipyard access!
+    clearRect(waterSet, 0, 0, 14, 14);
+    clearRect(waterSet, 50, 0, 14, 14);
+    clearRect(waterSet, 0, 50, 14, 14);
+    clearRect(waterSet, 50, 50, 14, 14);
+    addRect(waterSet, 15, 0, 14, 7);
+    addRect(waterSet, 35, 0, 14, 7);
+    addRect(waterSet, 15, 57, 14, 7);
+    addRect(waterSet, 35, 57, 14, 7);
+    // Central volcanic caldera ridge ring with 4 wide molten-rock breaches
+    addRect(cliffSet, 24, 22, 6, 3);
+    addRect(cliffSet, 34, 22, 6, 3);
+    addRect(cliffSet, 24, 39, 6, 3);
+    addRect(cliffSet, 34, 39, 6, 3);
+    addRect(cliffSet, 22, 25, 3, 5);
+    addRect(cliffSet, 22, 34, 3, 5);
+    addRect(cliffSet, 39, 25, 3, 5);
+    addRect(cliffSet, 39, 34, 3, 5);
+    derricks = [
+      [31, 12],
+      [31, 50],
+      [12, 31],
+      [50, 31],
+    ];
+    extraOre = [[32, 32, 4]];
+    artifacts = [
+      { kind: "lava_vent", x: 26, y: 23.5, scale: 1.2 },
+      { kind: "lava_vent", x: 38, y: 23.5, scale: 1.2 },
+      { kind: "lava_vent", x: 26, y: 40.5, scale: 1.2 },
+      { kind: "lava_vent", x: 38, y: 40.5, scale: 1.2 },
+      { kind: "seastack", x: 20, y: 3, scale: 1.1 },
+      { kind: "seastack", x: 44, y: 61, scale: 1.1 },
+    ];
+  } else if (id === "oilrig") {
+    // Offshore Megarig: Deep open ocean with 4 corner launch platforms + steel sea-bridges to a giant central oil platform!
+    addRect(waterSet, 0, 0, MAP_W, MAP_H);
+    clearRect(waterSet, 0, 0, 17, 17);
+    clearRect(waterSet, 47, 0, 17, 17);
+    clearRect(waterSet, 0, 47, 17, 17);
+    clearRect(waterSet, 47, 47, 17, 17);
+    // Giant central offshore platform deck + 4 cardinal highway bridges
+    clearRect(waterSet, 23, 23, 18, 18);
+    clearRect(waterSet, 16, 29, 8, 6);
+    clearRect(waterSet, 40, 29, 8, 6);
+    clearRect(waterSet, 29, 16, 6, 8);
+    clearRect(waterSet, 29, 40, 6, 8);
+    // Connector bridges to the 4 corner pads
+    clearRect(waterSet, 12, 16, 5, 16);
+    clearRect(waterSet, 47, 16, 5, 16);
+    clearRect(waterSet, 12, 32, 5, 16);
+    clearRect(waterSet, 47, 32, 5, 16);
+    derricks = [
+      [25, 25],
+      [37, 25],
+      [25, 37],
+      [37, 37],
+    ];
+    extraOre = [[32, 32, 3]];
+    artifacts = [
+      { kind: "oilrig_tower", x: 32, y: 24, scale: 1.2 },
+      { kind: "oilrig_tower", x: 32, y: 40, scale: 1.2 },
+      { kind: "lighthouse", x: 17, y: 17, scale: 0.9 },
+      { kind: "lighthouse", x: 47, y: 47, scale: 0.9 },
+      { kind: "buoy", x: 24, y: 10 },
+      { kind: "buoy", x: 40, y: 10 },
+      { kind: "buoy", x: 24, y: 54 },
+      { kind: "buoy", x: 40, y: 54 },
+      { kind: "shipwreck", x: 5, y: 32, rot: 0.2, scale: 1.1 },
+      { kind: "shipwreck", x: 59, y: 32, rot: -2.9, scale: 1.1 },
+    ];
+  } else if (id === "cybergrid") {
+    // Neon Megastructure: High-tech orbital titanium battle deck with crystalline monolith barriers
+    addRect(cliffSet, 20, 20, 4, 2);
+    addRect(cliffSet, 40, 20, 4, 2);
+    addRect(cliffSet, 20, 42, 4, 2);
+    addRect(cliffSet, 40, 42, 4, 2);
+    addRect(cliffSet, 30, 12, 4, 5);
+    addRect(cliffSet, 30, 47, 4, 5);
+    addRect(cliffSet, 12, 30, 5, 4);
+    addRect(cliffSet, 47, 30, 5, 4);
+    derricks = [
+      [31, 21],
+      [31, 41],
+      [21, 31],
+      [41, 31],
+    ];
+    extraOre = [
+      [32, 32, 4],
+      [20, 32, 2],
+      [44, 32, 2],
+    ];
+    artifacts = [
+      { kind: "monolith", x: 32, y: 14.5, scale: 1.3 },
+      { kind: "monolith", x: 32, y: 49.5, scale: 1.3 },
+      { kind: "monolith", x: 14.5, y: 32, scale: 1.3 },
+      { kind: "monolith", x: 49.5, y: 32, scale: 1.3 },
+      { kind: "monolith", x: 22, y: 21, scale: 0.95 },
+      { kind: "monolith", x: 42, y: 21, scale: 0.95 },
+      { kind: "monolith", x: 22, y: 43, scale: 0.95 },
+      { kind: "monolith", x: 42, y: 43, scale: 0.95 },
     ];
   } else {
     // oasis
@@ -507,7 +747,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
   for (const k of cliffSet) cliffs.push([k % MAP_W, (k / MAP_W) | 0]);
   const water: [number, number][] = [];
   for (const k of waterSet) water.push([k % MAP_W, (k / MAP_W) | 0]);
-  const layout: MapLayout = { cliffs, water, derricks, extraOre };
+  const layout: MapLayout = { cliffs, water, derricks, extraOre, artifacts };
   mapCache.set(id, layout);
   return layout;
 }

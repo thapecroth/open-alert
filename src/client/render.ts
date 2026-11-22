@@ -27,6 +27,25 @@ interface Tracked {
   last: EntSnap;
   anim: AnimState;
   holdInd?: THREE.Group;
+  isBuilding: boolean;
+  isStaticBld: boolean;
+  staticFrozen: boolean;
+  lastLowPower: boolean;
+}
+
+function isStaticBuildingRig(vis: EntVis): boolean {
+  const r = vis.rig;
+  return !r.crane && !r.spin && !r.spin2 && !r.flag && !r.turret && !r.pulse?.length;
+}
+
+function freezeStaticBuilding(vis: EntVis): void {
+  vis.rig.body.scale.set(1, 1, 1);
+  vis.root.updateMatrix();
+  vis.root.updateMatrixWorld(true);
+  vis.root.matrixAutoUpdate = false;
+  vis.rig.body.traverse((o) => {
+    o.matrixAutoUpdate = false;
+  });
 }
 
 // Shared Hold Position indicator assets (zero per-unit GPU leaks)
@@ -124,9 +143,25 @@ export class Renderer {
   private playerLowPower = new Map<number, boolean>();
   private hiddenEntityId: number | null = null;
 
+  // Bound VFX emitter callbacks & scratch buffers (zero per-frame allocations)
+  private readonly emitSmoke: (x: number, y: number, z: number, dark: boolean) => void;
+  private readonly emitWake: (x: number, z: number, scale?: number) => void;
+  private readonly emitDust: (x: number, z: number, scale?: number) => void;
+  private readonly emitContrail: (x: number, y: number, z: number, scale?: number) => void;
+  private readonly scratchVec = new THREE.Vector3();
+  private readonly scratchPos = { x: 0, y: 0, d: 0 };
+  private readonly wpEntries: { x: number; y: number; wp: [number, number, OrderKind][] }[] = [];
+  private readonly wpEntryPool: { x: number; y: number; wp: [number, number, OrderKind][] }[] = [];
+  private readonly rallyEntries: { x: number; y: number; rx: number; ry: number }[] = [];
+  private readonly rallyEntryPool: { x: number; y: number; rx: number; ry: number }[] = [];
+
   constructor(private gs: GameScene) {
     this.vfx = new VfxSystem(gs.scene);
     this.waypoints = new WaypointOverlay(gs.scene);
+    this.emitSmoke = (x, y, z, dark) => this.vfx.spawnSmoke(x, y, z, dark);
+    this.emitWake = (x, z, scale) => this.vfx.spawnWake(x, z, scale);
+    this.emitDust = (x, z, scale) => this.vfx.spawnDust(x, z, scale);
+    this.emitContrail = (x, y, z, scale) => this.vfx.spawnContrail(x, y, z, scale);
   }
 
   setPlayerPower(players: Record<number, PlayerState>): void {
@@ -208,15 +243,25 @@ export class Renderer {
       if (this.tracked.has(e.id)) continue;
       const color = this.slotColors.get(e.o) ?? "#888888";
       const vis = makeEntVis(e.k, color, scene);
+      const isBuilding = isBuildingKind(e.k);
       vis.root.position.set(e.x, 0, e.y);
-      if (!isBuildingKind(e.k)) applyFacing(vis.root, e.d / 10);
+      if (!isBuilding) applyFacing(vis.root, e.d / 10);
       setVetBadge(vis, e.vet ?? 0);
       tagEntity(vis.root, e.id);
       if (e.id === this.hiddenEntityId) vis.root.visible = false;
       scene.add(vis.root);
       this.gs.pickables.push(vis.root);
       const anim = createAnimState(e, this.hasInitialSnap);
-      this.tracked.set(e.id, { vis, last: e, anim });
+      const isStaticBld = isBuilding && isStaticBuildingRig(vis);
+      this.tracked.set(e.id, {
+        vis,
+        last: e,
+        anim,
+        isBuilding,
+        isStaticBld,
+        staticFrozen: false,
+        lastLowPower: false,
+      });
     }
     this.hasInitialSnap = true;
 
@@ -248,7 +293,7 @@ export class Renderer {
     }
 
     // Prune selection to living entities
-    for (const id of [...this.selection]) if (!this.tracked.has(id)) this.selection.delete(id);
+    for (const id of this.selection) if (!this.tracked.has(id)) this.selection.delete(id);
     this.updateBars(map);
   }
 
@@ -279,6 +324,10 @@ export class Renderer {
         t.anim.flashing = false;
         t.anim.hitFlash = 0;
         t.anim.matMode = "normal";
+        t.isBuilding = isBuildingKind(e.k);
+        t.isStaticBld = t.isBuilding && isStaticBuildingRig(vis);
+        t.staticFrozen = false;
+        t.lastLowPower = false;
         if (ownerChanged) {
           this.selection.delete(id);
           this.onOwnerLost?.(id);
@@ -299,7 +348,7 @@ export class Renderer {
       if (t.vis.bin) t.vis.bin.scale.y = Math.max(0.05, (e.cargo ?? 0) / 40);
 
       // Hold Position stance indicator (ground amber anchor ring + centered shield badge)
-      const holding = Boolean(e.hold) && !isBuildingKind(e.k);
+      const holding = Boolean(e.hold) && !t.isBuilding;
       if (holding && !t.holdInd) {
         t.holdInd = makeHoldIndicator(t.vis.topY);
         t.vis.root.add(t.holdInd);
@@ -341,6 +390,37 @@ export class Renderer {
     return { x: t.last.x, y: t.last.y, d: t.last.d / 10 };
   }
 
+  private framePosInto(
+    id: number,
+    a: Snap,
+    b: Snap,
+    interpT: number,
+    out: { x: number; y: number; d: number },
+  ): boolean {
+    const ea = a.ents.get(id);
+    const eb = b.ents.get(id);
+    if (!ea && !eb) return false;
+    if (!ea) {
+      out.x = eb!.x;
+      out.y = eb!.y;
+      out.d = eb!.d / 10;
+      return true;
+    }
+    if (!eb) {
+      out.x = ea.x;
+      out.y = ea.y;
+      out.d = ea.d / 10;
+      return true;
+    }
+    let dd = eb.d - ea.d;
+    if (dd > Math.PI * 10) dd -= Math.PI * 20;
+    if (dd < -Math.PI * 10) dd += Math.PI * 20;
+    out.x = ea.x + (eb.x - ea.x) * interpT;
+    out.y = ea.y + (eb.y - ea.y) * interpT;
+    out.d = (ea.d + dd * interpT) / 10;
+    return true;
+  }
+
   private framePos(id: number): { x: number; y: number; d: number } | null {
     const n = this.snaps.length;
     if (!n) return null;
@@ -354,71 +434,176 @@ export class Renderer {
         break;
       }
     }
-    const ea = a.ents.get(id);
-    const eb = b.ents.get(id);
-    if (!ea && !eb) return null;
-    if (!ea) return { x: eb!.x, y: eb!.y, d: eb!.d / 10 };
-    if (!eb) return { x: ea.x, y: ea.y, d: ea.d / 10 };
     const span = Math.max(1, b.recv - a.recv);
-    const t = Math.max(0, Math.min(1, (rt - a.recv) / span));
-    let dd = eb.d - ea.d;
-    if (dd > Math.PI * 10) dd -= Math.PI * 20;
-    if (dd < -Math.PI * 10) dd += Math.PI * 20;
-    return {
-      x: ea.x + (eb.x - ea.x) * t,
-      y: ea.y + (eb.y - ea.y) * t,
-      d: (ea.d + dd * t) / 10,
-    };
+    const interpT = Math.max(0, Math.min(1, (rt - a.recv) / span));
+    const out = { x: 0, y: 0, d: 0 };
+    return this.framePosInto(id, a, b, interpT, out) ? out : null;
   }
 
   update(dt = 0.016) {
-    const nowSec = performance.now() / 1000;
-    const emitSmoke = (x: number, y: number, z: number, dark: boolean) => this.vfx.spawnSmoke(x, y, z, dark);
-    const emitWake = (x: number, z: number, scale?: number) => this.vfx.spawnWake(x, z, scale);
-    const emitDust = (x: number, z: number, scale?: number) => this.vfx.spawnDust(x, z, scale);
-    const emitContrail = (x: number, y: number, z: number, scale?: number) =>
-      this.vfx.spawnContrail(x, y, z, scale);
-    const wpEntries: { x: number; y: number; wp: [number, number, OrderKind][] }[] = [];
-    const rallyEntries: { x: number; y: number; rx: number; ry: number }[] = [];
+    const nowMs = performance.now();
+    const nowSec = nowMs / 1000;
+    const safeDt = Math.max(0.0005, Math.min(0.1, dt));
 
-    for (const [id, t] of this.tracked) {
-      const p = this.framePos(id);
-      if (!p) continue;
-      t.vis.root.position.x = p.x;
-      t.vis.root.position.z = p.y;
-      if (!isBuildingKind(t.last.k)) {
-        applyFacing(t.vis.root, p.d);
-      }
-      const lowPwr = this.playerLowPower.get(t.last.o) === true;
-      stepEntityAnim(
-        t.vis,
-        t.anim,
-        t.last,
-        p.x,
-        p.y,
-        p.d,
-        dt,
-        nowSec,
-        emitSmoke,
-        emitWake,
-        lowPwr,
-        emitDust,
-        emitContrail,
-      );
+    this.wpEntries.length = 0;
+    this.rallyEntries.length = 0;
 
-      if (this.selection.has(id) && t.vis.root.visible) {
-        if (t.last.wp?.length) {
-          wpEntries.push({ x: p.x, y: p.y, wp: t.last.wp });
+    // Resolve snapshot interpolation pair ONCE per frame instead of per entity
+    const snapCount = this.snaps.length;
+    let snapA: Snap | null = null;
+    let snapB: Snap | null = null;
+    let interpT = 0;
+    if (snapCount > 0) {
+      const rt = nowMs - INTERP_MS;
+      snapA = this.snaps[0];
+      snapB = this.snaps[snapCount - 1];
+      for (let i = snapCount - 1; i > 0; i--) {
+        if (this.snaps[i - 1].recv <= rt) {
+          snapA = this.snaps[i - 1];
+          snapB = this.snaps[i];
+          break;
         }
+      }
+      const span = Math.max(1, snapB.recv - snapA.recv);
+      interpT = Math.max(0, Math.min(1, (rt - snapA.recv) / span));
+    }
+
+    const pos = this.scratchPos;
+
+    if (snapA && snapB) {
+      for (const [id, t] of this.tracked) {
+        const lowPwr = this.playerLowPower.get(t.last.o) === true;
+
+        // Fast-path & static matrix freezing for settled buildings with no moving sub-parts
+        let px: number;
+        let py: number;
         if (
-          t.last.rally &&
-          (t.last.k === "barracks" ||
-            t.last.k === "factory" ||
-            t.last.k === "factory2" ||
-            t.last.k === "airfield" ||
-            t.last.k === "shipyard")
+          t.isStaticBld &&
+          (!t.anim.isNewBuilding || t.anim.buildAge >= 1) &&
+          t.anim.hitFlash <= 0 &&
+          t.anim.matMode === "normal"
         ) {
-          rallyEntries.push({ x: p.x, y: p.y, rx: t.last.rally[0], ry: t.last.rally[1] });
+          px = t.last.x;
+          py = t.last.y;
+          if (!t.staticFrozen) {
+            t.vis.root.position.set(px, 0, py);
+            freezeStaticBuilding(t.vis);
+            t.staticFrozen = true;
+          } else if (t.vis.root.position.x !== px || t.vis.root.position.z !== py) {
+            t.vis.root.position.set(px, 0, py);
+            t.vis.root.updateMatrix();
+            t.vis.root.updateMatrixWorld(true);
+          }
+
+          const hasPowerGlow = Boolean(t.vis.rig.powerGlow?.length);
+          if (hasPowerGlow && (lowPwr || t.lastLowPower)) {
+            stepEntityAnim(
+              t.vis,
+              t.anim,
+              t.last,
+              px,
+              py,
+              t.last.d / 10,
+              dt,
+              nowSec,
+              this.emitSmoke,
+              this.emitWake,
+              lowPwr,
+              this.emitDust,
+              this.emitContrail,
+            );
+          } else {
+            // Only tick smoke stack / battle-damage smoke timer on settled static buildings
+            const rig = t.vis.rig;
+            if (rig.smokePos && t.vis.root.visible) {
+              const k = t.last.k;
+              const damaged = t.last.hp < t.last.mhp * 0.55;
+              const isStack = k === "factory" || k === "factory2" || k === "refinery" || k === "power";
+              if (damaged || isStack) {
+                t.anim.smokeCd -= safeDt;
+                if (t.anim.smokeCd <= 0) {
+                  t.anim.smokeCd = damaged ? 0.28 + Math.random() * 0.2 : 0.9 + Math.random() * 0.5;
+                  this.vfx.spawnSmoke(
+                    px + rig.smokePos.x * 0.5,
+                    rig.smokePos.y,
+                    py + rig.smokePos.z * 0.5,
+                    damaged,
+                  );
+                }
+              }
+            }
+          }
+          t.lastLowPower = lowPwr;
+        } else {
+          if (!this.framePosInto(id, snapA, snapB, interpT, pos)) continue;
+          px = pos.x;
+          py = pos.y;
+          if (t.staticFrozen) {
+            if (t.vis.root.position.x !== px || t.vis.root.position.z !== py) {
+              t.vis.root.position.set(px, 0, py);
+              t.vis.root.updateMatrix();
+              t.vis.root.updateMatrixWorld(true);
+            }
+          } else {
+            t.vis.root.position.x = px;
+            t.vis.root.position.z = py;
+          }
+          if (!t.isBuilding) {
+            applyFacing(t.vis.root, pos.d);
+          }
+          stepEntityAnim(
+            t.vis,
+            t.anim,
+            t.last,
+            px,
+            py,
+            pos.d,
+            dt,
+            nowSec,
+            this.emitSmoke,
+            this.emitWake,
+            lowPwr,
+            this.emitDust,
+            this.emitContrail,
+          );
+          t.lastLowPower = lowPwr;
+        }
+
+        if (this.selection.has(id) && t.vis.root.visible) {
+          if (t.last.wp?.length) {
+            const wi = this.wpEntries.length;
+            let entry = this.wpEntryPool[wi];
+            if (!entry) {
+              entry = { x: px, y: py, wp: t.last.wp };
+              this.wpEntryPool[wi] = entry;
+            } else {
+              entry.x = px;
+              entry.y = py;
+              entry.wp = t.last.wp;
+            }
+            this.wpEntries.push(entry);
+          }
+          if (
+            t.last.rally &&
+            (t.last.k === "barracks" ||
+              t.last.k === "factory" ||
+              t.last.k === "factory2" ||
+              t.last.k === "airfield" ||
+              t.last.k === "shipyard")
+          ) {
+            const ri = this.rallyEntries.length;
+            let rEntry = this.rallyEntryPool[ri];
+            if (!rEntry) {
+              rEntry = { x: px, y: py, rx: t.last.rally[0], ry: t.last.rally[1] };
+              this.rallyEntryPool[ri] = rEntry;
+            } else {
+              rEntry.x = px;
+              rEntry.y = py;
+              rEntry.rx = t.last.rally[0];
+              rEntry.ry = t.last.rally[1];
+            }
+            this.rallyEntries.push(rEntry);
+          }
         }
       }
     }
@@ -434,7 +619,7 @@ export class Renderer {
       (cv.beacon.material as THREE.MeshBasicMaterial).opacity = 0.14 + 0.08 * Math.sin(phase * 1.35);
     }
 
-    this.waypoints.update(wpEntries, nowSec, rallyEntries);
+    this.waypoints.update(this.wpEntries, nowSec, this.rallyEntries);
     this.vfx.update();
   }
 
@@ -581,7 +766,7 @@ export class Renderer {
         }
       }
       if (vis) this.seen.add(id);
-      const show = vis || (isBuildingKind(e.k) && this.seen.has(id));
+      const show = vis || (t.isBuilding && this.seen.has(id));
       if (t.vis.root.visible !== show) t.vis.root.visible = show;
     }
 
@@ -595,7 +780,7 @@ export class Renderer {
   entScreenPos(id: number): { x: number; y: number } | null {
     const t = this.tracked.get(id);
     if (!t || !t.vis.root.visible) return null;
-    const v = t.vis.root.position.clone();
+    const v = this.scratchVec.copy(t.vis.root.position);
     // Air units project at an averaged mid-height between ground ring & flying hull for reliable drag-box selection
     v.y = t.vis.rig.altitude ? t.vis.rig.altitude * 0.42 : 0.5;
     v.project(this.gs.camera);

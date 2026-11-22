@@ -2,7 +2,7 @@ import { Net } from "./net";
 import { GameScene } from "./scene";
 import { Renderer } from "./render";
 import { Input } from "./input";
-import { Hud } from "./hud";
+import { Hud, type GraphicsBridge } from "./hud";
 import { AudioEngine } from "./audio";
 import { FirstPersonController } from "./fpv";
 import { generateIcons } from "./icons";
@@ -79,6 +79,8 @@ hud.setRoom(room);
 hud.setStatus("connecting…");
 hud.setInitialName(name);
 hud.setAudioState(audio.muted, audio.musicOn);
+const gfx = (gs as unknown as { graphics?: GraphicsBridge }).graphics;
+if (gfx) hud.bindGraphics(gfx);
 
 // ---------- placement validity (exact client parity with server canPlace) ----------
 

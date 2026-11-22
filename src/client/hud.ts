@@ -63,18 +63,137 @@ const TOOLTIPS: Record<string, string> = {
   dreadnought: "Poseidon Dreadnought — long-range Navy bombardment cruiser with splash cruise missiles. Needs Tech Lab.",
 };
 
-const MAP_PREVIEW_PALETTES: Record<MapId, { bg: string; grid: string; cliff: string; cliffEdge: string }> = {
+const MAP_PREVIEW_PALETTES: Record<
+  MapId,
+  { bg: string; grid: string; cliff: string; cliffEdge: string; water?: string; waterGlint?: string; accentGrid?: string }
+> = {
   crossroads: { bg: "#2b3926", grid: "rgba(180,210,160,0.08)", cliff: "#5a6257", cliffEdge: "#768072" }, // Steppe (olive)
   canyon: { bg: "#4a2c20", grid: "rgba(235,175,140,0.08)", cliff: "#82523c", cliffEdge: "#a16a50" }, // Canyon (rust)
   basin: { bg: "#28323c", grid: "rgba(170,200,225,0.08)", cliff: "#576574", cliffEdge: "#748494" }, // Alpine (slate)
   tundra: { bg: "#2e4656", grid: "rgba(210,240,255,0.1)", cliff: "#88b3ca", cliffEdge: "#b0d5e8" }, // Arctic (icy)
   fortress: { bg: "#4d3f2a", grid: "rgba(235,210,160,0.08)", cliff: "#85704f", cliffEdge: "#a38d68" }, // Desert (sandy)
   jungle: { bg: "#1c3828", grid: "rgba(150,225,175,0.08)", cliff: "#3e5e47", cliffEdge: "#567d61" }, // Jungle (emerald)
-  islands: { bg: "#2b4a3e", grid: "rgba(165,225,205,0.08)", cliff: "#4a5c58", cliffEdge: "#68807b" }, // Riverland (emerald/water)
+  islands: {
+    bg: "#2b4a3e",
+    grid: "rgba(165,225,205,0.08)",
+    cliff: "#4a5c58",
+    cliffEdge: "#68807b",
+    water: "#1a5c7a",
+    waterGlint: "rgba(130, 222, 255, 0.3)",
+  }, // Riverland (emerald/water)
   oasis: { bg: "#574323", grid: "rgba(250,215,145,0.09)", cliff: "#947542", cliffEdge: "#b39259" }, // Sahara (golden)
-  archipelago: { bg: "#3a5c36", grid: "rgba(185,235,195,0.08)", cliff: "#524942", cliffEdge: "#756a60" }, // Pacific tropical ocean/atoll
-  coastline: { bg: "#33424a", grid: "rgba(175,215,235,0.08)", cliff: "#4d5c66", cliffEdge: "#6c7f8c" }, // Stormy slate ocean/shore
+  archipelago: {
+    bg: "#3a5c36",
+    grid: "rgba(185,235,195,0.08)",
+    cliff: "#524942",
+    cliffEdge: "#756a60",
+    water: "#145d82",
+    waterGlint: "rgba(138, 232, 255, 0.34)",
+  }, // Pacific tropical ocean/atoll
+  coastline: {
+    bg: "#33424a",
+    grid: "rgba(175,215,235,0.08)",
+    cliff: "#4d5c66",
+    cliffEdge: "#6c7f8c",
+    water: "#154159",
+    waterGlint: "rgba(145, 206, 230, 0.28)",
+  }, // Stormy slate ocean/shore
+  atlantis: {
+    bg: "#b89652",
+    grid: "rgba(255, 236, 178, 0.16)",
+    cliff: "#2b7f92",
+    cliffEdge: "#6bf2ff",
+    water: "#0f8c9e",
+    waterGlint: "rgba(136, 255, 248, 0.44)",
+  }, // Mythic turquoise sea + golden-sand temple plaza
+  shipwreck: {
+    bg: "#343b3a",
+    grid: "rgba(160, 190, 192, 0.08)",
+    cliff: "#4f4640",
+    cliffEdge: "#7d6858",
+    water: "#13323e",
+    waterGlint: "rgba(116, 178, 196, 0.25)",
+  }, // Deep stormy slate-teal abyss + salvage sandbars
+  volcano: {
+    bg: "#211d20",
+    grid: "rgba(255, 134, 62, 0.11)",
+    cliff: "#7a2c16",
+    cliffEdge: "#ff6e24",
+    water: "#183847",
+    waterGlint: "rgba(210, 232, 242, 0.34)",
+  }, // Obsidian ash + fiery molten caldera rim + steaming sea border
+  oilrig: {
+    bg: "#4a5662",
+    grid: "rgba(218, 234, 248, 0.14)",
+    cliff: "#6a7885",
+    cliffEdge: "#95a8ba",
+    water: "#0f3764",
+    waterGlint: "rgba(114, 190, 255, 0.3)",
+  }, // Deep sapphire ocean + metallic steel platform decks
+  cybergrid: {
+    bg: "#101722",
+    grid: "rgba(64, 230, 255, 0.28)",
+    cliff: "#1d3145",
+    cliffEdge: "#44e2ff",
+    accentGrid: "rgba(64, 230, 255, 0.1)",
+  }, // Sleek dark carbon orbital deck + glowing cyan circuits
 };
+
+export type QualityPreset = "low" | "medium" | "high" | "ultra";
+
+export interface GraphicsSettings {
+  preset: QualityPreset;
+  raytracing: boolean;
+  contactShadows: boolean;
+  bloom: boolean;
+  dynamicRes: boolean;
+}
+
+export interface GpuInfo {
+  backend: "WebGL2" | "WebGL";
+  webgpuAvailable: boolean;
+  webgpuAdapter: string;
+  rendererName: string;
+  vendor: string;
+  maxTextureSize: number;
+  cores: number;
+  recommended: QualityPreset;
+}
+
+export interface GraphicsStats {
+  fps: number;
+  frameMs: number;
+  calls: number;
+  triangles: number;
+  dpr: number;
+}
+
+export interface GraphicsBridge {
+  settings: GraphicsSettings;
+  gpu: GpuInfo;
+  stats: GraphicsStats;
+  applyPreset(p: QualityPreset): void;
+  setOption(k: "raytracing" | "contactShadows" | "bloom" | "dynamicRes", v: boolean): void;
+}
+
+const GFX_PRESET_DESCS: Record<QualityPreset, string> = {
+  low: "Laptop Fast — direct GPU render with zero post-FX for maximum battery & frame rate.",
+  medium: "Balanced — HDR bloom, contact shadows & adaptive 60fps resolution scaling.",
+  high: "Dedicated GPU — 2048px shadows & Screen-Space Raytracing (SSR) reflections.",
+  ultra: "Full GPU Raytraced Reflections + Contact Shadows & AO + HDR Bloom at max render scale.",
+};
+
+function fmtPresetName(p: QualityPreset): string {
+  return p === "ultra" ? "ULTRA RT" : p.toUpperCase();
+}
+
+function fmtTris(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "--";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 10_000) return `${(n / 1_000).toFixed(1)}k`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(2)}k`;
+  return String(Math.round(n));
+}
 
 function fmtBoost(mult: number): string {
   return `×${Number(mult.toFixed(2))}`;
@@ -203,6 +322,8 @@ export class Hud {
   private spectating = false;
   private fpvMode = false;
   private fpvLastKind = "";
+  private gfx: GraphicsBridge | null = null;
+  private gfxLastMs = 0;
 
   constructor() {
     el("ready-btn").addEventListener("click", () => {
@@ -246,6 +367,47 @@ export class Hud {
     el("copy-link2").addEventListener("click", copy);
     el("help-btn")?.addEventListener("click", () => el("help").classList.toggle("hidden"));
     el("help-close")?.addEventListener("click", () => el("help").classList.add("hidden"));
+    document.getElementById("gfx-btn")?.addEventListener("click", () => this.toggleGraphicsPanel());
+    document.getElementById("lobby-gfx-btn")?.addEventListener("click", () => this.openGraphicsPanel());
+    document.getElementById("gfx-close")?.addEventListener("click", () => this.closeGraphicsPanel());
+    document.getElementById("gfx-panel")?.addEventListener("click", (e) => {
+      if (e.target === e.currentTarget) this.closeGraphicsPanel();
+    });
+    window.addEventListener(
+      "keydown",
+      (e) => {
+        if (e.code !== "Escape") return;
+        const panel = document.getElementById("gfx-panel");
+        if (panel && !panel.classList.contains("hidden")) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          this.closeGraphicsPanel();
+        }
+      },
+      true,
+    );
+    for (const btn of document.querySelectorAll<HTMLButtonElement>(".gfx-preset[data-preset]")) {
+      btn.addEventListener("click", () => {
+        const preset = btn.dataset.preset as QualityPreset | undefined;
+        if (!preset || !this.gfx) return;
+        this.gfx.applyPreset(preset);
+        this.syncGraphicsControls();
+        this.updateGraphicsTelemetry(true);
+      });
+    }
+    const wireGfxOpt = (id: string, key: "raytracing" | "contactShadows" | "bloom" | "dynamicRes") => {
+      const inp = document.getElementById(id) as HTMLInputElement | null;
+      inp?.addEventListener("change", () => {
+        if (!this.gfx) return;
+        this.gfx.setOption(key, inp.checked);
+        this.syncGraphicsControls();
+        this.updateGraphicsTelemetry(true);
+      });
+    };
+    wireGfxOpt("gfx-rt", "raytracing");
+    wireGfxOpt("gfx-ao", "contactShadows");
+    wireGfxOpt("gfx-bloom", "bloom");
+    wireGfxOpt("gfx-dyn", "dynamicRes");
     el("wasd-btn")?.addEventListener("click", () => this.onToggleWasd?.());
     document.getElementById("mute-btn")?.addEventListener("click", () => this.onToggleMute?.());
     document.getElementById("music-btn")?.addEventListener("click", () => this.onToggleMusic?.());
@@ -456,17 +618,33 @@ export class Hud {
     // Navigable ocean / river water tiles with subtle wave glints
     const cs = Math.ceil(s);
     if (layout.water.length) {
-      ctx.fillStyle = "#19587a";
+      ctx.fillStyle = pal.water ?? "#19587a";
       for (let i = 0; i < layout.water.length; i++) {
         const [wx, wy] = layout.water[i];
         ctx.fillRect(wx * s, wy * s, cs, cs);
       }
-      ctx.fillStyle = "rgba(130, 222, 255, 0.3)";
+      ctx.fillStyle = pal.waterGlint ?? "rgba(130, 222, 255, 0.3)";
       for (let i = 0; i < layout.water.length; i++) {
         const [wx, wy] = layout.water[i];
         if (((wx * 13 + wy * 29) & 15) === 0) {
           ctx.fillRect(wx * s, wy * s, Math.max(1.5, s * 1.15), Math.max(1, s * 0.45));
         }
+      }
+    }
+
+    // Optional fine circuit sub-grid (e.g. Cybergrid orbital deck)
+    if (pal.accentGrid) {
+      ctx.strokeStyle = pal.accentGrid;
+      ctx.lineWidth = 1;
+      for (let t = 8; t < MAP_W; t += 8) {
+        if (t % 16 === 0) continue;
+        const p = Math.round(t * s) + 0.5;
+        ctx.beginPath();
+        ctx.moveTo(p, 0);
+        ctx.lineTo(p, h);
+        ctx.moveTo(0, p);
+        ctx.lineTo(w, p);
+        ctx.stroke();
       }
     }
 
@@ -514,6 +692,130 @@ export class Hud {
     for (let i = 0; i < layout.cliffs.length; i++) {
       const [cx, cy] = layout.cliffs[i];
       ctx.fillRect(cx * s, cy * s, cs, Math.max(1, s * 0.4));
+    }
+
+    // Creative map landmarks & ocean artifacts
+    if (layout.artifacts?.length) {
+      for (const art of layout.artifacts) {
+        const ax = art.x * s;
+        const ay = art.y * s;
+        const sc = art.scale ?? 1;
+        if (art.kind === "shipwreck") {
+          ctx.save();
+          ctx.translate(ax, ay);
+          ctx.rotate(art.rot ?? 0);
+          const len = Math.max(5.5, 4.6 * sc);
+          const wid = Math.max(2.2, 1.9 * sc);
+          ctx.beginPath();
+          ctx.moveTo(len * 0.6, 0);
+          ctx.lineTo(-len * 0.45, -wid * 0.55);
+          ctx.lineTo(-len * 0.55, 0);
+          ctx.lineTo(-len * 0.45, wid * 0.55);
+          ctx.closePath();
+          ctx.fillStyle = "#7c4732";
+          ctx.fill();
+          ctx.strokeStyle = "#b56945";
+          ctx.lineWidth = 0.8;
+          ctx.stroke();
+          ctx.restore();
+        } else if (art.kind === "obelisk") {
+          const r = 2.6 * Math.min(1.3, sc);
+          ctx.beginPath();
+          ctx.moveTo(ax, ay - r);
+          ctx.lineTo(ax + r * 0.85, ay);
+          ctx.lineTo(ax, ay + r);
+          ctx.lineTo(ax - r * 0.85, ay);
+          ctx.closePath();
+          ctx.fillStyle = "#48f4ff";
+          ctx.fill();
+          ctx.strokeStyle = "#08242e";
+          ctx.lineWidth = 0.9;
+          ctx.stroke();
+        } else if (art.kind === "seagate") {
+          ctx.save();
+          ctx.translate(ax, ay);
+          ctx.rotate(art.rot ?? 0);
+          const span = 4.2 * Math.min(1.35, sc);
+          ctx.strokeStyle = "#3ceeff";
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(-span, 0);
+          ctx.lineTo(span, 0);
+          ctx.stroke();
+          ctx.fillStyle = "#c8ffff";
+          ctx.fillRect(-span - 1, -1.2, 2.2, 2.4);
+          ctx.fillRect(span - 1.2, -1.2, 2.2, 2.4);
+          ctx.restore();
+        } else if (art.kind === "lava_vent") {
+          const r = 3.2 * Math.min(1.25, sc);
+          ctx.fillStyle = "rgba(255, 92, 24, 0.45)";
+          ctx.beginPath();
+          ctx.arc(ax, ay, r * 1.45, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#ff7a1f";
+          ctx.beginPath();
+          ctx.arc(ax, ay, r * 0.85, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#ffe680";
+          ctx.beginPath();
+          ctx.arc(ax, ay, Math.max(1.1, r * 0.4), 0, Math.PI * 2);
+          ctx.fill();
+        } else if (art.kind === "oilrig_tower") {
+          const sz = Math.max(4.4, 3.8 * sc);
+          ctx.fillStyle = "#ffc933";
+          ctx.fillRect(ax - sz / 2, ay - sz / 2, sz, sz);
+          ctx.strokeStyle = "#121a22";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(ax - sz / 2, ay - sz / 2, sz, sz);
+          ctx.fillStyle = "#121a22";
+          ctx.fillRect(ax - 0.8, ay - 0.8, 1.6, 1.6);
+        } else if (art.kind === "lighthouse") {
+          ctx.fillStyle = "rgba(255, 228, 102, 0.36)";
+          ctx.beginPath();
+          ctx.arc(ax, ay, 3.8, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#ffe570";
+          ctx.beginPath();
+          ctx.arc(ax, ay, 2.0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#ffffff";
+          ctx.beginPath();
+          ctx.arc(ax, ay, 0.9, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (art.kind === "monolith") {
+          const r = 3.0 * Math.min(1.25, sc);
+          ctx.fillStyle = "rgba(64, 232, 255, 0.28)";
+          ctx.beginPath();
+          ctx.arc(ax, ay, r * 1.35, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.moveTo(ax, ay - r);
+          ctx.lineTo(ax + r, ay);
+          ctx.lineTo(ax, ay + r);
+          ctx.lineTo(ax - r, ay);
+          ctx.closePath();
+          ctx.fillStyle = "#42ecff";
+          ctx.fill();
+          ctx.strokeStyle = "#081420";
+          ctx.lineWidth = 0.9;
+          ctx.stroke();
+        } else if (art.kind === "seastack") {
+          const r = 2.4 * Math.min(1.3, sc);
+          ctx.fillStyle = "#364047";
+          ctx.beginPath();
+          ctx.arc(ax, ay, r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#697982";
+          ctx.beginPath();
+          ctx.arc(ax - 0.5, ay - 0.5, r * 0.5, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (art.kind === "buoy") {
+          ctx.fillStyle = "#ff6844";
+          ctx.beginPath();
+          ctx.arc(ax, ay, 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
     }
 
     // Neutral Oil Derricks (amber diamond markers)
@@ -602,7 +904,152 @@ export class Hud {
     clock.textContent = `${mm}:${ss}`;
   }
 
+  bindGraphics(gfx: GraphicsBridge) {
+    this.gfx = gfx;
+    this.syncGraphicsControls();
+    this.updateGraphicsTelemetry(true);
+  }
+
+  openGraphicsPanel() {
+    const panel = document.getElementById("gfx-panel");
+    if (!panel) return;
+    panel.classList.remove("hidden");
+    this.syncGraphicsControls();
+    this.updateGraphicsTelemetry(true);
+  }
+
+  closeGraphicsPanel() {
+    document.getElementById("gfx-panel")?.classList.add("hidden");
+  }
+
+  toggleGraphicsPanel() {
+    const panel = document.getElementById("gfx-panel");
+    if (!panel) return;
+    if (panel.classList.contains("hidden")) this.openGraphicsPanel();
+    else this.closeGraphicsPanel();
+  }
+
+  private syncGraphicsControls() {
+    if (!this.gfx) return;
+    const { settings, gpu } = this.gfx;
+
+    // Topbar GFX button label & highlight
+    const btn = document.getElementById("gfx-btn");
+    if (btn) {
+      if (settings.raytracing) {
+        btn.textContent = "GFX: RT";
+        btn.classList.add("on");
+      } else if (settings.preset === "low") {
+        btn.textContent = "GFX: LOW";
+        btn.classList.remove("on");
+      } else {
+        btn.textContent = "GFX";
+        btn.classList.toggle("on", settings.preset === "high" || settings.preset === "ultra");
+      }
+      btn.title = `Graphics: ${fmtPresetName(settings.preset)}${settings.raytracing ? " · SSR Raytracing ON" : ""} (click to configure)`;
+    }
+
+    // Segmented preset buttons
+    for (const pbtn of document.querySelectorAll<HTMLButtonElement>(".gfx-preset[data-preset]")) {
+      pbtn.classList.toggle("active", pbtn.dataset.preset === settings.preset);
+    }
+    const desc = document.getElementById("gfx-preset-desc");
+    if (desc) desc.textContent = GFX_PRESET_DESCS[settings.preset] ?? "";
+    const rec = document.getElementById("gfx-rec-note");
+    if (rec && gpu?.recommended) {
+      rec.textContent = `Recommended: ${fmtPresetName(gpu.recommended)}`;
+    }
+
+    // Individual pipeline checkboxes
+    const syncChk = (id: string, val: boolean) => {
+      const inp = document.getElementById(id) as HTMLInputElement | null;
+      if (inp) inp.checked = val;
+    };
+    syncChk("gfx-rt", settings.raytracing);
+    syncChk("gfx-ao", settings.contactShadows);
+    syncChk("gfx-bloom", settings.bloom);
+    syncChk("gfx-dyn", settings.dynamicRes);
+  }
+
+  updateGraphicsTelemetry(force = false) {
+    if (!this.gfx) return;
+    const now = performance.now();
+    if (!force && now - this.gfxLastMs < 300) return;
+    this.gfxLastMs = now;
+
+    const { gpu, stats, settings } = this.gfx;
+    const fps = Math.round(stats.fps);
+
+    // Compact live topbar FPS pill
+    const pill = document.getElementById("fps-pill");
+    if (pill) {
+      pill.textContent = fps > 0 ? `${fps} FPS` : "-- FPS";
+      pill.classList.toggle("warn", fps > 0 && fps < 35 && fps >= 20);
+      pill.classList.toggle("low", fps > 0 && fps < 20);
+      pill.title = `${fps > 0 ? fps : "--"} FPS · ${stats.frameMs.toFixed(1)} ms · ${stats.dpr.toFixed(2)}× DPR`;
+    }
+
+    // Keep GFX button indicator synced if settings changed externally
+    const gfxBtn = document.getElementById("gfx-btn");
+    if (gfxBtn) {
+      const desired = settings.raytracing ? "GFX: RT" : settings.preset === "low" ? "GFX: LOW" : "GFX";
+      if (gfxBtn.textContent !== desired) {
+        gfxBtn.textContent = desired;
+        gfxBtn.classList.toggle("on", settings.raytracing || settings.preset === "high" || settings.preset === "ultra");
+      }
+    }
+
+    const panel = document.getElementById("gfx-panel");
+    if (!panel || panel.classList.contains("hidden")) return;
+
+    // Hardware telemetry header (refreshed while open in case WebGPU adapter resolves async)
+    const gpuEl = document.getElementById("gfx-gpu-name");
+    if (gpuEl) {
+      const name = gpu.rendererName || gpu.webgpuAdapter || "Hardware GPU";
+      gpuEl.textContent = name;
+      gpuEl.title = gpu.vendor ? `${name} (${gpu.vendor})` : name;
+    }
+    const glBadge = document.getElementById("gfx-badge-gl");
+    if (glBadge) {
+      glBadge.textContent = `${gpu.backend || "WebGL2"} GPU`;
+      glBadge.classList.add("acc");
+    }
+    const wgpuBadge = document.getElementById("gfx-badge-wgpu");
+    if (wgpuBadge) {
+      wgpuBadge.textContent = gpu.webgpuAvailable ? "WebGPU READY" : "WebGL2 Only";
+      wgpuBadge.classList.toggle("ok", gpu.webgpuAvailable);
+      wgpuBadge.title = gpu.webgpuAvailable
+        ? gpu.webgpuAdapter
+          ? `WebGPU Adapter: ${gpu.webgpuAdapter}`
+          : "WebGPU hardware adapter available"
+        : "Browser running WebGL2 hardware path";
+    }
+    const coresBadge = document.getElementById("gfx-badge-cores");
+    if (coresBadge) {
+      coresBadge.textContent = `${Math.max(1, gpu.cores || 1)}T`;
+      coresBadge.title = `${gpu.cores || 1} logical CPU threads · Max texture ${gpu.maxTextureSize || 0}px`;
+    }
+
+    // Live 300ms metrics row
+    const mFps = document.getElementById("gfx-m-fps");
+    if (mFps) {
+      mFps.textContent = fps > 0 ? String(fps) : "--";
+      mFps.classList.toggle("ok", fps >= 50);
+      mFps.classList.toggle("warn", fps >= 25 && fps < 50);
+      mFps.classList.toggle("low", fps > 0 && fps < 25);
+    }
+    const mMs = document.getElementById("gfx-m-ms");
+    if (mMs) mMs.textContent = stats.frameMs > 0 ? `${stats.frameMs.toFixed(1)}ms` : "--";
+    const mCalls = document.getElementById("gfx-m-calls");
+    if (mCalls) mCalls.textContent = Number.isFinite(stats.calls) ? String(Math.round(stats.calls)) : "--";
+    const mTris = document.getElementById("gfx-m-tris");
+    if (mTris) mTris.textContent = fmtTris(stats.triangles);
+    const mDpr = document.getElementById("gfx-m-dpr");
+    if (mDpr) mDpr.textContent = stats.dpr > 0 ? `${stats.dpr.toFixed(2)}×` : "--";
+  }
+
   tick(dt: number) {
+    this.updateGraphicsTelemetry(false);
     if (this.spectating || !this.creditsInit) return;
     const diff = this.targetCredits - this.displayCredits;
     if (Math.abs(diff) > 0.5) {
@@ -844,6 +1291,7 @@ export class Hud {
     const fpvHud = document.getElementById("fpv-hud");
     if (active) {
       this.fpvLastKind = "";
+      this.closeGraphicsPanel();
       this.hideHoverTip();
       this.hideSideInfo();
       for (const id of [
@@ -1375,7 +1823,7 @@ export class Hud {
         b.disabled = true;
         bt.textContent = "NO WATER";
         const detail =
-          "Naval Shipyard requires navigable water — pick a naval map (Bridgehead Crossing, Pacific Atoll, Storm Coast).";
+          "Naval Shipyard requires navigable water — pick a naval map (Bridgehead Crossing, Pacific Atoll, Storm Coast, Sunken Atlantis, Titan Graveyard, Caldera Forge, Offshore Megarig).";
         b.title = `${this.buildTooltip(kind)} · ${detail}`;
         applyReason(b, "No water", detail, "lock", "blocked");
         continue;
@@ -1802,18 +2250,19 @@ export class Hud {
       ctx.fillText("RADAR OFFLINE", 80, 89);
       return;
     }
+    const pal = MAP_PREVIEW_PALETTES[mapId] ?? MAP_PREVIEW_PALETTES.crossroads;
     const layout = getMapLayout(mapId);
     const cs = Math.ceil(s);
     // Navigable ocean / river water channels
     if (layout.water.length) {
-      ctx.fillStyle = "#19587a";
+      ctx.fillStyle = pal.water ?? "#19587a";
       for (let i = 0; i < layout.water.length; i++) {
         ctx.fillRect(layout.water[i][0] * s, layout.water[i][1] * s, cs, cs);
       }
     }
     // Impassable rocky cliff plateaus
     const cliffs = layout.cliffs;
-    ctx.fillStyle = "#2a343d";
+    ctx.fillStyle = mapId === "volcano" ? "#6b2b18" : mapId === "cybergrid" ? "#1d354a" : "#2a343d";
     for (let i = 0; i < cliffs.length; i++) {
       ctx.fillRect(cliffs[i][0] * s, cliffs[i][1] * s, cs, cs);
     }
