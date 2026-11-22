@@ -271,6 +271,10 @@ function formatChainSteps(chain: BuildingKind[]): string[] {
 }
 
 const MCP_CONNECT_CMD = "claude mcp add --transport http open-alert https://open-alert.thapecroth.workers.dev/mcp";
+const MCP_ARENA_PROMPT =
+  "Use create_ai_arena on the open-alert MCP server to launch an AI-vs-AI match, give me the watch_url so I can spectate in 3D, and play using gym_obs & feature_maps!";
+const MCP_JSON_CONFIG =
+  '{ "mcpServers": { "open-alert": { "type": "http", "url": "https://open-alert.thapecroth.workers.dev/mcp" } } }';
 
 function fmtClock(tick: number): string {
   const sec = Math.max(0, Math.floor(tick / 10));
@@ -322,6 +326,7 @@ export class Hud {
   private ready = false;
   private playing = false;
   private quotaExceeded = false;
+  private currentRoomCode = "----";
   private watchPollTimer: ReturnType<typeof setInterval> | null = null;
   private watchFetching = false;
   private specCmdrSig = "";
@@ -459,19 +464,29 @@ export class Hud {
       this.onWatchAiBattle?.(map);
     });
     document.getElementById("copy-mcp-btn")?.addEventListener("click", (e) => {
-      navigator.clipboard?.writeText(MCP_CONNECT_CMD).catch(() => {});
-      this.toast("Claude Code MCP command copied", true);
-      const btn = e.currentTarget as HTMLElement | null;
-      if (btn && !btn.dataset.origLabel) {
-        btn.dataset.origLabel = btn.textContent ?? "COPY MCP";
-        btn.textContent = "COPIED ✓";
-        setTimeout(() => {
-          if (btn.dataset.origLabel) {
-            btn.textContent = btn.dataset.origLabel;
-            delete btn.dataset.origLabel;
-          }
-        }, 1800);
-      }
+      this.copyWithFeedback(e.currentTarget as HTMLElement | null, MCP_CONNECT_CMD, "Claude Code MCP command copied");
+    });
+    document.getElementById("lobby-mcp-btn")?.addEventListener("click", () => this.openMcpPanel());
+    document.getElementById("topbar-mcp-btn")?.addEventListener("click", () => this.openMcpPanel());
+    document.getElementById("mcp-close")?.addEventListener("click", () => this.closeMcpPanel());
+    document.getElementById("mcp-panel")?.addEventListener("click", (e) => {
+      if (e.target === e.currentTarget) this.closeMcpPanel();
+    });
+    document.getElementById("mcp-copy-cli")?.addEventListener("click", (e) => {
+      this.copyWithFeedback(e.currentTarget as HTMLElement | null, MCP_CONNECT_CMD, "Claude Code MCP command copied");
+    });
+    document.getElementById("mcp-copy-room")?.addEventListener("click", (e) => {
+      this.copyWithFeedback(e.currentTarget as HTMLElement | null, this.getMcpRoomPrompt(), "Room AI prompt copied");
+    });
+    document.getElementById("mcp-copy-arena")?.addEventListener("click", (e) => {
+      this.copyWithFeedback(e.currentTarget as HTMLElement | null, MCP_ARENA_PROMPT, "AI Arena prompt copied");
+    });
+    document.getElementById("mcp-copy-json")?.addEventListener("click", (e) => {
+      this.copyWithFeedback(e.currentTarget as HTMLElement | null, MCP_JSON_CONFIG, "MCP JSON config copied");
+    });
+    document.getElementById("mcp-open-watch")?.addEventListener("click", () => {
+      this.closeMcpPanel();
+      this.openWatchPanel();
     });
     document.getElementById("gfx-close")?.addEventListener("click", () => this.closeGraphicsPanel());
     document.getElementById("gfx-panel")?.addEventListener("click", (e) => {
@@ -481,6 +496,13 @@ export class Hud {
       "keydown",
       (e) => {
         if (e.code !== "Escape") return;
+        const mcpPanel = document.getElementById("mcp-panel");
+        if (mcpPanel && !mcpPanel.classList.contains("hidden")) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          this.closeMcpPanel();
+          return;
+        }
         const watchPanel = document.getElementById("watch-panel");
         if (watchPanel && !watchPanel.classList.contains("hidden")) {
           e.preventDefault();
@@ -1040,6 +1062,43 @@ export class Hud {
     }
   }
 
+  private getMcpRoomPrompt(): string {
+    return `Join Open Alert room "${this.currentRoomCode}" as "Claude" using the open-alert MCP tools (get_game_state returns the exact RL Gym gym_obs), build a base and army, and play to win!`;
+  }
+
+  private syncMcpRoomPrompt() {
+    const promptEl = document.getElementById("mcp-room-prompt");
+    if (promptEl) promptEl.textContent = this.getMcpRoomPrompt();
+    const badgeEl = document.getElementById("mcp-room-badge");
+    if (badgeEl) badgeEl.textContent = `ROOM ${this.currentRoomCode}`;
+  }
+
+  private copyWithFeedback(btn: HTMLElement | null, text: string, toastMsg: string) {
+    navigator.clipboard?.writeText(text).catch(() => {});
+    this.toast(toastMsg, true);
+    if (btn && !btn.dataset.origLabel) {
+      btn.dataset.origLabel = btn.textContent ?? "COPY";
+      btn.textContent = "COPIED ✓";
+      setTimeout(() => {
+        if (btn.dataset.origLabel) {
+          btn.textContent = btn.dataset.origLabel;
+          delete btn.dataset.origLabel;
+        }
+      }, 1800);
+    }
+  }
+
+  openMcpPanel() {
+    const panel = document.getElementById("mcp-panel");
+    if (!panel) return;
+    this.syncMcpRoomPrompt();
+    panel.classList.remove("hidden");
+  }
+
+  closeMcpPanel() {
+    document.getElementById("mcp-panel")?.classList.add("hidden");
+  }
+
   async refreshWatchRooms(manual = false) {
     if (this.watchFetching) return;
     const panel = document.getElementById("watch-panel");
@@ -1418,8 +1477,10 @@ export class Hud {
   }
 
   setRoom(code: string) {
+    this.currentRoomCode = code;
     el("room-code").textContent = "ROOM " + code;
     el("lobby-room").textContent = code;
+    this.syncMcpRoomPrompt();
   }
 
   setStatus(s: string) {
@@ -1605,6 +1666,7 @@ export class Hud {
       this.fpvLastKind = "";
       this.closeGraphicsPanel();
       this.closeWatchPanel();
+      this.closeMcpPanel();
       this.hideHoverTip();
       this.hideSideInfo();
       for (const id of [
