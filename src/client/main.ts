@@ -54,6 +54,7 @@ const renderer = new Renderer(gs);
 const hud = new Hud();
 const audio = new AudioEngine();
 const net = new Net(room);
+net.setIdentity(name, token);
 
 const unlockAudio = () => {
   audio.unlock();
@@ -322,6 +323,14 @@ renderer.onOwnerLost = (id) => {
 
 // ---------- network ----------
 
+hud.onSwitchLocal = () => {
+  net.switchToLocal("Local Solo Skirmish active — 0ms ping, plays offline with bots!");
+  document.getElementById("solo-local-btn")?.classList.add("hidden");
+};
+net.onLocalFallback = (reason) => {
+  document.getElementById("solo-local-btn")?.classList.add("hidden");
+  hud.toast(reason, true);
+};
 net.onStatus = (s) => hud.setStatus(s);
 net.onMsg = (m: S2C) => {
   switch (m.t) {

@@ -303,6 +303,7 @@ export class Hud {
   onToggleWasd?: () => void;
   onToggleMute?: () => void;
   onToggleMusic?: () => void;
+  onSwitchLocal?: () => void;
 
   private ready = false;
   private icons = new Map<string, string>();
@@ -413,6 +414,7 @@ export class Hud {
     el("help-close")?.addEventListener("click", () => el("help").classList.add("hidden"));
     document.getElementById("gfx-btn")?.addEventListener("click", () => this.toggleGraphicsPanel());
     document.getElementById("lobby-gfx-btn")?.addEventListener("click", () => this.openGraphicsPanel());
+    document.getElementById("solo-local-btn")?.addEventListener("click", () => this.onSwitchLocal?.());
     document.getElementById("gfx-close")?.addEventListener("click", () => this.closeGraphicsPanel());
     document.getElementById("gfx-panel")?.addEventListener("click", (e) => {
       if (e.target === e.currentTarget) this.closeGraphicsPanel();
