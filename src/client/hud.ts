@@ -1,4 +1,4 @@
-import type { LobbyPlayer, PlayerState, EntSnap, CrateSnap, MatchStats } from "../shared/protocol";
+import type { LobbyPlayer, PlayerState, EntSnap, CrateSnap, MatchStats, RoomSummary } from "../shared/protocol";
 import {
   BUILDINGS,
   UNITS,
@@ -270,6 +270,15 @@ function formatChainSteps(chain: BuildingKind[]): string[] {
   return chain.map((k) => (k === "factory2" ? "Upgrade War Factory → MKII" : BUILDING_NAMES[k]));
 }
 
+const MCP_CONNECT_CMD = "claude mcp add --transport http open-alert https://open-alert.thapecroth.workers.dev/mcp";
+
+function fmtClock(tick: number): string {
+  const sec = Math.max(0, Math.floor(tick / 10));
+  const mm = String(Math.floor(sec / 60)).padStart(2, "0");
+  const ss = String(sec % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
 export class Hud {
   onReady: (r: boolean) => void = () => {};
   onStart: () => void = () => {};
@@ -304,8 +313,18 @@ export class Hud {
   onToggleMute?: () => void;
   onToggleMusic?: () => void;
   onSwitchLocal?: () => void;
+  onRetryOnline?: () => void;
+  onWatchAiBattle?: (map: MapId) => void;
+  onToggleAutoCam?: () => void;
+  onFocusCommander?: (slot: number) => void;
+  onQuotaDetected?: () => void;
 
   private ready = false;
+  private playing = false;
+  private quotaExceeded = false;
+  private watchPollTimer: ReturnType<typeof setInterval> | null = null;
+  private watchFetching = false;
+  private specCmdrSig = "";
   private icons = new Map<string, string>();
   private buildBtns = new Map<BuildingKind, HTMLButtonElement>();
   private trainBtns = new Map<UnitKind, HTMLButtonElement>();
@@ -415,6 +434,45 @@ export class Hud {
     document.getElementById("gfx-btn")?.addEventListener("click", () => this.toggleGraphicsPanel());
     document.getElementById("lobby-gfx-btn")?.addEventListener("click", () => this.openGraphicsPanel());
     document.getElementById("solo-local-btn")?.addEventListener("click", () => this.onSwitchLocal?.());
+    document.getElementById("quota-retry-btn")?.addEventListener("click", () => this.onRetryOnline?.());
+    document.getElementById("lobby-watch-btn")?.addEventListener("click", () => this.openWatchPanel());
+    document.getElementById("topbar-watch-btn")?.addEventListener("click", () => this.openWatchPanel());
+    document.getElementById("spec-watch-btn")?.addEventListener("click", () => this.openWatchPanel());
+    document.getElementById("watch-close")?.addEventListener("click", () => this.closeWatchPanel());
+    document.getElementById("watch-refresh")?.addEventListener("click", () => this.refreshWatchRooms(true));
+    document.getElementById("watch-panel")?.addEventListener("click", (e) => {
+      if (e.target === e.currentTarget) this.closeWatchPanel();
+    });
+    document.getElementById("spec-autocam")?.addEventListener("click", () => this.onToggleAutoCam?.());
+    const watchAiMap = document.getElementById("watch-ai-map") as HTMLSelectElement | null;
+    if (watchAiMap) {
+      watchAiMap.innerHTML = "";
+      for (const m of MAP_LIST) {
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = `${m.name} · ${m.biome}${m.naval ? " ⚓" : ""}`;
+        watchAiMap.appendChild(opt);
+      }
+    }
+    document.getElementById("watch-ai-btn")?.addEventListener("click", () => {
+      const map = ((document.getElementById("watch-ai-map") as HTMLSelectElement | null)?.value as MapId) ?? "crossroads";
+      this.onWatchAiBattle?.(map);
+    });
+    document.getElementById("copy-mcp-btn")?.addEventListener("click", (e) => {
+      navigator.clipboard?.writeText(MCP_CONNECT_CMD).catch(() => {});
+      this.toast("Claude Code MCP command copied", true);
+      const btn = e.currentTarget as HTMLElement | null;
+      if (btn && !btn.dataset.origLabel) {
+        btn.dataset.origLabel = btn.textContent ?? "COPY MCP";
+        btn.textContent = "COPIED ✓";
+        setTimeout(() => {
+          if (btn.dataset.origLabel) {
+            btn.textContent = btn.dataset.origLabel;
+            delete btn.dataset.origLabel;
+          }
+        }, 1800);
+      }
+    });
     document.getElementById("gfx-close")?.addEventListener("click", () => this.closeGraphicsPanel());
     document.getElementById("gfx-panel")?.addEventListener("click", (e) => {
       if (e.target === e.currentTarget) this.closeGraphicsPanel();
@@ -423,6 +481,13 @@ export class Hud {
       "keydown",
       (e) => {
         if (e.code !== "Escape") return;
+        const watchPanel = document.getElementById("watch-panel");
+        if (watchPanel && !watchPanel.classList.contains("hidden")) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          this.closeWatchPanel();
+          return;
+        }
         const panel = document.getElementById("gfx-panel");
         if (panel && !panel.classList.contains("hidden")) {
           e.preventDefault();
@@ -928,10 +993,13 @@ export class Hud {
     this.displayCredits = 0;
     this.targetCredits = 0;
     this.spectating = false;
+    this.playing = false;
     this.fpvMode = false;
     this.groupSig = "";
+    this.specCmdrSig = "";
     this.readyAwaiting = null;
     document.getElementById("ready-pill")?.classList.add("hidden");
+    document.getElementById("spec-controls")?.classList.add("hidden");
     this.fpvLastKind = "";
     this.selSig = "";
     this.updateClock(0);
@@ -946,13 +1014,191 @@ export class Hud {
     if (boost) boost.classList.add("hidden");
   }
 
+  setQuotaExceeded(exceeded: boolean) {
+    this.quotaExceeded = exceeded;
+    document.getElementById("quota-banner")?.classList.toggle("hidden", !exceeded);
+    document.getElementById("watch-quota-pill")?.classList.toggle("hidden", !exceeded);
+  }
+
+  openWatchPanel() {
+    const panel = document.getElementById("watch-panel");
+    if (!panel) return;
+    panel.classList.remove("hidden");
+    document.getElementById("watch-quota-pill")?.classList.toggle("hidden", !this.quotaExceeded);
+    void this.refreshWatchRooms(true);
+    if (this.watchPollTimer) clearInterval(this.watchPollTimer);
+    this.watchPollTimer = setInterval(() => {
+      void this.refreshWatchRooms(false);
+    }, 5000);
+  }
+
+  closeWatchPanel() {
+    document.getElementById("watch-panel")?.classList.add("hidden");
+    if (this.watchPollTimer) {
+      clearInterval(this.watchPollTimer);
+      this.watchPollTimer = null;
+    }
+  }
+
+  async refreshWatchRooms(manual = false) {
+    if (this.watchFetching) return;
+    const panel = document.getElementById("watch-panel");
+    if (!panel || panel.classList.contains("hidden")) return;
+    this.watchFetching = true;
+    const refreshBtn = document.getElementById("watch-refresh") as HTMLButtonElement | null;
+    if (manual && refreshBtn) {
+      refreshBtn.disabled = true;
+      refreshBtn.textContent = "SYNCING…";
+    }
+    try {
+      const apiBase = location.port === "5173" ? "http://localhost:8787" : "";
+      const res = await fetch(`${apiBase}/api/rooms`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { rooms?: RoomSummary[]; quotaExceeded?: boolean };
+      if (data.quotaExceeded) {
+        this.setQuotaExceeded(true);
+        this.onQuotaDetected?.();
+      }
+      this.renderWatchRooms(Array.isArray(data.rooms) ? data.rooms : []);
+    } catch {
+      const list = document.getElementById("watch-list");
+      if (list && !list.children.length) {
+        this.renderWatchRooms([]);
+      }
+    } finally {
+      this.watchFetching = false;
+      if (refreshBtn) {
+        refreshBtn.disabled = false;
+        refreshBtn.textContent = "REFRESH";
+      }
+    }
+  }
+
+  private renderWatchRooms(rooms: RoomSummary[]) {
+    const summary = document.getElementById("watch-summary");
+    const list = document.getElementById("watch-list");
+    const liveCount = rooms.filter((r) => r.phase === "playing").length;
+    const totalPlayers = rooms.reduce((sum, r) => sum + Math.max(0, r.players || 0), 0);
+    const totalUnits = rooms.reduce((sum, r) => sum + Math.max(0, r.ents || 0), 0);
+    if (summary) {
+      summary.textContent = `${liveCount} Live · ${totalPlayers} ${totalPlayers === 1 ? "Player" : "Players"} · ${totalUnits} ${totalUnits === 1 ? "Unit" : "Units"}`;
+    }
+    if (!list) return;
+    list.innerHTML = "";
+    if (!rooms.length) {
+      const empty = document.createElement("div");
+      empty.className = "watch-empty";
+      empty.textContent =
+        "No live online matches right now — start a match or click WATCH LIVE AI BATTLE above to spectate a 3-way AI war!";
+      list.appendChild(empty);
+      return;
+    }
+
+    const phaseOrder: Record<RoomSummary["phase"], number> = { playing: 0, lobby: 1, ended: 2 };
+    const sorted = [...rooms].sort((a, b) => {
+      const po = (phaseOrder[a.phase] ?? 3) - (phaseOrder[b.phase] ?? 3);
+      if (po !== 0) return po;
+      return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+    });
+
+    for (const r of sorted) {
+      const card = document.createElement("div");
+      const isLive = r.phase === "playing";
+      const isLobby = r.phase === "lobby";
+      card.className = `watch-room-card${isLive ? " live" : ""}`;
+
+      const top = document.createElement("div");
+      top.className = "wr-top";
+      const status = document.createElement("span");
+      status.className = `wr-status ${isLive ? "live" : isLobby ? "lobby" : "ended"}`;
+      status.innerHTML = isLive
+        ? '<span class="wr-dot">●</span> LIVE'
+        : isLobby
+          ? "○ LOBBY"
+          : "■ ENDED";
+      const code = document.createElement("span");
+      code.className = "wr-code";
+      code.textContent = `ROOM ${r.room}`;
+      const clock = document.createElement("span");
+      clock.className = "wr-clock";
+      clock.textContent = fmtClock(r.tick ?? 0);
+      top.append(status, code, clock);
+
+      const mapInfo = MAP_LIST.find((m) => m.id === r.map);
+      const mapEl = document.createElement("div");
+      mapEl.className = "wr-map";
+      mapEl.textContent = mapInfo
+        ? `${mapInfo.name} · ${mapInfo.biome}${mapInfo.naval ? " ⚓" : ""}`
+        : String(r.map);
+
+      const cmdrs = document.createElement("div");
+      cmdrs.className = "wr-cmdrs";
+      const namesText = r.names?.length ? r.names.join(", ") : `${r.players} ${r.players === 1 ? "player" : "players"}`;
+      cmdrs.textContent = namesText;
+      cmdrs.title = namesText;
+
+      const foot = document.createElement("div");
+      foot.className = "wr-foot";
+      const meta = document.createElement("span");
+      meta.className = "wr-meta";
+      const unitCount = Math.max(0, r.ents ?? 0);
+      const specPart = (r.spectators ?? 0) > 0 ? ` · ${r.spectators} watching` : "";
+      meta.textContent = `${unitCount} ${unitCount === 1 ? "unit" : "units"}${specPart}`;
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "wr-join";
+      btn.textContent = "SPECTATE LIVE";
+      btn.addEventListener("click", () => {
+        location.href = `/?room=${encodeURIComponent(r.room)}&spectate=1`;
+      });
+      foot.append(meta, btn);
+
+      card.append(top, mapEl, cmdrs, foot);
+      list.appendChild(card);
+    }
+  }
+
+  setAutoCamState(on: boolean) {
+    const btn = document.getElementById("spec-autocam");
+    if (!btn) return;
+    btn.textContent = on ? "AUTO-CAM: ON" : "AUTO-CAM: OFF";
+    btn.classList.toggle("on", on);
+  }
+
+  updateSpecCommanders(players: { slot: number; name: string }[], states?: Record<number, PlayerState>) {
+    const row = document.getElementById("spec-focus-row");
+    if (!row) return;
+    const sorted = [...players].filter((p) => p.slot >= 0).sort((a, b) => a.slot - b.slot);
+    const sig = sorted.map((p) => `${p.slot}:${p.name}:${states?.[p.slot]?.eliminated ? 1 : 0}`).join("|");
+    if (sig === this.specCmdrSig) return;
+    this.specCmdrSig = sig;
+    row.innerHTML = "";
+    for (const p of sorted) {
+      const elim = !!states?.[p.slot]?.eliminated;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = `spec-cmdr-btn${elim ? " elim" : ""}`;
+      b.dataset.slot = String(p.slot);
+      b.title = `Focus camera on ${p.name}`;
+      const col = PLAYER_COLORS[p.slot] ?? "#8a97a5";
+      b.innerHTML = `<span class="cdot" style="background:${col}"></span><span>${esc(p.name)}</span>`;
+      b.addEventListener("click", () => this.onFocusCommander?.(p.slot));
+      row.appendChild(b);
+    }
+  }
+
+  private syncSpecBar() {
+    const bar = document.getElementById("spec-controls");
+    if (!bar) return;
+    const show = this.playing && this.spectating && !this.fpvMode;
+    bar.classList.toggle("hidden", !show);
+  }
+
   updateClock(tick: number) {
     const clock = document.getElementById("game-clock");
     if (!clock) return;
-    const sec = Math.max(0, Math.floor(tick / 10));
-    const mm = String(Math.floor(sec / 60)).padStart(2, "0");
-    const ss = String(sec % 60).padStart(2, "0");
-    clock.textContent = `${mm}:${ss}`;
+    clock.textContent = fmtClock(tick);
   }
 
   bindGraphics(gfx: GraphicsBridge) {
@@ -1181,7 +1427,9 @@ export class Hud {
   }
 
   showLobby(players: LobbyPlayer[], you: string, mapId: MapId = "crossroads", config: GameConfig = DEFAULT_CONFIG) {
+    this.playing = false;
     this.fpvMode = false;
+    this.syncSpecBar();
     document.getElementById("fpv-hud")?.classList.add("hidden");
     this.hideHoverTip();
     this.hideSideInfo();
@@ -1329,6 +1577,7 @@ export class Hud {
   }
 
   hideLobby(spectating = false) {
+    this.playing = true;
     el("lobby").classList.add("hidden");
     for (const id of ["topbar", "minimap", "selinfo", "chat-box"]) {
       document.getElementById(id)?.classList.remove("hidden");
@@ -1346,6 +1595,7 @@ export class Hud {
       document.getElementById("sw-hud")?.classList.add("hidden");
       document.getElementById("recon-hud")?.classList.add("hidden");
     }
+    this.syncSpecBar();
   }
 
   setFpvMode(active: boolean, spectating = this.spectating) {
@@ -1354,12 +1604,14 @@ export class Hud {
     if (active) {
       this.fpvLastKind = "";
       this.closeGraphicsPanel();
+      this.closeWatchPanel();
       this.hideHoverTip();
       this.hideSideInfo();
       for (const id of [
         "sidebar",
         "verbbar",
         "selinfo",
+        "spec-controls",
         "groupbar",
         "placement-hint",
         "hover-tip",
@@ -1542,7 +1794,9 @@ export class Hud {
   }
 
   showEnd(text: string, reason = "", stats?: MatchStats[], durationSec?: number) {
+    this.playing = false;
     this.fpvMode = false;
+    this.syncSpecBar();
     document.getElementById("fpv-hud")?.classList.add("hidden");
     this.hideHoverTip();
     this.hideSideInfo();

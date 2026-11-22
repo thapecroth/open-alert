@@ -2,9 +2,22 @@ import { routePartykitRequest, Server } from "partyserver";
 import type { Connection } from "partyserver";
 import { World } from "./server/world";
 import { AIBot } from "./server/bot";
-import type { C2S, S2C, LobbyPlayer } from "./shared/protocol";
-import { MAX_PLAYERS, TICK_MS, SNAP_EVERY, MAP_W, MAP_H, PLAYER_COLORS, DEFAULT_CONFIG, MAP_LIST } from "./shared/gamedefs";
-import type { MapId, BotDiff, BotProfile, GameConfig } from "./shared/gamedefs";
+import type { C2S, S2C, LobbyPlayer, RoomSummary, OrderKind } from "./shared/protocol";
+import {
+  MAX_PLAYERS,
+  TICK_MS,
+  SNAP_EVERY,
+  MAP_W,
+  MAP_H,
+  PLAYER_COLORS,
+  DEFAULT_CONFIG,
+  MAP_LIST,
+  BUILDINGS,
+  UNITS,
+  SPAWNS,
+  SHIPYARD_BUILD_DIST,
+} from "./shared/gamedefs";
+import type { MapId, BotDiff, BotProfile, GameConfig, BuildingKind, UnitKind } from "./shared/gamedefs";
 
 interface Env {
   GameRoom: DurableObjectNamespace;
@@ -18,9 +31,11 @@ interface PlayerRec {
   slot: number;
   ready: boolean;
   spectator: boolean;
+  wantSpectate?: boolean;
   connected: boolean;
   team: number;
   bot?: boolean;
+  mcp?: boolean;
   diff?: BotDiff;
   profile?: BotProfile;
 }
@@ -34,6 +49,155 @@ const VALID_CREDITS = new Set([3000, 5000, 10000, 20000]);
 const VALID_SPEEDS = new Set([0.75, 1, 1.5, 2]);
 const validIds = (v: unknown): number[] =>
   Array.isArray(v) ? v.filter((n): n is number => Number.isFinite(n)) : [];
+const hasOwn = (o: object, k: unknown): boolean =>
+  typeof k === "string" && Object.prototype.hasOwnProperty.call(o, k);
+const isQuotaError = (err: unknown): boolean => {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return /Exceeded allowed duration|quota|limit/i.test(msg);
+};
+const round1 = (n: number) => Math.round(n * 10) / 10;
+
+const MCP_CORS_HEADERS: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+  "access-control-allow-headers": "content-type, accept, mcp-session-id, mcp-protocol-version, authorization",
+};
+
+const MCP_TOOLS = [
+  {
+    name: "list_live_games",
+    description: "List active and lobby Open Alert multiplayer rooms currently live on the server.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "join_game",
+    description:
+      "Create or join an Open Alert room as a player commander. Optionally pick map, add AI bot(s), and start the match immediately. Returns token, slot, watch_url (spectator link), and play_url.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        room: { type: "string", description: "Room slug (2-32 alphanumeric/hyphen chars). Auto-generated if omitted." },
+        name: { type: "string", description: "Commander callsign (max 16 chars)." },
+        map: { type: "string", enum: MAP_LIST.map((m) => m.id), description: "Map id (lobby only)." },
+        add_bot: {
+          oneOf: [{ type: "boolean" }, { type: "integer", minimum: 1, maximum: 3 }],
+          description: "Add 1 (true) or up to 3 AI bot opponents in lobby.",
+        },
+        diff: { type: "string", enum: ["easy", "normal", "brutal"], description: "Bot difficulty." },
+        profile: { type: "string", enum: ["balanced", "rusher", "turtle", "tech"], description: "Bot strategy profile." },
+        start: { type: "boolean", description: "Start the match immediately if >= 2 players are in the room." },
+        token: { type: "string", description: "Optional existing player token to reconnect." },
+      },
+    },
+  },
+  {
+    name: "get_game_state",
+    description:
+      "Get concise tactical game state for your commander: phase, tick, credits, power, awaiting placement, production queues, own buildings & units, visible enemies, neutral oil derricks, supply crates, and nearest ore.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        room: { type: "string", description: "Room slug." },
+        token: { type: "string", description: "Your commander token returned by join_game." },
+      },
+      required: ["room", "token"],
+    },
+  },
+  {
+    name: "build_structure",
+    description:
+      "Start constructing a building in your Construction Yard queue (power, refinery, barracks, radar, factory, airfield, shipyard, turret, arc, depot, techlab, purifier, superweapon).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        room: { type: "string" },
+        token: { type: "string" },
+        kind: {
+          type: "string",
+          enum: Object.keys(BUILDINGS).filter((k) => !BUILDINGS[k as BuildingKind].noBuild && k !== "conyard"),
+        },
+      },
+      required: ["room", "token", "kind"],
+    },
+  },
+  {
+    name: "place_structure",
+    description:
+      "Place the finished structure currently in `awaiting`. If tx/ty are omitted, automatically scans for a legal valid placement tile near your base.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        room: { type: "string" },
+        token: { type: "string" },
+        tx: { type: "integer", minimum: 0, maximum: MAP_W - 1 },
+        ty: { type: "integer", minimum: 0, maximum: MAP_H - 1 },
+      },
+      required: ["room", "token"],
+    },
+  },
+  {
+    name: "train_unit",
+    description: "Queue 1 to 5 units for training at your barracks, war factory, airfield, or naval shipyard.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        room: { type: "string" },
+        token: { type: "string" },
+        unit: { type: "string", enum: Object.keys(UNITS) },
+        count: { type: "integer", minimum: 1, maximum: 5, default: 1 },
+      },
+      required: ["room", "token", "unit"],
+    },
+  },
+  {
+    name: "command_units",
+    description:
+      "Issue tactical orders (move, amove, attack, patrol, harvest, stop, hold) to specific unit IDs or a named unit group (all_combat, infantry, tanks, air, sea, harvesters).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        room: { type: "string" },
+        token: { type: "string" },
+        kind: { type: "string", enum: ["move", "amove", "attack", "patrol", "harvest", "stop", "hold"] },
+        x: { type: "number", minimum: 0, maximum: MAP_W },
+        y: { type: "number", minimum: 0, maximum: MAP_H },
+        target: { type: "integer", description: "Optional target entity ID for attack orders." },
+        ids: { type: "array", items: { type: "integer" }, description: "Specific unit entity IDs." },
+        group: {
+          type: "string",
+          enum: ["all_combat", "infantry", "tanks", "air", "sea", "harvesters"],
+          description: "Select all your units matching this group if ids omitted.",
+        },
+      },
+      required: ["room", "token", "kind"],
+    },
+  },
+  {
+    name: "special_action",
+    description:
+      "Trigger special commander actions: superweapon (Ion Cannon at x,y), recon (Radar Scan at x,y), upgrade (War Factory -> II), sell, repair, rally, chat, or resign.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        room: { type: "string" },
+        token: { type: "string" },
+        action: {
+          type: "string",
+          enum: ["superweapon", "recon", "upgrade", "sell", "repair", "rally", "chat", "resign"],
+        },
+        x: { type: "number" },
+        y: { type: "number" },
+        id: { type: "integer", description: "Target building entity ID (for upgrade/sell/repair/rally)." },
+        text: { type: "string", description: "Chat message text (for action=chat)." },
+      },
+      required: ["room", "token", "action"],
+    },
+  },
+] as const;
 
 export class GameRoom extends Server<Env> {
   phase: "lobby" | "playing" | "ended" = "lobby";
@@ -47,6 +211,7 @@ export class GameRoom extends Server<Env> {
   lastTickAt = 0;
   endSent = false;
   bots = new Map<string, AIBot>(); // player id -> AI brain, ticked once per game tick
+  private dir = new Map<string, RoomSummary>(); // used only when this.name === "__directory"
 
   onClose(conn: Connection, code?: number) {
     const pid = this.connPlayer.get(conn.id);
@@ -111,7 +276,7 @@ export class GameRoom extends Server<Env> {
         }
         return;
       case "join":
-        return this.handleJoin(conn, m.name, m.token);
+        return this.handleJoin(conn, m.name, m.token, m.spectate);
       case "ready":
         if (me && this.phase === "lobby") {
           me.ready = !!m.ready;
@@ -226,8 +391,8 @@ export class GameRoom extends Server<Env> {
           // round — but only while a slot is free; a full room keeps them spectating
           const used = new Set([...this.players.values()].filter((p) => !p.spectator).map((p) => p.slot));
           for (const p of this.players.values()) {
-            p.ready = !!p.bot;
-            if (p.spectator) {
+            p.ready = !!p.bot || !!p.mcp;
+            if (p.spectator && !p.wantSpectate) {
               for (let s = 0; s < MAX_PLAYERS; s++)
                 if (!used.has(s)) {
                   used.add(s);
@@ -337,9 +502,45 @@ export class GameRoom extends Server<Env> {
     if (err) send(conn, { t: "deny", msg: err });
   }
 
-  private handleJoin(conn: Connection, name: string, token?: string) {
+  private handleJoin(conn: Connection, name: string, token?: string, spectate?: boolean) {
     const clean = String(name || "Commander").slice(0, 16).trim() || "Commander";
     const tok = typeof token === "string" && token.length > 0 && token.length <= 64 ? token : undefined;
+
+    // Explicit spectator join: never occupies a player slot or triggers host transfer
+    if (spectate === true) {
+      if (this.resetTimer) {
+        clearTimeout(this.resetTimer);
+        this.resetTimer = null;
+      }
+      const existing = tok ? this.players.get(tok) : undefined;
+      const id = tok && (!existing || existing.spectator) ? tok : `spec-${crypto.randomUUID().slice(0, 8)}`;
+      const prev = this.players.get(id);
+      if (prev && prev.connId && prev.connId !== conn.id) {
+        for (const c of this.getConnections()) if (c.id === prev.connId) c.close(4000, "replaced");
+        this.connPlayer.delete(prev.connId);
+      }
+      const p: PlayerRec = {
+        id,
+        connId: conn.id,
+        name: clean,
+        slot: -1,
+        ready: false,
+        spectator: true,
+        wantSpectate: true,
+        connected: true,
+        team: 0,
+      };
+      this.players.set(id, p);
+      this.connPlayer.set(conn.id, id);
+      if (this.phase === "playing" && this.world) {
+        this.ensureLoop();
+        this.sendInit(conn, p);
+        this.broadcastLobby();
+      } else {
+        this.broadcastLobby();
+      }
+      return;
+    }
 
     // rejoin with a known token (reconnect / refresh / second tab)
     if (tok) {
@@ -379,7 +580,7 @@ export class GameRoom extends Server<Env> {
       return;
     }
 
-    const used = new Set([...this.players.values()].map((p) => p.slot));
+    const used = new Set([...this.players.values()].filter((x) => !x.spectator && x.slot >= 0).map((p) => p.slot));
     let slot = -1;
     for (let s = 0; s < MAX_PLAYERS; s++)
       if (!used.has(s)) {
@@ -428,6 +629,65 @@ export class GameRoom extends Server<Env> {
       const pid = this.connPlayer.get(conn.id);
       if (pid)
         send(conn, { t: "lobby", players, you: pid, room: this.name, map: this.map, phase: this.phase, config: this.config });
+    }
+    this.reportDirectory();
+  }
+
+  private pruneDir(now = Date.now()) {
+    for (const [room, s] of this.dir) {
+      const ttl = s.phase === "ended" ? 15000 : 45000;
+      if (s.players <= 0 || now - s.updatedAt > ttl) {
+        this.dir.delete(room);
+      }
+    }
+  }
+
+  private reportDirectory(remove = false) {
+    let roomName: string;
+    try {
+      roomName = this.name;
+    } catch {
+      return;
+    }
+    if (!roomName || roomName === "__directory" || !this.env?.GameRoom) return;
+    let payload: { op: "delete"; room: string } | { op: "upsert"; summary: RoomSummary };
+    if (remove) {
+      payload = { op: "delete", room: roomName };
+    } else {
+      const all = [...this.players.values()];
+      const nonSpec = all.filter((p) => !p.spectator && p.slot >= 0);
+      const bots = nonSpec.filter((p) => p.bot).length;
+      const humans = nonSpec.length - bots;
+      const spectators = all.filter((p) => p.spectator && p.connected).length;
+      const summary: RoomSummary = {
+        room: roomName,
+        phase: this.phase,
+        map: this.map,
+        players: nonSpec.length,
+        humans,
+        bots,
+        spectators,
+        tick: this.world?.tick ?? 0,
+        ents: this.world?.ents.size ?? 0,
+        names: nonSpec.map((p) => p.name),
+        updatedAt: Date.now(),
+      };
+      payload = nonSpec.length === 0 ? { op: "delete", room: roomName } : { op: "upsert", summary };
+    }
+    try {
+      const stub = this.env.GameRoom.getByName("__directory");
+      void stub
+        .fetch(
+          new Request("https://internal/dir", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload),
+          }),
+        )
+        .then((r) => r.body?.cancel())
+        .catch(() => {});
+    } catch {
+      // never throw or block ticks on directory reporting
     }
   }
 
@@ -499,6 +759,7 @@ export class GameRoom extends Server<Env> {
       this.lastTickAt = Date.now();
       this.ensureLoop();
     }
+    this.reportDirectory();
   }
 
   private stepIntervalMs(): number {
@@ -554,6 +815,9 @@ export class GameRoom extends Server<Env> {
         const snap = w.snapshot();
         this.broadcast(JSON.stringify({ t: "snap", tick: w.tick, ...snap } satisfies S2C));
       }
+      if (w.tick % 50 === 0) {
+        this.reportDirectory();
+      }
       if (w.winner !== null && !this.endSent) {
         this.endSent = true;
         const names: Record<number, string> = {};
@@ -578,6 +842,7 @@ export class GameRoom extends Server<Env> {
         this.alarmActive = false;
         this.phase = "ended";
         void this.ctx.storage.deleteAlarm().catch(() => {});
+        this.reportDirectory();
       }
     } catch (err) {
       console.error("gameTick error:", err);
@@ -599,9 +864,529 @@ export class GameRoom extends Server<Env> {
     this.endSent = false;
     this.players.clear();
     this.bots.clear();
+    this.reportDirectory(true);
   }
 
-  onRequest() {
+  private mcpPlayer(token: unknown): PlayerRec | null {
+    if (typeof token !== "string" || !token) return null;
+    const p = this.players.get(token);
+    if (!p || p.spectator || p.slot < 0) return null;
+    return p;
+  }
+
+  private findPlacementSpot(slot: number, kind: BuildingKind): { tx: number; ty: number } | null {
+    const w = this.world;
+    if (!w) return null;
+    const d = BUILDINGS[kind];
+    const ownBuildings: { x: number; y: number }[] = [];
+    let anchorX = SPAWNS[slot]?.x ?? 8;
+    let anchorY = SPAWNS[slot]?.y ?? 8;
+    for (const e of w.ents.values()) {
+      if (e.o === slot && hasOwn(BUILDINGS, e.k)) {
+        ownBuildings.push({ x: Math.floor(e.x), y: Math.floor(e.y) });
+        if (e.k === "conyard") {
+          anchorX = Math.floor(e.x);
+          anchorY = Math.floor(e.y);
+        }
+      }
+    }
+    const maxRadius = d.waterOnly ? SHIPYARD_BUILD_DIST + 6 : 16;
+    for (let r = 1; r <= maxRadius; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+          const tx = anchorX + dx;
+          const ty = anchorY + dy;
+          if (w.canPlace(slot, kind, tx, ty) === null) return { tx, ty };
+        }
+      }
+    }
+    const localR = d.waterOnly ? SHIPYARD_BUILD_DIST + 3 : 6;
+    for (const b of ownBuildings) {
+      for (let r = 1; r <= localR; r++) {
+        for (let dy = -r; dy <= r; dy++) {
+          for (let dx = -r; dx <= r; dx++) {
+            if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+            const tx = b.x + dx;
+            const ty = b.y + dy;
+            if (w.canPlace(slot, kind, tx, ty) === null) return { tx, ty };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  private handleMcpAction(op: string, args: Record<string, unknown>): Record<string, unknown> {
+    if (op === "join_game") {
+      if (this.resetTimer) {
+        clearTimeout(this.resetTimer);
+        this.resetTimer = null;
+      }
+      const clean = String(args.name || "MCP-Cmdr").slice(0, 16).trim() || "MCP-Cmdr";
+      const reqTok =
+        typeof args.token === "string" && args.token.length > 0 && args.token.length <= 64 ? args.token : undefined;
+      let p = reqTok ? this.players.get(reqTok) : undefined;
+      if (p && p.spectator) p = undefined;
+
+      if (!p) {
+        if (this.phase === "ended") {
+          this.phase = "lobby";
+          this.world = null;
+          this.lastTickAt = 0;
+          this.endSent = false;
+          this.bots.clear();
+          for (const [k, rec] of this.players) {
+            if (rec.bot || !rec.connected) this.players.delete(k);
+            else rec.ready = !!rec.mcp;
+          }
+        }
+        if (this.phase === "playing") {
+          return { ok: false, error: "match already in progress; spectate or join another room" };
+        }
+        const used = new Set([...this.players.values()].filter((x) => !x.spectator && x.slot >= 0).map((x) => x.slot));
+        let slot = -1;
+        for (let s = 0; s < MAX_PLAYERS; s++) {
+          if (!used.has(s)) {
+            slot = s;
+            break;
+          }
+        }
+        if (slot < 0) return { ok: false, error: "room is full" };
+        const token = reqTok || `mcp-${crypto.randomUUID().slice(0, 12)}`;
+        p = {
+          id: token,
+          connId: null,
+          name: clean,
+          slot,
+          ready: true,
+          spectator: false,
+          connected: true,
+          team: 0,
+          mcp: true,
+        };
+        this.players.set(token, p);
+      } else {
+        p.connected = true;
+        if (typeof args.name === "string" && args.name.trim()) p.name = clean;
+      }
+
+      if (this.phase === "lobby") {
+        if (typeof args.map === "string" && VALID_MAPS.has(args.map as MapId)) {
+          this.map = args.map as MapId;
+        }
+        const botCount =
+          args.add_bot === true
+            ? 1
+            : typeof args.add_bot === "number" && Number.isFinite(args.add_bot)
+              ? Math.max(0, Math.min(MAX_PLAYERS - 1, Math.floor(args.add_bot)))
+              : 0;
+        const diff: BotDiff =
+          typeof args.diff === "string" && VALID_DIFFS.has(args.diff as BotDiff) ? (args.diff as BotDiff) : "normal";
+        const explicitProfile: BotProfile | null =
+          typeof args.profile === "string" && VALID_PROFILES.has(args.profile as BotProfile)
+            ? (args.profile as BotProfile)
+            : null;
+        const cycleProfiles: BotProfile[] = ["balanced", "rusher", "tech", "turtle"];
+        for (let i = 0; i < botCount; i++) {
+          this.addBot(diff, explicitProfile ?? cycleProfiles[i % cycleProfiles.length]);
+        }
+        if (args.start === true) {
+          const actives = [...this.players.values()].filter((x) => x.connected && !x.spectator && x.slot >= 0);
+          if (actives.length < 2) {
+            return { ok: false, error: "need at least 2 players to start — pass add_bot: true" };
+          }
+          this.startGame();
+        } else {
+          this.broadcastLobby();
+        }
+      } else if (this.phase === "playing") {
+        this.ensureLoop();
+      }
+
+      const origin =
+        typeof args.origin === "string" && args.origin ? args.origin : "https://open-alert.thapecroth.workers.dev";
+      return {
+        ok: true,
+        room: this.name,
+        token: p.id,
+        slot: p.slot,
+        phase: this.phase,
+        map: this.map,
+        watch_url: `${origin}/?room=${encodeURIComponent(this.name)}&spectate=1`,
+        play_url: `${origin}/?room=${encodeURIComponent(this.name)}`,
+        players: this.lobbyList(),
+      };
+    }
+
+    const p = this.mcpPlayer(args.token);
+    if (!p) return { ok: false, error: "invalid or missing player token — call join_game first" };
+
+    if (op === "get_game_state") {
+      if (this.phase !== "playing" || !this.world) {
+        return {
+          ok: true,
+          room: this.name,
+          phase: this.phase,
+          map: this.map,
+          slot: p.slot,
+          players: this.lobbyList(),
+          winner: this.world?.winner ?? null,
+        };
+      }
+      if (!this.alarmActive || Date.now() - this.lastTickAt > 2000) this.ensureLoop();
+      const w = this.world;
+      const wp = w.players.get(p.slot);
+      if (!wp) return { ok: false, error: "player slot not in active world" };
+
+      const ownBuildings: Record<string, unknown>[] = [];
+      const ownUnits: Record<string, unknown>[] = [];
+      const neutralDerricks: Record<string, unknown>[] = [];
+      const visionSources: { x: number; y: number; r: number; subR: number }[] = [];
+      let baseX = SPAWNS[p.slot]?.x ?? 8;
+      let baseY = SPAWNS[p.slot]?.y ?? 8;
+
+      for (const e of w.ents.values()) {
+        if (w.isAlly(p.slot, e.o)) {
+          const r = e.k === "radar" || e.k === "superweapon" ? 17 : 14;
+          const subR = e.k === "gunboat" || e.k === "destroyer" || e.k === "sub" ? 9 : 5.5;
+          visionSources.push({ x: e.x, y: e.y, r, subR });
+        }
+        if (e.o === p.slot) {
+          if (hasOwn(BUILDINGS, e.k)) {
+            if (e.k === "conyard") {
+              baseX = e.x;
+              baseY = e.y;
+            }
+            ownBuildings.push({
+              id: e.id,
+              kind: e.k,
+              x: round1(e.x),
+              y: round1(e.y),
+              hp: Math.round(e.hp),
+              mhp: e.mhp,
+              ...(e.rally ? { rally: e.rally } : {}),
+            });
+          } else {
+            ownUnits.push({
+              id: e.id,
+              kind: e.k,
+              x: round1(e.x),
+              y: round1(e.y),
+              hp: Math.round(e.hp),
+              mhp: e.mhp,
+              ...(e.vet > 0 ? { vet: e.vet } : {}),
+              ...(e.k === "harvester" ? { cargo: e.cargo } : {}),
+              ...(e.hold ? { hold: true } : {}),
+              ...(e.order ? { order: e.order.kind } : {}),
+            });
+          }
+        } else if (e.o === -1 && e.k === "derrick") {
+          neutralDerricks.push({ id: e.id, x: round1(e.x), y: round1(e.y), hp: Math.round(e.hp), mhp: e.mhp });
+        }
+      }
+
+      const visibleEnemies: Record<string, unknown>[] = [];
+      for (const e of w.ents.values()) {
+        if (e.o < 0 || w.isAlly(p.slot, e.o)) continue;
+        const subStealth = e.k === "sub" && w.tick >= e.subSurfaceUntil;
+        let visible = !this.config.fog && !subStealth;
+        if (!visible) {
+          for (const v of visionSources) {
+            const dx = v.x - e.x;
+            const dy = v.y - e.y;
+            const lim = subStealth ? v.subR : v.r;
+            if (dx * dx + dy * dy <= lim * lim) {
+              visible = true;
+              break;
+            }
+          }
+        }
+        if (visible) {
+          visibleEnemies.push({
+            id: e.id,
+            owner: e.o,
+            kind: e.k,
+            building: hasOwn(BUILDINGS, e.k),
+            x: round1(e.x),
+            y: round1(e.y),
+            hp: Math.round(e.hp),
+            mhp: e.mhp,
+          });
+        }
+      }
+
+      const oreSnap = w.oreSnapshot();
+      let nearestOre: { x: number; y: number; amount: number; dist: number } | null = null;
+      let bestDist2 = Infinity;
+      for (const [ox, oy, amt] of oreSnap) {
+        if (amt <= 0) continue;
+        const d2 = (ox - baseX) * (ox - baseX) + (oy - baseY) * (oy - baseY);
+        if (d2 < bestDist2) {
+          bestDist2 = d2;
+          nearestOre = { x: ox, y: oy, amount: amt, dist: round1(Math.sqrt(d2)) };
+        }
+      }
+
+      const enemySpawns = [...w.players.values()]
+        .filter((other) => other.slot !== p.slot && !w.isAlly(p.slot, other.slot) && !other.eliminated)
+        .map((other) => ({ slot: other.slot, x: SPAWNS[other.slot]?.x ?? 0, y: SPAWNS[other.slot]?.y ?? 0 }));
+
+      return {
+        ok: true,
+        room: this.name,
+        phase: this.phase,
+        map: this.map,
+        tick: w.tick,
+        slot: p.slot,
+        credits: Math.floor(wp.credits),
+        power: { have: wp.pwrHave, use: wp.pwrUse, low: wp.lowPower },
+        eliminated: wp.eliminated,
+        awaiting: wp.awaiting,
+        bq: wp.bq,
+        queues: wp.queues,
+        swLeft: wp.swLeft >= 0 ? wp.swLeft : null,
+        reconLeft: wp.reconLeft >= 0 ? wp.reconLeft : null,
+        own_buildings: ownBuildings,
+        own_units: ownUnits,
+        visible_enemies: visibleEnemies,
+        neutral_derricks: neutralDerricks,
+        crates: [...w.crates.values()].map((c) => ({ id: c.id, kind: c.kind, x: round1(c.x), y: round1(c.y) })),
+        nearest_ore: nearestOre,
+        ore_tiles: oreSnap.length,
+        enemy_spawns: enemySpawns,
+        winner: w.winner,
+      };
+    }
+
+    if (this.phase !== "playing" || !this.world) {
+      return { ok: false, error: `cannot run ${op} while room phase is ${this.phase}` };
+    }
+    if (!this.alarmActive || Date.now() - this.lastTickAt > 2000) this.ensureLoop();
+    const w = this.world;
+
+    if (op === "build_structure") {
+      if (typeof args.kind !== "string" || !hasOwn(BUILDINGS, args.kind)) {
+        return { ok: false, error: "invalid building kind" };
+      }
+      const err = w.cmdBuild(p.slot, args.kind as BuildingKind);
+      if (err) return { ok: false, error: err };
+      return { ok: true, kind: args.kind, bq: w.players.get(p.slot)?.bq ?? null };
+    }
+
+    if (op === "place_structure") {
+      const wp = w.players.get(p.slot);
+      const kind = wp?.awaiting;
+      if (!kind) return { ok: false, error: "nothing to place" };
+      let tx: number;
+      let ty: number;
+      if (typeof args.tx === "number" && Number.isFinite(args.tx) && typeof args.ty === "number" && Number.isFinite(args.ty)) {
+        tx = Math.floor(args.tx);
+        ty = Math.floor(args.ty);
+      } else {
+        const spot = this.findPlacementSpot(p.slot, kind);
+        if (!spot) return { ok: false, error: `no valid placement spot found for ${kind}` };
+        tx = spot.tx;
+        ty = spot.ty;
+      }
+      const err = w.cmdPlace(p.slot, tx, ty);
+      if (err) return { ok: false, error: err };
+      return { ok: true, kind, tx, ty };
+    }
+
+    if (op === "train_unit") {
+      if (typeof args.unit !== "string" || !hasOwn(UNITS, args.unit)) {
+        return { ok: false, error: "invalid unit kind" };
+      }
+      const count =
+        typeof args.count === "number" && Number.isFinite(args.count)
+          ? Math.max(1, Math.min(5, Math.floor(args.count)))
+          : 1;
+      let queued = 0;
+      let lastErr: string | null = null;
+      for (let i = 0; i < count; i++) {
+        const err = w.cmdTrain(p.slot, args.unit as UnitKind);
+        if (err) {
+          lastErr = err;
+          break;
+        }
+        queued++;
+      }
+      if (queued === 0) return { ok: false, error: lastErr ?? "failed to train unit" };
+      return { ok: true, unit: args.unit, queued, ...(lastErr ? { note: lastErr } : {}) };
+    }
+
+    if (op === "command_units") {
+      const kind = args.kind;
+      if (typeof kind !== "string" || !["move", "amove", "attack", "patrol", "harvest", "stop", "hold"].includes(kind)) {
+        return { ok: false, error: "invalid order kind" };
+      }
+      let ids = validIds(args.ids);
+      if (ids.length === 0 && typeof args.group === "string") {
+        const grp = args.group;
+        ids = [];
+        for (const e of w.ents.values()) {
+          if (e.o !== p.slot || hasOwn(BUILDINGS, e.k)) continue;
+          const u = UNITS[e.k as UnitKind];
+          if (
+            (grp === "all_combat" && u.dmg > 0) ||
+            (grp === "infantry" && (e.k === "infantry" || e.k === "rocket" || e.k === "engineer")) ||
+            (grp === "tanks" && (e.k === "tank" || e.k === "heavy" || e.k === "arty" || e.k === "spider")) ||
+            (grp === "air" && u.domain === "air") ||
+            (grp === "sea" && u.domain === "sea") ||
+            (grp === "harvesters" && e.k === "harvester")
+          ) {
+            ids.push(e.id);
+          }
+        }
+      }
+      if (ids.length === 0) return { ok: false, error: "no matching units (specify ids or group)" };
+
+      if (kind === "stop") {
+        w.cmdStop(p.slot, ids);
+        return { ok: true, kind, count: ids.length };
+      }
+      if (kind === "hold") {
+        w.cmdHold(p.slot, ids);
+        return { ok: true, kind, count: ids.length };
+      }
+
+      let x = typeof args.x === "number" && Number.isFinite(args.x) ? args.x : NaN;
+      let y = typeof args.y === "number" && Number.isFinite(args.y) ? args.y : NaN;
+      const target = typeof args.target === "number" && Number.isFinite(args.target) ? args.target : undefined;
+      if ((!Number.isFinite(x) || !Number.isFinite(y)) && target != null) {
+        const te = w.ents.get(target);
+        if (te) {
+          x = te.x;
+          y = te.y;
+        }
+      }
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return { ok: false, error: "x and y coordinates (or a valid target entity id) are required" };
+      }
+      const err = w.cmdOrder(p.slot, ids, kind as OrderKind, x, y, target);
+      if (err) return { ok: false, error: err };
+      return { ok: true, kind, count: ids.length, x: round1(x), y: round1(y), ...(target != null ? { target } : {}) };
+    }
+
+    if (op === "special_action") {
+      const action = args.action;
+      if (typeof action !== "string") return { ok: false, error: "missing action" };
+      switch (action) {
+        case "superweapon": {
+          if (typeof args.x !== "number" || typeof args.y !== "number") return { ok: false, error: "x and y required" };
+          const err = w.cmdSuperweapon(p.slot, args.x, args.y);
+          return err ? { ok: false, error: err } : { ok: true, action, x: args.x, y: args.y };
+        }
+        case "recon": {
+          if (typeof args.x !== "number" || typeof args.y !== "number") return { ok: false, error: "x and y required" };
+          const err = w.cmdRecon(p.slot, args.x, args.y);
+          return err ? { ok: false, error: err } : { ok: true, action, x: args.x, y: args.y };
+        }
+        case "upgrade": {
+          let id = typeof args.id === "number" && Number.isFinite(args.id) ? args.id : -1;
+          if (id < 0) {
+            for (const e of w.ents.values()) {
+              if (e.o === p.slot && e.k === "factory") {
+                id = e.id;
+                break;
+              }
+            }
+          }
+          if (id < 0) return { ok: false, error: "no factory to upgrade" };
+          const err = w.cmdUpgrade(p.slot, id);
+          return err ? { ok: false, error: err } : { ok: true, action, id };
+        }
+        case "sell": {
+          if (typeof args.id !== "number" || !Number.isFinite(args.id)) return { ok: false, error: "building id required" };
+          const err = w.cmdSell(p.slot, args.id);
+          return err ? { ok: false, error: err } : { ok: true, action, id: args.id };
+        }
+        case "repair": {
+          if (typeof args.id !== "number" || !Number.isFinite(args.id)) return { ok: false, error: "building id required" };
+          const err = w.cmdRepair(p.slot, args.id);
+          return err ? { ok: false, error: err } : { ok: true, action, id: args.id };
+        }
+        case "rally": {
+          if (
+            typeof args.id !== "number" ||
+            !Number.isFinite(args.id) ||
+            typeof args.x !== "number" ||
+            typeof args.y !== "number"
+          ) {
+            return { ok: false, error: "building id, x, and y required" };
+          }
+          const err = w.cmdRally(p.slot, args.id, args.x, args.y);
+          return err ? { ok: false, error: err } : { ok: true, action, id: args.id, x: args.x, y: args.y };
+        }
+        case "chat": {
+          const text = String(args.text || "").slice(0, 120).replace(/[<>&]/g, "").trim();
+          if (!text) return { ok: false, error: "chat text required" };
+          const color = p.slot >= 0 ? PLAYER_COLORS[p.slot] : "#8a97a5";
+          this.broadcast(JSON.stringify({ t: "chat", name: p.name, color, text } satisfies S2C));
+          return { ok: true, action, text };
+        }
+        case "resign": {
+          w.cmdResign(p.slot);
+          return { ok: true, action };
+        }
+        default:
+          return { ok: false, error: `unknown action: ${action}` };
+      }
+    }
+
+    return { ok: false, error: `unknown mcp op: ${op}` };
+  }
+
+  async onRequest(req: Request): Promise<Response> {
+    if (this.name === "__directory") {
+      if (req.method === "POST") {
+        let body: { op?: string; summary?: RoomSummary; room?: string };
+        try {
+          body = (await req.json()) as { op?: string; summary?: RoomSummary; room?: string };
+        } catch {
+          return Response.json({ ok: false, error: "bad json" }, { status: 400 });
+        }
+        const now = Date.now();
+        if (body.op === "delete" && typeof body.room === "string") {
+          this.dir.delete(body.room);
+        } else if (body.op === "upsert" && body.summary && typeof body.summary.room === "string") {
+          const s = body.summary;
+          if (s.players <= 0) {
+            this.dir.delete(s.room);
+          } else {
+            const prev = this.dir.get(s.room);
+            const updatedAt = prev && prev.phase === "ended" && s.phase === "ended" ? prev.updatedAt : now;
+            this.dir.set(s.room, { ...s, updatedAt });
+          }
+        }
+        this.pruneDir(now);
+        return Response.json({ ok: true });
+      }
+      this.pruneDir();
+      const rooms = [...this.dir.values()].sort(
+        (a, b) => (b.phase === "playing" ? 1 : 0) - (a.phase === "playing" ? 1 : 0) || b.players - a.players,
+      );
+      return Response.json({ rooms });
+    }
+
+    const mcpOp = req.headers.get("x-mcp-op");
+    if (req.method === "POST" && mcpOp) {
+      let args: Record<string, unknown> = {};
+      try {
+        const parsed = await req.json();
+        if (parsed && typeof parsed === "object") args = parsed as Record<string, unknown>;
+      } catch {
+        return Response.json({ ok: false, error: "invalid json body" }, { status: 400 });
+      }
+      try {
+        const res = this.handleMcpAction(mcpOp, args);
+        return Response.json(res);
+      } catch (err) {
+        return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+      }
+    }
+
     return Response.json({
       phase: this.phase,
       players: this.players.size,
@@ -613,8 +1398,173 @@ export class GameRoom extends Server<Env> {
   }
 }
 
+async function handleMcpRequest(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method === "DELETE") {
+    return new Response(null, { status: 204, headers: MCP_CORS_HEADERS });
+  }
+  if (request.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405, headers: MCP_CORS_HEADERS });
+  }
+
+  let body: { jsonrpc?: string; id?: string | number | null; method?: string; params?: Record<string, unknown> };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return Response.json(
+      { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } },
+      { status: 400, headers: MCP_CORS_HEADERS },
+    );
+  }
+  if (!body || typeof body !== "object" || typeof body.method !== "string") {
+    return Response.json(
+      { jsonrpc: "2.0", id: body?.id ?? null, error: { code: -32600, message: "Invalid Request" } },
+      { status: 400, headers: MCP_CORS_HEADERS },
+    );
+  }
+
+  const { id, method, params } = body;
+  // JSON-RPC notifications (no id, or notifications/*) receive 202 Accepted
+  if (method === "notifications/initialized" || method.startsWith("notifications/") || id === undefined) {
+    return new Response(null, { status: 202, headers: MCP_CORS_HEADERS });
+  }
+
+  const ok = (result: unknown) =>
+    Response.json({ jsonrpc: "2.0", id, result }, { headers: MCP_CORS_HEADERS });
+  const fail = (code: number, message: string) =>
+    Response.json({ jsonrpc: "2.0", id, error: { code, message } }, { headers: MCP_CORS_HEADERS });
+
+  if (method === "initialize") {
+    return ok({
+      protocolVersion: "2024-11-05",
+      capabilities: { tools: {} },
+      serverInfo: { name: "open-alert", version: "1.0.0" },
+    });
+  }
+  if (method === "ping") {
+    return ok({});
+  }
+  if (method === "tools/list") {
+    return ok({ tools: MCP_TOOLS });
+  }
+  if (method === "tools/call") {
+    const toolName = typeof params?.name === "string" ? params.name : "";
+    const toolArgs =
+      params?.arguments && typeof params.arguments === "object"
+        ? (params.arguments as Record<string, unknown>)
+        : {};
+
+    const toolRes = (data: unknown, isError = false) =>
+      ok({
+        content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+        ...(isError ? { isError: true } : {}),
+      });
+
+    if (toolName === "list_live_games") {
+      const stub = env.GameRoom.getByName("__directory");
+      const res = await stub.fetch(new Request("https://internal/dir"));
+      const data = await res.json();
+      return toolRes(data);
+    }
+
+    const roomTools = new Set([
+      "join_game",
+      "get_game_state",
+      "build_structure",
+      "place_structure",
+      "train_unit",
+      "command_units",
+      "special_action",
+    ]);
+    if (!roomTools.has(toolName)) {
+      return fail(-32602, `Unknown tool: ${toolName}`);
+    }
+
+    let room = typeof toolArgs.room === "string" ? toolArgs.room.trim().toLowerCase() : "";
+    if (!room && toolName === "join_game") {
+      room = `mcp-${crypto.randomUUID().slice(0, 6)}`;
+    }
+    if (!/^[a-z0-9-]{2,32}$/.test(room) || room === "__directory") {
+      return toolRes({ ok: false, error: "room must be 2-32 lowercase alphanumeric/hyphen characters" }, true);
+    }
+
+    const stub = env.GameRoom.getByName(room);
+    const res = await stub.fetch(
+      new Request("https://internal/mcp-action", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-mcp-op": toolName },
+        body: JSON.stringify({ ...toolArgs, room, origin: url.origin }),
+      }),
+    );
+    const data = (await res.json()) as { ok?: boolean };
+    return toolRes(data, data.ok === false);
+  }
+
+  return fail(-32601, `Method not found: ${method}`);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    return (await routePartykitRequest(request, env)) || env.ASSETS.fetch(request);
+    const url = new URL(request.url);
+
+    if (url.pathname === "/mcp" && request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: MCP_CORS_HEADERS });
+    }
+
+    if (url.pathname === "/api/rooms" && request.method === "GET") {
+      try {
+        const stub = env.GameRoom.getByName("__directory");
+        const res = await stub.fetch(new Request("https://internal/dir"));
+        if (!res.ok) {
+          const txt = await res.text().catch(() => "");
+          if (isQuotaError(txt)) {
+            return Response.json(
+              { rooms: [], quotaExceeded: true },
+              { status: 200, headers: { "cache-control": "no-store", "access-control-allow-origin": "*" } },
+            );
+          }
+          return Response.json(
+            { rooms: [] },
+            { status: 200, headers: { "cache-control": "no-store", "access-control-allow-origin": "*" } },
+          );
+        }
+        const data = await res.json();
+        return Response.json(data, {
+          headers: { "cache-control": "no-store", "access-control-allow-origin": "*" },
+        });
+      } catch (err) {
+        if (isQuotaError(err)) {
+          return Response.json(
+            { rooms: [], quotaExceeded: true },
+            { status: 200, headers: { "cache-control": "no-store", "access-control-allow-origin": "*" } },
+          );
+        }
+        return Response.json(
+          { rooms: [] },
+          { status: 200, headers: { "cache-control": "no-store", "access-control-allow-origin": "*" } },
+        );
+      }
+    }
+
+    try {
+      if (url.pathname === "/mcp") {
+        return await handleMcpRequest(request, env, url);
+      }
+      const partyRes = await routePartykitRequest(request, env);
+      if (partyRes) return partyRes;
+    } catch (err) {
+      if (isQuotaError(err)) {
+        return Response.json(
+          {
+            error: "quota_exceeded",
+            message:
+              "Cloudflare free-tier daily Durable Objects quota reached (resets at 00:00 UTC). Use Local Solo mode to play offline!",
+          },
+          { status: 503, headers: url.pathname === "/mcp" ? MCP_CORS_HEADERS : undefined },
+        );
+      }
+      throw err;
+    }
+
+    return env.ASSETS.fetch(request);
   },
 } satisfies ExportedHandler<Env>;

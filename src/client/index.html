@@ -33,6 +33,7 @@
         <span id="credits">$0</span>
         <span id="power"></span>
         <span id="fps-pill" title="Live frame rate">-- FPS</span>
+        <button id="topbar-watch-btn" type="button" title="Live Spectator Dashboard — watch live games &amp; AI battles">LIVE</button>
         <button id="mute-btn" class="on" title="Toggle sound effects">SFX</button>
         <button id="music-btn" class="on" title="Toggle tactical soundtrack">BGM</button>
         <button id="gfx-btn" type="button" title="Graphics, Raytracing &amp; GPU Settings">GFX</button>
@@ -61,6 +62,11 @@
     </div>
 
     <div id="selinfo" class="hidden"></div>
+    <div id="spec-controls" class="hidden" role="region" aria-label="Spectator camera controls">
+      <button id="spec-autocam" type="button" title="Toggle Auto-Cam — smoothly follows the hottest combat action">AUTO-CAM: OFF</button>
+      <div id="spec-focus-row" class="spec-focus-row"></div>
+      <button id="spec-watch-btn" type="button" title="Open Live Spectator Dashboard">ALL GAMES</button>
+    </div>
     <div id="left-stack">
       <button id="recon-hud" class="hidden" title="Radar Recon Scan — temporarily reveals fog of war">
         <span class="recon-prog"></span>
@@ -298,6 +304,45 @@
       </div>
     </div>
 
+    <div id="watch-panel" class="hidden" role="dialog" aria-modal="true" aria-labelledby="watch-title">
+      <div class="panel watch-card">
+        <div class="watch-head">
+          <div class="watch-title-wrap">
+            <h2 id="watch-title">LIVE SPECTATOR DASHBOARD</h2>
+            <span id="watch-summary" class="watch-summary">0 Live · 0 Players · 0 Units</span>
+          </div>
+          <div class="watch-head-actions">
+            <button id="watch-refresh" type="button" title="Refresh live matches">REFRESH</button>
+            <button id="watch-close" type="button" title="Close spectator dashboard (Esc)">CLOSE</button>
+          </div>
+        </div>
+
+        <div id="watch-quota-pill" class="watch-quota-pill hidden" role="status">
+          Online rooms are paused until Cloudflare's daily free-tier resets at 00:00 UTC — click <strong>▶ WATCH LIVE AI BATTLE</strong> below for instant 0ms spectating.
+        </div>
+
+        <div class="watch-ai-bar">
+          <div class="watch-ai-left">
+            <label for="watch-ai-map" class="watch-bar-label">INSTANT 3-WAY AI WAR</label>
+            <select id="watch-ai-map" title="Battlefield map for live 3-way AI match"></select>
+          </div>
+          <button id="watch-ai-btn" type="button" title="Watch a live 3-way AI-vs-AI battle right now at 0ms ping">▶ WATCH LIVE AI BATTLE</button>
+        </div>
+
+        <div class="watch-mcp-bar">
+          <span class="watch-mcp-label">CLAUDE CODE MCP</span>
+          <code id="watch-mcp-cmd" class="watch-mcp-cmd">claude mcp add --transport http open-alert https://open-alert.thapecroth.workers.dev/mcp</code>
+          <button id="copy-mcp-btn" type="button" title="Copy Claude Code MCP connect command">COPY MCP</button>
+        </div>
+
+        <div class="watch-list-head">
+          <span class="watch-bar-label">ONLINE MATCHES</span>
+          <span id="watch-poll-note" class="watch-poll-note">Auto-refresh every 5s</span>
+        </div>
+        <div id="watch-list" class="watch-list"></div>
+      </div>
+    </div>
+
     <div id="lobby">
       <div class="panel lobby-panel">
         <h1 class="title-row"><img class="emblem" src="/favicon.svg" alt="" />OPEN ALERT</h1>
@@ -305,8 +350,16 @@
         <div class="room-row">
           ROOM <span id="lobby-room">----</span>
           <button id="copy-link2">COPY INVITE LINK</button>
+          <button id="lobby-watch-btn" type="button" title="Watch live online matches &amp; AI battles">WATCH LIVE</button>
           <button id="solo-local-btn" type="button" title="Play solo vs AI bots locally in browser (0ms ping, zero server quota)">SOLO OFFLINE</button>
           <button id="lobby-gfx-btn" type="button" title="Graphics, Raytracing &amp; GPU Settings">⚙ GRAPHICS</button>
+        </div>
+        <div id="quota-banner" class="quota-banner hidden" role="status">
+          <div class="quota-copy">
+            <span class="quota-tag">DAILY SERVER LIMIT REACHED</span>
+            <p class="quota-text">Online multiplayer has reached Cloudflare's daily free-tier limit (resets at 00:00 UTC). Local Solo Skirmish vs AI bots is active right now at 0ms ping!</p>
+          </div>
+          <button id="quota-retry-btn" type="button" title="Retry connecting to online multiplayer">RETRY ONLINE</button>
         </div>
         <div class="lobby-map-row">
           <canvas id="map-preview" width="112" height="112" title="Tactical map preview"></canvas>

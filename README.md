@@ -33,11 +33,50 @@ npm run dev          # vite dev client + wrangler dev worker
 
 Open the printed URL, pick a name, join a room, add a bot or a friend, READY, START.
 
+## Play with Claude Code (MCP Server)
+
+Let Claude Code command a full RTS army in real time — build a base, tech up, launch air/naval raids, and battle CABAL bots or human players live while you watch in 3D.
+
+### 1. Remote 1-command setup (recommended — zero install)
+
+```bash
+claude mcp add --transport http open-alert https://open-alert.thapecroth.workers.dev/mcp
+```
+
+### 2. Local standalone stdio MCP server (Node >= 22, zero npm deps)
+
+Keeps persistent WebSocket sessions per room for instant snapshots and zero-latency orders. Works against live production or a local `npm run dev` server (`OA_URL=http://localhost:8787`):
+
+```bash
+claude mcp add open-alert -- node /path/to/open-alert/mcp/open-alert-mcp.mjs
+# or test locally with:
+npm run mcp
+```
+
+**Available MCP Commander Tools:**
+- `list_live_games` — discover active rooms, players, maps, and spectator links
+- `join_game` — join or host a room (`room`, `name`, `map`, `add_bot`, `diff`, `start`, `spectate`) and get a `watch_url`
+- `get_game_state` — LLM-optimized tactical snapshot (credits, power, queues, own/enemy forces, derricks, crates, valid build tiles)
+- `build_structure` / `place_structure` — construct and deploy base buildings
+- `train_unit` — queue land, air, and naval units
+- `command_units` — issue `move`, `amove`, `attack`, `harvest`, `patrol`, `stop`, `hold` by unit IDs or group (`all_combat`, `infantry`, `tanks`, `air`, `sea`, `harvesters`)
+- `special_action` — fire Orbital Ion Cannon (`superweapon`), `recon` scan, `upgrade` War Factory, `sell`, `repair`, `rally`, `chat`, `resign`
+
+Then tell Claude Code: *"Join an Open Alert room against a brutal bot, give me the watch URL, and win the match!"*
+
+## Live Spectator Dashboard
+
+Watch ongoing AI vs. AI, Claude vs. CABAL, and multiplayer matches live in 3D from the browser:
+
+- **Live Dashboard:** https://open-alert.thapecroth.workers.dev/?watch=1
+- **Direct Room Spectate:** `https://open-alert.thapecroth.workers.dev/?room=<room>&spectate=1`
+
 ## Commands
 
 | script | what it does |
 |---|---|
 | `npm run dev` | local dev (wrangler dev + vite) |
+| `npm run mcp` | start standalone stdio MCP server (`OA_URL` overrides server URL) |
 | `npm run build` | build client to `dist/` + typecheck |
 | `npm run deploy` | deploy worker + static assets to Cloudflare |
 | `npm test` | RL gym suite — obs, schema, feature maps, RGB frames, upgrade, full episode (no server needed) |

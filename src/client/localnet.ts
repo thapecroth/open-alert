@@ -46,9 +46,82 @@ export class LocalRoom {
   private timer: ReturnType<typeof setInterval> | null = null;
   private endSent = false;
   private myId = "local-host";
+  private spectateOnly = false;
+  private aiBotCount = 3;
 
   constructor(room: string) {
     this.room = room;
+  }
+
+  isSpectate(): boolean {
+    return this.spectateOnly;
+  }
+
+  startAiSpectate(map: MapId = "archipelago", botCount = 3) {
+    const chosenMap: MapId = VALID_MAPS.has(map) ? map : "archipelago";
+    const count = Math.max(2, Math.min(MAX_PLAYERS, Math.floor(botCount || 3)));
+    this.stopTimer();
+    this.players.clear();
+    this.bots.clear();
+    this.spectateOnly = true;
+    this.aiBotCount = count;
+    this.map = chosenMap;
+    this.config = { ...DEFAULT_CONFIG, gameSpeed: 1.5 };
+
+    const profiles: BotProfile[] = ["rusher", "balanced", "tech", "turtle"];
+    const diffs: BotDiff[] = ["brutal", "normal", "brutal", "normal"];
+    const callsigns = ["CABAL-ALPHA", "CABAL-OMEGA", "CABAL-PRIME", "CABAL-APEX"];
+
+    for (let s = 0; s < count; s++) {
+      const id = `bot-${s}`;
+      this.players.set(id, {
+        id,
+        name: callsigns[s] ?? `CABAL-${s + 1}`,
+        slot: s,
+        ready: true,
+        team: 0,
+        bot: true,
+        diff: diffs[s % diffs.length],
+        profile: profiles[s % profiles.length],
+      });
+    }
+
+    const actives = [...this.players.values()];
+    const slots = actives.map((p) => p.slot).sort((a, b) => a - b);
+    const teams: Record<number, number> = {};
+    const names: Record<number, string> = {};
+    for (const p of actives) {
+      teams[p.slot] = p.team;
+      names[p.slot] = p.name;
+    }
+
+    const w = new World(slots, { map: this.map, teams, names, config: this.config });
+    this.world = w;
+    for (const p of actives) {
+      this.bots.set(p.id, new RtsBot(w, p.slot, { diff: p.diff ?? "normal", profile: p.profile ?? "balanced" }));
+    }
+    this.phase = "playing";
+    this.endSent = false;
+
+    this.emit({
+      t: "init",
+      you: "local-spectator",
+      slot: -1,
+      w: MAP_W,
+      h: MAP_H,
+      map: this.map,
+      config: this.config,
+      players: actives.map((p) => ({
+        id: p.id,
+        name: p.name,
+        slot: p.slot,
+        team: p.team,
+      })),
+      ore: w.oreSnapshot(),
+    });
+
+    const tickMs = Math.max(40, Math.round(TICK_MS / (this.config.gameSpeed || 1.5)));
+    this.timer = setInterval(() => this.tick(), tickMs);
   }
 
   private emit(m: S2C) {
@@ -89,6 +162,23 @@ export class LocalRoom {
 
   send(m: C2S) {
     if (m.t === "hb") return;
+    if (this.spectateOnly) {
+      if (m.t === "rematch" && this.phase === "ended") {
+        this.startAiSpectate(this.map, this.aiBotCount);
+        return;
+      }
+      if (m.t === "chat") {
+        this.emit({
+          t: "chat",
+          name: "Spectator",
+          color: "#45d6ff",
+          text: String(m.text || "").slice(0, 200),
+        });
+      } else if (m.t === "ping") {
+        this.emit({ t: "ping", x: m.x, y: m.y, slot: -1 });
+      }
+      return;
+    }
     if (m.t === "join") {
       const clean = String(m.name || "Commander").slice(0, 16).trim() || "Commander";
       if (!this.players.has(this.myId)) {
