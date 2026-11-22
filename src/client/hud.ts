@@ -1,4 +1,4 @@
-import type { LobbyPlayer, PlayerState } from "../shared/protocol";
+import type { LobbyPlayer, PlayerState, EntSnap } from "../shared/protocol";
 import {
   BUILDINGS,
   UNITS,
@@ -14,7 +14,6 @@ import {
 } from "../shared/gamedefs";
 import { el, fmtCost, isBuildingKind } from "./util";
 import { Renderer } from "./render";
-import { EntSnap } from "../shared/protocol";
 
 const TOOLTIPS: Record<string, string> = {
   conyard: "Construction Yard — the heart of your base.",
@@ -54,6 +53,8 @@ export class Hud {
   onMinimapPing: (x: number, y: number) => void = () => {};
   onVerb: (v: "amove" | "stop" | "sell" | "repair") => void = () => {};
   onUpgrade?: (id: number) => void;
+  onGroupClick?: (n: number, dbl: boolean) => void;
+  onToggleWasd?: () => void;
 
   private ready = false;
   private icons = new Map<string, string>();
@@ -64,7 +65,8 @@ export class Hud {
   private mmLast = 0;
   private pinged: { x: number; y: number; t: number } | null = null;
   private chatLines: string[] = [];
-  private iconsDone = false;
+  private selSig = "";
+  private lastGroupClick = { n: -1, t: 0 };
 
   constructor() {
     el("ready-btn").addEventListener("click", () => {
@@ -85,30 +87,36 @@ export class Hud {
     el("copy-link2").addEventListener("click", copy);
     el("help-btn")?.addEventListener("click", () => el("help").classList.toggle("hidden"));
     el("help-close")?.addEventListener("click", () => el("help").classList.add("hidden"));
+    el("wasd-btn")?.addEventListener("click", () => this.onToggleWasd?.());
 
     for (const v of ["amove", "stop", "sell", "repair"] as const) {
       el(`verb-${v}`)?.addEventListener("click", () => this.onVerb(v));
     }
 
-    // chat
+    // Chat input
     const chatInput = el<HTMLInputElement>("chat-input");
     chatInput.addEventListener("keydown", (e) => {
       e.stopPropagation();
-      if (e.key === "Enter" && chatInput.value.trim()) {
-        this.onChat(chatInput.value.trim().slice(0, 120));
-        chatInput.value = "";
+      if (e.key === "Enter") {
+        if (chatInput.value.trim()) {
+          this.onChat(chatInput.value.trim().slice(0, 120));
+          chatInput.value = "";
+        }
         chatInput.blur();
-      } else if (e.key === "Escape") chatInput.blur();
+      } else if (e.key === "Escape") {
+        chatInput.blur();
+      }
     });
     el("chat-box").addEventListener("click", () => chatInput.focus());
 
-    // build sidebar buttons once
+    // Build sidebar buttons once
     const bl = el("build-list");
     for (const kind of BUILD_ORDER) {
       const d = BUILDINGS[kind];
       const b = document.createElement("button");
       b.className = "sbtn";
-      b.title = `${TOOLTIPS[kind] ?? BUILDING_NAMES[kind]} · ${d.buildTicks / 10}s to build`;
+      b.dataset.kind = kind;
+      b.title = this.buildTooltip(kind);
       b.innerHTML = `<span class="icon" data-kind="${kind}"></span><span class="sname">${BUILDING_NAMES[kind]}</span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span>`;
       b.addEventListener("click", () => this.clickBuild(kind));
       b.addEventListener("contextmenu", (e) => {
@@ -118,12 +126,15 @@ export class Hud {
       bl.appendChild(b);
       this.buildBtns.set(kind, b);
     }
+
     const tl = el("train-list");
     for (const { unit, label: l } of TRAIN_ORDER) {
+      const d = UNITS[unit];
       const b = document.createElement("button");
       b.className = "sbtn";
-      b.title = `${TOOLTIPS[unit] ?? l} · ${UNITS[unit].buildTicks / 10}s to train`;
-      b.innerHTML = `<span class="icon" data-kind="${unit}"></span><span class="sname">${l}</span><span class="cost">$${UNITS[unit].cost}</span><span class="btime">${UNITS[unit].buildTicks / 10}s</span><span class="prog"></span>`;
+      b.dataset.unit = unit;
+      b.title = `${TOOLTIPS[unit] ?? l} · ${d.buildTicks / 10}s to train`;
+      b.innerHTML = `<span class="icon" data-kind="${unit}"></span><span class="sname">${l}</span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span>`;
       b.addEventListener("click", () => this.onTrain(unit));
       b.addEventListener("contextmenu", (e) => {
         e.preventDefault();
@@ -133,7 +144,7 @@ export class Hud {
       this.trainBtns.set(unit, b);
     }
 
-    // minimap nav
+    // Minimap navigation & pings
     const nav = (e: PointerEvent) => {
       const r = this.minimap.getBoundingClientRect();
       const x = ((e.clientX - r.left) / r.width) * MAP_W;
@@ -155,6 +166,32 @@ export class Hud {
     window.addEventListener("pointerup", () => (mmDrag = false));
   }
 
+  private buildTooltip(kind: BuildingKind, missing?: BuildingKind[]) {
+    const d = BUILDINGS[kind];
+    const base = `${TOOLTIPS[kind] ?? BUILDING_NAMES[kind]} · ${d.buildTicks / 10}s to build`;
+    if (missing?.length) return `${base} · Requires: ${missing.map((m) => BUILDING_NAMES[m]).join(", ")}`;
+    return base;
+  }
+
+  focusChat() {
+    el<HTMLInputElement>("chat-input").focus();
+  }
+
+  setWasdLabel(on: boolean) {
+    const b = document.getElementById("wasd-btn");
+    if (b) {
+      b.textContent = on ? "KEYS: WASD" : "KEYS: RTS";
+      b.classList.toggle("on", on);
+      b.title = on
+        ? "WASD pans camera · F = Attack-Move · X = Stop (click to switch to Classic RTS)"
+        : "Arrows pan camera · A = Attack-Move · S = Stop · X = Scatter (click to switch to WASD pan)";
+    }
+    const va = document.querySelector("#verb-amove kbd");
+    const vs = document.querySelector("#verb-stop kbd");
+    if (va) va.textContent = on ? "F" : "A";
+    if (vs) vs.textContent = on ? "X" : "S";
+  }
+
   setIcons(icons: Map<string, string>) {
     this.icons = icons;
     for (const [k, url] of icons) {
@@ -163,6 +200,7 @@ export class Hud {
         span.classList.add("has-icon");
       }
     }
+    this.selSig = ""; // refresh selection icons if already open
   }
 
   private iconFor(kind: string) {
@@ -211,7 +249,9 @@ export class Hud {
 
   hideLobby() {
     el("lobby").classList.add("hidden");
-    for (const id of ["topbar", "sidebar", "minimap", "selinfo", "verbbar", "chat-box"]) el(id).classList.remove("hidden");
+    for (const id of ["topbar", "sidebar", "minimap", "selinfo", "verbbar", "chat-box", "groupbar"]) {
+      document.getElementById(id)?.classList.remove("hidden");
+    }
   }
 
   showEnd(text: string) {
@@ -247,19 +287,21 @@ export class Hud {
   }
 
   updateTop(state: PlayerState | null, spectatorStates?: Record<number, PlayerState>) {
+    const cr = el("credits");
+    const pw = el("power");
+    const wrap = el("spec-board");
     if (spectatorStates) {
-      // spectator scoreboard
-      const el2 = el("credits");
-      el2.textContent = "";
-      const wrap = el("spec-board");
+      cr.textContent = "";
+      pw.innerHTML = "";
+      pw.classList.remove("low");
       wrap.innerHTML = Object.entries(spectatorStates)
         .map(([s, p]) => `<span style="color:${PLAYER_COLORS[+s] ?? "#888"}">${fmtCost(p.credits)}</span>`)
         .join(" · ");
       return;
     }
+    wrap.innerHTML = "";
     if (!state) return;
-    el("credits").textContent = fmtCost(state.credits);
-    const pw = el("power");
+    cr.textContent = fmtCost(state.credits);
     const pct = state.pwrHave > 0 ? Math.min(1, state.pwrUse / state.pwrHave) : state.pwrUse > 0 ? 1 : 0;
     pw.innerHTML = `PWR <b>${state.pwrHave - state.pwrUse >= 0 ? "+" : ""}${state.pwrHave - state.pwrUse}</b><i style="width:${Math.round(pct * 34)}px"></i>`;
     pw.classList.toggle("low", state.lowPower);
@@ -268,124 +310,207 @@ export class Hud {
   updateSidebar(state: PlayerState | null, has: (k: string) => boolean) {
     for (const [kind, b] of this.buildBtns) {
       const d = BUILDINGS[kind];
-      b.classList.remove("ready");
+      b.classList.remove("ready", "locked");
       delete b.dataset.busy;
       b.disabled = false;
       const prog = b.querySelector<HTMLElement>(".prog")!;
+      const bt = b.querySelector<HTMLElement>(".btime")!;
       prog.style.width = "0%";
-      if (!state) {
-        b.disabled = true;
-        continue;
-      }
-      if (!has("conyard")) {
+      bt.textContent = `${d.buildTicks / 10}s`;
+      if (!state || !has("conyard")) {
         b.disabled = true;
         continue;
       }
       if (state.awaiting === kind) {
         b.classList.add("ready");
+        bt.textContent = "RDY";
         continue;
       }
       if (state.bq?.kind === kind) {
         b.dataset.busy = "1";
         prog.style.width = `${(1 - state.bq.left / state.bq.total) * 100}%`;
+        bt.textContent = `${(state.bq.left / 10).toFixed(1)}s`;
+        continue;
+      }
+      const missing = d.requires?.filter((r) => !has(r)) ?? [];
+      b.title = this.buildTooltip(kind, missing);
+      if (missing.length) {
+        b.classList.add("locked");
+        b.disabled = true;
         continue;
       }
       if (state.bq || state.awaiting || state.credits < d.cost) b.disabled = true;
     }
+
     for (const [unit, b] of this.trainBtns) {
       const d = UNITS[unit];
       const prog = b.querySelector<HTMLElement>(".prog")!;
+      const bt = b.querySelector<HTMLElement>(".btime")!;
       prog.style.width = "0%";
+      bt.textContent = `${d.buildTicks / 10}s`;
       b.querySelector(".qcount")?.remove();
+      b.classList.remove("locked");
       b.disabled = true;
       if (!state) continue;
       const cat = d.trainsAt;
-      if (!has(cat) || (d.requires && !has(d.requires))) continue;
+      if (!has(cat) || (d.requires && !has(d.requires))) {
+        b.classList.add("locked");
+        continue;
+      }
       const q = state.queues[cat];
       if (q && q.unit === unit) {
         prog.style.width = `${(1 - q.left / q.total) * 100}%`;
+        bt.textContent = `${(q.left / 10).toFixed(1)}s`;
         const c = document.createElement("span");
         c.className = "qcount";
         c.textContent = "×" + q.count;
         b.appendChild(c);
-      } else if (q) continue; // queue busy with another unit
+      } else if (q) continue;
       b.disabled = state.credits < d.cost;
     }
   }
 
-  updateSelInfo(sel: Set<number>, tracked: Renderer["tracked"], mySlot: number) {
+  updateGroups(groups: Map<number, Set<number>>, tracked: Renderer["tracked"], mySlot: number) {
+    const bar = document.getElementById("groupbar");
+    if (!bar) return;
+    bar.innerHTML = "";
+    const nums = [...groups.keys()].sort((a, b) => a - b);
+    for (const n of nums) {
+      const ids = groups.get(n)!;
+      let count = 0;
+      for (const id of ids) if (tracked.get(id)?.last.o === mySlot) count++;
+      if (!count) continue;
+      const b = document.createElement("button");
+      b.className = "gbtn";
+      b.title = `Group ${n} (${count}) — click to select, double-click to center`;
+      b.innerHTML = `<kbd>${n}</kbd><span>${count}</span>`;
+      b.addEventListener("click", () => {
+        const now = performance.now();
+        const dbl = this.lastGroupClick.n === n && now - this.lastGroupClick.t < 420;
+        this.lastGroupClick = { n, t: now };
+        this.onGroupClick?.(n, dbl);
+      });
+      bar.appendChild(b);
+    }
+  }
+
+  updateSelInfo(
+    sel: Set<number>,
+    tracked: Renderer["tracked"],
+    mySlot: number,
+    state?: PlayerState | null,
+    has?: (k: string) => boolean,
+  ) {
     const box = el("selinfo");
     if (!sel.size) {
-      box.innerHTML = "";
+      if (this.selSig !== "") {
+        this.selSig = "";
+        box.innerHTML = "";
+      }
       return;
     }
     const counts = new Map<string, number>();
     let hpSum = 0,
       hpMax = 0;
+    let singleId: number | null = null;
+    let singleKind: string | null = null;
     for (const id of sel) {
       const t = tracked.get(id);
       if (!t) continue;
       counts.set(t.last.k, (counts.get(t.last.k) ?? 0) + 1);
       hpSum += t.last.hp;
       hpMax += t.last.mhp;
+      if (sel.size === 1 && t.last.o === mySlot) {
+        singleId = id;
+        singleKind = t.last.k;
+      }
     }
-    const parts = [...counts].map(([k, n]) => {
-      const ic = this.iconFor(k);
-      const img = ic ? `<img class="si-icon" src="${ic}">` : "";
-      return `${img}<span>${n}× ${label(k as BuildingKind | UnitKind as never)}</span>`;
-    }).join("");
-    box.innerHTML = `<div class="si-row">${parts}</div><div class="si-hp"><i style="width:${Math.round((hpSum / hpMax) * 100)}%"></i><span>hp ${Math.round(hpSum)}/${hpMax}</span></div>`;
-    // factory upgrade affordance: exactly one own war factory selected
-    if (sel.size === 1) {
-      const id = sel.values().next().value!;
-      const t = tracked.get(id);
-      if (t && t.last.o === mySlot && t.last.k === "factory") {
+    if (!hpMax) {
+      if (this.selSig !== "") {
+        this.selSig = "";
+        box.innerHTML = "";
+      }
+      return;
+    }
+
+    const hasTech = has ? has("techlab") : true;
+    const canAfford = state ? state.credits >= UPGRADE_COST : true;
+    const sig =
+      [...counts].map(([k, n]) => `${k}:${n}`).join(",") +
+      `|${singleId ?? ""}|${singleKind ?? ""}|${hasTech ? 1 : 0}|${canAfford ? 1 : 0}`;
+
+    // Only rebuild DOM structure when selection or upgrade readiness actually changes
+    // (prevents 5Hz innerHTML destruction from eating clicks on the UPGRADE button)
+    if (sig !== this.selSig) {
+      this.selSig = sig;
+      const parts = [...counts]
+        .map(([k, n]) => {
+          const ic = this.iconFor(k);
+          const img = ic ? `<img class="si-icon" src="${ic}">` : "";
+          return `${img}<span>${n}× ${label(k as BuildingKind | UnitKind as never)}</span>`;
+        })
+        .join("");
+      box.innerHTML = `<div class="si-row">${parts}</div><div class="si-hp"><i></i><span></span></div>`;
+
+      if (singleId !== null && singleKind === "factory") {
         const b = document.createElement("button");
-        b.className = "sbtn";
-        b.style.minHeight = "0";
-        b.style.justifyContent = "center";
-        b.style.color = "var(--amber)";
-        b.textContent = `UPGRADE → ${BUILDING_NAMES.factory2.toUpperCase()} (${fmtCost(UPGRADE_COST)})`;
-        b.addEventListener("click", () => this.onUpgrade?.(id));
+        b.className = "sbtn si-upgrade";
+        b.disabled = !hasTech || !canAfford;
+        b.textContent = !hasTech
+          ? `UPGRADE → MKII (NEEDS TECH LAB)`
+          : `UPGRADE → ${BUILDING_NAMES.factory2.toUpperCase()} (${fmtCost(UPGRADE_COST)})`;
+        b.addEventListener("click", () => this.onUpgrade?.(singleId!));
         box.appendChild(b);
-      } else if (t && t.last.o === mySlot && t.last.k === "factory2") {
+      } else if (singleId !== null && singleKind === "factory2") {
         const d = document.createElement("div");
-        d.style.cssText = "margin-top:6px;font-size:11px;letter-spacing:2px;color:#8a97a5;text-align:center";
+        d.className = "si-mk2";
         d.textContent = "★ MKII";
         box.appendChild(d);
       }
     }
+
+    // Always update HP bar smoothly in place
+    const bar = box.querySelector<HTMLElement>(".si-hp i");
+    const txt = box.querySelector<HTMLElement>(".si-hp span");
+    if (bar) bar.style.width = `${Math.round((hpSum / hpMax) * 100)}%`;
+    if (txt) txt.textContent = `HP ${Math.round(hpSum)} / ${hpMax}`;
   }
 
-  drawMinimap(r: Renderer, oreCells: Set<number>, camX: number, camY: number, camH: number, mySlot: number, hasRadar: boolean) {
+  drawMinimap(
+    r: Renderer,
+    oreCells: Set<number>,
+    camX: number,
+    camY: number,
+    camH: number,
+    mySlot: number,
+    hasRadar: boolean,
+  ) {
     const now = performance.now();
-    if (now - this.mmLast < 200) return;
+    if (now - this.mmLast < 160) return;
     this.mmLast = now;
     const ctx = this.mmCtx;
     const s = this.minimap.width / MAP_W;
-    ctx.fillStyle = "#060a0e";
+    ctx.fillStyle = "#080e14";
     ctx.fillRect(0, 0, 160, 160);
     if (mySlot >= 0 && !hasRadar) {
-      // no radar uplink — RA2-style offline minimap for players (spectators see through it)
-      ctx.fillStyle = "#4a5a66";
+      ctx.fillStyle = "#5f7485";
       ctx.font = "10px monospace";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText("NO RADAR UPLINK", 80, 80);
       return;
     }
-    ctx.fillStyle = "#a07c2a";
+    ctx.fillStyle = "#b58b2e";
     for (const key of oreCells.keys()) {
       ctx.fillRect((key % MAP_W) * s, ((key / MAP_W) | 0) * s, Math.max(1.6, s), Math.max(1.6, s));
     }
     for (const t of r.tracked.values()) {
       const e: EntSnap = t.last;
-      if (e.o !== mySlot && mySlot >= 0 && !r.isVisible(e.id)) continue; // fog-lite
+      if (e.o !== mySlot && mySlot >= 0 && !r.isVisible(e.id)) continue;
       ctx.fillStyle = e.o >= 0 ? PLAYER_COLORS[e.o] : "#5a6a77";
       const sz = isBuildingKind(e.k) ? Math.max(3, BUILDINGS[e.k].w * s) : 2.5;
       ctx.fillRect(e.x * s - sz / 2, e.y * s - sz / 2, sz, sz);
     }
-    // alert ping flash
     if (this.pinged) {
       const age = now - this.pinged.t;
       if (age < 2400) {
@@ -397,10 +522,9 @@ export class Hud {
         ctx.stroke();
       } else this.pinged = null;
     }
-    // viewport rectangle (approximate visible area by zoom)
     const vw = camH * 1.4,
       vh = camH * 1.1;
-    ctx.strokeStyle = "rgba(140,220,255,0.55)";
+    ctx.strokeStyle = "rgba(140,220,255,0.65)";
     ctx.lineWidth = 1;
     ctx.strokeRect((camX - vw / 2) * s, (camY - vh / 2) * s, vw * s, vh * s);
   }

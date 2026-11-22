@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Open Alert — browser RTS</title>
     <meta name="description" content="Open Alert: a real-time multiplayer strategy game in your browser. Harvest ore, build your base, crush your friends." />
-    <meta name="theme-color" content="#0a1118" />
+    <meta name="theme-color" content="#0b1118" />
     <meta property="og:title" content="Open Alert" />
     <meta property="og:description" content="Real-time strategy, multiplayer, in the browser. Harvest ore, tech up, crush your friends." />
     <meta property="og:type" content="website" />
@@ -31,6 +31,7 @@
         <span id="spec-board"></span>
         <span id="credits">$0</span>
         <span id="power"></span>
+        <button id="wasd-btn" title="Toggle WASD camera pan vs Classic RTS hotkeys">KEYS: RTS</button>
         <button id="resign-btn" title="Self-destruct your base and leave the game">RESIGN</button>
         <button id="help-btn" title="Controls & hotkeys">?</button>
       </div>
@@ -38,8 +39,8 @@
 
     <div id="verbbar" class="hidden">
       <button id="verb-amove" title="Attack-move (A): fight everything on the way">ATTACK-MOVE <kbd>A</kbd></button>
-      <button id="verb-stop" title="Stop (S): halt selected units">STOP <kbd>S</kbd></button>
-      <button id="verb-sell" title="Sell ($): click your building for a 50% refund">SELL <kbd>$</kbd></button>
+      <button id="verb-stop" title="Stop (S): halt selected units & clear waypoints">STOP <kbd>S</kbd></button>
+      <button id="verb-sell" title="Sell ($ or V): click your building for a 50% refund">SELL <kbd>$</kbd></button>
       <button id="verb-repair" title="Repair (R): click your damaged building to fix it">REPAIR <kbd>R</kbd></button>
     </div>
 
@@ -51,6 +52,7 @@
     </div>
 
     <div id="selinfo" class="hidden"></div>
+    <div id="groupbar" class="hidden"></div>
     <div id="toasts"></div>
     <canvas id="minimap" width="160" height="160" class="hidden"></canvas>
     <div id="order-label" class="hidden"></div>
@@ -64,17 +66,20 @@
       <div class="panel help-panel">
         <h2>CONTROLS</h2>
         <table>
-          <tr><td>Left-click / drag</td><td>select units</td></tr>
-          <tr><td>Right-click</td><td>move · attack target · harvest ore</td></tr>
-          <tr><td><kbd>A</kbd> + right-click</td><td>attack-move (fight en route)</td></tr>
-          <tr><td><kbd>S</kbd></td><td>stop selected units</td></tr>
-          <tr><td><kbd>$</kbd> / <kbd>R</kbd></td><td>sell / repair mode — click your building</td></tr>
-          <tr><td>Right-click sidebar item</td><td>cancel & refund</td></tr>
-          <tr><td>Wheel / edge / arrows / mid-drag</td><td>zoom · pan camera</td></tr>
-          <tr><td><kbd>Esc</kbd></td><td>cancel mode</td></tr>
-          <tr><td>Enter</td><td>chat</td></tr>
+          <tr><td>Left-click / drag / Shift+click</td><td>select · box-select · add/toggle</td></tr>
+          <tr><td>Double-click unit</td><td>select all same-type units on screen</td></tr>
+          <tr><td>Right-click</td><td>move · attack · harvest ore</td></tr>
+          <tr><td><kbd>Shift</kbd> + Right-click</td><td>queue walking waypoints (chains orders)</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>1</kbd>–<kbd>9</kbd> / <kbd>1</kbd>–<kbd>9</kbd></td><td>assign / recall control groups (2× tap = center)</td></tr>
+          <tr><td><kbd>A</kbd> + click / right-click</td><td>attack-move (fight en route)</td></tr>
+          <tr><td><kbd>S</kbd> / <kbd>X</kbd></td><td>stop & clear waypoints · scatter units</td></tr>
+          <tr><td><kbd>Q</kbd> / <kbd>F1</kbd> / <kbd>Tab</kbd></td><td>all combat · next harvester · cycle bases</td></tr>
+          <tr><td><kbd>$</kbd> (<kbd>V</kbd>) / <kbd>R</kbd></td><td>sell / repair mode — click your building</td></tr>
+          <tr><td>Arrows · Wheel · <kbd>+</kbd>/<kbd>-</kbd> · Mid-drag</td><td>pan & zoom camera (toggle WASD in top bar)</td></tr>
+          <tr><td><kbd>H</kbd> · <kbd>Space</kbd> · <kbd>C</kbd></td><td>jump to base · last alert · center selection</td></tr>
+          <tr><td><kbd>Enter</kbd> / <kbd>Esc</kbd></td><td>open chat · cancel mode / deselect</td></tr>
         </table>
-        <p class="hint">Harvest ore → build refinery for harvesters → power → barracks → war factory → destroy the enemy.</p>
+        <p class="hint">Harvest ore → build refinery for harvesters → power → barracks → war factory → tech lab → upgrade factory → destroy the enemy.</p>
         <button id="help-close">CLOSE</button>
       </div>
     </div>
@@ -105,7 +110,7 @@
       </div>
     </div>
 
-    <div id="placement-hint" class="hidden">Left-click to place · Right-click to cancel</div>
+    <div id="placement-hint" class="hidden">Left-click to place · Right-click or Esc to cancel & refund</div>
 
     <script type="module" src="./main.ts"></script>
   </body>

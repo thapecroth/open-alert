@@ -6,9 +6,9 @@ import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { MAP_W, MAP_H } from "../shared/gamedefs";
+import { createBattlefieldTextures } from "./textures";
 
-// Small facade so callers used to the old engine API keep working:
-//   gs.engine.getRenderingCanvas()/getRenderWidth()/getDeltaTime()/runRenderLoop()/resize()
+// Facade preserving the legacy engine API expected by main.ts / input.ts / tests
 class EngineShim {
   constructor(private gs: GameScene) {}
   getRenderingCanvas() {
@@ -26,7 +26,9 @@ class EngineShim {
   runRenderLoop(cb: () => void) {
     this.gs.setLoop(cb);
   }
-  resize() {}
+  resize() {
+    this.gs.resize();
+  }
 }
 
 export class GameScene {
@@ -64,76 +66,84 @@ export class GameScene {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.28;
+    this.renderer.toneMappingExposure = 1.15;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x04060a);
-    this.scene.fog = new THREE.FogExp2(0x04060a, 0.005);
+    this.scene.background = new THREE.Color(0x0d1520);
+    this.scene.fog = new THREE.FogExp2(0x0d1520, 0.0042);
 
-    this.camera = new THREE.PerspectiveCamera(50, 1, 0.5, 700);
+    this.camera = new THREE.PerspectiveCamera(48, 1, 0.5, 700);
     this.updateCamera();
 
-    // lights — cool hemisphere ambient + warm key with shadows
-    const hemi = new THREE.HemisphereLight(0x93aecf, 0x1a1815, 1.15);
+    // Tactical daylight-dusk lighting: warm sun key + cool sky bounce + soft rim
+    const hemi = new THREE.HemisphereLight(0xa6c4e6, 0x3b352a, 1.05);
     this.scene.add(hemi);
-    const dir = new THREE.DirectionalLight(0xffe2b8, 1.9);
-    dir.position.set(42, 58, 26);
+
+    const dir = new THREE.DirectionalLight(0xffe7c2, 2.05);
+    dir.position.set(-28, 60, 42);
+    dir.target.position.set(MAP_W / 2, 0, MAP_H / 2);
     dir.castShadow = true;
     dir.shadow.mapSize.set(2048, 2048);
-    dir.shadow.camera.left = -46;
-    dir.shadow.camera.right = MAP_W + 46;
-    dir.shadow.camera.top = MAP_H + 46;
-    dir.shadow.camera.bottom = -46;
-    dir.shadow.camera.near = 8;
-    dir.shadow.camera.far = 190;
+    dir.shadow.camera.left = -48;
+    dir.shadow.camera.right = 48;
+    dir.shadow.camera.top = 48;
+    dir.shadow.camera.bottom = -48;
+    dir.shadow.camera.near = 10;
+    dir.shadow.camera.far = 180;
     dir.shadow.bias = -0.0004;
     dir.shadow.normalBias = 0.03;
-    this.scene.add(dir);
-    // faint cyan rim light from behind for silhouette separation
-    const rim = new THREE.DirectionalLight(0x3fb8e8, 0.35);
-    rim.position.set(-30, 24, -40);
+    this.scene.add(dir, dir.target);
+
+    // Subtle cool counter-fill so shaded sides stay legible
+    const rim = new THREE.DirectionalLight(0x52a8dc, 0.45);
+    rim.position.set(55, 28, -35);
     this.scene.add(rim);
 
-    // HDRI environment for PBR reflections (night sky — subtle sheen)
+    // HDRI environment for metallic specular reflections
     new RGBELoader().load("/tex/satara_night_1k.hdr", (hdr) => {
       const pmrem = new THREE.PMREMGenerator(this.renderer);
       const env = pmrem.fromEquirectangular(hdr).texture;
       this.scene.environment = env;
-      this.scene.environmentIntensity = 0.55;
+      this.scene.environmentIntensity = 0.5;
       hdr.dispose();
       pmrem.dispose();
       this.envReady = true;
     });
 
-    // bloom — emissive accents and FX glow
+    // Calibrated bloom: crisp weapon flashes & energy cores without blowing out meshes
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(1024, 1024), 0.55, 0.65, 0.8);
+    const bloom = new UnrealBloomPass(new THREE.Vector2(1024, 1024), 0.34, 0.48, 0.92);
     this.composer.addPass(bloom);
     this.composer.addPass(new OutputPass());
 
-    // pointer tracking for picking (canvas-relative CSS pixels)
-    canvas.addEventListener("pointermove", (e) => {
-      const r = canvas.getBoundingClientRect();
-      this.pointerX = e.clientX - r.left;
-      this.pointerY = e.clientY - r.top;
-    });
+    // Pointer tracking — synced on move AND down so clicks never use stale coordinates
+    canvas.addEventListener("pointermove", (e) => this.syncPointer(e.clientX, e.clientY));
+    canvas.addEventListener("pointerdown", (e) => this.syncPointer(e.clientX, e.clientY));
 
     this.buildSky();
     this.buildGround();
-    this.buildVoidRing();
+    this.buildPerimeter();
+    this.buildProps();
     this.buildOre();
     this.resize();
+  }
+
+  syncPointer(clientX: number, clientY: number) {
+    const r = this.canvas.getBoundingClientRect();
+    this.pointerX = clientX - r.left;
+    this.pointerY = clientY - r.top;
   }
 
   // ---------- environment pieces ----------
 
   private buildSky() {
     const geo = new THREE.SphereGeometry(420, 24, 16);
-    const mat = new THREE.MeshBasicMaterial({ side: THREE.BackSide, fog: false, depthWrite: false });
+    const mat = new THREE.MeshBasicMaterial({ color: 0x162436, side: THREE.BackSide, fog: false, depthWrite: false });
     new THREE.TextureLoader().load("/tex/sky.png", (t) => {
       t.colorSpace = THREE.SRGBColorSpace;
       mat.map = t;
+      mat.color.setHex(0xffffff);
       mat.needsUpdate = true;
     });
     const sky = new THREE.Mesh(geo, mat);
@@ -144,29 +154,13 @@ export class GameScene {
   private buildGround() {
     const geo = new THREE.PlaneGeometry(MAP_W, MAP_H);
     geo.rotateX(-Math.PI / 2);
-    const mat = new THREE.MeshStandardMaterial({ color: 0x9fb2a8, roughness: 1.0, metalness: 0.0 });
-    const tl = new THREE.TextureLoader();
-    const rep = (t: THREE.Texture, srgb = false) => {
-      t.wrapS = t.wrapT = THREE.RepeatWrapping;
-      t.repeat.set(5, 5);
-      if (srgb) t.colorSpace = THREE.SRGBColorSpace;
-      t.anisotropy = 8;
-      return t;
-    };
-    tl.load("/tex/coast_sand_rocks_02_diff_2k.jpg", (t) => {
-      mat.map = rep(t, true);
-      mat.needsUpdate = true;
-    });
-    tl.load("/tex/coast_sand_rocks_02_nor_gl_2k.jpg", (t) => {
-      mat.normalMap = rep(t);
-      mat.normalScale.set(0.7, 0.7);
-      mat.needsUpdate = true;
-    });
-    tl.load("/tex/coast_sand_rocks_02_arm_2k.jpg", (t) => {
-      // arm texture: AO=R, roughness=G, metalness=B (glTF packing)
-      mat.aoMap = rep(t);
-      mat.roughnessMap = rep(t);
-      mat.needsUpdate = true;
+    const { map, bumpMap } = createBattlefieldTextures();
+    const mat = new THREE.MeshStandardMaterial({
+      map,
+      bumpMap,
+      bumpScale: 0.14,
+      roughness: 0.92,
+      metalness: 0.04,
     });
     const g = new THREE.Mesh(geo, mat);
     g.position.set(MAP_W / 2, 0, MAP_H / 2);
@@ -174,53 +168,95 @@ export class GameScene {
     this.ground = g;
     this.scene.add(g);
 
-    // faint command-grid overlay
-    const grid = new THREE.GridHelper(MAP_W, MAP_W, 0x46c8e8, 0x2a7d99);
+    // Subtle tactical command grid overlay
+    const grid = new THREE.GridHelper(MAP_W, MAP_W, 0x62b8d6, 0x3b6e80);
     (grid.material as THREE.Material).transparent = true;
-    (grid.material as THREE.Material).opacity = 0.055;
-    grid.position.set(MAP_W / 2, 0.02, MAP_H / 2);
+    (grid.material as THREE.Material).opacity = 0.045;
+    grid.position.set(MAP_W / 2, 0.018, MAP_H / 2);
     this.scene.add(grid);
   }
 
-  private buildVoidRing() {
-    // dark collar so the map edge reads as a floating platform over the void
-    const voidGeo = new THREE.PlaneGeometry(MAP_W * 4, MAP_H * 4);
-    voidGeo.rotateX(-Math.PI / 2);
-    const voidMat = new THREE.MeshBasicMaterial({ color: 0x030507, fog: false });
-    const ring = new THREE.Mesh(voidGeo, voidMat);
-    ring.position.set(MAP_W / 2, -0.32, MAP_H / 2);
-    this.scene.add(ring);
-    // glowing rim under the battlefield edge
-    const rimGeo = new THREE.PlaneGeometry(MAP_W + 0.9, MAP_H + 0.9);
-    rimGeo.rotateX(-Math.PI / 2);
-    const rimMat = new THREE.MeshBasicMaterial({ color: 0x0a2a38, fog: false });
-    const rim = new THREE.Mesh(rimGeo, rimMat);
-    rim.position.set(MAP_W / 2, -0.03, MAP_H / 2);
-    this.scene.add(rim);
+  private buildPerimeter() {
+    // Grounded outer terrain skirt fading into atmospheric fog instead of floating over pitch black
+    const skirtGeo = new THREE.PlaneGeometry(MAP_W * 4, MAP_H * 4);
+    skirtGeo.rotateX(-Math.PI / 2);
+    const skirtMat = new THREE.MeshStandardMaterial({
+      color: 0x1e2524,
+      roughness: 0.96,
+      metalness: 0.02,
+    });
+    const skirt = new THREE.Mesh(skirtGeo, skirtMat);
+    skirt.position.set(MAP_W / 2, -0.18, MAP_H / 2);
+    skirt.receiveShadow = true;
+    this.scene.add(skirt);
+
+    // Subtle glowing tactical boundary line around the playable 64x64 theater
+    const borderPts = [
+      new THREE.Vector3(0, 0.05, 0),
+      new THREE.Vector3(MAP_W, 0.05, 0),
+      new THREE.Vector3(MAP_W, 0.05, MAP_H),
+      new THREE.Vector3(0, 0.05, MAP_H),
+      new THREE.Vector3(0, 0.05, 0),
+    ];
+    const border = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(borderPts),
+      new THREE.LineBasicMaterial({ color: 0x3c8ba6, transparent: true, opacity: 0.45 }),
+    );
+    this.scene.add(border);
+  }
+
+  private buildProps() {
+    // Low grounded perimeter ridges outside the playable 64x64 theater fading into fog
+    const rockGeo = new THREE.DodecahedronGeometry(1, 1);
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0x262e2c, roughness: 0.95, metalness: 0.04 });
+    const count = 40;
+    const rocks = new THREE.InstancedMesh(rockGeo, rockMat, count);
+    rocks.receiveShadow = true;
+    const d = new THREE.Object3D();
+    let placed = 0;
+    for (let i = 0; i < count; i++) {
+      const ang = (i / count) * Math.PI * 2 + (i % 3) * 0.12;
+      const dist = MAP_W * 0.62 + ((i * 19) % 14);
+      const x = MAP_W / 2 + Math.cos(ang) * dist;
+      const z = MAP_H / 2 + Math.sin(ang) * dist;
+      if (x > -2.5 && x < MAP_W + 2.5 && z > -2.5 && z < MAP_H + 2.5) continue;
+      const sx = 2.8 + ((i * 7) % 10) * 0.45;
+      const sy = 0.45 + ((i * 11) % 5) * 0.18;
+      const sz = 2.6 + ((i * 13) % 9) * 0.4;
+      d.position.set(x, -0.25, z);
+      d.rotation.set(0, i * 1.1, 0);
+      d.scale.set(sx, sy, sz);
+      d.updateMatrix();
+      rocks.setMatrixAt(placed++, d.matrix);
+    }
+    rocks.count = placed;
+    rocks.instanceMatrix.needsUpdate = true;
+    this.scene.add(rocks);
   }
 
   private buildOre() {
-    // a small crystal cluster per cell reads as an ore deposit, not a floating gem
+    // Rich mineral crystal clusters anchored into a rocky base
     const shards: THREE.BufferGeometry[] = [];
-    const mk = (x: number, z: number, s: number, h: number, rot: number) => {
+    const mk = (x: number, z: number, s: number, h: number, rot: number, tilt: number) => {
       const g = new THREE.OctahedronGeometry(s, 0);
       g.scale(1, h, 1);
       g.rotateY(rot);
-      g.rotateZ((x * 7) % 0.3 - 0.15);
-      g.translate(x, 0, z);
+      g.rotateZ(tilt);
+      g.translate(x, s * h * 0.42, z);
       shards.push(g);
     };
-    mk(0, 0.02, 0.2, 1.9, 0.4);
-    mk(-0.19, 0.1, 0.15, 1.3, 1.9);
-    mk(0.17, 0.14, 0.12, 1.05, 3.6);
-    mk(0.06, -0.16, 0.1, 0.85, 5.1);
+    mk(0, 0.02, 0.18, 1.9, 0.4, 0.08);
+    mk(-0.18, 0.1, 0.14, 1.35, 1.9, -0.18);
+    mk(0.17, 0.12, 0.12, 1.15, 3.6, 0.22);
+    mk(0.05, -0.16, 0.11, 0.95, 5.1, -0.12);
+    mk(-0.11, -0.13, 0.09, 0.8, 2.7, 0.16);
     const geo = mergeGeometries(shards)!;
     const mat = new THREE.MeshStandardMaterial({
-      color: 0x8a5a14,
-      emissive: 0xff9d1e,
-      emissiveIntensity: 0.95,
-      roughness: 0.3,
-      metalness: 0.15,
+      color: 0xb87c18,
+      emissive: 0xff9f1a,
+      emissiveIntensity: 0.72,
+      roughness: 0.26,
+      metalness: 0.35,
     });
     const ore = new THREE.InstancedMesh(geo, mat, GameScene.ORE_MAX);
     ore.count = 0;
@@ -230,13 +266,20 @@ export class GameScene {
     this.scene.add(ore);
   }
 
+  clearOre() {
+    this.oreSlots.clear();
+    this.oreFree = [];
+    this.orePeak = 0;
+    this.ore.count = 0;
+    this.ore.instanceMatrix.needsUpdate = true;
+  }
+
   setOreCells(cells: [number, number, number][]) {
     for (const [x, y, amt] of cells) {
       const key = y * MAP_W + x;
       let slot = this.oreSlots.get(key);
       if (amt <= 0) {
         if (slot !== undefined) {
-          // hide by scaling to zero, free the slot
           this.dummy.position.set(x + 0.5, -10, y + 0.5);
           this.dummy.scale.setScalar(0.001);
           this.dummy.updateMatrix();
@@ -252,7 +295,7 @@ export class GameScene {
         this.oreSlots.set(key, slot);
       }
       const s = 0.45 + Math.min(1, amt / 60) * 0.55;
-      this.dummy.position.set(x + 0.5, 0.16, y + 0.5);
+      this.dummy.position.set(x + 0.5, 0.02, y + 0.5);
       this.dummy.rotation.set(0, ((key * 2654435761) % 628) / 100, 0);
       this.dummy.scale.set(s, s * (0.8 + Math.min(1, amt / 60) * 0.4), s);
       this.dummy.updateMatrix();
@@ -265,9 +308,11 @@ export class GameScene {
   // ---------- picking ----------
 
   private ndc() {
+    const w = this.canvas.clientWidth || 1;
+    const h = this.canvas.clientHeight || 1;
     return {
-      x: (this.pointerX / this.canvas.clientWidth) * 2 - 1,
-      y: -(this.pointerY / this.canvas.clientHeight) * 2 + 1,
+      x: (this.pointerX / w) * 2 - 1,
+      y: -(this.pointerY / h) * 2 + 1,
     };
   }
 
@@ -279,27 +324,39 @@ export class GameScene {
     return this.raycaster.ray.intersectPlane(this.groundPlane, out) ? out : null;
   }
 
-  // screen -> entity pick (children carry userData.entityId up the chain)
+  // screen -> visible entity pick (ignores fog-hidden roots, health bars, and selection rings)
   pickEntity(): number | null {
     const p = this.ndc();
     this.raycaster.setFromCamera(new THREE.Vector2(p.x, p.y), this.camera);
-    const hits = this.raycaster.intersectObjects(this.pickables, true);
+    const visibleRoots = this.pickables.filter((r) => r.visible);
+    const hits = this.raycaster.intersectObjects(visibleRoots, true);
     for (const h of hits) {
+      if (h.object.userData?.isBar) continue;
       let o: THREE.Object3D | null = h.object;
+      let hidden = false;
+      let foundId: number | undefined;
       while (o) {
-        const id = o.userData?.entityId as number | undefined;
-        if (id !== undefined) return id;
+        if (!o.visible || o.userData?.isBar) {
+          hidden = true;
+          break;
+        }
+        if (foundId === undefined && o.userData?.entityId !== undefined) {
+          foundId = o.userData.entityId as number;
+        }
         o = o.parent;
       }
+      if (!hidden && foundId !== undefined) return foundId;
     }
     return null;
   }
 
   // ---------- camera / loop ----------
 
+  // Standard North-Up isometric RTS camera: -Z is UP (North), +X is RIGHT (East),
+  // matching the minimap (0,0 top-left -> 64,64 bottom-right).
   updateCamera() {
     const h = this.camHeight;
-    this.camera.position.set(this.camTarget.x, h, this.camTarget.z - h * 0.62);
+    this.camera.position.set(this.camTarget.x, h, this.camTarget.z + h * 0.68);
     this.camera.lookAt(this.camTarget);
   }
 
@@ -311,7 +368,7 @@ export class GameScene {
   }
 
   zoom(delta: number) {
-    this.camHeight = Math.max(12, Math.min(48, this.camHeight + delta));
+    this.camHeight = Math.max(11, Math.min(48, this.camHeight + delta));
     this.updateCamera();
   }
 
@@ -327,7 +384,7 @@ export class GameScene {
   setLoop(cb: () => void) {
     let last = performance.now();
     const tick = (now: number) => {
-      this.dtMs = now - last;
+      this.dtMs = Math.min(100, Math.max(1, now - last));
       last = now;
       cb();
       requestAnimationFrame(tick);

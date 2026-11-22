@@ -982,7 +982,7 @@ try {
       await sleep(120);
       const t2 = await gs();
       const xOk = t1.camX < t0.camX - 0.4,
-        zOk = t2.camZ > t1.camZ + 0.4;
+        zOk = t2.camZ < t1.camZ - 0.4;
       rec("9b arrow-key pan", xOk && zOk, `camTarget.x ${t0.camX.toFixed(1)}→${t1.camX.toFixed(1)} (ArrowLeft, ${xOk}) · camTarget.z ${t1.camZ.toFixed(1)}→${t2.camZ.toFixed(1)} (ArrowUp, ${zOk})`);
     } catch (e) {
       rec("9b arrow-key pan", false, "threw: " + e.message);
@@ -1008,7 +1008,7 @@ try {
       await sleep(650);
       const e3 = await gs();
       const dze = e3.camZ - e2.camZ;
-      rec("9c edge-pan", leftOk && botOk && dxe < -0.5 && dze < -0.5, `left-edge Δx=${dxe.toFixed(2)} (want <−0.5, canvas=${leftOk}) · bottom-edge Δz=${dze.toFixed(2)} (want <−0.5, canvas=${botOk})`);
+      rec("9c edge-pan", leftOk && botOk && dxe < -0.5 && dze > 0.5, `left-edge Δx=${dxe.toFixed(2)} (want <−0.5, canvas=${leftOk}) · bottom-edge Δz=${dze.toFixed(2)} (want >+0.5, canvas=${botOk})`);
     } catch (e) {
       rec("9c edge-pan", false, "threw: " + e.message);
     }

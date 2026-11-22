@@ -1,10 +1,12 @@
 import * as THREE from "three";
-import type { EntSnap, GameEvent } from "../shared/protocol";
-import { makeEntVis, tagEntity, applyFacing, EntVis } from "./meshes";
+import type { EntSnap, GameEvent, OrderKind } from "../shared/protocol";
+import { makeEntVis, tagEntity, applyFacing, EntVis } from "./models";
+import { createAnimState, stepEntityAnim, triggerFireAnim, AnimState } from "./anim";
+import { VfxSystem, WaypointOverlay } from "./vfx";
 import { isBuildingKind } from "./util";
 import { GameScene } from "./scene";
 
-const INTERP_MS = 260; // render delay for snapshot interpolation
+const INTERP_MS = 220; // crisp snapshot interpolation window
 const SNAP_KEEP = 8;
 
 interface Snap {
@@ -15,13 +17,7 @@ interface Snap {
 interface Tracked {
   vis: EntVis;
   last: EntSnap;
-}
-
-interface Fx {
-  obj: THREE.Object3D;
-  born: number;
-  life: number;
-  tick: (o: THREE.Object3D, t: number) => void;
+  anim: AnimState;
 }
 
 export class Renderer {
@@ -29,9 +25,32 @@ export class Renderer {
   snaps: Snap[] = [];
   selection = new Set<number>();
   slotColors = new Map<number, string>();
-  private fxs: Fx[] = [];
+  onOwnerLost?: (id: number) => void;
 
-  constructor(private gs: GameScene) {}
+  private vfx: VfxSystem;
+  private waypoints: WaypointOverlay;
+  private seen = new Set<number>();
+  private hasInitialSnap = false;
+
+  constructor(private gs: GameScene) {
+    this.vfx = new VfxSystem(gs.scene);
+    this.waypoints = new WaypointOverlay(gs.scene);
+  }
+
+  reset() {
+    const scene = this.gs.scene;
+    for (const t of this.tracked.values()) {
+      scene.remove(t.vis.root);
+    }
+    this.tracked.clear();
+    this.gs.pickables.length = 0;
+    this.snaps = [];
+    this.selection.clear();
+    this.seen.clear();
+    this.hasInitialSnap = false;
+    this.vfx.clear();
+    this.waypoints.clear();
+  }
 
   pushSnap(ents: EntSnap[]) {
     const map = new Map<number, EntSnap>();
@@ -40,7 +59,7 @@ export class Renderer {
     if (this.snaps.length > SNAP_KEEP) this.snaps.shift();
 
     const scene = this.gs.scene;
-    // remove gone entities
+    // Remove gone entities
     for (const [id, t] of this.tracked) {
       if (!map.has(id)) {
         scene.remove(t.vis.root);
@@ -50,18 +69,22 @@ export class Renderer {
         this.selection.delete(id);
       }
     }
-    // create new
+    // Create new entities
     for (const e of ents) {
       if (this.tracked.has(e.id)) continue;
       const color = this.slotColors.get(e.o) ?? "#888888";
       const vis = makeEntVis(e.k, color, scene);
       vis.root.position.set(e.x, 0, e.y);
+      if (!isBuildingKind(e.k)) applyFacing(vis.root, e.d / 10);
       tagEntity(vis.root, e.id);
       scene.add(vis.root);
       this.gs.pickables.push(vis.root);
-      this.tracked.set(e.id, { vis, last: e });
+      const anim = createAnimState(e, this.hasInitialSnap);
+      this.tracked.set(e.id, { vis, last: e, anim });
     }
-    // prune selection to own living units
+    this.hasInitialSnap = true;
+
+    // Prune selection to living entities
     for (const id of [...this.selection]) if (!this.tracked.has(id)) this.selection.delete(id);
     this.updateBars(map);
   }
@@ -70,9 +93,12 @@ export class Renderer {
     for (const [id, t] of this.tracked) {
       const e = map.get(id);
       if (!e) continue;
-      if (t.last.o !== e.o) {
-        // ownership changed (engineer capture) — rebuild the mesh in the new color
+      const ownerChanged = t.last.o !== e.o;
+      const kindChanged = t.last.k !== e.k;
+      if (ownerChanged || kindChanged) {
+        // Ownership changed (capture) OR kind changed (factory -> factory2 upgrade) — rebuild visual!
         const scene = this.gs.scene;
+        const wasVisible = t.vis.root.visible;
         scene.remove(t.vis.root);
         const i = this.gs.pickables.indexOf(t.vis.root);
         if (i >= 0) this.gs.pickables.splice(i, 1);
@@ -80,10 +106,18 @@ export class Renderer {
         const vis = makeEntVis(e.k, color, scene);
         vis.root.position.copy(t.vis.root.position);
         vis.root.rotation.y = t.vis.root.rotation.y;
+        vis.root.visible = wasVisible;
         tagEntity(vis.root, e.id);
         scene.add(vis.root);
         this.gs.pickables.push(vis.root);
         t.vis = vis;
+        if (ownerChanged) {
+          this.selection.delete(id);
+          this.onOwnerLost?.(id);
+        } else {
+          // Keep selection ring active across upgrade
+          t.vis.ring.visible = this.selection.has(id);
+        }
       }
       t.last = e;
       const frac = Math.max(0, e.hp / e.mhp);
@@ -93,7 +127,6 @@ export class Renderer {
       const show = frac < 1 || this.selection.has(id);
       t.vis.barBg.visible = show;
       t.vis.barFg.visible = show;
-      // harvester cargo glow scales with load (cap 40)
       if (t.vis.bin) t.vis.bin.scale.y = Math.max(0.05, (e.cargo ?? 0) / 40);
     }
   }
@@ -133,87 +166,40 @@ export class Renderer {
     };
   }
 
-  update() {
-    const now = performance.now();
+  update(dt = 0.016) {
+    const nowSec = performance.now() / 1000;
+    const emitSmoke = (x: number, y: number, z: number, dark: boolean) => this.vfx.spawnSmoke(x, y, z, dark);
+    const wpEntries: { x: number; y: number; wp: [number, number, OrderKind][] }[] = [];
+
     for (const [id, t] of this.tracked) {
       const p = this.framePos(id);
       if (!p) continue;
       t.vis.root.position.x = p.x;
       t.vis.root.position.z = p.y;
-      if (isBuildingKind(t.last.k)) {
-        if (t.last.k === "turret" && t.vis.turret) applyFacing(t.vis.turret, p.d);
-      } else {
+      if (!isBuildingKind(t.last.k)) {
         applyFacing(t.vis.root, p.d);
       }
-      if (t.vis.spin) t.vis.spin.rotation.y += 0.012;
-    }
-    // fx
-    for (let i = this.fxs.length - 1; i >= 0; i--) {
-      const f = this.fxs[i];
-      const t = (now - f.born) / f.life;
-      if (t >= 1) {
-        this.gs.scene.remove(f.obj);
-        disposeObj(f.obj);
-        this.fxs.splice(i, 1);
-      } else f.tick(f.obj, t);
-    }
-  }
+      stepEntityAnim(t.vis, t.anim, t.last, p.x, p.y, p.d, dt, nowSec, emitSmoke);
 
-  private addFx(obj: THREE.Object3D, life: number, tick: Fx["tick"]) {
-    this.gs.scene.add(obj);
-    this.fxs.push({ obj, born: performance.now(), life, tick });
+      if (this.selection.has(id) && t.last.wp?.length && t.vis.root.visible) {
+        wpEntries.push({ x: p.x, y: p.y, wp: t.last.wp });
+      }
+    }
+
+    this.waypoints.update(wpEntries, nowSec);
+    this.vfx.update();
   }
 
   applyEvents(events: GameEvent[]) {
-    const scene = this.gs.scene;
     for (const ev of events) {
       if (ev.e === "shot") {
-        const a = new THREE.Vector3(ev.fx, 0.7, ev.fy);
-        const b = new THREE.Vector3(ev.tx, 0.5, ev.ty);
-        // tracer beam — stretched emissive cylinder
-        const len = a.distanceTo(b);
-        const beam = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.035, 0.035, 1, 6),
-          new THREE.MeshBasicMaterial({ color: new THREE.Color(2.4, 2.0, 0.8), transparent: true, opacity: 0.95 })
-        );
-        beam.scale.y = len;
-        beam.position.copy(a).lerp(b, 0.5);
-        beam.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
-        this.addFx(beam, 140, (m, t) => ((m as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = 0.95 * (1 - t));
-        // muzzle flash sprite
-        const flash = new THREE.Sprite(new THREE.SpriteMaterial({ color: new THREE.Color(3, 2.2, 0.9), transparent: true }));
-        flash.position.copy(a);
-        flash.scale.setScalar(0.5);
-        this.addFx(flash, 120, (m, t) => {
-          m.scale.setScalar(0.5 * (1 - t * 0.6));
-          (m as THREE.Sprite).material.opacity = 1 - t;
-        });
+        this.vfx.spawnShot(ev.fx, ev.fy, ev.tx, ev.ty, ev.w ?? "bullet");
+        if (ev.src != null) {
+          const shooter = this.tracked.get(ev.src);
+          if (shooter) triggerFireAnim(shooter.anim, ev.fx, ev.fy, ev.tx, ev.ty);
+        }
       } else if (ev.e === "boom") {
-        const r = Math.max(1.4, ev.r * 1.1);
-        // fireball
-        const s = new THREE.Mesh(
-          new THREE.SphereGeometry(0.5, 10, 8),
-          new THREE.MeshBasicMaterial({ color: new THREE.Color(2.8, 1.1, 0.3), transparent: true })
-        );
-        s.position.set(ev.x, 0.6, ev.y);
-        this.addFx(s, 520, (m, t) => {
-          const sc = 0.4 + t * r;
-          m.scale.setScalar(sc);
-          m.position.y = 0.4 + t * 0.9;
-          ((m as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = (1 - t) * (1 - t);
-        });
-        // ground shockwave ring
-        const ring = new THREE.Mesh(
-          new THREE.TorusGeometry(1, 0.05, 8, 32),
-          new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 1.3, 0.4), transparent: true })
-        );
-        ring.rotation.x = -Math.PI / 2;
-        ring.position.set(ev.x, 0.12, ev.y);
-        this.addFx(ring, 430, (m, t) => {
-          const sc = 1 + t * r * 1.9;
-          m.scale.set(sc, sc, sc);
-          ((m as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = 0.9 * (1 - t);
-        });
+        this.vfx.spawnBoom(ev.x, ev.y, ev.r);
       } else if (ev.e === "ore") {
         this.gs.setOreCells(ev.cells);
       }
@@ -226,16 +212,21 @@ export class Renderer {
     return out;
   }
 
-  // fog-lite: enemy units only render within sight of your forces; enemy
-  // buildings stay visible once scouted. spectators see everything.
-  private seen = new Set<number>();
+  // Fog-lite: enemy units only render within sight of your forces; enemy
+  // buildings stay visible once scouted. Spectators see everything.
   applyVisibility(mySlot: number) {
-    if (mySlot < 0) return;
+    if (mySlot < 0) {
+      for (const t of this.tracked.values()) if (!t.vis.root.visible) t.vis.root.visible = true;
+      return;
+    }
     const mine: { x: number; y: number }[] = [];
     for (const t of this.tracked.values()) if (t.last.o === mySlot) mine.push(t.last);
     for (const [id, t] of this.tracked) {
       const e = t.last;
-      if (e.o === mySlot || e.o < 0) continue;
+      if (e.o === mySlot || e.o < 0) {
+        if (!t.vis.root.visible) t.vis.root.visible = true;
+        continue;
+      }
       let vis = false;
       for (const m of mine) {
         if ((m.x - e.x) * (m.x - e.x) + (m.y - e.y) * (m.y - e.y) <= 14 * 14) {
@@ -248,32 +239,22 @@ export class Renderer {
       if (t.vis.root.visible !== show) t.vis.root.visible = show;
     }
   }
+
   isVisible(id: number) {
     return this.tracked.get(id)?.vis.root.visible ?? false;
   }
 
   entScreenPos(id: number): { x: number; y: number } | null {
     const t = this.tracked.get(id);
-    if (!t) return null;
+    if (!t || !t.vis.root.visible) return null;
     const v = t.vis.root.position.clone();
     v.y = 0.5;
     v.project(this.gs.camera);
+    // Reject entities behind or clipped outside camera frustum
+    if (v.z < -1 || v.z > 1) return null;
     return {
       x: (v.x * 0.5 + 0.5) * this.gs.canvas.clientWidth,
       y: (-v.y * 0.5 + 0.5) * this.gs.canvas.clientHeight,
     };
   }
-}
-
-function disposeObj(o: THREE.Object3D) {
-  o.traverse((c) => {
-    if (c instanceof THREE.Mesh) {
-      (c.geometry as THREE.BufferGeometry)?.dispose?.();
-      const m = c.material as THREE.Material | THREE.Material[];
-      if (Array.isArray(m)) m.forEach((x) => x.dispose());
-      else m?.dispose?.();
-    } else if (c instanceof THREE.Sprite) {
-      (c.material as THREE.SpriteMaterial).dispose();
-    }
-  });
 }

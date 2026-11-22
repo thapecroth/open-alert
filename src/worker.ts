@@ -139,7 +139,15 @@ export class GameRoom extends Server<Env> {
           err = "bad order";
           break;
         }
-        err = this.world.cmdOrder(slot, validIds(m.ids), m.kind, m.x, m.y, Number.isFinite(m.target) ? m.target : undefined);
+        err = this.world.cmdOrder(
+          slot,
+          validIds(m.ids),
+          m.kind,
+          m.x,
+          m.y,
+          Number.isFinite(m.target) ? m.target : undefined,
+          !!m.queue,
+        );
         break;
       case "stop":
         this.world.cmdStop(slot, validIds(m.ids));

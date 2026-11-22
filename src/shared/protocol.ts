@@ -5,7 +5,7 @@ export type C2S =
   | { t: "join"; name: string; token?: string }
   | { t: "ready"; ready: boolean }
   | { t: "start" }
-  | { t: "order"; ids: number[]; kind: OrderKind; x: number; y: number; target?: number }
+  | { t: "order"; ids: number[]; kind: OrderKind; x: number; y: number; target?: number; queue?: boolean }
   | { t: "stop"; ids: number[] }
   | { t: "build"; kind: BuildingKind } // start building production
   | { t: "buildCancel" }
@@ -22,6 +22,7 @@ export type C2S =
   | { t: "rematch" };
 
 export type OrderKind = "move" | "amove" | "attack" | "harvest";
+export type WeaponFx = "bullet" | "cannon" | "rocket" | "arty" | "arc" | "melee";
 
 // ---------- server -> client ----------
 export interface LobbyPlayer {
@@ -45,6 +46,7 @@ export interface EntSnap {
   mhp: number;
   d: number; // facing, radians * 10 quantized
   cargo?: number;
+  wp?: [number, number, OrderKind][]; // active + queued waypoints
 }
 
 export interface ProdQueue {
@@ -67,7 +69,7 @@ export interface PlayerState {
 }
 
 export type GameEvent =
-  | { e: "shot"; fx: number; fy: number; tx: number; ty: number }
+  | { e: "shot"; fx: number; fy: number; tx: number; ty: number; w?: WeaponFx; src?: number }
   | { e: "boom"; x: number; y: number; r: number }
   | { e: "spawn"; id: number }
   | { e: "ore"; cells: [number, number, number][] } // [x,y,amountLeft]
