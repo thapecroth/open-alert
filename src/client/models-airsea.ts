@@ -615,6 +615,122 @@ function makeMicroDroneGeo(): THREE.BufferGeometry {
   return g;
 }
 
+// 23. FPV Suicide Drone: Sculpted PG-7V RPG Shaped-Charge Warhead (LatheGeometry along +Z)
+function makeRpgWarheadGeo(): THREE.BufferGeometry {
+  const pts: THREE.Vector2[] = [
+    new THREE.Vector2(0.002, -0.34),
+    new THREE.Vector2(0.036, -0.34),
+    new THREE.Vector2(0.038, -0.14), // narrow tail tube
+    new THREE.Vector2(0.088, -0.02), // flared shaped-charge body
+    new THREE.Vector2(0.092, 0.07),
+    new THREE.Vector2(0.052, 0.22), // ballistic nose cone
+    new THREE.Vector2(0.022, 0.34), // piezoelectric standoff probe
+    new THREE.Vector2(0.002, 0.38),
+  ];
+  const g = new THREE.LatheGeometry(pts, 16);
+  g.rotateX(Math.PI / 2); // +Y -> +Z
+  return g;
+}
+
+// 24. Delta Kamikaze (Shahed): Iconic Cropped Delta-Wing Loitering Munition Planform (+y -> +Z)
+function makeShahedWingGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(0, 0.96); // sharp warhead nose apex
+  s.lineTo(0.14, 0.64);
+  s.lineTo(0.84, -0.36); // wide swept delta leading edge
+  s.lineTo(0.84, -0.66); // crisp cropped square wingtip
+  s.lineTo(0.16, -0.62); // straight delta trailing edge
+  s.lineTo(0.1, -0.74); // rear pusher engine cowling
+  s.lineTo(-0.1, -0.74);
+  s.lineTo(-0.16, -0.62);
+  s.lineTo(-0.84, -0.66);
+  s.lineTo(-0.84, -0.36);
+  s.lineTo(-0.14, 0.64);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.068,
+    bevelEnabled: true,
+    bevelThickness: 0.024,
+    bevelSize: 0.018,
+    bevelSegments: 2,
+  });
+  g.center();
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
+// 25. Delta Kamikaze (Shahed): Twin Vertical Wingtip Endplate Rudder Fin (+x -> +Z)
+function makeShahedTipFinGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(0.18, 0.0); // leading wingtip nose
+  s.lineTo(0.02, 0.22); // upper vertical stabilizer peak
+  s.lineTo(-0.16, 0.19);
+  s.lineTo(-0.18, -0.17); // symmetric lower ventral stabilizer
+  s.lineTo(0.02, -0.19);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.02,
+    bevelEnabled: true,
+    bevelThickness: 0.006,
+    bevelSize: 0.006,
+    bevelSegments: 1,
+  });
+  g.center();
+  g.rotateY(-Math.PI / 2);
+  return g;
+}
+
+// 26. EW Jammer Drone: Sleek Dark-Titanium Hex-Wing Electronic Warfare UAV Planform (+y -> +Z)
+function makeEwDroneWingGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(0, 0.82); // faceted hex-nose apex
+  s.lineTo(0.28, 0.56);
+  s.lineTo(0.96, 0.08); // forward-swept hex-wing outer shoulder
+  s.lineTo(0.92, -0.26); // chamfered hexagonal wingtip
+  s.lineTo(0.42, -0.58); // angled rear hex trailing edge
+  s.lineTo(0.18, -0.46); // twin-boom rear notch
+  s.lineTo(0, -0.62);
+  s.lineTo(-0.18, -0.46);
+  s.lineTo(-0.42, -0.58);
+  s.lineTo(-0.92, -0.26);
+  s.lineTo(-0.96, 0.08);
+  s.lineTo(-0.28, 0.56);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.078,
+    bevelEnabled: true,
+    bevelThickness: 0.028,
+    bevelSize: 0.022,
+    bevelSegments: 2,
+  });
+  g.center();
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
+// 27. Sea-Baby USV: Low-Profile Stealth Wave-Piercing Unmanned Drone Boat Hull (+y -> +Z)
+function makeUsvHullGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(0, 0.88); // razor wave-piercing kamikaze prow
+  s.lineTo(0.17, 0.42);
+  s.lineTo(0.24, -0.18); // sleek narrow low-observable beam
+  s.lineTo(0.2, -0.68); // clean waterjet transom stern
+  s.lineTo(-0.2, -0.68);
+  s.lineTo(-0.24, -0.18);
+  s.lineTo(-0.17, 0.42);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.13,
+    bevelEnabled: true,
+    bevelThickness: 0.032,
+    bevelSize: 0.022,
+    bevelSegments: 2,
+  });
+  g.center();
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
 const geoHangarArch = makeHangarArchGeo();
 const geoInterceptorPlanform = makeInterceptorPlanformGeo();
 const geoJetTailFin = makeJetTailFinGeo();
@@ -636,9 +752,49 @@ const geoDreadnoughtHull = makeDreadnoughtHullGeo();
 const geoCarrierHull = makeCarrierHullGeo();
 const geoCarrierDeck = makeCarrierDeckGeo();
 const geoMicroDrone = makeMicroDroneGeo();
+const geoRpgWarhead = makeRpgWarheadGeo();
+const geoShahedWing = makeShahedWingGeo();
+const geoShahedTipFin = makeShahedTipFinGeo();
+const geoEwDroneWing = makeEwDroneWingGeo();
+const geoUsvHull = makeUsvHullGeo();
 const geoGunboatTurret = makeNavalTurretGeo(0.36, 0.16, 0.44);
 const geoDestroyerTurret = makeNavalTurretGeo(0.5, 0.22, 0.6);
 const geoSubShroud = new THREE.TorusGeometry(0.17, 0.024, 8, 20);
+const geoEwHaloOuter = new THREE.TorusGeometry(0.76, 0.022, 8, 36);
+geoEwHaloOuter.rotateX(Math.PI / 2);
+const geoEwHaloInner = new THREE.TorusGeometry(0.52, 0.015, 8, 28);
+geoEwHaloInner.rotateX(Math.PI / 2);
+const geoEwHaloArc = new THREE.TorusGeometry(0.86, 0.014, 6, 18, Math.PI * 0.45);
+geoEwHaloArc.rotateX(Math.PI / 2);
+
+const ewHaloPurpleMat = new THREE.MeshBasicMaterial({
+  color: 0xb05cff,
+  transparent: true,
+  opacity: 0.56,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+});
+const ewHaloCyanMat = new THREE.MeshBasicMaterial({
+  color: 0x3ef2ff,
+  transparent: true,
+  opacity: 0.52,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+});
+const fpvBlurDiscMat = new THREE.MeshBasicMaterial({
+  color: 0x202b36,
+  transparent: true,
+  opacity: 0.26,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
+const fpvBlurRingMat = new THREE.MeshBasicMaterial({
+  color: 0xff5a36,
+  transparent: true,
+  opacity: 0.34,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
 const geoZepRingTable: { z: number; geo: THREE.TorusGeometry; isAccent: boolean }[] = (
   [
     [-0.78, 0.44, false],
@@ -2077,6 +2233,350 @@ export function buildAirSeaModel(
 
       smokePos = new THREE.Vector3(ix, 1.38, iz - 0.18);
       topY = 2.02;
+      break;
+    }
+
+    // =========================================================================
+    // 17. FPV SUICIDE DRONE (Air) — Carbon-Fiber X-Frame Quadcopter + Underslung RPG Warhead
+    // =========================================================================
+    case "fpvdrone": {
+      altitude = 2.65;
+      body.position.y = altitude;
+
+      const carbonMat = getChassisMat("#181d24", 0.36, 0.52);
+      const oliveWarhead = getChassisMat("#4a5738", 0.56, 0.28);
+      const warheadMetal = getChassisMat("#6e7880", 0.32, 0.78);
+      const copperMat = getChassisMat("#c97a38", 0.32, 0.8);
+      const crimsonLed = getGlowMat(CRIMSON, 1.9);
+
+      // Central carbon-fiber flight controller stack & top/bottom X-frame plates
+      add(rbox(0.24, 0.055, 0.34, carbonMat, 0.015), 0, 0.02, 0);
+      add(rbox(0.18, 0.08, 0.24, hullDk, 0.02), 0, 0.065, -0.02);
+      // Top-mounted strapped LiPo battery pack with satin faction grip band
+      add(rbox(0.15, 0.075, 0.22, gunm, 0.018), 0, 0.125, -0.03);
+      add(box(0.162, 0.082, 0.052, accent), 0, 0.125, -0.03);
+
+      // Authentic carbon-fiber X-frame 4 arms + 4 angled brushless motor pods + spinning rotors (`spin`)
+      spin = new THREE.Group();
+      body.add(spin);
+
+      const armOffsets: [number, number][] = [
+        [-1, 1], // front-left
+        [1, 1], // front-right
+        [-1, -1], // rear-left
+        [1, -1], // rear-right
+      ];
+      for (const [sx, sz] of armOffsets) {
+        const ang = Math.atan2(sx, sz);
+        // Carbon-fiber diagonal arm strut
+        const arm = rbox(0.052, 0.026, 0.44, carbonMat, 0.008);
+        arm.rotation.y = ang;
+        add(arm, sx * 0.19, 0.025, sz * 0.19);
+        // Subtle faction arm stripe near hub
+        const stripe = box(0.056, 0.03, 0.075, accent);
+        stripe.rotation.y = ang;
+        add(stripe, sx * 0.12, 0.026, sz * 0.12);
+
+        // Angled motor pod mount & brushless bell at arm tip
+        const mx = sx * 0.34;
+        const mz = sz * 0.34;
+        const pod = new THREE.Group();
+        pod.position.set(mx, 0.052, mz);
+        pod.rotation.z = -sx * 0.09;
+        pod.rotation.x = sz * 0.07;
+        body.add(pod);
+        add(cyl(0.092, 0.072, gunm), 0, 0, 0, pod);
+        add(cyl(0.082, 0.026, copperMat), 0, 0.01, 0, pod);
+        add(cyl(0.038, 0.04, steel), 0, 0.048, 0, pod);
+
+        // Individual spinning 3-blade FPV rotor + translucent motion-blur disc (child of `spin`)
+        const rotor = new THREE.Group();
+        rotor.position.set(mx, 0.105, mz);
+        rotor.rotation.z = -sx * 0.09;
+        rotor.rotation.x = sz * 0.07;
+        spin.add(rotor);
+        rotor.add(cyl(0.034, 0.024, steel));
+        for (let b = 0; b < 3; b++) {
+          const bang = (b * Math.PI * 2) / 3;
+          const blade = box(0.026, 0.008, 0.24, carbonMat);
+          blade.position.set(Math.sin(bang) * 0.12, 0, Math.cos(bang) * 0.12);
+          blade.rotation.y = bang;
+          rotor.add(blade);
+        }
+        const bDisc = new THREE.Mesh(geoRotorDisc, fpvBlurDiscMat);
+        bDisc.scale.setScalar(0.245);
+        bDisc.position.y = -0.005;
+        rotor.add(bDisc);
+        const bRing = new THREE.Mesh(rotorRingGeo, fpvBlurRingMat);
+        bRing.scale.setScalar(0.245);
+        bRing.position.y = -0.004;
+        rotor.add(bRing);
+      }
+
+      // Front tilt-angled micro-FPV camera cage + optical lens
+      add(rbox(0.11, 0.095, 0.09, carbonMat, 0.014), 0, 0.055, 0.19);
+      const camBarrel = cyl(0.064, 0.055, gunm);
+      camBarrel.rotation.x = Math.PI / 2 - 0.24;
+      add(camBarrel, 0, 0.06, 0.245);
+      const camLens = sph(0.048, getGlassMat("#64e4ff"), false);
+      add(camLens, 0, 0.064, 0.27);
+
+      // Rear tilted VTX lollipop FPV antenna
+      const antMast = cyl(0.016, 0.19, steel);
+      antMast.rotation.x = -0.45;
+      add(antMast, 0, 0.14, -0.2);
+      add(sph(0.052, accentBright), 0, 0.22, -0.25);
+
+      // Underslung strapped olive/metallic RPG PG-7V shaped-charge warhead!
+      add(mesh(geoRpgWarhead, oliveWarhead), 0, -0.095, 0.06);
+      // Metallic nose cap collar & twin copper contact-detonator fuse prongs
+      const noseBand = cyl(0.094, 0.045, warheadMetal);
+      noseBand.rotation.x = Math.PI / 2;
+      add(noseBand, 0, -0.095, 0.16);
+      for (const sx of [-1, 1]) {
+        const prong = cyl(0.01, 0.13, copperMat);
+        prong.rotation.x = Math.PI / 2;
+        prong.rotation.z = sx * 0.22;
+        add(prong, sx * 0.022, -0.095, 0.45);
+      }
+      // Heavy black mounting straps cinching warhead tightly to belly
+      for (const sz of [-0.04, 0.1]) {
+        add(rbox(0.2, 0.135, 0.028, gunm, 0.006), 0, -0.035, sz);
+      }
+      // Pulsing bright crimson armed detonator LED (`pulse`)
+      const armedLed = sph(0.062, crimsonLed, false);
+      add(armedLed, 0, -0.025, 0.26);
+      pulse.push(armedLed);
+      const tailLed = sph(0.042, crimsonLed, false);
+      add(tailLed, 0, 0.09, -0.18);
+      pulse.push(tailLed);
+
+      smokePos = new THREE.Vector3(0, altitude, -0.2);
+      topY = altitude + 0.34;
+      break;
+    }
+
+    // =========================================================================
+    // 18. DELTA KAMIKAZE (Shahed, Air) — Cropped Delta-Wing Loitering Munition + Pusher Prop
+    // =========================================================================
+    case "shahed": {
+      altitude = 3.15;
+      body.position.y = altitude;
+
+      const matteWhite = getChassisMat("#c8d1da", 0.56, 0.22);
+      const matteSlate = getChassisMat("#8c99a6", 0.52, 0.28);
+      const noseDark = getChassisMat("#1f252d", 0.44, 0.58);
+      const crimsonStripe = getChassisMat("#d43228", 0.42, 0.36);
+
+      // Iconic sleek matte white/slate cropped delta-wing fuselage (ExtrudeGeometry)
+      add(mesh(geoShahedWing, matteWhite), 0, 0, 0);
+
+      // Blended cylindrical dorsal fuselage fairing spine tapering from warhead to pusher engine
+      const spine = cyl(0.19, 1.38, matteSlate, true);
+      spine.rotation.x = Math.PI / 2;
+      add(spine, 0, 0.04, -0.04);
+      // Satin faction dorsal & wing identification bands
+      add(rbox(0.11, 0.045, 0.68, accent, 0.015), 0, 0.11, -0.16);
+      for (const sx of [-1, 1]) {
+        const wMark = box(0.26, 0.082, 0.14, accent);
+        add(wMark, sx * 0.46, 0.004, -0.44);
+      }
+
+      // Dark warhead nose cone with crimson accent stripe & pulsing armed tip beacon
+      const noseCone = cone(0.19, 0.42, noseDark);
+      noseCone.rotation.x = Math.PI / 2;
+      add(noseCone, 0, 0.01, 0.96);
+      const redBand = cyl(0.175, 0.075, crimsonStripe);
+      redBand.rotation.x = Math.PI / 2;
+      add(redBand, 0, 0.01, 0.72);
+      const armedDot = sph(0.056, getGlowMat(CRIMSON, 1.8), false);
+      add(armedDot, 0, 0.085, 0.58);
+      pulse.push(armedDot);
+
+      // Twin vertical wingtip endplate rudders (ExtrudeGeometry extending above & below wingtips!)
+      for (const sx of [-1, 1]) {
+        add(mesh(geoShahedTipFin, matteSlate), sx * 0.85, 0.01, -0.52);
+        add(box(0.032, 0.08, 0.18, crimsonStripe), sx * 0.85, 0.14, -0.56);
+      }
+
+      // Rear dark engine cowling + twin mini exhaust stubs
+      add(rbox(0.18, 0.12, 0.2, gunm, 0.025), 0, 0.01, -0.74);
+      for (const sx of [-0.075, 0.075]) {
+        const exh = cyl(0.032, 0.12, steel);
+        exh.rotation.x = Math.PI / 2;
+        add(exh, sx, -0.05, -0.78);
+      }
+
+      // Rear spinning 2-blade pusher propeller (`spin` rotates around Z)
+      spin = new THREE.Group();
+      spin.position.set(0, 0.01, -0.87);
+      body.add(spin);
+      const pHub = cone(0.075, 0.12, gunm);
+      pHub.rotation.x = -Math.PI / 2;
+      spin.add(pHub);
+      const propMat = getChassisMat("#242a32", 0.42, 0.56);
+      for (let i = 0; i < 2; i++) {
+        const blade = box(0.042, 0.46, 0.016, propMat);
+        blade.rotation.z = (i * Math.PI) / 2;
+        spin.add(blade);
+      }
+      const pTipRing = new THREE.Mesh(rotorRingGeo, fpvBlurDiscMat);
+      pTipRing.rotation.x = Math.PI / 2;
+      pTipRing.scale.setScalar(0.24);
+      spin.add(pTipRing);
+
+      smokePos = new THREE.Vector3(0, altitude, -0.88);
+      topY = altitude + 0.38;
+      break;
+    }
+
+    // =========================================================================
+    // 19. EW JAMMER DRONE (Air) — Dark-Titanium Hex-Wing UAV + Phased EW Radome & Halo
+    // =========================================================================
+    case "ewdrone": {
+      altitude = 3.25;
+      body.position.y = altitude;
+
+      const ewTitanium = getChassisMat("#28323e", 0.34, 0.72);
+      const ewSlate = getChassisMat("#3c4a58", 0.3, 0.68);
+      const ewPurpleGlow = getGlowMat("#b45cff", 1.85);
+      const ewCyanGlow = getGlowMat(CORE_GLOW, 1.75);
+
+      // Sleek dark-titanium hex-wing electronic warfare UAV airframe (ExtrudeGeometry)
+      add(mesh(geoEwDroneWing, ewTitanium), 0, 0, 0);
+
+      // Faceted hexagonal dorsal avionics hump & satin faction spine trim
+      add(rbox(0.42, 0.13, 0.96, ewSlate, 0.045), 0, 0.085, 0.02);
+      add(rbox(0.18, 0.05, 0.78, accent, 0.02), 0, 0.155, -0.02);
+
+      // Flush dark-glass forward EW optical visor + glowing purple-cyan spectrum strips
+      const ewVisor = rbox(0.28, 0.065, 0.22, getGlassMat("#7b5cff"), 0.02, false);
+      ewVisor.rotation.x = 0.26;
+      add(ewVisor, 0, 0.115, 0.44);
+
+      // Twin dorsal EW blade dipole antennas + glowing purple-cyan wingtip emitter nodes
+      for (const sx of [-1, 1]) {
+        const ant = rbox(0.024, 0.22, 0.12, steel, 0.006);
+        ant.rotation.z = sx * -0.24;
+        add(ant, sx * 0.26, 0.18, -0.34);
+        // Leading-edge faction & EW wing chevron
+        const wBar = box(0.46, 0.09, 0.085, accent);
+        wBar.rotation.y = sx * -0.58;
+        add(wBar, sx * 0.58, 0.008, 0.18);
+        // Wingtip EW jamming emitter pods
+        add(rbox(0.065, 0.055, 0.34, gunm, 0.012), sx * 0.94, 0, -0.08);
+        const tipGlow = sph(0.064, sx < 0 ? ewPurpleGlow : ewCyanGlow, false);
+        add(tipGlow, sx * 0.94, 0, 0.11);
+        pulse.push(tipGlow);
+      }
+
+      // Compact twin rear electric ducted thruster pods with cool cyan glow
+      for (const sx of [-0.22, 0.22]) {
+        const duct = cyl(0.11, 0.22, gunm);
+        duct.rotation.x = Math.PI / 2;
+        add(duct, sx, 0.01, -0.52);
+        const jet = sph(0.072, ewCyanGlow, false);
+        add(jet, sx, 0.01, -0.64);
+        pulse.push(jet);
+      }
+
+      // Underslung glowing purple-cyan phased EW jammer radome
+      add(cyl(0.36, 0.09, gunm), 0, -0.08, 0.04);
+      const radomeCore = sph(0.28, ewPurpleGlow, false);
+      radomeCore.scale.set(1.0, 0.56, 1.0);
+      add(radomeCore, 0, -0.145, 0.04);
+      pulse.push(radomeCore);
+      const radomeRing = new THREE.Mesh(geoEwHaloInner, ewCyanGlow);
+      radomeRing.scale.setScalar(0.36);
+      add(radomeRing, 0, -0.115, 0.04);
+      pulse.push(radomeRing);
+
+      // Subtle rotating holographic purple-cyan jamming halo ring (`spin`, `spin2`, `pulse`)
+      spin = new THREE.Group();
+      spin.position.set(0, -0.13, 0.04);
+      body.add(spin);
+      const outerHalo = new THREE.Mesh(geoEwHaloOuter, ewHaloPurpleMat);
+      spin.add(outerHalo);
+      pulse.push(outerHalo);
+      for (let i = 0; i < 3; i++) {
+        const arc = new THREE.Mesh(geoEwHaloArc, ewHaloCyanMat);
+        arc.rotation.y = (i * Math.PI * 2) / 3;
+        spin.add(arc);
+      }
+
+      spin2 = new THREE.Group();
+      spin2.position.set(0, -0.14, 0.04);
+      body.add(spin2);
+      const innerHalo = new THREE.Mesh(geoEwHaloInner, ewHaloCyanMat);
+      spin2.add(innerHalo);
+      pulse.push(innerHalo);
+
+      smokePos = new THREE.Vector3(0, altitude, -0.62);
+      topY = altitude + 0.48;
+      break;
+    }
+
+    // =========================================================================
+    // 20. SEA-BABY USV DRONE BOAT (Sea) — Stealth Wave-Piercing Kamikaze Boat + Per-Instance subMats
+    // =========================================================================
+    case "usv": {
+      body.position.y = 0.04;
+
+      const usvHullMat = getChassisMat("#1b222a", 0.46, 0.52);
+      const usvDeckMat = getChassisMat("#27303a", 0.42, 0.56);
+      const satWhite = getChassisMat("#e4ecf4", 0.36, 0.16);
+      const crimsonFuse = getGlowMat(CRIMSON, 1.9);
+
+      // Low-profile dark stealth wave-piercing USV hull (ExtrudeGeometry)
+      add(mesh(geoUsvHull, usvHullMat), 0, 0.09, 0.04);
+      // Low beveled armored deck hatch cover & subtle satin faction bow chevrons
+      add(rbox(0.32, 0.055, 0.96, usvDeckMat, 0.018), 0, 0.18, -0.04);
+      add(rbox(0.36, 0.032, 0.24, accent, 0.01), 0, 0.195, 0.28);
+      add(box(0.11, 0.025, 0.42, accentDark), 0, 0.195, -0.26);
+
+      // Flat white rectangular Starlink-style satcom dish mounted cleanly on aft deck!
+      const satDish = rbox(0.24, 0.026, 0.32, satWhite, 0.008);
+      satDish.rotation.x = -0.12;
+      add(satDish, 0, 0.235, -0.24);
+      add(cyl(0.042, 0.055, gunm), 0, 0.205, -0.24);
+
+      // Tiny forward optical/FLIR turret mast
+      add(cyl(0.032, 0.15, steel), 0, 0.275, 0.22);
+      add(sph(0.095, gunm), 0, 0.365, 0.22);
+      const flirEye = sph(0.045, getGlowMat(CORE_GLOW, 1.5), false);
+      add(flirEye, 0, 0.365, 0.265);
+      // Slim stern whip comms antenna
+      add(cyl(0.014, 0.34, steel), 0.11, 0.34, -0.52);
+
+      // Rear recessed stealth waterjet thruster housing
+      const jet = cyl(0.11, 0.18, gunm);
+      jet.rotation.x = Math.PI / 2;
+      add(jet, 0, 0.085, -0.66);
+
+      // Twin metallic bow contact-detonator impact horns + blinking red bow warhead fuse (`pulse`)!
+      for (const sx of [-0.07, 0.07]) {
+        const horn = cyl(0.018, 0.16, steel);
+        horn.rotation.x = Math.PI / 2;
+        horn.rotation.z = sx > 0 ? -0.18 : 0.18;
+        add(horn, sx, 0.135, 0.94);
+      }
+      const bowFuse = sph(0.072, crimsonFuse, false);
+      add(bowFuse, 0, 0.165, 0.82);
+      pulse.push(bowFuse);
+
+      // Per-instance cloned subMats for sleek low-visibility stealth translucency!
+      const mats: THREE.Material[] = [];
+      body.traverse((o) => {
+        if (o instanceof THREE.Mesh && !Array.isArray(o.material)) {
+          const cloned = (o.material as THREE.Material).clone();
+          o.material = cloned;
+          mats.push(cloned);
+        }
+      });
+      subMats = mats;
+
+      smokePos = new THREE.Vector3(0, 0.26, -0.45);
+      topY = 0.62;
       break;
     }
 

@@ -15,6 +15,7 @@ export type UiSfx =
   | "cap"
   | "upgrade"
   | "recon"
+  | "ewjam"
   | "hold"
   | "powerDown"
   | "powerUp"
@@ -701,9 +702,11 @@ export class AudioEngine {
                     ? 0.12
                     : kind === "recon"
                       ? 0.35
-                      : kind === "hold"
-                        ? 0.06
-                        : 0.04;
+                      : kind === "ewjam"
+                        ? 0.09
+                        : kind === "hold"
+                          ? 0.06
+                          : 0.04;
 
     if (!this.allow(`ui:${kind}`, minGap, now)) return;
 
@@ -751,6 +754,9 @@ export class AudioEngine {
           break;
         case "recon":
           this.uiRecon(ctx, bus, now);
+          break;
+        case "ewjam":
+          this.uiEwJam(ctx, bus, now);
           break;
         case "hold":
           this.uiHold(ctx, bus, now);
@@ -1626,6 +1632,76 @@ export class AudioEngine {
 
     // Faint radar bounce echo
     this.playTone(ctx, bus, "sine", 1320, 1300, now + 0.31, 0.24, 0.08, 0.006);
+  }
+
+  private uiEwJam(ctx: AudioContext, bus: AudioNode, now: number): void {
+    // Crisp electronic static interference zap/burst (FM EM warble + stuttered static crackle)
+    const dur = 0.24;
+
+    // 1. FM-modulated descending electromagnetic interference zap
+    const carrier = ctx.createOscillator();
+    carrier.type = "sawtooth";
+    carrier.frequency.setValueAtTime(1920, now);
+    carrier.frequency.exponentialRampToValueAtTime(360, now + dur);
+
+    const mod = ctx.createOscillator();
+    mod.type = "square";
+    mod.frequency.setValueAtTime(92, now);
+    mod.frequency.exponentialRampToValueAtTime(34, now + dur);
+
+    const modDepth = ctx.createGain();
+    modDepth.gain.setValueAtTime(640, now);
+    modDepth.gain.exponentialRampToValueAtTime(95, now + dur);
+
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.Q.value = 3.2;
+    bp.frequency.setValueAtTime(2400, now);
+    bp.frequency.exponentialRampToValueAtTime(620, now + dur);
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(0.24, now + 0.006);
+    g.gain.exponentialRampToValueAtTime(0.08, now + 0.075);
+    g.gain.linearRampToValueAtTime(0.19, now + 0.105);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    mod.connect(modDepth);
+    modDepth.connect(carrier.frequency);
+    carrier.connect(bp);
+    bp.connect(g);
+    g.connect(bus);
+
+    carrier.start(now);
+    mod.start(now);
+    carrier.stop(now + dur + 0.02);
+    mod.stop(now + dur + 0.02);
+
+    // 2. Crisp RF white-noise static burst with gated double-crackle envelope
+    if (this.whiteNoise) {
+      const noise = this.makeNoiseSource(ctx, this.whiteNoise);
+      const nBp = ctx.createBiquadFilter();
+      nBp.type = "bandpass";
+      nBp.Q.value = 2.4;
+      nBp.frequency.setValueAtTime(3800, now);
+      nBp.frequency.exponentialRampToValueAtTime(1150, now + 0.2);
+
+      const ng = ctx.createGain();
+      ng.gain.setValueAtTime(0.0001, now);
+      ng.gain.linearRampToValueAtTime(0.32, now + 0.004);
+      ng.gain.exponentialRampToValueAtTime(0.05, now + 0.055);
+      ng.gain.linearRampToValueAtTime(0.24, now + 0.085);
+      ng.gain.exponentialRampToValueAtTime(0.0001, now + 0.21);
+
+      noise.connect(nBp);
+      nBp.connect(ng);
+      ng.connect(bus);
+      noise.start(now, Math.random() * 1.2);
+      noise.stop(now + 0.23);
+    }
+
+    // 3. Tight low-mid electromagnetic pulse thump
+    this.playTone(ctx, bus, "triangle", 260, 68, now, 0.095, 0.22, 0.003);
   }
 
   private uiHold(ctx: AudioContext, bus: AudioNode, now: number): void {

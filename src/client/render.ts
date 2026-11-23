@@ -148,7 +148,9 @@ function makeHoldIndicator(topY: number): THREE.Group {
   return g;
 }
 
-// Shared Supply Aura assets for Forward Supply Hub & Mobile Supply Truck (zero per-entity GPU leaks)
+// Shared Supply & EW Jamming Aura assets (zero per-entity GPU leaks)
+const EW_JAM_RADIUS = UNITS.ewdrone.ewJamRadius ?? 8.5;
+
 const supplyHubAuraRingGeo = new THREE.RingGeometry(SUPPLY_HUB_RADIUS - 0.16, SUPPLY_HUB_RADIUS, 72);
 supplyHubAuraRingGeo.rotateX(-Math.PI / 2);
 const supplyHubAuraFillGeo = new THREE.CircleGeometry(SUPPLY_HUB_RADIUS - 0.16, 72);
@@ -158,6 +160,13 @@ const supplyTruckAuraRingGeo = new THREE.RingGeometry(SUPPLY_TRUCK_RADIUS - 0.14
 supplyTruckAuraRingGeo.rotateX(-Math.PI / 2);
 const supplyTruckAuraFillGeo = new THREE.CircleGeometry(SUPPLY_TRUCK_RADIUS - 0.14, 56);
 supplyTruckAuraFillGeo.rotateX(-Math.PI / 2);
+
+const ewJamAuraRingGeo = new THREE.RingGeometry(EW_JAM_RADIUS - 0.16, EW_JAM_RADIUS, 72);
+ewJamAuraRingGeo.rotateX(-Math.PI / 2);
+const ewJamAuraInnerRingGeo = new THREE.RingGeometry(EW_JAM_RADIUS * 0.56 - 0.06, EW_JAM_RADIUS * 0.56, 56);
+ewJamAuraInnerRingGeo.rotateX(-Math.PI / 2);
+const ewJamAuraFillGeo = new THREE.CircleGeometry(EW_JAM_RADIUS - 0.16, 72);
+ewJamAuraFillGeo.rotateX(-Math.PI / 2);
 
 const supplyAuraRingMat = new THREE.MeshBasicMaterial({
   color: 0x3ef088,
@@ -173,11 +182,53 @@ const supplyAuraFillMat = new THREE.MeshBasicMaterial({
   side: THREE.DoubleSide,
   depthWrite: false,
 });
+const ewAuraRingMat = new THREE.MeshBasicMaterial({
+  color: 0xb066ff,
+  transparent: true,
+  opacity: 0.48,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
+const ewAuraInnerRingMat = new THREE.MeshBasicMaterial({
+  color: 0x46ecff,
+  transparent: true,
+  opacity: 0.3,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
+const ewAuraFillMat = new THREE.MeshBasicMaterial({
+  color: 0x8a3cff,
+  transparent: true,
+  opacity: 0.075,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
 
-function makeSupplyAura(kind: "supplyhub" | "supplytruck"): THREE.Group {
+function makeSupplyAura(kind: "supplyhub" | "supplytruck" | "ewdrone"): THREE.Group {
   const g = new THREE.Group();
   g.visible = false;
   g.userData.isBar = true;
+
+  if (kind === "ewdrone") {
+    const ring = new THREE.Mesh(ewJamAuraRingGeo, ewAuraRingMat);
+    ring.position.y = 0.058;
+    ring.renderOrder = 5;
+    ring.userData.isBar = true;
+    g.add(ring);
+
+    const innerRing = new THREE.Mesh(ewJamAuraInnerRingGeo, ewAuraInnerRingMat);
+    innerRing.position.y = 0.056;
+    innerRing.renderOrder = 5;
+    innerRing.userData.isBar = true;
+    g.add(innerRing);
+
+    const fill = new THREE.Mesh(ewJamAuraFillGeo, ewAuraFillMat);
+    fill.position.y = 0.052;
+    fill.renderOrder = 4;
+    fill.userData.isBar = true;
+    g.add(fill);
+    return g;
+  }
 
   const isHub = kind === "supplyhub";
   const ring = new THREE.Mesh(isHub ? supplyHubAuraRingGeo : supplyTruckAuraRingGeo, supplyAuraRingMat);
@@ -356,7 +407,7 @@ export class Renderer {
       const anim = createAnimState(e, this.hasInitialSnap);
       const isStaticBld = isBuilding && isStaticBuildingRig(vis);
       let supplyAura: THREE.Group | undefined;
-      if (e.k === "supplyhub" || e.k === "supplytruck") {
+      if (e.k === "supplyhub" || e.k === "supplytruck" || e.k === "ewdrone") {
         supplyAura = makeSupplyAura(e.k);
         vis.root.add(supplyAura);
       }
@@ -498,7 +549,7 @@ export class Renderer {
         t.holdInd = undefined;
         t.logBars = undefined;
         t.supplyAura = undefined;
-        if (e.k === "supplyhub" || e.k === "supplytruck") {
+        if (e.k === "supplyhub" || e.k === "supplytruck" || e.k === "ewdrone") {
           t.supplyAura = makeSupplyAura(e.k);
           vis.root.add(t.supplyAura);
         }
@@ -866,8 +917,10 @@ export class Renderer {
       (cv.beacon.material as THREE.MeshBasicMaterial).opacity = 0.14 + 0.08 * Math.sin(phase * 1.35);
     }
 
-    // Subtle breathing pulse on selected supply hub / supply truck coverage aura rings
+    // Subtle breathing pulse on selected supply hub / supply truck & EW jammer coverage aura rings
     supplyAuraRingMat.opacity = 0.36 + 0.08 * Math.sin(nowSec * 2.6);
+    ewAuraRingMat.opacity = 0.42 + 0.1 * Math.sin(nowSec * 3.8);
+    ewAuraInnerRingMat.opacity = 0.24 + 0.09 * Math.sin(nowSec * 3.8 + 1.4);
 
     this.waypoints.update(this.wpEntries, nowSec, this.rallyEntries);
     this.vfx.update();
@@ -891,6 +944,8 @@ export class Renderer {
         if (shooter) triggerFireAnim(shooter.anim, ev.fx, ev.fy, ev.tx, ev.ty);
       } else if (ev.e === "intercept") {
         this.vfx.spawnIntercept(ev.fx, ev.fy, ev.tx, ev.ty);
+      } else if (ev.e === "ewjam") {
+        this.vfx.spawnEwJam(ev.fx, ev.fy, ev.tx, ev.ty);
       } else if (ev.e === "boom") {
         this.vfx.spawnBoom(ev.x, ev.y, ev.r);
         if (ev.r >= 1.5) {
@@ -986,7 +1041,14 @@ export class Renderer {
     }
     const visionMult = hasSatlink ? 1.4 : 1.0;
 
-    const visionSources: { x: number; y: number; r: number; subDetectR: number; stealthAirDetectR: number }[] = [];
+    const visionSources: {
+      x: number;
+      y: number;
+      r: number;
+      subDetectR: number;
+      usvDetectR: number;
+      stealthAirDetectR: number;
+    }[] = [];
     for (const t of this.tracked.values()) {
       if (isFriendly(t.last.o)) {
         const k = t.last.k;
@@ -999,6 +1061,17 @@ export class Renderer {
           : (UNITS[k as UnitKind]?.vision ?? 9);
         const r = baseR * visionMult;
         const subDetectR = k === "gunboat" || k === "destroyer" || k === "sub" || k === "carrier" ? 9 : 5.5;
+        const usvDetectR =
+          k === "usv" ||
+          k === "gunboat" ||
+          k === "destroyer" ||
+          k === "sub" ||
+          k === "dreadnought" ||
+          k === "carrier" ||
+          k === "radar" ||
+          k === "uav"
+            ? 9
+            : 5.5;
         const stealthAirDetectR =
           k === "radar" ||
           k === "sam" ||
@@ -1008,7 +1081,7 @@ export class Renderer {
           k === "uav"
             ? 11
             : 6.5;
-        visionSources.push({ x: t.last.x, y: t.last.y, r, subDetectR, stealthAirDetectR });
+        visionSources.push({ x: t.last.x, y: t.last.y, r, subDetectR, usvDetectR, stealthAirDetectR });
       }
     }
     const reconZones = this.gs.getActiveReconReveals();
@@ -1024,12 +1097,19 @@ export class Renderer {
         continue;
       }
       const isStealthedSub = e.k === "sub" && Boolean(e.sub);
+      const isStealthedUsv = e.k === "usv" && Boolean(e.sub);
       const isStealthedAir = e.k === "stealthbomber" && Boolean(e.sub);
       let vis = false;
       for (const m of visionSources) {
         const dx = m.x - e.x;
         const dy = m.y - e.y;
-        const lim = isStealthedSub ? m.subDetectR : isStealthedAir ? m.stealthAirDetectR : m.r;
+        const lim = isStealthedSub
+          ? m.subDetectR
+          : isStealthedUsv
+            ? m.usvDetectR
+            : isStealthedAir
+              ? m.stealthAirDetectR
+              : m.r;
         if (dx * dx + dy * dy <= lim * lim) {
           vis = true;
           break;

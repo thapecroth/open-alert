@@ -393,6 +393,9 @@ export function stepEntityAnim(
 
   // ---------- 4. Air Force (Smooth Banking, Hover Float, Stealth Cloak, Rotors & Wingtip Contrails) ----------
   else if (
+    k === "fpvdrone" ||
+    k === "shahed" ||
+    k === "ewdrone" ||
     k === "interceptor" ||
     k === "chopper" ||
     k === "bomber" ||
@@ -404,7 +407,43 @@ export function stepEntityAnim(
     const alt = rig.altitude ?? 3.2;
     let bob = 0;
 
-    if (k === "interceptor") {
+    if (k === "fpvdrone") {
+      // Agile racing/kamikaze quadcopter: crisp hover buzz, aggressive forward tilt, snappy banking & 4 counter-rotating rotors
+      bob = Math.sin(nowSec * 6.2 + last.id) * 0.055 + Math.cos(nowSec * 9.4 + last.id) * 0.018;
+      rig.body.position.y = alt + bob;
+      const targetBank = Math.max(-0.78, Math.min(0.78, yawRate * 0.28));
+      st.bank += (targetBank - st.bank) * (1 - Math.exp(-13 * safeDt));
+      rig.body.rotation.z = st.bank;
+      const targetPitch = 0.04 * (1 - m) + Math.min(0.42, 0.22 + st.speed * 0.05) * m;
+      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * (1 - Math.exp(-11 * safeDt));
+      if (rig.spin) {
+        const rotSpeed = 38 + 24 * m;
+        for (let i = 0; i < rig.spin.children.length; i++) {
+          rig.spin.children[i].rotation.y += safeDt * (i % 2 === 0 ? rotSpeed : -rotSpeed);
+        }
+      }
+    } else if (k === "shahed") {
+      // Steady cropped-delta loitering munition flight + high-RPM rear pusher prop
+      bob = Math.sin(nowSec * 3.6 + last.id) * 0.07;
+      rig.body.position.y = alt + bob;
+      const targetBank = Math.max(-0.62, Math.min(0.62, yawRate * 0.22));
+      st.bank += (targetBank - st.bank) * (1 - Math.exp(-8.5 * safeDt));
+      rig.body.rotation.z = st.bank;
+      const targetPitch = 0.018 * (1 - m) + (0.045 + Math.abs(st.bank) * 0.04) * m;
+      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * (1 - Math.exp(-7.5 * safeDt));
+      if (rig.spin) rig.spin.rotation.z += safeDt * 42;
+    } else if (k === "ewdrone") {
+      // Smooth electronic warfare UAV hover/orbit + counter-rotating holographic jamming halo rings
+      bob = Math.sin(nowSec * 2.4 + last.id) * 0.095;
+      rig.body.position.y = alt + bob;
+      const targetBank = Math.max(-0.42, Math.min(0.42, yawRate * 0.16));
+      st.bank += (targetBank - st.bank) * (1 - Math.exp(-7 * safeDt));
+      rig.body.rotation.z = st.bank;
+      const targetPitch = 0.01 * (1 - m) + 0.03 * m;
+      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * (1 - Math.exp(-6.5 * safeDt));
+      if (rig.spin) rig.spin.rotation.y += safeDt * 2.6;
+      if (rig.spin2) rig.spin2.rotation.y -= safeDt * 4.2;
+    } else if (k === "interceptor") {
       bob = Math.sin(nowSec * 3.8 + last.id) * 0.09;
       rig.body.position.y = alt + bob;
       const targetBank = Math.max(-0.64, Math.min(0.64, yawRate * 0.2));
@@ -489,7 +528,7 @@ export function stepEntityAnim(
     // Crisp white-cyan wingtip jet contrails (extra blazing white-cyan contrails for Mach-9 hypersonic!)
     if (
       emitContrail &&
-      (k === "interceptor" || k === "bomber" || k === "uav" || k === "stealthbomber" || k === "hypersonic") &&
+      (k === "interceptor" || k === "bomber" || k === "uav" || k === "shahed" || k === "stealthbomber" || k === "hypersonic") &&
       moving &&
       vis.root.visible
     ) {
@@ -500,7 +539,7 @@ export function stepEntityAnim(
             ? 0.022
             : k === "interceptor"
               ? 0.042
-              : k === "bomber"
+              : k === "bomber" || k === "shahed"
                 ? 0.055
                 : k === "stealthbomber"
                   ? 0.06
@@ -514,9 +553,21 @@ export function stepEntityAnim(
                 ? 0.92
                 : k === "hypersonic"
                   ? 0.86
-                  : 0.78;
+                  : k === "shahed"
+                    ? 0.72
+                    : 0.78;
         const trailZ =
-          k === "hypersonic" ? -0.64 : k === "bomber" ? -0.44 : k === "stealthbomber" ? -0.38 : k === "uav" ? -0.35 : -0.5;
+          k === "hypersonic"
+            ? -0.64
+            : k === "bomber"
+              ? -0.44
+              : k === "stealthbomber"
+                ? -0.38
+                : k === "shahed"
+                  ? -0.52
+                  : k === "uav"
+                    ? -0.35
+                    : -0.5;
         const cosH = Math.cos(headingRad);
         const sinH = Math.sin(headingRad);
         const cosB = Math.cos(st.bank);
@@ -530,9 +581,11 @@ export function stepEntityAnim(
                 ? last.sub
                   ? 0.62
                   : 1.05
-                : k === "uav"
-                  ? 0.65
-                  : 0.88;
+                : k === "shahed"
+                  ? 0.56
+                  : k === "uav"
+                    ? 0.65
+                    : 0.88;
         for (const sx of [-1, 1]) {
           const lx = sx * span * cosB;
           const ly = sx * span * sinB;
@@ -550,14 +603,14 @@ export function stepEntityAnim(
   }
 
   // ---------- 5. Navy (Organic Ocean Swells, Naval Turrets, Submarine Dive & Wakes) ----------
-  else if (k === "gunboat" || k === "destroyer" || k === "sub" || k === "dreadnought" || k === "carrier") {
+  else if (k === "usv" || k === "gunboat" || k === "destroyer" || k === "sub" || k === "dreadnought" || k === "carrier") {
     const heavyShip = k === "dreadnought" || k === "carrier";
     const wavePitch =
-      Math.sin(nowSec * 2.0 + last.id) * (heavyShip ? 0.018 : 0.032) +
-      Math.sin(nowSec * 3.3 + last.id * 2.1) * (heavyShip ? 0.008 : 0.014);
+      Math.sin(nowSec * 2.0 + last.id) * (heavyShip ? 0.018 : k === "usv" ? 0.044 : 0.032) +
+      Math.sin(nowSec * 3.3 + last.id * 2.1) * (heavyShip ? 0.008 : k === "usv" ? 0.02 : 0.014);
     const waveRoll =
-      Math.cos(nowSec * 1.55 + last.id * 1.3) * (heavyShip ? 0.022 : 0.04) +
-      Math.sin(nowSec * 2.6 + last.id * 0.7) * (heavyShip ? 0.009 : 0.016);
+      Math.cos(nowSec * 1.55 + last.id * 1.3) * (heavyShip ? 0.022 : k === "usv" ? 0.048 : 0.04) +
+      Math.sin(nowSec * 2.6 + last.id * 0.7) * (heavyShip ? 0.009 : k === "usv" ? 0.02 : 0.016);
 
     if (k === "sub") {
       const targetY = last.sub ? -0.2 : 0.06;
@@ -589,17 +642,34 @@ export function stepEntityAnim(
       }
     } else {
       const heave =
-        Math.sin(nowSec * 2.15 + last.id) * (heavyShip ? 0.024 : 0.036) +
+        Math.sin(nowSec * (k === "usv" ? 3.2 : 2.15) + last.id) * (heavyShip ? 0.024 : k === "usv" ? 0.028 : 0.036) +
         Math.cos(nowSec * 3.1 + last.id * 1.7) * 0.01;
-      const turnHeel = Math.max(-0.1, Math.min(0.1, yawRate * (k === "gunboat" ? 0.065 : 0.03)));
-      st.roll += (turnHeel - st.roll) * (1 - Math.exp(-6 * safeDt));
+      const turnHeel = Math.max(
+        k === "usv" ? -0.18 : -0.1,
+        Math.min(k === "usv" ? 0.18 : 0.1, yawRate * (k === "usv" ? 0.088 : k === "gunboat" ? 0.065 : 0.03)),
+      );
+      st.roll += (turnHeel - st.roll) * (1 - Math.exp(-(k === "usv" ? 9 : 6) * safeDt));
 
       // Naval cannon/missile firing recoil rock
       const fireRock = st.hullKick > 0 ? Math.sin((1 - st.hullKick) * Math.PI * 1.4) * st.hullKick * (heavyShip ? 0.05 : 0.035) : 0;
 
-      rig.body.position.y = 0.08 + heave;
-      rig.body.rotation.x = wavePitch + (k === "gunboat" ? -0.065 : -0.022) * m - fireRock;
+      rig.body.position.y = (k === "usv" ? 0.04 : 0.08) + heave;
+      rig.body.rotation.x = wavePitch + (k === "usv" ? -0.095 : k === "gunboat" ? -0.065 : -0.022) * m - fireRock;
       rig.body.rotation.z = waveRoll + st.roll;
+
+      // Low-visibility stealth translucency for Sea-Baby USV when cloaked (e.sub === true)
+      if (k === "usv" && rig.subMats && st.matMode === "normal") {
+        const targetAlpha = last.sub ? 0.42 : 1.0;
+        st.subAlpha += (targetAlpha - st.subAlpha) * Math.min(1, safeDt * 5.2);
+        const isTrans = st.subAlpha < 0.98;
+        for (const subMat of rig.subMats) {
+          if (subMat.transparent !== isTrans) {
+            subMat.transparent = isTrans;
+            subMat.needsUpdate = true;
+          }
+          subMat.opacity = st.subAlpha;
+        }
+      }
 
       if (rig.turret) {
         const hullYaw = Math.PI / 2 - headingRad;
@@ -630,11 +700,21 @@ export function stepEntityAnim(
     if (emitWake && moving && vis.root.visible) {
       st.wakeCd -= safeDt;
       if (st.wakeCd <= 0) {
-        st.wakeCd = k === "gunboat" ? 0.13 : heavyShip ? 0.24 : 0.18;
+        st.wakeCd = k === "usv" ? 0.095 : k === "gunboat" ? 0.13 : heavyShip ? 0.24 : 0.18;
         const cosH = Math.cos(headingRad);
         const sinH = Math.sin(headingRad);
         const sternOff =
-          k === "carrier" ? 1.65 : k === "dreadnought" ? 1.42 : k === "destroyer" ? 1.08 : k === "sub" ? 0.96 : 0.74;
+          k === "carrier"
+            ? 1.65
+            : k === "dreadnought"
+              ? 1.42
+              : k === "destroyer"
+                ? 1.08
+                : k === "sub"
+                  ? 0.96
+                  : k === "usv"
+                    ? 0.64
+                    : 0.74;
         const wakeScale =
           k === "carrier"
             ? 1.72
@@ -646,12 +726,17 @@ export function stepEntityAnim(
                   ? last.sub
                     ? 0.52
                     : 0.84
-                  : 0.8;
+                  : k === "usv"
+                    ? last.sub
+                      ? 0.44
+                      : 0.64
+                    : 0.8;
         emitWake(x - cosH * sternOff, y - sinH * sternOff, wakeScale);
-        // Subtle bow-wave crest for fast surface warships
+        // Subtle bow-wave crest for fast surface warships & Sea-Baby USV
         if (k !== "sub") {
-          const bowOff = k === "carrier" ? 1.75 : k === "dreadnought" ? 1.55 : k === "destroyer" ? 1.25 : 0.85;
-          emitWake(x + cosH * bowOff, y + sinH * bowOff, wakeScale * 0.56);
+          const bowOff =
+            k === "carrier" ? 1.75 : k === "dreadnought" ? 1.55 : k === "destroyer" ? 1.25 : k === "usv" ? 0.66 : 0.85;
+          emitWake(x + cosH * bowOff, y + sinH * bowOff, wakeScale * 0.54);
         }
       }
     }
@@ -747,8 +832,25 @@ export function stepEntityAnim(
         k === "satlink");
     const isJetBurner =
       k === "interceptor" || k === "bomber" || k === "uav" || k === "stealthbomber" || k === "hypersonic";
-    const freq = isJetBurner ? 18.0 : k === "superweapon" || k === "satlink" ? 5.2 : 3.6;
-    const amp = isJetBurner ? 0.16 : k === "superweapon" || k === "satlink" ? 0.18 : 0.14;
+    const isArmedKamikaze = k === "fpvdrone" || k === "shahed" || k === "usv";
+    const freq = isJetBurner
+      ? 18.0
+      : isArmedKamikaze
+        ? 9.5
+        : k === "ewdrone"
+          ? 4.8
+          : k === "superweapon" || k === "satlink"
+            ? 5.2
+            : 3.6;
+    const amp = isJetBurner
+      ? 0.16
+      : isArmedKamikaze
+        ? 0.26
+        : k === "ewdrone"
+          ? 0.18
+          : k === "superweapon" || k === "satlink"
+            ? 0.18
+            : 0.14;
     const s = offlinePulse
       ? 0.78 + 0.04 * Math.sin(nowSec * 2.4 + last.id)
       : 0.94 + amp * Math.sin(nowSec * freq + last.id);

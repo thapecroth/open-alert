@@ -80,7 +80,10 @@ function getAirShadowMat(): THREE.MeshBasicMaterial {
 
 export function isAir(kind: EntKind): boolean {
   return (
+    kind === "fpvdrone" ||
     kind === "uav" ||
+    kind === "shahed" ||
+    kind === "ewdrone" ||
     kind === "interceptor" ||
     kind === "chopper" ||
     kind === "bomber" ||
@@ -92,6 +95,7 @@ export function isAir(kind: EntKind): boolean {
 
 export function isSea(kind: EntKind): boolean {
   return (
+    kind === "usv" ||
     kind === "gunboat" ||
     kind === "destroyer" ||
     kind === "sub" ||
@@ -101,7 +105,10 @@ export function isSea(kind: EntKind): boolean {
 }
 
 const AIR_SHADOW_SIZE: Partial<Record<EntKind, [number, number]>> = {
+  fpvdrone: [0.62, 0.62],
   uav: [1.18, 0.72],
+  shahed: [0.88, 0.96],
+  ewdrone: [1.08, 0.96],
   interceptor: [0.95, 1.1],
   chopper: [0.98, 1.15],
   bomber: [1.45, 1.18],
@@ -241,7 +248,11 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
           ? 1.24
           : kind === "railtank" || kind === "heavy" || kind === "himars"
             ? 1.12
-            : 0.96;
+            : kind === "fpvdrone"
+              ? 0.78
+              : kind === "usv"
+                ? 0.84
+                : 0.96;
   const { bg, fg } = makeBar(barW);
   bg.position.y = topY + 0.38;
   fg.position.y = topY + 0.38;
@@ -275,9 +286,13 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
                 ? 0.98
                 : kind === "sub" || kind === "railtank" || kind === "heavy"
                   ? 0.9
-                  : seaUnit || airUnit || kind === "himars"
-                    ? 0.82
-                    : 0.68;
+                  : kind === "fpvdrone"
+                    ? 0.62
+                    : kind === "usv"
+                      ? 0.68
+                      : seaUnit || airUnit || kind === "himars"
+                        ? 0.82
+                        : 0.68;
   const ring = new THREE.Mesh(
     geoRing,
     new THREE.MeshBasicMaterial({

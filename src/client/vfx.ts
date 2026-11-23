@@ -1510,6 +1510,127 @@ export class VfxSystem {
     this.spawnFlash(start, new THREE.Color(3.2, 2.5, 1.1), 0.95, 170);
   }
 
+  // ---------- Electronic Warfare (EW) Jamming VFX ----------
+
+  spawnEwJam(fx: number, fy: number, tx: number, ty: number) {
+    const start = new THREE.Vector3(fx, 3.12, fy);
+    const end = new THREE.Vector3(tx, 2.85, ty);
+    const dist = Math.max(0.25, start.distanceTo(end));
+    const segs = Math.max(8, Math.min(18, Math.round(dist * 2.2)));
+
+    // Dual intertwined crackling purple-cyan electromagnetic static arcs
+    const arcSpecs: { color: THREE.Color; jitter: number; life: number }[] = [
+      { color: new THREE.Color(2.6, 0.85, 4.4), jitter: 0.42, life: 420 },
+      { color: new THREE.Color(0.7, 3.3, 4.5), jitter: 0.34, life: 360 },
+    ];
+    for (let aIdx = 0; aIdx < arcSpecs.length; aIdx++) {
+      const spec = arcSpecs[aIdx];
+      const positions = new Float32Array((segs + 1) * 3);
+      const fillArc = (amp: number) => {
+        for (let i = 0; i <= segs; i++) {
+          const u = i / segs;
+          const env = Math.sin(u * Math.PI);
+          const off = i * 3;
+          positions[off] = start.x + (end.x - start.x) * u + (Math.random() - 0.5) * amp * env;
+          positions[off + 1] =
+            start.y + (end.y - start.y) * u + (Math.random() - 0.5) * amp * 0.8 * env + env * 0.22;
+          positions[off + 2] = start.z + (end.z - start.z) * u + (Math.random() - 0.5) * amp * env;
+        }
+      };
+      fillArc(spec.jitter);
+      const geo = new THREE.BufferGeometry();
+      const posAttr = new THREE.BufferAttribute(positions, 3);
+      posAttr.setUsage(THREE.DynamicDrawUsage);
+      geo.setAttribute("position", posAttr);
+
+      const mat = new THREE.LineBasicMaterial({
+        color: spec.color,
+        transparent: true,
+        opacity: 0.98,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const bolt = new THREE.Line(geo, mat);
+      let crackleAccum = 0;
+      this.add(
+        bolt,
+        spec.life,
+        (_o, t, dt) => {
+          crackleAccum += dt;
+          if (crackleAccum >= 0.045) {
+            crackleAccum = 0;
+            fillArc(spec.jitter * (1.15 - t * 0.45));
+            posAttr.needsUpdate = true;
+          }
+          const flicker = 0.72 + 0.28 * Math.sin(t * 54 + aIdx * 2.1);
+          mat.opacity = 0.98 * (1 - t) * flicker;
+        },
+        true,
+      );
+    }
+
+    // Emitter & target electromagnetic static flashes
+    this.spawnFlash(start, new THREE.Color(2.2, 0.9, 4.0), 0.95, 220);
+    this.spawnFlash(end, new THREE.Color(2.6, 1.0, 4.4), 1.45, 300);
+    this.spawnFlash(end, new THREE.Color(0.8, 3.2, 4.4), 1.05, 230);
+
+    // Brief translucent purple-cyan electromagnetic static burst around the jammed drone
+    const staticMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(1.9, 0.75, 3.6),
+      transparent: true,
+      opacity: 0.65,
+      wireframe: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const staticOrb = new THREE.Mesh(sharedFire, staticMat);
+    staticOrb.position.copy(end);
+    this.add(staticOrb, 380, (o, t) => {
+      o.scale.setScalar(0.38 + t * 1.45);
+      o.rotation.y += 0.28;
+      o.rotation.x += 0.19;
+      staticMat.opacity = 0.65 * (1 - t) * (0.75 + 0.25 * Math.sin(t * 60));
+    });
+
+    // 3 staggered tilted expanding purple-cyan interference rings around the jammed drone
+    const ringTilts: [number, number, THREE.Color, number][] = [
+      [-Math.PI / 2 + 0.28, 0.2, new THREE.Color(2.3, 0.75, 4.2), 460],
+      [-Math.PI / 2 - 0.34, -0.26, new THREE.Color(0.75, 3.2, 4.4), 400],
+      [-Math.PI / 2, 0, new THREE.Color(1.85, 1.3, 4.2), 520],
+    ];
+    for (let i = 0; i < ringTilts.length; i++) {
+      const [rx, rz, col, life] = ringTilts[i];
+      const rMat = new THREE.MeshBasicMaterial({
+        color: col,
+        transparent: true,
+        opacity: 0.92,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const ring = new THREE.Mesh(sharedRing, rMat);
+      ring.position.copy(end);
+      ring.rotation.set(rx, 0, rz);
+      const delay = i * 0.1;
+      this.add(ring, life, (ro, t) => {
+        if (t < delay) {
+          rMat.opacity = 0;
+          return;
+        }
+        const rt = (t - delay) / (1 - delay);
+        const ease = 1 - Math.pow(1 - rt, 1.8);
+        ro.scale.setScalar(0.24 + ease * (1.85 + i * 0.25));
+        ro.rotateZ(0.12 * (i % 2 === 0 ? 1 : -1));
+        rMat.opacity = 0.92 * (1 - rt) * (1 - rt);
+      });
+    }
+
+    // Subtle ground-projected purple-cyan EW ripple directly beneath the jammed drone
+    this.spawnImpactRing(tx, ty, 1.65, new THREE.Color(1.9, 0.85, 3.8), 440);
+
+    // Floating "JAMMED!" popup right above the disrupted drone
+    this.spawnPopup(tx, ty, "JAMMED!", "#cc7cff", 3.65);
+  }
+
   // ---------- Floating World-Space Text Popups ----------
 
   spawnPopup(x: number, y: number, text: string, color = "#ffd84d", startY = 1.65) {

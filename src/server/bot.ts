@@ -75,7 +75,7 @@ export class RtsBot {
   private threatAt = -1e9;
   private lastScout = -1e9;
   private phase: Phase = "early";
-  private rocketNext = false; // alternates what a fresh barracks queue starts with
+  private barracksCycle = 0; // rotates infantry / FPV suicide drones / AT-MANPADS rockets
   private infCap: number;
   private tankCap: number;
   private turretCap: number;
@@ -513,8 +513,6 @@ export class RtsBot {
     // opener, late spends freely since the base is done
     const reserve = want ? Math.min(BUILDINGS[want].cost, this.phase === "early" ? 650 : 450) : this.phase === "late" ? 200 : 150;
     const radar = this.hasBuilding(bc, "radar");
-    const techlab = this.hasBuilding(bc, "techlab");
-    const satlink = this.hasBuilding(bc, "satlink");
     const f2 = this.hasBuilding(bc, "factory2");
     const a2 = this.hasBuilding(bc, "airfield2");
     const s2 = this.hasBuilding(bc, "shipyard2");
@@ -522,18 +520,17 @@ export class RtsBot {
       supplytrucks = 0,
       army = 0,
       engi = 0,
-      artys = 0,
-      heavies = 0,
-      spiders = 0,
+      fpvdrones = 0,
       himars = 0,
       railtanks = 0,
       uavs = 0,
+      shaheds = 0,
+      ewdrones = 0,
       interceptors = 0,
       choppers = 0,
-      bombers = 0,
       stealthbombers = 0,
       hypersonics = 0,
-      zeppelins = 0,
+      usvs = 0,
       gunboats = 0,
       destroyers = 0,
       subs = 0,
@@ -551,18 +548,17 @@ export class RtsBot {
       else if (!isB(e.k)) {
         army++;
         if (e.k === "engineer") engi++;
-        else if (e.k === "arty") artys++;
-        else if (e.k === "heavy") heavies++;
-        else if (e.k === "spider") spiders++;
+        else if (e.k === "fpvdrone") fpvdrones++;
         else if (e.k === "himars") himars++;
         else if (e.k === "railtank") railtanks++;
         else if (e.k === "uav") uavs++;
+        else if (e.k === "shahed") shaheds++;
+        else if (e.k === "ewdrone") ewdrones++;
         else if (e.k === "interceptor") interceptors++;
         else if (e.k === "chopper") choppers++;
-        else if (e.k === "bomber") bombers++;
         else if (e.k === "stealthbomber") stealthbombers++;
         else if (e.k === "hypersonic") hypersonics++;
-        else if (e.k === "zeppelin") zeppelins++;
+        else if (e.k === "usv") usvs++;
         else if (e.k === "gunboat") gunboats++;
         else if (e.k === "destroyer") destroyers++;
         else if (e.k === "sub") subs++;
@@ -571,25 +567,37 @@ export class RtsBot {
       }
     }
 
-    // barracks: infantry scaled by phase, rocket troopers alternating in once
-    // radar is up, and an engineer for neutral Oil Derricks / Coal Mines / late pushes (Normal/Brutal)
+    // barracks: infantry, FPV suicide drones, AT/MANPADS rockets once radar is up,
+    // and an engineer for neutral Oil Derricks / Coal Mines / late pushes (Normal/Brutal)
     const infGoal =
       this.phase === "early"
         ? Math.min(2, this.infCap)
         : this.phase === "mid" || this.diff === "easy"
           ? this.infCap
           : this.infCap + 2;
+    const fpvCap = this.diff === "easy" ? 2 : this.diff === "brutal" ? 6 : 4;
     if (this.hasBuilding(bc, "barracks") && army < this.armyCap) {
       const q = me.queues.barracks;
       const wantLandmarkEngi = this.diff !== "easy" && neutralLandmarks > 0 && me.credits >= UNITS.engineer.cost + 200;
       if (this.diff !== "easy" && !q && !engi && (wantLandmarkEngi || me.credits > 800)) {
         this.trycmd(() => w.cmdTrain(this.slot, "engineer"));
-      } else {
-        // a fresh queue alternates what it starts with, so rockets mix in
-        const unit: UnitKind = radar && this.rocketNext ? "rocket" : "infantry";
-        if ((!q || q.unit === unit) && (q?.count ?? 0) < infGoal && me.credits >= UNITS[unit].cost + reserve) {
+      } else if (!q) {
+        const step = this.barracksCycle % 3;
+        let unit: UnitKind = "infantry";
+        if (step === 1 && fpvdrones < fpvCap && (this.phase !== "early" || this.profile === "rusher")) {
+          unit = "fpvdrone";
+        } else if (step === 2 && radar) {
+          unit = "rocket";
+        }
+        if (me.credits >= UNITS[unit].cost + reserve) {
           this.trycmd(() => w.cmdTrain(this.slot, unit));
-          if (!q) this.rocketNext = !this.rocketNext;
+          this.barracksCycle++;
+        }
+      } else if (q.unit !== "engineer") {
+        const u = q.unit;
+        const cap = u === "fpvdrone" ? Math.min(infGoal, Math.max(1, fpvCap - fpvdrones)) : infGoal;
+        if (q.count < cap && me.credits >= UNITS[u].cost + reserve) {
+          this.trycmd(() => w.cmdTrain(this.slot, u));
         }
       }
     }
@@ -614,18 +622,20 @@ export class RtsBot {
       }
     }
 
-    // Air Command: Reaper Drones, Valkyrie Jets, Hornet Gunships, Tempest Bombers, B-21 Phantoms, Mach-9 & Leviathan
+    // Air Command: Reaper UAVs, EW Jammer Drones, Delta Kamikaze Drones, Valkyrie Jets, Hornet Gunships, B-21 Stealth & Mach-9 Hypersonic
     if (this.hasBuilding(bc, "airfield")) {
       const q = me.queues.airfield;
-      const airCount = uavs + interceptors + choppers + bombers + stealthbombers + hypersonics + zeppelins;
-      const airGoal = this.diff === "easy" ? 2 : this.diff === "brutal" ? 9 : 4;
+      const airCount = uavs + ewdrones + shaheds + interceptors + choppers + stealthbombers + hypersonics;
+      const airGoal = this.diff === "easy" ? 2 : this.diff === "brutal" ? 11 : 6;
+      const ewCap = this.diff === "easy" ? 0 : this.diff === "brutal" || this.profile === "turtle" ? 2 : 1;
+      const shahedCap = this.diff === "easy" ? 2 : this.diff === "brutal" ? 5 : 3;
       if (!q) {
         let unit: UnitKind | null = null;
         if (uavs < 1) unit = "uav";
+        else if (radar && ewCap > 0 && ewdrones < ewCap) unit = "ewdrone";
         else if (a2 && stealthbombers < 2 && interceptors + choppers >= 1) unit = "stealthbomber";
         else if (a2 && hypersonics < 2 && interceptors >= 1) unit = "hypersonic";
-        else if (techlab && zeppelins < 2 && interceptors + choppers >= 2) unit = "zeppelin";
-        else if (techlab && bombers < 2 && interceptors >= 1) unit = "bomber";
+        else if (shaheds < shahedCap && (shaheds <= interceptors + choppers || this.profile === "rusher")) unit = "shahed";
         else if (interceptors <= choppers) unit = "interceptor";
         else unit = "chopper";
         if (unit && airCount < airGoal && army < this.armyCap + 8 && me.credits >= UNITS[unit].cost + reserve) {
@@ -634,21 +644,27 @@ export class RtsBot {
       } else {
         const u = q.unit;
         const cap =
-          u === "zeppelin" || u === "bomber" || u === "stealthbomber" || u === "hypersonic" || u === "uav" ? 2 : 3;
+          u === "ewdrone"
+            ? ewCap
+            : u === "shahed"
+              ? shahedCap
+              : u === "stealthbomber" || u === "hypersonic" || u === "uav"
+                ? 2
+                : 3;
         const fielded =
           u === "uav"
             ? uavs
-            : u === "interceptor"
-              ? interceptors
-              : u === "chopper"
-                ? choppers
-                : u === "bomber"
-                  ? bombers
-                  : u === "stealthbomber"
-                    ? stealthbombers
-                    : u === "hypersonic"
-                      ? hypersonics
-                      : zeppelins;
+            : u === "ewdrone"
+              ? ewdrones
+              : u === "shahed"
+                ? shaheds
+                : u === "interceptor"
+                  ? interceptors
+                  : u === "chopper"
+                    ? choppers
+                    : u === "stealthbomber"
+                      ? stealthbombers
+                      : hypersonics;
         if (
           fielded + q.count < cap &&
           airCount + q.count < airGoal &&
@@ -660,15 +676,17 @@ export class RtsBot {
       }
     }
 
-    // Naval Shipyard: Viper Hydrofoils, Aegis Destroyers, Kraken Subs, Poseidon Dreadnoughts & Nimitz Carriers
+    // Naval Shipyard: Sea-Baby USV Drone Boats, Viper Hydrofoils, Aegis Destroyers, Kraken Subs, Poseidon Cruisers & Nimitz Carriers
     if (this.hasBuilding(bc, "shipyard")) {
       const q = me.queues.shipyard;
-      const seaCount = gunboats + destroyers + subs + dreadnoughts + carriers;
-      const seaGoal = this.diff === "easy" ? 2 : this.diff === "brutal" ? 9 : 4;
+      const seaCount = usvs + gunboats + destroyers + subs + dreadnoughts + carriers;
+      const seaGoal = this.diff === "easy" ? 3 : this.diff === "brutal" ? 11 : 6;
+      const usvCap = this.diff === "easy" ? 2 : this.diff === "brutal" ? 4 : 3;
       if (!q) {
         let unit: UnitKind | null = null;
         if (s2 && carriers < 2 && gunboats + destroyers >= 2) unit = "carrier";
         else if (s2 && dreadnoughts < 2 && gunboats + destroyers >= 2) unit = "dreadnought";
+        else if (usvs < usvCap && (gunboats + destroyers >= 1 || usvs < 1)) unit = "usv";
         else if (radar && subs < 2 && gunboats >= 1) unit = "sub";
         else if (destroyers < 3 && gunboats >= 1) unit = "destroyer";
         else unit = "gunboat";
@@ -677,17 +695,19 @@ export class RtsBot {
         }
       } else {
         const u = q.unit;
-        const cap = u === "dreadnought" || u === "carrier" || u === "sub" ? 2 : 3;
+        const cap = u === "usv" ? usvCap : u === "dreadnought" || u === "carrier" || u === "sub" ? 2 : 3;
         const fielded =
-          u === "gunboat"
-            ? gunboats
-            : u === "destroyer"
-              ? destroyers
-              : u === "sub"
-                ? subs
-                : u === "carrier"
-                  ? carriers
-                  : dreadnoughts;
+          u === "usv"
+            ? usvs
+            : u === "gunboat"
+              ? gunboats
+              : u === "destroyer"
+                ? destroyers
+                : u === "sub"
+                  ? subs
+                  : u === "carrier"
+                    ? carriers
+                    : dreadnoughts;
         if (
           fielded + q.count < cap &&
           seaCount + q.count < seaGoal &&
@@ -703,21 +723,19 @@ export class RtsBot {
       const q = me.queues.factory;
       const tankGoal =
         this.phase === "late" ? this.tankCap + (this.diff === "easy" ? 1 : this.diff === "normal" ? 2 : 3) : this.tankCap;
+      const himarsCap = this.diff === "easy" ? 1 : this.diff === "brutal" ? 3 : 2;
+      const railCap = this.diff === "brutal" || this.profile === "tech" ? 5 : 4;
       if (!q) {
-        // fresh queue: arty/HIMARS siege support, Railgun MBTs, MKII heavies/spiders, else Battle Tanks
+        // fresh queue: Aegis Railgun MBTs (factory2), HIMARS rocket artillery (radar), else Main Battle Tanks
         let unit: UnitKind | null = null;
-        const artyCap = this.diff === "easy" ? 1 : 2;
         if (this.phase !== "early") {
-          if (satlink && railtanks < 4 && railtanks <= himars + 1) unit = "railtank";
-          else if (satlink && himars < 2) unit = "himars";
-          else if (radar && artys < artyCap && !satlink) unit = "arty";
-          else if (f2 && heavies < 4 && heavies <= spiders) unit = "heavy";
-          else if (f2 && spiders < 4) unit = "spider";
-          else if (f2 && heavies < 4) unit = "heavy";
+          if (f2 && railtanks < railCap && railtanks <= himars + 2) unit = "railtank";
+          else if (radar && himars < himarsCap) unit = "himars";
+          else if (f2 && railtanks < railCap) unit = "railtank";
           else unit = "tank";
         }
         // high-tier units bypass the base army cap slightly so tech booms stay impactful
-        const eliteUnit = (f2 && (unit === "heavy" || unit === "spider")) || (satlink && (unit === "railtank" || unit === "himars"));
+        const eliteUnit = (f2 && unit === "railtank") || (radar && unit === "himars" && this.phase === "late");
         if (unit && (army < this.armyCap || eliteUnit) && me.credits >= UNITS[unit].cost + reserve) {
           this.trycmd(() => w.cmdTrain(this.slot, unit));
         }
@@ -725,34 +743,20 @@ export class RtsBot {
         // one shared queue — stack more of what's already in it (queued units
         // count toward the caps) instead of fighting a different queue unit
         const u = q.unit;
-        const artyCap = this.diff === "easy" ? 1 : 2;
         const cap =
           u === "tank"
             ? tankGoal
-            : u === "arty"
-              ? artyCap
-              : u === "himars"
-                ? 2
-                : u === "heavy" || u === "spider" || u === "railtank"
-                  ? 4
-                  : 0;
-        const fielded =
-          u === "arty"
-            ? artys
-            : u === "heavy"
-              ? heavies
-              : u === "spider"
-                ? spiders
-                : u === "himars"
-                  ? himars
-                  : u === "railtank"
-                    ? railtanks
-                    : 0;
-        const eliteU = (f2 && (u === "heavy" || u === "spider")) || (satlink && (u === "railtank" || u === "himars"));
+            : u === "himars"
+              ? himarsCap
+              : u === "railtank"
+                ? railCap
+                : 0;
+        const fielded = u === "himars" ? himars : u === "railtank" ? railtanks : 0;
+        const eliteU = (f2 && u === "railtank") || (radar && u === "himars" && this.phase === "late");
         if (cap > 0 && fielded + q.count < cap && (army < this.armyCap || eliteU) && me.credits >= UNITS[u].cost + reserve) {
           this.trycmd(() => w.cmdTrain(this.slot, u));
         }
-        // a queued harvester is left to finish rather than cancelled
+        // a queued harvester or supplytruck is left to finish rather than cancelled
       }
     }
   }
@@ -1078,9 +1082,10 @@ export class RtsBot {
     if (t - this.lastDefend < defendCooldown) return; // human-paced defensive reaction
     this.lastDefend = t;
     const ids: number[] = [];
+    const isDroneThreat = threat.k === "fpvdrone" || threat.k === "shahed" || threat.k === "usv" || threat.k === "uav";
     for (const e of w.ents.values()) {
-      if (e.o !== this.slot || isB(e.k) || e.k === "harvester" || e.k === "engineer") continue;
-      if (!w.canAttack(e, threat)) continue;
+      if (e.o !== this.slot || isB(e.k) || e.k === "harvester" || e.k === "engineer" || e.k === "supplytruck") continue;
+      if (!w.canAttack(e, threat) && !(e.k === "ewdrone" && isDroneThreat)) continue;
       if (dist(e.x, e.y, base.x, base.y) > GUARD_RADIUS) continue;
       ids.push(e.id);
     }
