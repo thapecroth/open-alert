@@ -2724,19 +2724,19 @@ export function buildLandModel(kind: EntKind, colorHex: string, body: THREE.Grou
     }
 
     case "fusion": {
-      // Tokamak Fusion Reactor (3x2) — Clean-Energy Dome, Magnetic Torus Plasma Ring & Superconducting Coils
-      body.add(foundationPad(3, 2, colorHex, 0.24));
+      // Tokamak Fusion Reactor (2x2 in-place Power Plant Tier-3 upgrade!)
+      body.add(foundationPad(2, 2, colorHex, 0.24));
 
-      // Sleek futuristic clean-energy armored plinth + edge accents
-      add(rbox(2.72, 0.3, 1.72, matDk), 0, 0.38, 0);
-      add(rbox(2.54, 0.07, 1.56, matCer, true), 0, 0.55, 0);
-      for (const sz of [-0.82, 0.82]) {
-        add(rbox(1.92, 0.06, 0.08, matAcc, true), 0, 0.56, sz);
+      // Compact futuristic clean-energy armored plinth sized cleanly for 2x2 upgrade footprint
+      add(rbox(1.82, 0.3, 1.72, matDk), 0, 0.38, 0);
+      add(rbox(1.68, 0.07, 1.56, matCer, true), 0, 0.55, 0);
+      for (const sz of [-0.78, 0.78]) {
+        add(rbox(1.42, 0.06, 0.08, matAcc, true), 0, 0.56, sz);
       }
 
-      // Flanking cryogenic spherical coolant tanks (left & right ends)
-      for (const sx of [-1.1, 1.1]) {
-        add(cyl(0.42, 0.24, matGun, "oct"), sx, 0.64, -0.36);
+      // Flanking cryogenic spherical coolant tanks (fitted inside 2x2 footprint)
+      for (const sx of [-0.76, 0.76]) {
+        add(cyl(0.32, 0.22, matGun, "oct"), sx, 0.62, -0.32);
         add(sph(0.48, matLt), sx, 0.96, -0.36);
         const tankBand = torus(0.49, matAcc, true);
         tankBand.rotation.x = Math.PI / 2;

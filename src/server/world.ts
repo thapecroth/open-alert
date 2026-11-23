@@ -1051,7 +1051,7 @@ export class World {
 
   private buildingCostBasis(k: BuildingKind): number {
     for (const path of Object.values(UPGRADE_PATHS)) {
-      if (path.to === k) return BUILDINGS[path.from].cost + path.cost;
+      if (path.to === k) return this.buildingCostBasis(path.from) + path.cost;
     }
     return BUILDINGS[k].cost;
   }
@@ -1344,8 +1344,11 @@ export class World {
 
   private hasBuilding(slot: number, kind: BuildingKind) {
     const upg = UPGRADED_OF[kind];
-    for (const e of this.ents.values())
-      if (e.o === slot && (e.k === kind || (upg !== undefined && e.k === upg))) return true;
+    for (const e of this.ents.values()) {
+      if (e.o !== slot) continue;
+      if (e.k === kind || (upg !== undefined && e.k === upg)) return true;
+      if (kind === "power" && (e.k === "coalplant" || e.k === "fusion")) return true;
+    }
     return false;
   }
 

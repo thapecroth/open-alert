@@ -34,9 +34,9 @@ import type { FpvTelemetry } from "./fpv";
 
 const TOOLTIPS: Record<string, string> = {
   conyard: "Construction Yard — the heart of your base.",
-  power: "Reactor Plant — powers your base (+100⚡); keeps defenses, radar & superweapon online.",
-  coalplant: "Thermal Coal Plant — heavy coal-fired generator (+165⚡). Needs Ore Refinery.",
-  fusion: "Fusion Reactor — massive late-game clean power (+380⚡). Needs Tech Lab.",
+  power: "Power Plant — generates +100⚡ power. Click to upgrade in-place → Thermal Coal Plant (+200⚡) → Fusion Reactor (+420⚡).",
+  coalplant: "Thermal Coal Plant (Tier II) — generates +200⚡ power. Click to upgrade in-place → Fusion Reactor (+420⚡) once Tech Lab is built.",
+  fusion: "Fusion Reactor (Tier III) — apex clean-energy Tokamak generating +420⚡ power.",
   refinery: "Ore Refinery — unlocks harvesters; deploys one free.",
   supplyhub: "Forward Supply Hub — extends build zone (26 tiles) & refills Fuel, Ammo + light repair in 12-tile aura",
   barracks: "Barracks — trains Riflemen, Combat Engineers, AT / MANPADS & FPV Suicide Drones. Upgrade to MKII for Veteran ★ troops.",

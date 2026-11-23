@@ -322,15 +322,17 @@ export class GameRoom extends Server<Env> {
     }
     const noHumans = [...this.players.values()].every((x) => x.bot || !x.connected);
     if (noHumans) {
-      // On abnormal mid-game WS drops (Wi-Fi blip / edge reroute), hold the match for 12s so PartySocket can reconnect!
-      // Clean closes (1000/1001/undefined) or lobby rooms reset immediately.
-      const abnormalDrop = this.phase === "playing" && typeof code === "number" && code !== 1000 && code !== 1001;
-      if (abnormalDrop) {
+      // During an active match, ALWAYS keep the room alive for a 30s reconnect grace window regardless of
+      // WebSocket close code (1000 from PartySocket.reconnect(), 1001 from page refresh, 1006 from Wi-Fi drops, etc.)
+      // so a brief reconnect or F5 refresh seamlessly rejoins instead of wiping the match!
+      if (this.phase === "playing") {
         if (!this.resetTimer) {
           this.resetTimer = setTimeout(() => {
             this.resetTimer = null;
-            if ([...this.players.values()].every((x) => x.bot || !x.connected)) this.resetRoom();
-          }, 12000);
+            if (this.phase === "playing" && [...this.players.values()].every((x) => x.bot || !x.connected)) {
+              this.resetRoom();
+            }
+          }, 30000);
         }
       } else {
         this.resetRoom();
