@@ -2296,6 +2296,9 @@ export class World {
     if (kamikaze) {
       this.events.push({ e: "boom", x: tx, y: ty, r: splashR ?? 2.0 });
       this.destroy(e, -1);
+    } else if (e.k === "stealthbomber" || e.k === "bomber" || e.k === "zeppelin") {
+      // gravity-bomb delivery: render the big impact blast + crater, not just a hit flash
+      this.events.push({ e: "boom", x: tx, y: ty, r: splashR ?? 2.5 });
     }
   }
 
@@ -2729,6 +2732,9 @@ export class World {
     if (kamikaze) {
       this.events.push({ e: "boom", x: tx, y: ty, r: splashR ?? 2.0 });
       this.destroy(e, -1);
+    } else if (e.k === "stealthbomber" || e.k === "bomber" || e.k === "zeppelin") {
+      // gravity-bomb delivery: render the big impact blast + crater, not just a hit flash
+      this.events.push({ e: "boom", x: tx, y: ty, r: splashR ?? 2.5 });
     }
   }
 

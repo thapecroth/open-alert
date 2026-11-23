@@ -345,18 +345,18 @@ export const UNITS: Record<UnitKind, UnitDef> = {
   chopper: { hp: 310, speed: 0.22, range: 6, dmg: 22, rof: 14, cost: 1000, buildTicks: 70, trainsAt: "airfield", domain: "air", canHitAir: true },
   a10: { hp: 460, speed: 0.27, range: 6.8, dmg: 22, rof: 6, cost: 950, buildTicks: 70, trainsAt: "airfield", domain: "air", canHitAir: true, requires: "radar" },
   ac130: { hp: 980, speed: 0.14, range: 8.8, dmg: 74, rof: 20, cost: 2100, buildTicks: 110, trainsAt: "airfield", domain: "air", vision: 13, requires: "airfield2" },
-  stealthbomber: { hp: 480, speed: 0.23, range: 6.5, dmg: 125, rof: 48, cost: 2600, buildTicks: 120, trainsAt: "airfield", domain: "air", stealth: true, requires: "airfield2" },
+  stealthbomber: { hp: 480, speed: 0.23, range: 6.5, dmg: 850, rof: 200, cost: 13000, buildTicks: 160, trainsAt: "airfield", domain: "air", stealth: true, requires: "airfield2" },
   hypersonic: { hp: 180, speed: 1.25, range: 2.2, dmg: 520, rof: 10, cost: 750, buildTicks: 55, trainsAt: "airfield", domain: "air", kamikaze: true, vision: 10, requires: "airfield2" },
   // Retired legacy air units (hidden from modern UI roster)
   bomber: { hp: 420, speed: 0.18, range: 5.5, dmg: 80, rof: 46, cost: 1600, buildTicks: 95, trainsAt: "airfield", domain: "air", requires: "techlab", retired: true },
   zeppelin: { hp: 1400, speed: 0.085, range: 3.6, dmg: 135, rof: 38, cost: 2200, buildTicks: 120, trainsAt: "airfield", domain: "air", requires: "techlab", retired: true },
   // Modern Navy & Unmanned Autonomous Vessels
   usv: { hp: 115, speed: 0.30, range: 1.75, dmg: 260, rof: 10, cost: 190, buildTicks: 30, trainsAt: "shipyard", domain: "sea", kamikaze: true, stealth: true, vision: 9 },
-  gunboat: { hp: 240, speed: 0.24, range: 6.5, dmg: 16, rof: 14, cost: 550, buildTicks: 50, trainsAt: "shipyard", domain: "sea", canHitAir: true },
-  destroyer: { hp: 580, speed: 0.14, range: 7.5, dmg: 32, rof: 22, cost: 1100, buildTicks: 80, trainsAt: "shipyard", domain: "sea", canHitAir: true },
-  sub: { hp: 460, speed: 0.15, range: 7, dmg: 52, rof: 30, cost: 850, buildTicks: 68, trainsAt: "shipyard", domain: "sea", stealth: true, requires: "radar" },
-  dreadnought: { hp: 1150, speed: 0.09, range: 13, dmg: 92, rof: 46, cost: 2200, buildTicks: 115, trainsAt: "shipyard", domain: "sea", requires: "shipyard2" },
-  carrier: { hp: 1350, speed: 0.10, range: 12, dmg: 64, rof: 26, cost: 2400, buildTicks: 125, trainsAt: "shipyard", domain: "sea", canHitAir: true, vision: 13, requires: "shipyard2" },
+  gunboat: { hp: 240, speed: 0.24, range: 6.5, dmg: 16, rof: 14, cost: 600, buildTicks: 50, trainsAt: "shipyard", domain: "sea", canHitAir: true },
+  destroyer: { hp: 580, speed: 0.14, range: 7.5, dmg: 32, rof: 22, cost: 1250, buildTicks: 80, trainsAt: "shipyard", domain: "sea", canHitAir: true },
+  sub: { hp: 460, speed: 0.15, range: 7, dmg: 52, rof: 30, cost: 950, buildTicks: 68, trainsAt: "shipyard", domain: "sea", stealth: true, requires: "radar" },
+  dreadnought: { hp: 1150, speed: 0.09, range: 13, dmg: 92, rof: 46, cost: 2400, buildTicks: 115, trainsAt: "shipyard", domain: "sea", requires: "shipyard2" },
+  carrier: { hp: 1350, speed: 0.10, range: 12, dmg: 64, rof: 26, cost: 2700, buildTicks: 125, trainsAt: "shipyard", domain: "sea", canHitAir: true, vision: 13, requires: "shipyard2" },
 };
 
 export const TRAIN_ORDER: { unit: UnitKind; label: string; group: "land" | "air" | "sea" }[] = [
@@ -480,7 +480,7 @@ export const SPLASH_RADIUS: Partial<Record<EntKind, number>> = {
   shahed: 2.6,
   usv: 2.4,
   bomber: 2.5,
-  stealthbomber: 3.1,
+  stealthbomber: 6.0,
   hypersonic: 3.6,
   ac130: 2.6,
   zeppelin: 2.9,

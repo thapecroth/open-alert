@@ -84,7 +84,7 @@ const TOOLTIPS: Record<string, string> = {
   a10: "A-10 Warthog — cost-effective armored CAS jet with GAU-8 30mm rotary cannon (BRRRT! 1.5× vs tanks & AA).",
   ac130: "AC-130 Gunship — heavy 4-turboprop flying artillery raining 105mm splash shells from high altitude.",
   bomber: "Tempest Bomber — heavy Air Force splash strike bomber vs ground & ships. Needs Tech Lab.",
-  stealthbomber: "B-21 Stealth Bomber — apex $690M-class stealth bomber, completely invisible unless the enemy has powered Radar or missile defenses. Needs Air Command II.",
+  stealthbomber: "B-21 Stealth Bomber — apex strategic bomber: drops one MASSIVE gravity bomb per run, then a long rearm. Completely invisible unless the enemy has powered Radar or missile defenses. Needs Air Command II.",
   hypersonic: "Mach-9 Missile — one-way hypersonic glide missile that can cross the whole map (520 splash; Anti-Nuke 80% / Iron Dome 33% intercept!).",
   zeppelin: "Leviathan Airship — armored Air Force flying dreadnought with massive splash bombs. Needs Tech Lab.",
   usv: "Sea-Baby USV Drone — $250K-class stealth explosive drone boat; skims waves unseen to ram warships & docks.",
