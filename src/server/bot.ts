@@ -390,13 +390,8 @@ export class RtsBot {
     }
   }
 
-  private pickPower(me: P, bc: Map<BuildingKind, number>): BuildingKind {
-    if (this.diff !== "easy" && this.hasBuilding(bc, "techlab") && me.credits >= BUILDINGS.fusion.cost + 150) {
-      return "fusion";
-    }
-    if (this.hasBuilding(bc, "refinery") && me.credits >= BUILDINGS.coalplant.cost + 80) {
-      return "coalplant";
-    }
+  private pickPower(_me: P, _bc: Map<BuildingKind, number>): BuildingKind {
+    // Power Plants are built as Tier-1 `power` and upgraded in-place to `coalplant` -> `fusion`!
     return "power";
   }
 
@@ -838,9 +833,24 @@ export class RtsBot {
     }
   }
 
-  // Upgrade production buildings along all 4 UPGRADE_PATHS (factory, barracks, airfield, shipyard).
+  // Upgrade power plants (power -> coalplant -> fusion) & production buildings along UPGRADE_PATHS.
   private upgrade(me: P, bc: Map<BuildingKind, number>) {
     if (this.diff === "easy") return;
+    // Upgrade existing Power Plants in-place when power is tight or in mid/late game!
+    const needPower = me.lowPower || me.pwrHave - me.pwrUse < 65;
+    if (needPower || this.phase === "late") {
+      for (const from of ["coalplant", "power"] as const) {
+        const path = UPGRADE_PATHS[from];
+        if (!path || (bc.get(from) ?? 0) === 0 || !this.hasBuilding(bc, path.requires)) continue;
+        if (me.credits < path.cost + (needPower ? 100 : 600)) continue;
+        for (const e of this.world.ents.values()) {
+          if (e.o === this.slot && e.k === from) {
+            this.trycmd(() => this.world.cmdUpgrade(this.slot, e.id));
+            return;
+          }
+        }
+      }
+    }
     if (this.phase === "early") return;
     const order: BuildingKind[] = ["factory", "barracks", "airfield", "shipyard"];
     for (const from of order) {

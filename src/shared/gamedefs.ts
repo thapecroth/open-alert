@@ -177,8 +177,8 @@ export const BUILDINGS: Record<BuildingKind, BuildingDef> = {
   // Core & Economy Structures
   conyard: { w: 3, h: 3, cost: 0, hp: 1000, power: 40, buildTicks: 0 },
   power: { w: 2, h: 2, cost: 300, hp: 400, power: 100, buildTicks: 50 },
-  coalplant: { w: 2, h: 2, cost: 480, hp: 520, power: 165, buildTicks: 65, requires: ["refinery"] },
-  fusion: { w: 3, h: 2, cost: 1350, hp: 850, power: 380, buildTicks: 105, requires: ["techlab"] },
+  coalplant: { w: 2, h: 2, cost: 0, hp: 580, power: 200, buildTicks: 0, noBuild: true },
+  fusion: { w: 2, h: 2, cost: 0, hp: 900, power: 420, buildTicks: 0, noBuild: true },
   refinery: { w: 3, h: 2, cost: 600, hp: 700, power: -35, buildTicks: 80 },
   supplyhub: { w: 2, h: 2, cost: 650, hp: 580, power: -15, buildTicks: 60, requires: ["refinery"], forwardRange: 26 },
   barracks: { w: 2, h: 2, cost: 500, hp: 500, power: -20, buildTicks: 70 },
@@ -215,7 +215,6 @@ export function buildCategoryOf(kind: BuildingKind): BuildCategory {
 
 export const BUILD_ORDER: BuildingKind[] = [
   "power",
-  "coalplant",
   "refinery",
   "supplyhub",
   "barracks",
@@ -225,7 +224,6 @@ export const BUILD_ORDER: BuildingKind[] = [
   "shipyard",
   "depot",
   "techlab",
-  "fusion",
   "purifier",
   "satlink",
   "superweapon",
@@ -250,6 +248,20 @@ export interface UpgradePath {
 }
 
 export const UPGRADE_PATHS: Record<string, UpgradePath> = {
+  power: {
+    from: "power",
+    to: "coalplant",
+    cost: 300,
+    requires: "refinery",
+    desc: "Upgrade Power Plant to Thermal Coal Plant (+200⚡ power, 580 HP).",
+  },
+  coalplant: {
+    from: "coalplant",
+    to: "fusion",
+    cost: 800,
+    requires: "techlab",
+    desc: "Upgrade Thermal Coal Plant to Tokamak Fusion Reactor (+420⚡ clean power, 900 HP).",
+  },
   barracks: {
     from: "barracks",
     to: "barracks2",
@@ -372,7 +384,7 @@ export const TRAIN_ORDER: { unit: UnitKind; label: string; group: "land" | "air"
 // display names for buildings (sidebar/tooltips)
 export const BUILDING_NAMES: Record<BuildingKind, string> = {
   conyard: "Construction Yard",
-  power: "Reactor Plant",
+  power: "Power Plant",
   coalplant: "Thermal Coal Plant",
   fusion: "Fusion Reactor",
   refinery: "Ore Refinery",

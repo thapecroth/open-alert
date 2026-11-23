@@ -375,8 +375,11 @@ const UPGRADED_ALIAS: Partial<Record<string, string>> = {
 
 function has(kind: string) {
   const mk2 = UPGRADED_ALIAS[kind];
-  for (const t of renderer.tracked.values())
-    if (t.last.o === mySlot && (t.last.k === kind || (mk2 !== undefined && t.last.k === mk2))) return true;
+  for (const t of renderer.tracked.values()) {
+    if (t.last.o !== mySlot) continue;
+    if (t.last.k === kind || (mk2 !== undefined && t.last.k === mk2)) return true;
+    if (kind === "power" && (t.last.k === "coalplant" || t.last.k === "fusion")) return true;
+  }
   return false;
 }
 
@@ -662,6 +665,8 @@ net.onMsg = (m: S2C) => {
           gs,
           [
             "conyard",
+            "coalplant",
+            "fusion",
             "barracks2",
             "factory2",
             "airfield2",
