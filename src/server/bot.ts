@@ -528,6 +528,8 @@ export class RtsBot {
       ewdrones = 0,
       interceptors = 0,
       choppers = 0,
+      a10s = 0,
+      ac130s = 0,
       stealthbombers = 0,
       hypersonics = 0,
       usvs = 0,
@@ -556,6 +558,8 @@ export class RtsBot {
         else if (e.k === "ewdrone") ewdrones++;
         else if (e.k === "interceptor") interceptors++;
         else if (e.k === "chopper") choppers++;
+        else if (e.k === "a10") a10s++;
+        else if (e.k === "ac130") ac130s++;
         else if (e.k === "stealthbomber") stealthbombers++;
         else if (e.k === "hypersonic") hypersonics++;
         else if (e.k === "usv") usvs++;
@@ -622,20 +626,25 @@ export class RtsBot {
       }
     }
 
-    // Air Command: Reaper UAVs, EW Jammer Drones, Delta Kamikaze Drones, Valkyrie Jets, Hornet Gunships, B-21 Stealth & Mach-9 Hypersonic
+    // Air Command: Reaper UAVs, EW Jammer Drones, Delta Kamikaze Drones, Valkyrie Jets, Hornet Gunships, A-10 Warthogs, AC-130 Gunships, B-21 Stealth & Mach-9 Hypersonic
     if (this.hasBuilding(bc, "airfield")) {
       const q = me.queues.airfield;
-      const airCount = uavs + ewdrones + shaheds + interceptors + choppers + stealthbombers + hypersonics;
-      const airGoal = this.diff === "easy" ? 2 : this.diff === "brutal" ? 11 : 6;
+      const airCount = uavs + ewdrones + shaheds + interceptors + choppers + a10s + ac130s + stealthbombers + hypersonics;
+      const airGoal = (this.diff === "easy" ? 2 : this.diff === "brutal" ? 13 : 7) + (a2 ? 3 : 0);
       const ewCap = this.diff === "easy" ? 0 : this.diff === "brutal" || this.profile === "turtle" ? 2 : 1;
       const shahedCap = this.diff === "easy" ? 2 : this.diff === "brutal" ? 5 : 3;
+      const a10Cap = this.diff === "easy" ? 0 : this.diff === "brutal" ? 3 : 2;
+      const ac130Cap = this.diff === "easy" ? 0 : this.diff === "brutal" ? 2 : 1;
       if (!q) {
         let unit: UnitKind | null = null;
         if (uavs < 1) unit = "uav";
         else if (radar && ewCap > 0 && ewdrones < ewCap) unit = "ewdrone";
-        else if (a2 && stealthbombers < 2 && interceptors + choppers >= 1) unit = "stealthbomber";
-        else if (a2 && hypersonics < 2 && interceptors >= 1) unit = "hypersonic";
-        else if (shaheds < shahedCap && (shaheds <= interceptors + choppers || this.profile === "rusher")) unit = "shahed";
+        else if (a2 && ac130Cap > 0 && ac130s < ac130Cap && ac130s <= hypersonics && interceptors + a10s + choppers >= 1) unit = "ac130";
+        else if (a2 && hypersonics < 2 && hypersonics <= stealthbombers && interceptors + a10s + choppers >= 1) unit = "hypersonic";
+        else if (a2 && stealthbombers < 2 && interceptors + a10s + choppers >= 1) unit = "stealthbomber";
+        else if (a2 && hypersonics < 2 && interceptors + a10s + choppers >= 1) unit = "hypersonic";
+        else if (radar && a10Cap > 0 && a10s < a10Cap && a10s <= interceptors && a10s <= choppers) unit = "a10";
+        else if (shaheds < shahedCap && (shaheds <= interceptors + choppers + a10s || this.profile === "rusher")) unit = "shahed";
         else if (interceptors <= choppers) unit = "interceptor";
         else unit = "chopper";
         if (unit && airCount < airGoal && army < this.armyCap + 8 && me.credits >= UNITS[unit].cost + reserve) {
@@ -648,9 +657,13 @@ export class RtsBot {
             ? ewCap
             : u === "shahed"
               ? shahedCap
-              : u === "stealthbomber" || u === "hypersonic" || u === "uav"
-                ? 2
-                : 3;
+              : u === "a10"
+                ? a10Cap
+                : u === "ac130"
+                  ? ac130Cap
+                  : u === "stealthbomber" || u === "hypersonic" || u === "uav"
+                    ? 2
+                    : 3;
         const fielded =
           u === "uav"
             ? uavs
@@ -662,9 +675,13 @@ export class RtsBot {
                   ? interceptors
                   : u === "chopper"
                     ? choppers
-                    : u === "stealthbomber"
-                      ? stealthbombers
-                      : hypersonics;
+                    : u === "a10"
+                      ? a10s
+                      : u === "ac130"
+                        ? ac130s
+                        : u === "stealthbomber"
+                          ? stealthbombers
+                          : hypersonics;
         if (
           fielded + q.count < cap &&
           airCount + q.count < airGoal &&

@@ -366,11 +366,13 @@ export class AudioEngine {
                 ? 0.085
                 : weapon === "laser"
                   ? 0.08
-                  : weapon === "intercept"
-                    ? 0.06
-                    : weapon === "arc"
-                      ? 0.07
-                      : 0.065;
+                  : weapon === "brrrt"
+                    ? 0.16
+                    : weapon === "intercept"
+                      ? 0.06
+                      : weapon === "arc"
+                        ? 0.07
+                        : 0.065;
 
     if (!this.allow(`shot:${weapon}`, minGap, ctx.currentTime)) return;
 
@@ -412,6 +414,9 @@ export class AudioEngine {
           break;
         case "railgun":
           this.synthRailgun(ctx, this.sfxBus, now, jitter, heroic);
+          break;
+        case "brrrt":
+          this.synthBrrrt(ctx, this.sfxBus, now, jitter, heroic);
           break;
         case "intercept":
           this.synthIntercept(ctx, this.sfxBus, now, jitter, heroic);
@@ -1354,6 +1359,132 @@ export class AudioEngine {
     this.playTone(ctx, bus, "sine", 1380 * jitter, 2120 * jitter, now + 0.045, 0.16, 0.065, 0.015);
   }
 
+  private synthBrrrt(
+    ctx: AudioContext,
+    bus: AudioNode,
+    now: number,
+    jitter: number,
+    heroic: boolean,
+  ): void {
+    // Iconic A-10 Warthog GAU-8/A Avenger 30mm rotary gatling "BRRRRRRT!"
+    // 3,900 RPM = 65 Hz fundamental pulse rate -> raspy sawtooth/pulse buzz + bandpass punch + sub-bass roar + distant crackle!
+    const dur = heroic ? 0.48 : 0.42;
+    const baseHz = 65 * (0.97 + (jitter - 0.94) * 0.5);
+
+    // 1. Raspy 65Hz rotary sawtooth + square pulse core through hard overdrive & punchy bandpass
+    const shaper = ctx.createWaveShaper();
+    if (this.hardDrive) shaper.curve = this.hardDrive;
+
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.Q.value = 2.0;
+    bp.frequency.setValueAtTime(980 * jitter, now);
+    bp.frequency.exponentialRampToValueAtTime(480 * jitter, now + dur);
+
+    const buzzGain = ctx.createGain();
+    buzzGain.gain.setValueAtTime(0.0001, now);
+    buzzGain.gain.linearRampToValueAtTime(heroic ? 0.46 : 0.39, now + 0.014);
+    buzzGain.gain.setValueAtTime(heroic ? 0.42 : 0.35, now + dur * 0.72);
+    buzzGain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    shaper.connect(bp);
+    bp.connect(buzzGain);
+    buzzGain.connect(bus);
+
+    const saw = ctx.createOscillator();
+    saw.type = "sawtooth";
+    saw.frequency.setValueAtTime(baseHz, now);
+    saw.frequency.linearRampToValueAtTime(baseHz * 0.92, now + dur);
+    saw.connect(shaper);
+    saw.start(now);
+    saw.stop(now + dur + 0.02);
+
+    const pulseOsc = ctx.createOscillator();
+    pulseOsc.type = "square";
+    pulseOsc.frequency.setValueAtTime(baseHz * 2.0, now);
+    pulseOsc.frequency.linearRampToValueAtTime(baseHz * 1.84, now + dur);
+    const pulseMix = ctx.createGain();
+    pulseMix.gain.value = 0.55;
+    pulseOsc.connect(pulseMix);
+    pulseMix.connect(shaper);
+    pulseOsc.start(now);
+    pulseOsc.stop(now + dur + 0.02);
+
+    // 2. Chest-rattling GAU-8 sub-bass roar (65Hz fundamental + 32.5Hz sub-octave rumble)
+    const subOsc = ctx.createOscillator();
+    subOsc.type = "sine";
+    subOsc.frequency.setValueAtTime(baseHz, now);
+    subOsc.frequency.exponentialRampToValueAtTime(baseHz * 0.74, now + dur);
+
+    const subGain = ctx.createGain();
+    subGain.gain.setValueAtTime(0.0001, now);
+    subGain.gain.linearRampToValueAtTime(heroic ? 0.54 : 0.46, now + 0.018);
+    subGain.gain.setValueAtTime(heroic ? 0.46 : 0.38, now + dur * 0.68);
+    subGain.gain.exponentialRampToValueAtTime(0.0001, now + dur + 0.06);
+
+    subOsc.connect(subGain);
+    subGain.connect(bus);
+    subOsc.start(now);
+    subOsc.stop(now + dur + 0.08);
+
+    this.playTone(ctx, bus, "triangle", baseHz * 0.5, 28, now, dur * 0.92, heroic ? 0.28 : 0.22, 0.02);
+
+    // 3. High-pressure supersonic air-rip modulated at 65Hz + distant acoustic crackle tail
+    if (this.whiteNoise) {
+      const rip = this.makeNoiseSource(ctx, this.whiteNoise);
+      const ripBp = ctx.createBiquadFilter();
+      ripBp.type = "bandpass";
+      ripBp.Q.value = 1.6;
+      ripBp.frequency.setValueAtTime(2150 * jitter, now);
+      ripBp.frequency.exponentialRampToValueAtTime(860, now + dur);
+
+      const ripGain = ctx.createGain();
+      ripGain.gain.setValueAtTime(0.0001, now);
+      ripGain.gain.linearRampToValueAtTime(heroic ? 0.28 : 0.22, now + 0.012);
+      ripGain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+      // 65Hz AM modulation onto noise gives crisp individual 30mm muzzle-blast teeth
+      const amLfo = ctx.createOscillator();
+      amLfo.type = "sawtooth";
+      amLfo.frequency.setValueAtTime(baseHz, now);
+      const amDepth = ctx.createGain();
+      amDepth.gain.value = 0.14;
+      amLfo.connect(amDepth);
+      amDepth.connect(ripGain.gain);
+
+      rip.connect(ripBp);
+      ripBp.connect(ripGain);
+      ripGain.connect(bus);
+      rip.start(now, Math.random() * 1.1);
+      rip.stop(now + dur + 0.02);
+      amLfo.start(now);
+      amLfo.stop(now + dur + 0.02);
+    }
+
+    // Distant battlefield canyon roar & impact crackle echo tail
+    if (this.pinkNoise) {
+      const echoStart = now + 0.085;
+      const echoDur = dur + 0.26;
+      const echo = this.makeNoiseSource(ctx, this.pinkNoise);
+      const echoBp = ctx.createBiquadFilter();
+      echoBp.type = "bandpass";
+      echoBp.Q.value = 1.1;
+      echoBp.frequency.setValueAtTime(1450, echoStart);
+      echoBp.frequency.exponentialRampToValueAtTime(260, echoStart + echoDur);
+
+      const eg = ctx.createGain();
+      eg.gain.setValueAtTime(0.0001, echoStart);
+      eg.gain.linearRampToValueAtTime(heroic ? 0.24 : 0.19, echoStart + 0.05);
+      eg.gain.exponentialRampToValueAtTime(0.0001, echoStart + echoDur);
+
+      echo.connect(echoBp);
+      echoBp.connect(eg);
+      eg.connect(bus);
+      echo.start(echoStart, Math.random() * 1.1);
+      echo.stop(echoStart + echoDur + 0.02);
+    }
+  }
+
   private synthIntercept(
     ctx: AudioContext,
     bus: AudioNode,
@@ -1421,7 +1552,12 @@ export class AudioEngine {
   ): void {
     // Subtle heroic rank-3 punch & metallic harmonic shimmer
     const base =
-      weapon === "cannon" || weapon === "arty" || weapon === "missile" || weapon === "bomb" || weapon === "railgun"
+      weapon === "cannon" ||
+      weapon === "arty" ||
+      weapon === "missile" ||
+      weapon === "bomb" ||
+      weapon === "railgun" ||
+      weapon === "brrrt"
         ? 82
         : 164;
     this.playTone(ctx, bus, "sine", base * jitter, base * 0.55, now, 0.14, 0.14, 0.003);

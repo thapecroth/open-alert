@@ -308,6 +308,34 @@ const UNIT_PROFILES: Record<UnitKind, UnitCameraProfile> = {
     recoilPitch: 0.018,
     recoilShake: 0.14,
   },
+  a10: {
+    eyeY: 3.18,
+    fov: 76,
+    initPitch: -0.24,
+    minPitch: -1.12,
+    maxPitch: 0.78,
+    bobAmp: 0.016,
+    bobFreq: 5.4,
+    strafeMode: "steer",
+    turnRate: 2.35,
+    recoilKickZ: 0.055,
+    recoilPitch: 0.016,
+    recoilShake: 0.17,
+  },
+  ac130: {
+    eyeY: 3.92,
+    fov: 64,
+    initPitch: -0.34,
+    minPitch: -1.22,
+    maxPitch: 0.58,
+    bobAmp: 0.011,
+    bobFreq: 2.6,
+    strafeMode: "strafe",
+    turnRate: 1.55,
+    recoilKickZ: 0.135,
+    recoilPitch: 0.036,
+    recoilShake: 0.3,
+  },
   bomber: {
     eyeY: 3.6,
     fov: 72,
@@ -337,18 +365,18 @@ const UNIT_PROFILES: Record<UnitKind, UnitCameraProfile> = {
     recoilShake: 0.22,
   },
   hypersonic: {
-    eyeY: 3.55,
-    fov: 82,
-    initPitch: -0.2,
-    minPitch: -1.05,
-    maxPitch: 0.8,
-    bobAmp: 0.014,
-    bobFreq: 6.8,
+    eyeY: 3.68,
+    fov: 88,
+    initPitch: -0.28,
+    minPitch: -1.28,
+    maxPitch: 0.78,
+    bobAmp: 0.016,
+    bobFreq: 8.6,
     strafeMode: "steer",
-    turnRate: 2.35,
-    recoilKickZ: 0.08,
-    recoilPitch: 0.022,
-    recoilShake: 0.18,
+    turnRate: 2.65,
+    recoilKickZ: 0.15,
+    recoilPitch: 0.048,
+    recoilShake: 0.36,
   },
   zeppelin: {
     eyeY: 3.78,
@@ -1532,25 +1560,215 @@ function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
     addPart(swayGroup, new THREE.BoxGeometry(0.068, 0.003, 0.002), cyanGlow, -0.055, -0.205, -0.425, 0.16, 0, 0);
     addPart(swayGroup, new THREE.BoxGeometry(0.068, 0.003, 0.002), cyanGlow, 0.055, -0.205, -0.425, 0.16, 0, 0);
     addMuzzleFlash(recoilGroup, 0, -0.34, -0.86, 1.65, 0x52f2ff);
+  } else if (kind === "a10") {
+    // A-10 Warthog Armored Cockpit: titanium windscreen bow + glowing green HUD combiner with gun-pipper brackets + dual throttle frame + nose GAU-8 muzzle flash!
+    const armorGray = getChassisMat("#38424d", 0.44, 0.64);
+    const hudGreenMat = trackMat(
+      new THREE.MeshBasicMaterial({
+        color: 0x3cff7a,
+        transparent: true,
+        opacity: 0.15,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    const hudLineMat = trackMat(
+      new THREE.MeshBasicMaterial({
+        color: 0x52ff8c,
+        transparent: true,
+        opacity: 0.88,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    );
+
+    // Armored titanium flat-windscreen A-pillars & upper canopy bow
+    addPart(swayGroup, new RoundedBoxGeometry(0.056, 0.56, 0.08, 2, 0.008), armorGray, -0.47, 0.06, -0.45, -0.22, 0.26, -0.24);
+    addPart(swayGroup, new RoundedBoxGeometry(0.056, 0.56, 0.08, 2, 0.008), armorGray, 0.47, 0.06, -0.45, -0.22, -0.26, 0.24);
+    addPart(swayGroup, new RoundedBoxGeometry(0.84, 0.054, 0.08, 2, 0.008), armorGray, 0, 0.34, -0.46, 0.16, 0, 0);
+    // Faction titanium armor trim strips along inner windscreen bow
+    addPart(swayGroup, new THREE.BoxGeometry(0.014, 0.22, 0.02), factionMat, -0.44, 0.04, -0.43, -0.22, 0.26, -0.24);
+    addPart(swayGroup, new THREE.BoxGeometry(0.014, 0.22, 0.02), factionMat, 0.44, 0.04, -0.43, -0.22, -0.26, 0.24);
+
+    // Heavy armored glareshield coaming & MFD tactical dash
+    addPart(swayGroup, new RoundedBoxGeometry(0.92, 0.125, 0.24, 2, 0.016), cockpitTrim, 0, -0.325, -0.48, -0.26, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.18, 0.052, 0.024, 1, 0.004), darkMetal, 0.24, -0.272, -0.42, -0.34, -0.12, 0);
+    glowPulses.push(
+      addPart(swayGroup, new THREE.BoxGeometry(0.115, 0.012, 0.008), greenGlow, 0.24, -0.266, -0.406, -0.34, -0.12, 0),
+      addPart(swayGroup, new THREE.BoxGeometry(0.088, 0.008, 0.008), amberGlow, 0.24, -0.282, -0.404, -0.34, -0.12, 0),
+      addPart(swayGroup, new THREE.BoxGeometry(0.042, 0.009, 0.008), redGlow, 0.11, -0.272, -0.408, -0.34, 0, 0),
+    );
+
+    // Left-side Dual TF34 Throttle Quadrant Frame & Twin Split Thrust Levers!
+    addPart(swayGroup, new RoundedBoxGeometry(0.16, 0.075, 0.16, 2, 0.01), darkMetal, -0.32, -0.285, -0.43, -0.2, 0.14, 0);
+    addPart(swayGroup, new THREE.BoxGeometry(0.012, 0.008, 0.11), gunMetal, -0.345, -0.246, -0.425, -0.2, 0.14, 0);
+    addPart(swayGroup, new THREE.BoxGeometry(0.012, 0.008, 0.11), gunMetal, -0.295, -0.246, -0.425, -0.2, 0.14, 0);
+    // Twin knurled throttle stalks & handles (Engine #1 + Engine #2)
+    for (const tx of [-0.345, -0.295]) {
+      addPart(swayGroup, new THREE.CylinderGeometry(0.007, 0.008, 0.085, 8), lightAlloy, tx, -0.22, -0.435, -0.32, 0, 0);
+      addPart(swayGroup, new RoundedBoxGeometry(0.034, 0.018, 0.022, 1, 0.004), cockpitTrim, tx, -0.184, -0.45, -0.22, 0, 0);
+    }
+    glowPulses.push(
+      addPart(swayGroup, new THREE.BoxGeometry(0.022, 0.008, 0.008), greenGlow, -0.345, -0.268, -0.365),
+      addPart(swayGroup, new THREE.BoxGeometry(0.022, 0.008, 0.008), greenGlow, -0.295, -0.268, -0.365),
+    );
+
+    // Iconic Glowing Green A-10 Fighter HUD Glass Combiner & Gun-Pipper Brackets!
+    addPart(swayGroup, new THREE.BoxGeometry(0.01, 0.145, 0.016), lightAlloy, -0.125, -0.185, -0.43, 0.18, 0, 0);
+    addPart(swayGroup, new THREE.BoxGeometry(0.01, 0.145, 0.016), lightAlloy, 0.125, -0.185, -0.43, 0.18, 0, 0);
+    addPart(swayGroup, new THREE.BoxGeometry(0.26, 0.009, 0.014), lightAlloy, 0, -0.115, -0.418, 0.18, 0, 0);
+    const hudPane = addPart(swayGroup, new THREE.PlaneGeometry(0.238, 0.132), hudGreenMat, 0, -0.184, -0.428, 0.18, 0, 0);
+    hudPane.renderOrder = 3;
+
+    // Glowing Green Gun-Pipper Brackets + CCIP 30mm Pipper Ring + Pitch Ladder on Combiner Glass!
+    for (const sx of [-1, 1]) {
+      // Left & right vertical gun-pipper framing brackets with inward top/bottom serifs
+      addPart(swayGroup, new THREE.BoxGeometry(0.0036, 0.068, 0.002), hudLineMat, sx * 0.062, -0.184, -0.424, 0.18, 0, 0);
+      addPart(swayGroup, new THREE.BoxGeometry(0.018, 0.0034, 0.002), hudLineMat, sx * 0.054, -0.151, -0.418, 0.18, 0, 0);
+      addPart(swayGroup, new THREE.BoxGeometry(0.018, 0.0034, 0.002), hudLineMat, sx * 0.054, -0.217, -0.43, 0.18, 0, 0);
+      // Outer horizon wings
+      addPart(swayGroup, new THREE.BoxGeometry(0.026, 0.003, 0.002), hudLineMat, sx * 0.092, -0.184, -0.424, 0.18, 0, 0);
+    }
+    // Center 30mm CCIP gun pipper ring + glowing center dot
+    addPart(swayGroup, new THREE.TorusGeometry(0.022, 0.0024, 6, 24), greenGlow, 0, -0.184, -0.424, 0.18, 0, 0);
+    glowPulses.push(
+      addPart(swayGroup, new THREE.SphereGeometry(0.0045, 8, 8), greenGlow, 0, -0.184, -0.422),
+    );
+    // Upper heading tape ticks
+    for (const hx of [-0.075, -0.045, -0.015, 0.015, 0.045, 0.075]) {
+      addPart(swayGroup, new THREE.BoxGeometry(0.0026, 0.01, 0.002), hudLineMat, hx, -0.134, -0.417, 0.18, 0, 0);
+    }
+
+    // Protruding Nose GAU-8/A 30mm 7-Barrel Rotary Gatling Tip & Blazing Golden-Amber Muzzle Flash!
+    const gauGroup = new THREE.Group();
+    gauGroup.position.set(0, -0.34, -0.84);
+    recoilGroup.add(gauGroup);
+    addPart(gauGroup, new THREE.CylinderGeometry(0.032, 0.036, 0.28, 12), gunMetal, 0, 0, 0.08, Math.PI / 2, 0, 0);
+    const gauCluster = new THREE.Group();
+    gauCluster.position.set(0, 0, -0.12);
+    gauGroup.add(gauCluster);
+    for (let i = 0; i < 6; i++) {
+      const ang = (i * Math.PI * 2) / 6;
+      addPart(
+        gauCluster,
+        new THREE.CylinderGeometry(0.0065, 0.0065, 0.26, 8),
+        darkMetal,
+        Math.cos(ang) * 0.016,
+        Math.sin(ang) * 0.016,
+        0,
+        Math.PI / 2,
+        0,
+        0,
+      );
+    }
+    addPart(gauCluster, new THREE.CylinderGeometry(0.026, 0.026, 0.022, 12), lightAlloy, 0, 0, -0.08, Math.PI / 2, 0, 0);
+    spinners.push({ obj: gauCluster, axis: "z", speed: 24 });
+    addMuzzleFlash(gauGroup, 0, 0, -0.3, 2.45, 0xffb438);
+  } else if (kind === "ac130") {
+    // AC-130 Spectre FLIR Gunner Optics: crisp military thermal-scope framing bezel + azimuth ticks + glowing side-mounted 105mm howitzer barrel!
+    const flirObsidian = getChassisMat("#141920", 0.56, 0.44);
+    const flirTickGlow = getGlowMat("#58ffa0", 1.7);
+    const thermalHotGlow = getGlowMat("#ff9832", 1.65);
+    const flirTintMat = trackMat(
+      new THREE.MeshBasicMaterial({
+        color: 0x38ff8c,
+        transparent: true,
+        opacity: 0.06,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+
+    // Military Thermal-Scope Perimeter Framing Bezel (clean wide-open center for gunship fire control!)
+    addPart(swayGroup, new RoundedBoxGeometry(1.12, 0.055, 0.1, 2, 0.01), flirObsidian, 0, 0.345, -0.45, 0.12, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(1.14, 0.075, 0.14, 2, 0.012), flirObsidian, 0, -0.34, -0.46, -0.22, 0, 0);
+    for (const sx of [-1, 1]) {
+      addPart(swayGroup, new RoundedBoxGeometry(0.056, 0.68, 0.1, 2, 0.01), flirObsidian, sx * 0.54, 0.0, -0.45, 0, -sx * 0.16, 0);
+      // Glowing phosphor-green FLIR thermal scope corner L-brackets
+      for (const sy of [-1, 1]) {
+        addPart(swayGroup, new THREE.BoxGeometry(0.095, 0.0055, 0.006), flirTickGlow, sx * 0.4, sy * 0.265, -0.43);
+        addPart(swayGroup, new THREE.BoxGeometry(0.0055, 0.078, 0.006), flirTickGlow, sx * 0.445, sy * 0.228, -0.43);
+      }
+      // Side elevation stadia ticks along inner left/right thermal-scope bezel
+      for (const ey of [-0.12, -0.06, 0, 0.06, 0.12]) {
+        const tickW = ey === 0 ? 0.032 : 0.018;
+        addPart(swayGroup, new THREE.BoxGeometry(tickW, 0.0038, 0.004), flirTickGlow, sx * 0.44, ey, -0.43);
+      }
+    }
+
+    // Upper Azimuth Compass Tick Strip + Center Lubber Marker across top FLIR bezel!
+    for (let i = -6; i <= 6; i++) {
+      const major = i % 3 === 0;
+      addPart(
+        swayGroup,
+        new THREE.BoxGeometry(major ? 0.005 : 0.003, major ? 0.022 : 0.012, 0.004),
+        i === 0 ? cyanGlow : flirTickGlow,
+        i * 0.048,
+        0.295,
+        -0.43,
+      );
+    }
+    addPart(swayGroup, new THREE.BoxGeometry(0.62, 0.003, 0.004), flirTickGlow, 0, 0.308, -0.432);
+
+    // Subtle upper & lower thermal-optic glass rim bands (keeps center razor clear)
+    const flirGlassTop = addPart(swayGroup, new THREE.PlaneGeometry(0.96, 0.06), flirTintMat, 0, 0.295, -0.44);
+    flirGlassTop.renderOrder = 2;
+
+    // Lower FCO Fire-Control Console: 105MM / 40MM / 25MM weapon-station status LEDs + spinning FLIR gimbal lock ring
+    addPart(swayGroup, new RoundedBoxGeometry(0.14, 0.018, 0.024, 1, 0.003), factionMat, -0.34, -0.3, -0.42);
+    addPart(swayGroup, new RoundedBoxGeometry(0.14, 0.018, 0.024, 1, 0.003), factionMat, 0.34, -0.3, -0.42);
+    glowPulses.push(
+      addPart(swayGroup, new THREE.BoxGeometry(0.056, 0.01, 0.008), thermalHotGlow, -0.14, -0.298, -0.415),
+      addPart(swayGroup, new THREE.BoxGeometry(0.046, 0.01, 0.008), amberGlow, -0.072, -0.298, -0.415),
+      addPart(swayGroup, new THREE.BoxGeometry(0.046, 0.01, 0.008), flirTickGlow, 0.072, -0.298, -0.415),
+      addPart(swayGroup, new THREE.BoxGeometry(0.056, 0.01, 0.008), cyanGlow, 0.14, -0.298, -0.415),
+    );
+    const flirLockRing = addPart(swayGroup, new THREE.TorusGeometry(0.036, 0.004, 8, 24), flirTickGlow, 0, -0.298, -0.42);
+    spinners.push({ obj: flirLockRing, axis: "z", speed: -1.8 });
+
+    // Glowing Side-Mounted 105mm M102 Howitzer Barrel Protruding from Port Gun Bay!
+    const howitzer = new THREE.Group();
+    howitzer.position.set(-0.34, -0.26, -0.78);
+    howitzer.rotation.set(0.06, -0.26, 0.05);
+    recoilGroup.add(howitzer);
+    // Heavy armored blast shroud & recoil recuperator cradle
+    addPart(howitzer, new RoundedBoxGeometry(0.12, 0.11, 0.28, 2, 0.016), darkMetal, 0, -0.01, 0.24);
+    addPart(howitzer, new THREE.CylinderGeometry(0.048, 0.056, 0.34, 16), gunMetal, 0, 0, 0.02, Math.PI / 2, 0, 0);
+    // Long heavy-caliber 105mm rifled tube + slotted muzzle brake collar
+    addPart(howitzer, new THREE.CylinderGeometry(0.038, 0.045, 0.56, 16), lightAlloy, 0, 0, -0.34, Math.PI / 2, 0, 0);
+    addPart(howitzer, new THREE.CylinderGeometry(0.052, 0.05, 0.09, 14), darkMetal, 0, 0, -0.62, Math.PI / 2, 0, 0);
+    // Glowing superheated thermal barrel sleeve & bore ring (distinctive FLIR thermal signature!)
+    glowPulses.push(
+      addPart(howitzer, new THREE.TorusGeometry(0.044, 0.0065, 8, 20), thermalHotGlow, 0, 0, -0.48),
+      addPart(howitzer, new THREE.TorusGeometry(0.048, 0.0055, 8, 20), thermalHotGlow, 0, 0, -0.65),
+    );
+    addMuzzleFlash(howitzer, 0, 0, -0.74, 2.55, 0xffa634);
   } else if (kind === "hypersonic") {
-    // Mach-9 Strike: ultra-sleek high-speed Mach-9 visor + delta needle nose + scramjet plasma rails!
+    // Mach-9 Kamikaze: ultra-sleek terminal-dive thermal visor + delta needle nose + cyan-gold plasma rails + armed crimson warhead bar!
     const titaniumMat = getChassisMat("#323d4c", 0.24, 0.86);
     addAircraftCanopy(false, false);
-    // Slept aerodynamic Mach-9 thermal visor arch overlay
+    // Swept aerodynamic Mach-9 thermal visor arch overlay + armed kamikaze red warning bar
     addPart(swayGroup, new RoundedBoxGeometry(0.76, 0.026, 0.07, 2, 0.006), titaniumMat, 0, 0.345, -0.45, 0.22, 0, 0);
+    glowPulses.push(
+      addPart(swayGroup, new THREE.BoxGeometry(0.14, 0.01, 0.008), redGlow, 0, 0.318, -0.425),
+    );
     // Long needle-sharp hypersonic delta nose cone & chine strakes extending forward!
     addPart(swayGroup, new THREE.ConeGeometry(0.068, 0.68, 6), titaniumMat, 0, -0.315, -0.92, -Math.PI / 2, 0, 0);
     addPart(swayGroup, new RoundedBoxGeometry(0.14, 0.022, 0.42, 1, 0.004), factionMat, 0, -0.302, -0.78, 0.04, 0, 0);
-    // Blazing cyan scramjet plasma glow rails along the swept nose chines
+    // Superheated gold-amber plasma tip + blazing cyan scramjet plasma glow rails along the swept nose chines
+    glowPulses.push(
+      addPart(swayGroup, new THREE.ConeGeometry(0.032, 0.16, 8), amberGlow, 0, -0.315, -1.24, -Math.PI / 2, 0, 0),
+    );
     for (const sx of [-1, 1]) {
       glowPulses.push(
-        addPart(swayGroup, new THREE.BoxGeometry(0.012, 0.012, 0.44), cyanGlow, sx * 0.095, -0.305, -0.82, 0.04, -sx * 0.14, 0),
+        addPart(swayGroup, new THREE.BoxGeometry(0.012, 0.012, 0.46), cyanGlow, sx * 0.095, -0.305, -0.82, 0.04, -sx * 0.14, 0),
+        addPart(swayGroup, new THREE.BoxGeometry(0.009, 0.009, 0.34), amberGlow, sx * 0.125, -0.302, -0.86, 0.04, -sx * 0.14, 0),
       );
-      // Conformal Mach-9 strike missile rails low left & right
-      addPart(recoilGroup, new THREE.CylinderGeometry(0.016, 0.02, 0.42, 10), lightAlloy, sx * 0.24, -0.275, -0.84, Math.PI / 2, 0, 0);
-      addPart(recoilGroup, new THREE.ConeGeometry(0.018, 0.08, 8), cyanGlow, sx * 0.24, -0.275, -1.08, -Math.PI / 2, 0, 0);
-      addMuzzleFlash(recoilGroup, sx * 0.24, -0.275, -1.14, 1.7, 0x72f8ff);
+      addMuzzleFlash(recoilGroup, sx * 0.18, -0.28, -1.16, 2.15, 0xffaa38);
     }
+    addMuzzleFlash(recoilGroup, 0, -0.31, -1.28, 2.45, 0x72f8ff);
   } else if (kind === "carrier") {
     // Nimitz Carrier: commanding panoramic supercarrier island bridge + helm radar + catapult flight deck!
     // Wide commanding bridge window brow & heavy sloped bridge stanchions

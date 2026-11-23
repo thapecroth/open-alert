@@ -62,6 +62,8 @@ export type UnitKind =
   | "ewdrone"
   | "interceptor"
   | "chopper"
+  | "a10"
+  | "ac130"
   | "bomber"
   | "stealthbomber"
   | "hypersonic"
@@ -318,8 +320,10 @@ export const UNITS: Record<UnitKind, UnitDef> = {
   ewdrone: { hp: 185, speed: 0.24, range: 0, dmg: 0, rof: 0, cost: 650, buildTicks: 55, trainsAt: "airfield", domain: "air", ewJamRadius: 8.5, vision: 12, requires: "radar" },
   interceptor: { hp: 190, speed: 0.34, range: 6.5, dmg: 26, rof: 18, cost: 900, buildTicks: 65, trainsAt: "airfield", domain: "air", canHitAir: true },
   chopper: { hp: 310, speed: 0.22, range: 6, dmg: 22, rof: 14, cost: 1100, buildTicks: 75, trainsAt: "airfield", domain: "air", canHitAir: true },
+  a10: { hp: 460, speed: 0.27, range: 6.8, dmg: 22, rof: 6, cost: 1250, buildTicks: 80, trainsAt: "airfield", domain: "air", canHitAir: true, requires: "radar" },
+  ac130: { hp: 980, speed: 0.14, range: 8.8, dmg: 74, rof: 20, cost: 2300, buildTicks: 115, trainsAt: "airfield", domain: "air", vision: 13, requires: "airfield2" },
   stealthbomber: { hp: 480, speed: 0.23, range: 6.5, dmg: 125, rof: 48, cost: 2100, buildTicks: 115, trainsAt: "airfield", domain: "air", stealth: true, requires: "airfield2" },
-  hypersonic: { hp: 280, speed: 0.44, range: 10.5, dmg: 78, rof: 34, cost: 1900, buildTicks: 105, trainsAt: "airfield", domain: "air", canHitAir: true, requires: "airfield2" },
+  hypersonic: { hp: 180, speed: 0.54, range: 1.9, dmg: 520, rof: 10, cost: 1200, buildTicks: 75, trainsAt: "airfield", domain: "air", kamikaze: true, vision: 10, requires: "airfield2" },
   // Retired legacy air units (hidden from modern UI roster)
   bomber: { hp: 420, speed: 0.18, range: 5.5, dmg: 80, rof: 46, cost: 1600, buildTicks: 95, trainsAt: "airfield", domain: "air", requires: "techlab", retired: true },
   zeppelin: { hp: 1400, speed: 0.085, range: 3.6, dmg: 135, rof: 38, cost: 2200, buildTicks: 120, trainsAt: "airfield", domain: "air", requires: "techlab", retired: true },
@@ -349,8 +353,10 @@ export const TRAIN_ORDER: { unit: UnitKind; label: string; group: "land" | "air"
   { unit: "ewdrone", label: "EW Jammer Drone", group: "air" },
   { unit: "interceptor", label: "Valkyrie Stealth Jet", group: "air" },
   { unit: "chopper", label: "Hornet Gunship", group: "air" },
+  { unit: "a10", label: "A-10 Warthog", group: "air" },
+  { unit: "ac130", label: "AC-130 Gunship", group: "air" },
   { unit: "stealthbomber", label: "B-21 Stealth Bomber", group: "air" },
-  { unit: "hypersonic", label: "Mach-9 Hypersonic", group: "air" },
+  { unit: "hypersonic", label: "Mach-9 Kamikaze", group: "air" },
   // Modern Navy & Unmanned Surface Vessels
   { unit: "usv", label: "Sea-Baby USV Drone", group: "sea" },
   { unit: "gunboat", label: "Viper Hydrofoil", group: "sea" },
@@ -439,7 +445,8 @@ export const SPLASH_RADIUS: Partial<Record<EntKind, number>> = {
   usv: 2.4,
   bomber: 2.5,
   stealthbomber: 3.1,
-  hypersonic: 2.2,
+  hypersonic: 3.6,
+  ac130: 2.6,
   zeppelin: 2.9,
   dreadnought: 2.8,
   carrier: 1.8,

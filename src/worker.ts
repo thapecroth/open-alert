@@ -179,7 +179,7 @@ const MCP_TOOLS = [
   {
     name: "command_units",
     description:
-      "Issue tactical orders (move, amove, attack, patrol, harvest, stop, hold) to specific unit IDs or a named unit group (all_combat, infantry, tanks [tank/himars/railtank], air [fpvdrone/shahed/ewdrone/uav/interceptor/chopper/stealthbomber/hypersonic], sea [usv/gunboat/destroyer/sub/dreadnought/carrier], harvesters).",
+      "Issue tactical orders (move, amove, attack, patrol, harvest, stop, hold) to specific unit IDs or a named unit group (all_combat, infantry, tanks [tank/himars/railtank], air [fpvdrone/shahed/ewdrone/uav/interceptor/chopper/a10/ac130/stealthbomber/hypersonic], sea [usv/gunboat/destroyer/sub/dreadnought/carrier], harvesters).",
     inputSchema: {
       type: "object",
       properties: {

@@ -86,6 +86,8 @@ export function isAir(kind: EntKind): boolean {
     kind === "ewdrone" ||
     kind === "interceptor" ||
     kind === "chopper" ||
+    kind === "a10" ||
+    kind === "ac130" ||
     kind === "bomber" ||
     kind === "stealthbomber" ||
     kind === "hypersonic" ||
@@ -111,6 +113,8 @@ const AIR_SHADOW_SIZE: Partial<Record<EntKind, [number, number]>> = {
   ewdrone: [1.08, 0.96],
   interceptor: [0.95, 1.1],
   chopper: [0.98, 1.15],
+  a10: [1.24, 1.06],
+  ac130: [1.68, 1.45],
   bomber: [1.45, 1.18],
   stealthbomber: [1.56, 1.12],
   hypersonic: [0.76, 1.38],
@@ -242,11 +246,11 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
     ? Math.max(BUILDINGS[kind].w, 1.4)
     : kind === "carrier"
       ? 1.68
-      : kind === "dreadnought" || kind === "zeppelin"
+      : kind === "dreadnought" || kind === "zeppelin" || kind === "ac130"
         ? 1.55
         : kind === "destroyer" || kind === "bomber" || kind === "stealthbomber"
           ? 1.24
-          : kind === "railtank" || kind === "heavy" || kind === "himars"
+          : kind === "railtank" || kind === "heavy" || kind === "himars" || kind === "a10"
             ? 1.12
             : kind === "fpvdrone"
               ? 0.78
@@ -272,27 +276,29 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
   // Selection ring on ground/water directly beneath unit
   const ringSize = isBuildingKind(kind)
     ? Math.max(BUILDINGS[kind].w, BUILDINGS[kind].h) * 0.78
-    : kind === "carrier"
-      ? 1.58
-      : kind === "dreadnought"
-        ? 1.42
-        : kind === "zeppelin"
-          ? 1.28
-          : kind === "destroyer"
-            ? 1.12
-            : kind === "stealthbomber"
-              ? 1.06
-              : kind === "bomber"
-                ? 0.98
-                : kind === "sub" || kind === "railtank" || kind === "heavy"
-                  ? 0.9
-                  : kind === "fpvdrone"
-                    ? 0.62
-                    : kind === "usv"
-                      ? 0.68
-                      : seaUnit || airUnit || kind === "himars"
-                        ? 0.82
-                        : 0.68;
+    : kind === "ac130"
+      ? 1.65
+      : kind === "carrier"
+        ? 1.58
+        : kind === "dreadnought"
+          ? 1.42
+          : kind === "zeppelin"
+            ? 1.28
+            : kind === "destroyer"
+              ? 1.12
+              : kind === "stealthbomber"
+                ? 1.06
+                : kind === "bomber" || kind === "a10"
+                  ? 0.98
+                  : kind === "sub" || kind === "railtank" || kind === "heavy"
+                    ? 0.9
+                    : kind === "fpvdrone"
+                      ? 0.62
+                      : kind === "usv"
+                        ? 0.68
+                        : seaUnit || airUnit || kind === "himars"
+                          ? 0.82
+                          : 0.68;
   const ring = new THREE.Mesh(
     geoRing,
     new THREE.MeshBasicMaterial({
