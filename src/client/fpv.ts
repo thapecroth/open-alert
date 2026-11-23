@@ -7,6 +7,10 @@ import { Renderer } from "./render";
 import { Net } from "./net";
 import { getChassisMat, getAccentMat, getGlassMat, getGlowMat } from "./textures";
 import { isBuildingKind } from "./util";
+import { makeVmKit, type VmKit } from "./fpv/vmkit";
+import { LAND_VM } from "./fpv/vm-land";
+import { AIR_VM } from "./fpv/vm-air";
+import { SEA_VM } from "./fpv/vm-sea";
 
 export interface FpvTelemetry {
   id: number;
@@ -23,6 +27,13 @@ export interface FpvTelemetry {
   submerged: boolean;
   pointerLocked: boolean;
   reloading: number; // 0 = ready, 0..1 = cooldown fraction
+  sprint: boolean; // Shift sprint/boost engaged
+  alt: number; // normalized altitude 0..1 for driven aircraft (server-synced), else 0
+  wpn: number; // selected weapon slot 0..2 on multi-weapon platforms
+  wpnName: string; // display name of selected weapon system
+  lockState: "none" | "locking" | "locked"; // missile/guided lock-on progress
+  lockPct: number; // 0..1 lock acquisition progress
+  crouch: boolean; // infantry crouch engaged
   target: {
     id: number;
     kind: EntKind;
@@ -517,7 +528,22 @@ function isTypingTarget(target: EventTarget | null): boolean {
 
 // ---------- Sculpted 3D Camera-Attached Weapon & Cockpit Viewmodels ----------
 
+// Per-domain viewmodel overrides live in fpv/vm-{land,air,sea}.ts — when a kind
+// has an upgraded builder registered it fully replaces the legacy branch below.
+const VM_OVERRIDES: Partial<Record<UnitKind, (kit: VmKit) => void>> = {
+  ...LAND_VM,
+  ...AIR_VM,
+  ...SEA_VM,
+};
+
 function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
+  const override = VM_OVERRIDES[kind];
+  if (override) {
+    const kit = makeVmKit(factionColor);
+    override(kit);
+    return kit.rig;
+  }
+
   const root = new THREE.Group();
   const swayGroup = new THREE.Group();
   const recoilGroup = new THREE.Group();
@@ -1861,6 +1887,9 @@ export class FirstPersonController {
   entId: number | null = null;
   onExit: (reason?: "dead" | "user") => void = () => {};
   onFireSfx: (kind: EntKind, vet: number) => void = () => {};
+  // Auxiliary 1P feedback sfx: "lock" | "locked" | "lost" | "sprint" | "boost"
+  // | "wpn" | "ads" | "crouch" | "hitmark" | "damage" | "climb" | "dive"
+  onSfx: (name: string) => void = () => {};
 
   private gs: GameScene;
   private renderer: Renderer;
@@ -2338,6 +2367,13 @@ export class FirstPersonController {
       submerged,
       pointerLocked: this.pointerLocked,
       reloading,
+      sprint: false,
+      alt: 0,
+      wpn: 0,
+      wpnName: "",
+      lockState: "none",
+      lockPct: 0,
+      crouch: false,
       target: aim.target,
       aimDist: Number(aim.aimDist.toFixed(1)),
     };

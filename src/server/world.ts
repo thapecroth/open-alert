@@ -112,7 +112,12 @@ export interface Ent {
     aimX: number;
     aimY: number;
     aimTarget?: number;
+    alt?: number; // -1..1 climb/dive input (aircraft)
+    sprint?: boolean; // sprint/flank/boost throttle
+    wpn?: number; // selected weapon slot 0..2 (multi-weapon platforms)
+    lock?: number; // persistent lock-on target id
   };
+  fpvAlt?: number; // normalized altitude 0..1 while player-driven (air only)
 }
 
 export interface P {
@@ -1016,6 +1021,10 @@ export class World {
     aimX?: number,
     aimY?: number,
     aimTarget?: number,
+    alt?: number,
+    sprint?: boolean,
+    wpn?: number,
+    lock?: number,
   ): string | null {
     if (!Number.isFinite(id) || !Number.isFinite(fwd) || !Number.isFinite(strafe) || !Number.isFinite(yaw)) {
       return "bad drive";
@@ -1040,6 +1049,10 @@ export class World {
       aimX: Number.isFinite(aimX) ? aimX! : e.x + Math.cos(yaw) * 6,
       aimY: Number.isFinite(aimY) ? aimY! : e.y + Math.sin(yaw) * 6,
       aimTarget: Number.isFinite(aimTarget) ? aimTarget : undefined,
+      alt: Number.isFinite(alt) ? Math.max(-1, Math.min(1, alt!)) : undefined,
+      sprint: !!sprint,
+      wpn: Number.isFinite(wpn) ? Math.max(0, Math.min(2, Math.round(wpn!))) : undefined,
+      lock: Number.isFinite(lock) ? lock : undefined,
     };
     return null;
   }

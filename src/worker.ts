@@ -552,6 +552,10 @@ export class GameRoom extends Server<Env> {
             Number.isFinite(m.aimX) ? m.aimX : undefined,
             Number.isFinite(m.aimY) ? m.aimY : undefined,
             Number.isFinite(m.aimTarget) ? m.aimTarget : undefined,
+            Number.isFinite(m.alt) ? m.alt : undefined,
+            !!m.sprint,
+            Number.isFinite(m.wpn) ? m.wpn : undefined,
+            Number.isFinite(m.lock) ? m.lock : undefined,
           );
         }
         break;
