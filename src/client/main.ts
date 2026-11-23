@@ -5,6 +5,7 @@ import { Input } from "./input";
 import { Hud, type GraphicsBridge } from "./hud";
 import { AudioEngine } from "./audio";
 import { FirstPersonController } from "./fpv";
+import { FpvStory } from "./story";
 import { generateIcons } from "./icons";
 import { isBuildingKind, el } from "./util";
 import * as THREE from "three";
@@ -23,6 +24,7 @@ import {
   buildCategoryOf,
   BuildingKind,
   EntKind,
+  UnitKind,
   MapId,
   GameConfig,
 } from "../shared/gamedefs";
@@ -338,7 +340,15 @@ function weaponFxOf(k: EntKind): WeaponFx {
 const input = new Input(gs, renderer, net, () => mySlot, placeReason, oreAt);
 input.isAlly = isAlly;
 const fpv = new FirstPersonController(gs, renderer, net, () => mySlot, isAlly);
+const story = new FpvStory();
+fpv.onSfx = (n) => audio.playFpvSfx(n);
+story.onSfx = (n) => audio.playFpvSfx(n);
 hud.setWasdLabel(input.wasdPan);
+
+// Entity-kind memory — victims vanish from the snap the tick they die, so the
+// story layer resolves kill-event target names through this persistent map.
+const lastKind = new Map<number, EntKind>();
+const kindOf = (id: number): EntKind | undefined => renderer.tracked.get(id)?.last.k ?? lastKind.get(id);
 
 function enterFpv(id: number) {
   if (phase !== "playing" || mySlot < 0 || fpv.active) return;
@@ -350,12 +360,15 @@ function enterFpv(id: number) {
   if (!fpv.enter(id)) return;
   input.enabled = false;
   hud.setFpvMode(true);
+  const ek = kindOf(id);
+  if (ek !== undefined && !isBuildingKind(ek)) story.reset(ek as UnitKind, name);
   audio.playUi("select");
 }
 
 fpv.onExit = (reason) => {
   input.enabled = true;
   hud.setFpvMode(false, mySlot < 0);
+  hud.updateFpvStory(null);
   hud.updateSelInfo(input.selection, renderer.tracked, mySlot, latestState, has);
   if (reason === "dead") {
     hud.toast("UNIT DESTROYED — RETURNING TO COMMAND");
@@ -594,6 +607,7 @@ net.onMsg = (m: S2C) => {
         phase = "lobby";
         mySlot = -1;
         latestState = null;
+        lastKind.clear();
         setAutoCam(false);
         renderer.reset();
         input.reset();
@@ -610,6 +624,7 @@ net.onMsg = (m: S2C) => {
       mySlot = m.slot;
       matchPlayers = m.players;
       combatEvents.length = 0;
+      lastKind.clear();
       currentMap = m.map ?? "crossroads";
       currentConfig = m.config ? { ...DEFAULT_CONFIG, ...m.config } : { ...DEFAULT_CONFIG };
       phase = "playing";
@@ -686,6 +701,9 @@ net.onMsg = (m: S2C) => {
     case "snap": {
       if (phase !== "playing") break;
       renderer.pushSnap(m.ents, m.crates);
+      // Remember every seen entity kind BEFORE pruning — dead ents vanish from
+      // the snap but kill events still need to resolve their names.
+      for (const e of m.ents) lastKind.set(e.id, e.k);
       renderer.setPlayerPower(m.players);
       renderer.applyVisibility(currentConfig.fog ? mySlot : -1, allies);
       renderer.applyEvents(m.events, mySlot);
@@ -693,12 +711,14 @@ net.onMsg = (m: S2C) => {
       let boomSfx = 0;
       let ewJamSfx = 0;
       const evNow = performance.now();
+      const storyCtx = { myId: fpv.entId ?? -1, kindOf };
       const noteCombatPos = (x: number, y: number, w: number) => {
         if (mySlot >= 0) return;
         combatEvents.push({ x, y, w, t: evNow });
         if (combatEvents.length > 80) combatEvents.splice(0, combatEvents.length - 80);
       };
       for (const ev of m.events) {
+        if (fpv.active) story.onEvent(ev, storyCtx);
         if (ev.e === "ore") {
           for (const [x, y, a] of ev.cells) {
             if (a <= 0) oreCells.delete(y * gs.mapW + x);
@@ -954,6 +974,8 @@ gs.engine.runRenderLoop(() => {
   if (fpv.active) {
     const tel = fpv.update(dt);
     hud.updateFpv(tel);
+    story.tick(dt, tel);
+    hud.updateFpvStory(story.state);
   }
   hud.tick(dt);
   audio.update(dt);

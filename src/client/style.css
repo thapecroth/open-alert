@@ -799,6 +799,145 @@ button.tbadge.own:hover { border-color: var(--text); color: #fff; }
   background: #361a1e; border-color: var(--danger); color: #fff;
 }
 
+/* FPV story layer — kill feed, objectives, streaks, hitmarker, lock & alt tape */
+#fpv-feed {
+  position: fixed; left: 16px; bottom: 200px; width: 312px; max-height: 152px;
+  display: flex; flex-direction: column; justify-content: flex-end; gap: 3px;
+  pointer-events: none;
+}
+#fpv-feed .fl {
+  width: fit-content; max-width: 100%; padding: 2px 8px;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.55px;
+  color: var(--text); background: rgba(11, 17, 24, 0.74);
+  border-left: 2px solid var(--line); border-radius: 0 3px 3px 0;
+  text-shadow: 0 1px 3px #000; animation: fpv-feed-in 0.18s ease-out;
+}
+@keyframes fpv-feed-in {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: none; }
+}
+#fpv-feed .fl-info { color: var(--acc); border-left-color: var(--acc-dim); }
+#fpv-feed .fl-good { color: var(--ok); border-left-color: #1d7a4a; }
+#fpv-feed .fl-warn { color: var(--amber); border-left-color: #9a6d16; }
+#fpv-feed .fl-kill { color: #ff8a5c; border-left-color: #a33d1f; }
+#fpv-feed .fl-medal { color: #ffd76a; border-left-color: #b9932e; }
+#fpv-feed .fl-radio { color: #9adfff; border-left-color: #3a7ca5; font-style: italic; }
+
+#fpv-objective {
+  position: fixed; top: 94px; left: 50%; transform: translateX(-50%);
+  width: 280px; padding: 7px 11px; pointer-events: none;
+  background: rgba(11, 17, 24, 0.88); border: 1px solid var(--line); border-radius: 5px;
+}
+.fpv-obj-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  font-size: 10px; font-weight: 700; letter-spacing: 1.6px; color: var(--acc-dim);
+}
+#fpv-obj-prog { color: var(--muted); letter-spacing: 0.8px; }
+#fpv-obj-title {
+  margin: 2px 0 5px; font-size: 12.5px; font-weight: 700;
+  letter-spacing: 0.6px; color: var(--text); white-space: nowrap; overflow: hidden;
+}
+.fpv-obj-track {
+  height: 5px; border-radius: 3px; overflow: hidden;
+  background: #0a1218; border: 1px solid var(--line);
+}
+#fpv-obj-fill {
+  height: 100%; width: 0; background: var(--acc);
+  transition: width 0.25s ease-out;
+}
+#fpv-objective.done { border-color: #b9932e; }
+#fpv-objective.done .fpv-obj-head,
+#fpv-objective.done #fpv-obj-prog { color: #ffd76a; }
+#fpv-objective.done #fpv-obj-fill { background: #ffd76a; }
+
+#fpv-streak {
+  position: fixed; top: 50px; right: 16px; text-align: right; pointer-events: none;
+  padding: 5px 11px; background: rgba(11, 17, 24, 0.84);
+  border: 1px solid var(--line); border-radius: 5px;
+}
+#fpv-kills { font-size: 14px; font-weight: 700; letter-spacing: 0.8px; color: var(--text); }
+#fpv-spree {
+  display: block; font-size: 11px; font-weight: 700;
+  letter-spacing: 1.1px; color: var(--amber);
+}
+#fpv-streak.hot { border-color: #a33d1f; }
+#fpv-streak.hot #fpv-kills { color: #ff8a5c; }
+#fpv-streak.hot #fpv-spree { color: #ff8a5c; animation: fpv-spree-pulse 0.55s infinite alternate; }
+@keyframes fpv-spree-pulse {
+  from { opacity: 1; }
+  to { opacity: 0.55; }
+}
+
+#fpv-hitmark {
+  position: absolute; left: 50%; top: 60px; /* 120px reticle svg center */
+  width: 48px; height: 48px; opacity: 0; pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+#fpv-hitmark svg { display: block; overflow: visible; }
+#fpv-hitmark line {
+  stroke: #fff; stroke-width: 3.4; stroke-linecap: round;
+  filter: drop-shadow(0 0 4px rgba(255, 110, 60, 0.95));
+}
+
+#fpv-lock {
+  margin-top: 5px; padding: 2px 9px; font-size: 12px; font-weight: 700;
+  letter-spacing: 1.3px; color: var(--amber); white-space: nowrap;
+  background: rgba(11, 17, 24, 0.86); border: 1px solid #7d5b1a; border-radius: 3px;
+}
+#fpv-lock.on { color: #ff6a5c; border-color: var(--danger); animation: fpv-lock-blink 0.45s infinite alternate; }
+@keyframes fpv-lock-blink {
+  from { opacity: 1; }
+  to { opacity: 0.55; }
+}
+#fpv-reticle.locking .ret-lock {
+  display: block; stroke: var(--amber); stroke-width: 1.7;
+  animation: fpv-ret-lock 0.5s infinite alternate;
+}
+@keyframes fpv-ret-lock {
+  from { opacity: 0.35; }
+  to { opacity: 1; }
+}
+
+#fpv-altape {
+  position: fixed; right: 16px; top: 50%; transform: translateY(-50%);
+  height: 200px; width: 38px; display: flex; flex-direction: column;
+  align-items: center; gap: 5px; pointer-events: none;
+}
+.fpv-altape-track {
+  position: relative; flex: 1; width: 7px; overflow: hidden;
+  background: #0a1218; border: 1px solid var(--line); border-radius: 3px;
+}
+#fpv-altape-fill {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 0%;
+  background: linear-gradient(180deg, var(--acc), var(--acc-dim));
+  transition: height 0.12s ease-out;
+}
+.fpv-altape-cruise {
+  position: absolute; left: -2px; right: -2px; bottom: 60%; height: 1px;
+  background: var(--amber); opacity: 0.75;
+}
+#fpv-altape-text {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.4px;
+  color: var(--acc); white-space: nowrap;
+}
+
+.fpv-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.fpv-chips.hidden { display: none; }
+.fpv-chip {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.9px; line-height: 1.3;
+  padding: 1px 7px; border-radius: 3px;
+  background: #10222f; border: 1px solid var(--acc-dim); color: var(--acc);
+}
+#fpv-chip-sprint { background: #0e2418; border-color: #2f8f57; color: #5ef0a0; }
+#fpv-chip-crouch { background: #241c0e; border-color: #7d5b1a; color: var(--amber); }
+#fpv-chip-sub { background: #0e1e2b; border-color: #3a7ca5; color: #9adfff; }
+
+#fpv-wpn {
+  font-size: 13px; font-weight: 700; letter-spacing: 1px; color: var(--amber);
+  border-bottom: 1px solid var(--line); padding-bottom: 5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* Graphics & Raytracing Telemetry Drawer */
 #gfx-panel {
   position: fixed; inset: 0; z-index: 22;

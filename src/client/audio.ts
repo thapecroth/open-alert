@@ -953,6 +953,130 @@ export class AudioEngine {
     }
   }
 
+  /**
+   * First-person feedback sounds — seeker lock ticks, movement cues, hitmarker,
+   * kill/objective/medal stingers & radio squelch. All short (<0.4s) and quiet
+   * so they layer under the battlefield mix without fatigue.
+   * Names: lock | locked | lost | sprint | boost | ads | crouch | wpn |
+   * climb | dive | hitmark | damage | kill | medal | radio | objective | warn
+   */
+  playFpvSfx(name: string): void {
+    const ctx = this.readySfxCtx();
+    if (!ctx || !this.sfxBus) return;
+
+    const now = ctx.currentTime;
+    const minGap =
+      name === "hitmark"
+        ? 0.05
+        : name === "lock"
+          ? 0.08
+          : name === "kill" || name === "wpn"
+            ? 0.1
+            : name === "crouch"
+              ? 0.12
+              : name === "radio" || name === "locked" || name === "lost"
+                ? 0.16
+                : name === "sprint" || name === "boost" || name === "damage"
+                  ? 0.25
+                  : name === "climb" || name === "dive"
+                    ? 0.3
+                    : name === "warn"
+                      ? 0.55
+                      : name === "medal" || name === "objective"
+                        ? 0.4
+                        : 0.07;
+
+    if (!this.allow(`fpv:${name}`, minGap, now)) return;
+
+    try {
+      const bus = this.sfxBus;
+      switch (name) {
+        case "lock":
+          // Soft seeker acquisition tick
+          this.playTone(ctx, bus, "sine", 1180, 1220, now, 0.045, 0.09, 0.002);
+          break;
+        case "locked":
+          // Rising lock confirm chirp
+          this.playTone(ctx, bus, "sine", 880, 1180, now, 0.07, 0.13, 0.003);
+          this.playTone(ctx, bus, "sine", 1480, 1980, now + 0.07, 0.12, 0.15, 0.003);
+          break;
+        case "lost":
+          // Descending lock-lost buzz
+          this.playTone(ctx, bus, "sawtooth", 430, 175, now, 0.2, 0.09, 0.004);
+          break;
+        case "sprint":
+        case "boost":
+          // Rush of air past the intake
+          this.fpvNoise(ctx, bus, now, 620, 2600, 0.24, 0.11);
+          break;
+        case "ads":
+          // Optic raised — soft click
+          this.playTone(ctx, bus, "triangle", 660, 430, now, 0.028, 0.12, 0.002);
+          this.fpvNoise(ctx, bus, now, 3200, 3200, 0.018, 0.05);
+          break;
+        case "crouch":
+          // Soft gear thud
+          this.playTone(ctx, bus, "sine", 150, 62, now, 0.11, 0.15, 0.004);
+          break;
+        case "wpn":
+          // Mechanical weapon-selector clack
+          this.playTone(ctx, bus, "triangle", 540, 380, now, 0.026, 0.13, 0.002);
+          this.playTone(ctx, bus, "triangle", 760, 520, now + 0.045, 0.03, 0.12, 0.002);
+          break;
+        case "climb":
+          this.playTone(ctx, bus, "sine", 290, 540, now, 0.28, 0.06, 0.02);
+          break;
+        case "dive":
+          this.playTone(ctx, bus, "sine", 540, 260, now, 0.28, 0.06, 0.02);
+          break;
+        case "hitmark":
+          // Quick hit-confirm tick
+          this.playTone(ctx, bus, "sine", 1520, 1460, now, 0.03, 0.1, 0.002);
+          this.playTone(ctx, bus, "triangle", 2280, 2100, now, 0.022, 0.05, 0.002);
+          break;
+        case "damage":
+          // Own hull taking a hit
+          this.playTone(ctx, bus, "sine", 120, 46, now, 0.17, 0.19, 0.003);
+          this.fpvNoise(ctx, bus, now, 900, 260, 0.12, 0.09);
+          break;
+        case "kill":
+          // Low confirm thunk
+          this.playTone(ctx, bus, "sine", 150, 44, now, 0.16, 0.19, 0.003);
+          this.playTone(ctx, bus, "triangle", 460, 300, now + 0.02, 0.07, 0.08, 0.003);
+          break;
+        case "medal":
+          // Little brass arpeggio
+          this.playTone(ctx, bus, "triangle", N.D5, N.D5, now, 0.1, 0.13, 0.004);
+          this.playTone(ctx, bus, "triangle", N.A5, N.A5, now + 0.075, 0.1, 0.13, 0.004);
+          this.playTone(ctx, bus, "triangle", N.D6, N.D6, now + 0.15, 0.2, 0.14, 0.004);
+          break;
+        case "objective":
+          // Mission ding + octave sparkle
+          this.playTone(ctx, bus, "sine", 988, 988, now, 0.11, 0.13, 0.004);
+          this.playTone(ctx, bus, "sine", 1976, 1976, now + 0.02, 0.09, 0.05, 0.004);
+          break;
+        case "warn":
+          // Two-tone caution alert
+          this.playTone(ctx, bus, "square", 640, 640, now, 0.07, 0.07, 0.003);
+          this.playTone(ctx, bus, "square", 470, 470, now + 0.085, 0.09, 0.07, 0.003);
+          break;
+        case "radio":
+        default:
+          // Radio squelch blip
+          this.fpvNoise(ctx, bus, now, 1900, 1200, 0.05, 0.1);
+          this.playTone(ctx, bus, "sine", 940, 860, now + 0.015, 0.05, 0.07, 0.003);
+          break;
+      }
+    } catch {
+      // Ignore transient Web Audio errors
+    }
+  }
+
+  /** Radio squelch blip — used for story barks & chatter lines. */
+  playBark(): void {
+    this.playFpvSfx("radio");
+  }
+
   // =========================================================================
   // Internal helpers
   // =========================================================================
@@ -993,6 +1117,34 @@ export class AudioEngine {
     src.loopStart = 0;
     src.loopEnd = buf.duration;
     return src;
+  }
+
+  /** Short band-passed white-noise sweep for FPV cues (whooshes, squelch, clicks). */
+  private fpvNoise(
+    ctx: AudioContext,
+    bus: AudioNode,
+    now: number,
+    f0: number,
+    f1: number,
+    dur: number,
+    gain: number,
+  ): void {
+    if (!this.whiteNoise) return;
+    const src = this.makeNoiseSource(ctx, this.whiteNoise);
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.Q.value = 1.4;
+    bp.frequency.setValueAtTime(Math.max(60, f0), now);
+    bp.frequency.exponentialRampToValueAtTime(Math.max(60, f1), now + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(gain, now + Math.min(0.008, dur * 0.4));
+    g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    src.connect(bp);
+    bp.connect(g);
+    g.connect(bus);
+    src.start(now, (now * 1.7) % 1.0);
+    src.stop(now + dur + 0.02);
   }
 
   private playTone(
