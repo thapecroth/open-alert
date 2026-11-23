@@ -9,7 +9,7 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json",
     "test": "node test/gym.mjs",
-    "test:ws": "node test/regress.mjs && node test/bugfix.mjs && node test/features.mjs && node test/techtree.mjs && node test/orderfuzz.mjs && node test/gfxgov.mjs && node test/fpvdrive.mjs && node test/fpvstory.mjs",
+    "test:ws": "node test/regress.mjs && node test/bugfix.mjs && node test/features.mjs && node test/techtree.mjs && node test/orderfuzz.mjs && node test/gfxgov.mjs && node test/fpvdrive.mjs && node test/fpvstory.mjs && node test/covert.mjs",
     "test:browser": "node test/interact.mjs && node test/waypoints-controls.mjs && node test/techvisual.mjs",
     "test:all": "npm run test && npm run test:ws && npm run test:browser",
     "mcp": "node mcp/open-alert-mcp.mjs",

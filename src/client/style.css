@@ -1300,3 +1300,32 @@ button.tbadge.own:hover { border-color: var(--text); color: #fff; }
   .mcp-step-head { gap: 6px; }
   .quota-banner { flex-direction: column; align-items: flex-start; }
 }
+
+/* ---------- Pause overlay (solo vs bots) ---------- */
+#paused-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 8, 14, 0.55);
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+}
+#paused-overlay.hidden { display: none; }
+.paused-card {
+  font-family: var(--font-display, "Rajdhani", sans-serif);
+  font-size: 54px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: #ffd76a;
+  text-shadow: 0 0 24px rgba(255, 200, 80, 0.45), 0 2px 0 rgba(0, 0, 0, 0.6);
+  text-align: center;
+}
+.paused-sub {
+  font-size: 15px;
+  letter-spacing: 0.3em;
+  color: rgba(220, 230, 245, 0.75);
+  margin-top: 8px;
+}

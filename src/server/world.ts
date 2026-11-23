@@ -27,6 +27,11 @@ import {
   IRONDOME_COOLDOWN,
   THAAD_NUKE_RADIUS,
   THAAD_NUKE_CD,
+  SPY_REVEAL_TICKS,
+  SPY_POWERCUT_TICKS,
+  SPY_DISABLE_TICKS,
+  SPY_RADAR_SCRAMBLE_TICKS,
+  SPY_CAPTURE_RANGE,
   SUPPLY_HUB_RADIUS,
   SUPPLY_TRUCK_RADIUS,
   BASE_SUPPLY_RADIUS,
@@ -102,6 +107,8 @@ export interface Ent {
   vet: number; // 0..3 veterancy rank
   subSurfaceUntil: number; // stealth reveal timer (cloaked when tick >= subSurfaceUntil)
   interceptCd: number; // Iron Dome active projectile interception cooldown
+  spottedUntil: number; // spy: cover blown until this tick (auto-targetable + shown as real kind)
+  sabUntil: number; // defense battery disabled by enemy spy sabotage until this tick
   rally?: [number, number]; // rally point on production buildings
   direct?: {
     until: number;
@@ -135,6 +142,8 @@ export interface P {
   lowPower: boolean;
   swLeft: number; // -1 if no superweapon, else 0..SW_CHARGE_TICKS
   reconLeft: number; // -1 if no radar, else 0..RECON_CHARGE_TICKS
+  powerCutUntil: number; // spy sabotage: grid blacked out until this tick
+  radarScrambleUntil: number; // spy sabotage: Radar-tier sensors blinded until this tick
   unitsBuilt: number;
   unitsLost: number;
   bldDestroyed: number;
@@ -165,6 +174,7 @@ const INTERCEPTABLE = new Set<EntKind>([
   "zeppelin",
   "fpvdrone",
   "shahed",
+  "ballistic",
 ]);
 const JAMMABLE_DRONES = new Set<EntKind>(["fpvdrone", "shahed", "usv", "uav"]);
 const STEALTH_AIR_DETECTORS = new Set<EntKind>([
@@ -194,7 +204,7 @@ const canHitGroundOf = (k: EntKind): boolean =>
   isBuilding(k)
     ? (BUILDINGS[k].dmg ?? 0) > 0 && BUILDINGS[k].canHitGround !== false
     : UNITS[k].canHitGround !== false && UNITS[k].dmg > 0;
-const isInfantry = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer";
+const isInfantry = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer" || k === "spy";
 const usesFuel = (k: EntKind): boolean =>
   !isBuilding(k) && !isInfantry(k) && k !== "supplytruck" && k !== "harvester";
 const fuelBurnOf = (k: EntKind, dom: UnitDomain): number => {
@@ -212,7 +222,8 @@ const ammoCostOf = (k: EntKind): number => {
     k === "dreadnought" ||
     k === "bomber" ||
     k === "stealthbomber" ||
-    k === "zeppelin"
+    k === "zeppelin" ||
+    k === "ballistic"
   ) {
     return 12;
   }
@@ -239,7 +250,8 @@ const isVehicle = (k: EntKind) =>
   k === "supplytruck" ||
   k === "spider" ||
   k === "himars" ||
-  k === "railtank";
+  k === "railtank" ||
+  k === "ballistic";
 const isLightUnit = (k: EntKind) =>
   isInfantry(k) || k === "spider" || k === "uav" || k === "gunboat";
 const isSeaShip = (k: EntKind) => !isBuilding(k) && UNITS[k].domain === "sea";
@@ -288,6 +300,8 @@ const armorMult = (attacker: EntKind, target: EntKind): number => {
     if (isBuilding(target)) return 1.3;
   } else if (attacker === "hypersonic") {
     if (isBuilding(target) || isSeaShip(target)) return 1.5;
+  } else if (attacker === "ballistic") {
+    if (isBuilding(target) || isSeaShip(target)) return 1.4;
   } else if (attacker === "a10") {
     if (
       target === "tank" ||
@@ -351,7 +365,7 @@ const weaponFxOf = (k: EntKind): WeaponFx => {
   if (k === "arty" || k === "ac130") return "arty";
   if (k === "arc") return "arc";
   if (k === "spider") return "melee";
-  if (k === "dreadnought" || k === "himars" || k === "hypersonic" || k === "carrier" || k === "thaad") return "missile";
+  if (k === "dreadnought" || k === "himars" || k === "hypersonic" || k === "carrier" || k === "thaad" || k === "ballistic") return "missile";
   if (k === "sub") return "torpedo";
   if (k === "bomber" || k === "stealthbomber" || k === "zeppelin") return "bomb";
   return "bullet";
@@ -460,6 +474,8 @@ export class World {
         lowPower: false,
         swLeft: -1,
         reconLeft: -1,
+        powerCutUntil: 0,
+        radarScrambleUntil: 0,
         unitsBuilt: 0,
         unitsLost: 0,
         bldDestroyed: 0,
@@ -586,6 +602,10 @@ export class World {
     if (targetKind === "usv") {
       return isSeaShip(detectorKind) || detectorKind === "radar" || detectorKind === "uav" ? 9 : 5.5;
     }
+    if (targetKind === "spy") {
+      // Disguised spy only blown by powered, unscrambled Radar-tier sensors
+      return STEALTH_AIR_DETECTORS.has(detectorKind) ? 10 : 0;
+    }
     return detectorKind === "gunboat" ||
       detectorKind === "destroyer" ||
       detectorKind === "sub" ||
@@ -597,11 +617,13 @@ export class World {
   private rebuildSpatialGrid() {
     for (let i = 0; i < this.grid.length; i++) this.grid[i].length = 0;
     const stealthed: Ent[] = [];
+    const spies: Ent[] = [];
     for (const e of this.ents.values()) {
       const gx = Math.max(0, Math.min(this.gridCols - 1, (e.x | 0) >> 3));
       const gy = Math.max(0, Math.min(this.gridRows - 1, (e.y | 0) >> 3));
       this.grid[gy * this.gridCols + gx].push(e);
       if (this.isStealthed(e)) stealthed.push(e);
+      if (e.k === "spy" && this.tick >= e.spottedUntil) spies.push(e);
     }
     this.subDetMask.clear();
     // Precompute stealth detection bitmasks once per tick using spatial grid (eliminates O(N^3) rescans)
@@ -620,7 +642,11 @@ export class World {
             if (u.o < 0 || u.id === st.id) continue;
             const detectR = this.stealthDetectRadius(st.k, u.k);
             if (detectR <= 0) continue;
-            if (st.k === "stealthbomber" && this.players.get(u.o)?.lowPower) continue;
+            if (STEALTH_AIR_DETECTORS.has(u.k)) {
+              // Radar-tier sensors need power and are blinded while radar-scrambled
+              const dp = this.players.get(u.o);
+              if (dp && (dp.lowPower || this.tick < dp.radarScrambleUntil)) continue;
+            }
             const dx = st.x - u.x,
               dy = st.y - u.y;
             if (dx * dx + dy * dy <= detectR * detectR) {
@@ -633,6 +659,32 @@ export class World {
         }
       }
       this.subDetMask.set(st.id, mask);
+    }
+    // Spy reveal scan: powered, unscrambled enemy Radar-tier sensors blow a disguised spy's cover
+    for (const spy of spies) {
+      const x0 = Math.max(0, ((spy.x - 10.5) | 0) >> 3);
+      const x1 = Math.min(this.gridCols - 1, ((spy.x + 10.5) | 0) >> 3);
+      const y0 = Math.max(0, ((spy.y - 10.5) | 0) >> 3);
+      const y1 = Math.min(this.gridRows - 1, ((spy.y + 10.5) | 0) >> 3);
+      let blown = false;
+      outer: for (let gy = y0; gy <= y1 && !blown; gy++) {
+        for (let gx = x0; gx <= x1; gx++) {
+          const cell = this.grid[gy * this.gridCols + gx];
+          for (let i = 0; i < cell.length; i++) {
+            const u = cell[i];
+            if (u.o < 0 || !STEALTH_AIR_DETECTORS.has(u.k) || this.isAlly(spy.o, u.o)) continue;
+            const dp = this.players.get(u.o);
+            if (dp && (dp.lowPower || this.tick < dp.radarScrambleUntil)) continue;
+            const dx = spy.x - u.x,
+              dy = spy.y - u.y;
+            if (dx * dx + dy * dy <= 100) {
+              spy.spottedUntil = this.tick + SPY_REVEAL_TICKS;
+              blown = true;
+              break outer;
+            }
+          }
+        }
+      }
     }
     this.gridTick = this.tick;
   }
@@ -647,7 +699,10 @@ export class World {
       if (u.o < 0 || !this.isAlly(viewerSlot, u.o)) continue;
       const detectR = this.stealthDetectRadius(target.k, u.k);
       if (detectR <= 0) continue;
-      if (target.k === "stealthbomber" && this.players.get(u.o)?.lowPower) continue;
+      if (STEALTH_AIR_DETECTORS.has(u.k)) {
+        const dp = this.players.get(u.o);
+        if (dp && (dp.lowPower || this.tick < dp.radarScrambleUntil)) continue;
+      }
       if (dist(target.x, target.y, u.x, u.y) <= detectR) return true;
     }
     return false;
@@ -659,7 +714,7 @@ export class World {
 
   canAttack(attacker: Ent, target: Ent): boolean {
     if (this.isAlly(attacker.o, target.o)) return false;
-    if (attacker.k === "engineer") {
+    if (attacker.k === "engineer" || attacker.k === "spy") {
       return isBuilding(target.k);
     }
     const w = weaponOf(attacker);
@@ -726,6 +781,8 @@ export class World {
       vet: 0,
       subSurfaceUntil: 0,
       interceptCd: 0,
+      spottedUntil: 0,
+      sabUntil: 0,
     };
     this.ents.set(e.id, e);
     for (let y = ty; y < ty + d.h; y++)
@@ -764,6 +821,8 @@ export class World {
       vet: 0,
       subSurfaceUntil: 0,
       interceptCd: 0,
+      spottedUntil: 0,
+      sabUntil: 0,
     };
     this.ents.set(e.id, e);
     this.events.push({ e: "spawn", id: e.id });
@@ -885,8 +944,8 @@ export class World {
       if (!e || e.o !== slot || isBuilding(e.k)) continue;
       // unarmed units can't take attack orders; harvesters also ignore amove/patrol, while ewdrone & supplytruck can move/amove/patrol smoothly
       const isSupportMover = e.k === "ewdrone" || e.k === "supplytruck";
-      if (kind === "attack" && weaponOf(e).dmg <= 0 && e.k !== "engineer") continue;
-      if ((kind === "amove" || kind === "patrol") && weaponOf(e).dmg <= 0 && e.k !== "engineer" && !isSupportMover) continue;
+      if (kind === "attack" && weaponOf(e).dmg <= 0 && e.k !== "engineer" && e.k !== "spy") continue;
+      if ((kind === "amove" || kind === "patrol") && weaponOf(e).dmg <= 0 && e.k !== "engineer" && e.k !== "spy" && !isSupportMover) continue;
       // spread group destinations on a dynamic grid so large groups don't stack on one tile
       const ox = kind === "attack" || kind === "harvest" ? 0 : ((i % cols) - (cols - 1) / 2) * 1.15;
       const oy = kind === "attack" || kind === "harvest" ? 0 : (Math.floor(i / cols) - (rows - 1) / 2) * 1.15;
@@ -1367,6 +1426,85 @@ export class World {
     return true;
   }
 
+  private trySabotage(e: Ent, tgt: Ent, maxRange = SPY_CAPTURE_RANGE): boolean {
+    if (e.k !== "spy" || !isBuilding(tgt.k) || this.isAlly(e.o, tgt.o)) return false;
+    const bd = BUILDINGS[tgt.k];
+    const edgeDist = Math.hypot(
+      Math.max(0, Math.abs(e.x - tgt.x) - bd.w / 2),
+      Math.max(0, Math.abs(e.y - tgt.y) - bd.h / 2)
+    );
+    if (edgeDist > maxRange) return false;
+    const vp = this.players.get(tgt.o);
+    const sp = this.players.get(e.o);
+    const steal = (amt: number) => {
+      if (!vp || !sp) return;
+      const s = Math.min(vp.credits, amt);
+      vp.credits -= s;
+      sp.credits += s;
+      sp.creditsEarned += s;
+      if (s > 0) this.events.push({ e: "income", x: tgt.x, y: tgt.y, amt: s, slot: e.o });
+    };
+    switch (tgt.k) {
+      case "power":
+      case "coalplant":
+      case "fusion":
+        // Black out the enemy grid for 30 seconds
+        if (vp) {
+          vp.powerCutUntil = this.tick + SPY_POWERCUT_TICKS;
+          this.recomputePower(tgt.o);
+        }
+        break;
+      case "turret":
+      case "sam":
+      case "arc":
+      case "irondome":
+      case "lasertower":
+      case "thaad":
+        // Sabotage the battery — it cannot fire or intercept for 45 seconds
+        tgt.sabUntil = this.tick + SPY_DISABLE_TICKS;
+        break;
+      case "radar":
+      case "satlink":
+        // Scramble enemy sensors — Radar-tier stealth detection blinded for 30 seconds
+        if (vp) vp.radarScrambleUntil = this.tick + SPY_RADAR_SCRAMBLE_TICKS;
+        break;
+      case "superweapon":
+        // Plant a virus — restart their superweapon charge from zero
+        if (vp && vp.swLeft >= 0) vp.swLeft = SW_CHARGE_TICKS;
+        break;
+      case "barracks":
+      case "barracks2":
+      case "factory":
+      case "factory2":
+      case "airfield":
+      case "airfield2":
+      case "shipyard":
+      case "shipyard2":
+        // Corrupt the production line — wipe active build queues
+        if (vp) {
+          vp.bq = null;
+          vp.dq = null;
+        }
+        break;
+      case "refinery":
+      case "purifier":
+        steal(Math.round(Math.max(500, (vp?.credits ?? 0) * 0.4)));
+        break;
+      case "techlab":
+        steal(1200);
+        break;
+      case "conyard":
+        steal(2000);
+        break;
+      default:
+        steal(800);
+        break;
+    }
+    this.events.push({ e: "sabotage", x: tgt.x, y: tgt.y, slot: e.o, vslot: tgt.o, kind: tgt.k });
+    this.destroy(e);
+    return true;
+  }
+
   private hasBuilding(slot: number, kind: BuildingKind) {
     const upg = UPGRADED_OF[kind];
     for (const e of this.ents.values()) {
@@ -1404,6 +1542,7 @@ export class World {
         use -= pw;
       }
     }
+    if (this.tick < p.powerCutUntil) have = 0; // spy sabotage blackout
     p.pwrHave = have;
     p.pwrUse = use;
     p.lowPower = use > have;
@@ -1839,9 +1978,9 @@ export class World {
         } else {
           this.advanceOrder(e);
         }
-      } else if (e.k === "engineer" && isBuilding(tgt.k)) {
-        // engineers don't shoot — they walk in and take the building
-        if (!this.tryCapture(e, tgt)) {
+      } else if ((e.k === "engineer" || e.k === "spy") && isBuilding(tgt.k)) {
+        // engineers & spies don't shoot — they walk in and take / sabotage the building
+        if (!(e.k === "spy" ? this.trySabotage(e, tgt) : this.tryCapture(e, tgt))) {
           if (e.repath-- <= 0) {
             e.repath = 12;
             this.pathNear(e, tgt);
@@ -1866,16 +2005,16 @@ export class World {
       const scanR =
         o.kind === "patrol"
           ? Math.max(w.range + 5, 10)
-          : Math.max(w.range + 7, e.k === "engineer" ? 8 : 12);
+          : Math.max(w.range + 7, e.k === "engineer" || e.k === "spy" ? 8 : 12);
       const tracked = e.agro != null ? this.ents.get(e.agro) : null;
       const enemy =
         tracked && this.canAttack(e, tracked) && entityDist(e, tracked) <= scanR + 2
           ? tracked
           : this.nearestEnemy(e, scanR);
       if (enemy) {
-        if (e.k === "engineer" && isBuilding(enemy.k)) {
-          // attack-moving engineers capture buildings they reach
-          if (!this.tryCapture(e, enemy)) {
+        if ((e.k === "engineer" || e.k === "spy") && isBuilding(enemy.k)) {
+          // attack-moving engineers & spies capture / sabotage buildings they reach
+          if (!(e.k === "spy" ? this.trySabotage(e, enemy) : this.tryCapture(e, enemy))) {
             e.agro = enemy.id;
             if (e.repath-- <= 0) {
               e.repath = 12;
@@ -1989,14 +2128,13 @@ export class World {
       }
     }
 
-    // Sapper (engineer) FPV Capture
-    if (e.k === "engineer") {
+    // Sapper (engineer) & Spy FPV Capture / Sabotage
+    if (e.k === "engineer" || e.k === "spy") {
       const capRange = dir.fire ? CAPTURE_RANGE + 0.5 : CAPTURE_RANGE;
       for (const b of [...this.ents.values()]) {
         if (!isBuilding(b.k) || this.isAlly(e.o, b.o)) continue;
-        if (entityDist(e, b) <= capRange && this.tryCapture(e, b, capRange)) {
-          return;
-        }
+        const done = e.k === "spy" ? this.trySabotage(e, b, capRange) : this.tryCapture(e, b, capRange);
+        if (done) return;
       }
     }
 
@@ -2158,6 +2296,9 @@ export class World {
     if (kamikaze) {
       this.events.push({ e: "boom", x: tx, y: ty, r: splashR ?? 2.0 });
       this.destroy(e, -1);
+    } else if (e.k === "stealthbomber" || e.k === "bomber" || e.k === "zeppelin") {
+      // gravity-bomb delivery: render the big impact blast + crater, not just a hit flash
+      this.events.push({ e: "boom", x: tx, y: ty, r: splashR ?? 2.5 });
     }
   }
 
@@ -2387,6 +2528,7 @@ export class World {
             if (t.o < 0 || this.isAlly(e.o, t.o) || !this.ents.has(t.id)) continue;
             const tp = this.players.get(t.o);
             if (!tp || tp.eliminated) continue;
+            if (t.k === "spy" && this.tick >= t.spottedUntil) continue; // disguised spy: no auto-acquire
             // Fast bounding-box reject before canAttack/sqrt
             const dx = Math.abs(e.x - t.x);
             const dy = Math.abs(e.y - t.y);
@@ -2406,6 +2548,7 @@ export class World {
       if (t.o < 0 || this.isAlly(e.o, t.o)) continue;
       const tp = this.players.get(t.o);
       if (!tp || tp.eliminated) continue;
+      if (t.k === "spy" && this.tick >= t.spottedUntil) continue; // disguised spy: no auto-acquire
       if (!this.canAttack(e, t)) continue;
       const d = entityDist(e, t);
       if (d <= bd) {
@@ -2422,6 +2565,32 @@ export class World {
 
   private tryIntercept(attacker: Ent, tx: number, ty: number, defenderSlot?: number): boolean {
     if (!INTERCEPTABLE.has(attacker.k)) return false;
+    // Ballistic Missile TEL SRBM: ONLY Anti-Nuke (THAAD) batteries can attempt interception — 80% each within 18 tiles
+    if (attacker.k === "ballistic") {
+      const batteries: { ent: Ent; d: number }[] = [];
+      for (const dome of this.ents.values()) {
+        if (dome.k !== "thaad" || dome.o < 0 || dome.interceptCd > 0) continue;
+        if (this.tick < dome.sabUntil) continue;
+        if (this.players.get(dome.o)?.lowPower) continue;
+        if (defenderSlot !== undefined && defenderSlot >= 0) {
+          if (!this.isAlly(defenderSlot, dome.o)) continue;
+        } else {
+          if (this.isAlly(attacker.o, dome.o)) continue;
+        }
+        const d = dist(dome.x, dome.y, tx, ty);
+        if (d <= THAAD_NUKE_RADIUS) batteries.push({ ent: dome, d });
+      }
+      batteries.sort((a, b) => a.d - b.d);
+      for (const { ent: tower } of batteries) {
+        tower.interceptCd = THAAD_NUKE_CD;
+        this.face(tower, tx, ty);
+        if (Math.random() < 0.8) {
+          this.events.push({ e: "intercept", fx: tower.x, fy: tower.y, tx, ty, slot: tower.o });
+          return true;
+        }
+      }
+      return false;
+    }
     // Mach-9 Kamikaze hypersonic glide missile: THAAD stops at 80% (16 tiles), Iron Dome at 33% (9.5 tiles)!
     if (attacker.k === "hypersonic") {
       const candidates: { ent: Ent; d: number; chance: number; priority: number }[] = [];
@@ -2429,6 +2598,7 @@ export class World {
         const isThaad = dome.k === "thaad";
         const isDome = dome.k === "irondome";
         if ((!isThaad && !isDome) || dome.o < 0 || dome.interceptCd > 0) continue;
+        if (this.tick < dome.sabUntil) continue;
         if (this.players.get(dome.o)?.lowPower) continue;
         if (defenderSlot !== undefined && defenderSlot >= 0) {
           if (!this.isAlly(defenderSlot, dome.o)) continue;
@@ -2457,6 +2627,7 @@ export class World {
       const isDome = dome.k === "irondome";
       const isThaad = thaadCanIntercept && dome.k === "thaad";
       if ((!isDome && !isThaad) || dome.o < 0 || dome.interceptCd > 0) continue;
+      if (this.tick < dome.sabUntil) continue;
       if (this.players.get(dome.o)?.lowPower) continue;
       if (defenderSlot !== undefined && defenderSlot >= 0) {
         if (!this.isAlly(defenderSlot, dome.o)) continue;
@@ -2482,6 +2653,7 @@ export class World {
     const w = weaponOf(e);
     if (w.range <= 0) return;
     if (isBuilding(e.k) && this.players.get(e.o)?.lowPower) return; // powered defenses offline
+    if (this.tick < e.sabUntil) return; // defense battery disabled by spy sabotage
     if (!this.canAttack(e, tgt)) return;
     const kamikaze = isKamikaze(e.k);
     const unitShooter = !isBuilding(e.k); // kill-confirm credit goes to unit shooters only
@@ -2560,6 +2732,9 @@ export class World {
     if (kamikaze) {
       this.events.push({ e: "boom", x: tx, y: ty, r: splashR ?? 2.0 });
       this.destroy(e, -1);
+    } else if (e.k === "stealthbomber" || e.k === "bomber" || e.k === "zeppelin") {
+      // gravity-bomb delivery: render the big impact blast + crater, not just a hit flash
+      this.events.push({ e: "boom", x: tx, y: ty, r: splashR ?? 2.5 });
     }
   }
 
@@ -2829,7 +3004,7 @@ export class World {
       const s: EntSnap = {
         id: e.id,
         o: e.o,
-        k: e.k,
+        k: e.k === "spy" && this.tick >= e.spottedUntil ? "infantry" : e.k,
         x: Math.round(e.x * 100) / 100,
         y: Math.round(e.y * 100) / 100,
         hp: Math.max(0, Math.round(e.hp)),
@@ -2846,6 +3021,7 @@ export class World {
       if (e.vet > 0) s.vet = e.vet;
       if (e.hold) s.hold = true;
       if (this.isStealthed(e)) s.sub = true;
+      if (e.k === "spy" && this.tick >= e.spottedUntil) s.disg = "spy";
       if (e.fpvAlt !== undefined) s.alt = Math.round(e.fpvAlt * 100) / 100;
       if (e.rally) s.rally = [e.rally[0], e.rally[1]];
       if (!isBuilding(e.k) && (e.order || e.orderQueue.length)) {

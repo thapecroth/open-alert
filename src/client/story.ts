@@ -72,6 +72,8 @@ const ENTRY_BARKS: Partial<Record<UnitKind, string>> = {
   heavy: "Heavy armor on the move. Nothing stops us.",
   spider: "All eight legs spinning. Let's crawl.",
   himars: "Launcher hot. Send the grid coordinates.",
+  spy: "Papers are forged. I'll be one of them before sunset.",
+  ballistic: "Tube erected. One shot, one crater.",
   railtank: "Capacitors charged. Rail's humming.",
   supplytruck: "Logistics run started. Keep the line fed.",
   harvester: "Scoop's turning. Let's get rich.",

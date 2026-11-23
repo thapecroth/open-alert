@@ -206,6 +206,36 @@ const UNIT_PROFILES: Record<UnitKind, UnitCameraProfile> = {
     recoilPitch: 0.044,
     recoilShake: 0.28,
   },
+  spy: {
+    // Undercover operator — light pistol view, agile but cautious
+    eyeY: 0.82,
+    fov: 74,
+    initPitch: 0,
+    minPitch: -0.52,
+    maxPitch: 0.65,
+    bobAmp: 0.034,
+    bobFreq: 12,
+    strafeMode: "strafe",
+    turnRate: 2.7,
+    recoilKickZ: 0.04,
+    recoilPitch: 0.016,
+    recoilShake: 0.06,
+  },
+  ballistic: {
+    // TEL launch console — heavy recoil as the missile booster ignites
+    eyeY: 1.42,
+    fov: 66,
+    initPitch: 0.04,
+    minPitch: -0.4,
+    maxPitch: 0.7,
+    bobAmp: 0.01,
+    bobFreq: 11,
+    strafeMode: "steer",
+    turnRate: 1.7,
+    recoilKickZ: 0.22,
+    recoilPitch: 0.06,
+    recoilShake: 0.5,
+  },
   railtank: {
     eyeY: 1.36,
     fov: 66,
@@ -2084,7 +2114,7 @@ export class FirstPersonController {
       }
     }
 
-    const kind = t.last.k as UnitKind;
+    const kind = (t.last.disg ?? t.last.k) as UnitKind; // own disguised spy enters as its real kind
     const def = UNITS[kind];
     const profile = UNIT_PROFILES[kind] ?? DEFAULT_PROFILE;
     const pos = this.renderer.getEntityWorldPos(id) ?? { x: t.last.x, y: t.last.y, d: t.last.d / 10 };

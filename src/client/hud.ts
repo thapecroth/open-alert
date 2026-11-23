@@ -42,24 +42,24 @@ const TOOLTIPS: Record<string, string> = {
   supplyhub: "Forward Supply Hub — extends build zone (26 tiles) & refills Fuel, Ammo + light repair in 12-tile aura",
   barracks: "Barracks — trains Riflemen, Combat Engineers, AT / MANPADS & FPV Suicide Drones. Upgrade to MKII for Veteran ★ troops.",
   barracks2: "Barracks II — elite infantry command; trains Veteran ★ troops faster.",
-  radar: "Lattice Sentry — autonomous AI sensor-fusion tower; reveals minimap, detects cloaked B-21 Stealth Bombers & unlocks Anvil, Pulsar EW & HIMARS.",
+  radar: "Radar Tower — reveals the minimap & detects cloaked B-21 Stealth Bombers. Unlocks Anti-Air Turret, Jammer Drone & HIMARS.",
   factory: "War Factory — builds Main Battle Tanks, HIMARS & logistics vehicles. Upgrade to MKII for Aegis Railgun MBT.",
   factory2: "War Factory II — heavy armor works; unlocks Aegis Railgun MBT + faster armored production.",
-  airfield: "Air Command — deploys attritable drones & aircraft (Reaper, Delta Kamikaze, Pulsar EW, Fury CCA, Hornet, A-10). Upgrade for Stealth Wing.",
-  airfield2: "Air Command II — Stealth Wing; unlocks AC-130 Gunship, B-21 Stealth Bomber & Barracuda Mach-9 + Veteran ★ aircraft.",
-  shipyard: "Naval Shipyard — builds Sea-Baby USVs, Dive-XL UUVs & warships on water. Upgrade to MKII for Fleet Dock.",
+  airfield: "Air Command — deploys attritable drones & aircraft (Reaper, Delta Kamikaze, Jammer Drone, Interceptor, Hornet, A-10). Upgrade for Stealth Wing.",
+  airfield2: "Air Command II — Stealth Wing; unlocks AC-130 Gunship, B-21 Stealth Bomber & Mach-9 Missile + Veteran ★ aircraft.",
+  shipyard: "Naval Shipyard — builds Sea-Baby USVs, Submarines & warships on water. Upgrade to MKII for Fleet Dock.",
   shipyard2: "Naval Shipyard II — Fleet Dock; unlocks Poseidon Cruiser, Nimitz Drone Carrier & Veteran ★ ships.",
-  techlab: "Tech Lab — unlocks Fusion Reactor, Ore Purifier, Roadrunner Hive, Helios Laser, Defense Satellite & MKII upgrades.",
-  satlink: "Defense Satellite — long-range orbital laser defense & telemetry hub; unlocks Nuclear Silo & Lattice Aegis. Limit 1.",
+  techlab: "Tech Lab — unlocks Fusion Reactor, Ore Purifier, Iron Dome, Helios Laser, Defense Satellite & MKII upgrades.",
+  satlink: "Defense Satellite — long-range orbital laser defense & telemetry hub; unlocks Nuclear Silo & Anti-Nuke. Limit 1.",
   turret: "Vulcan Turret — rapid-fire ground & anti-air (AA) base defense. Needs power.",
-  sam: "Anvil Interceptor — ultra cost-efficient autonomous kinetic counter-drone & AA defense. Needs power + Lattice Sentry.",
-  arc: "Arc Spire — heavy ground & anti-air (AA) lightning defense in every direction. Needs power + Lattice Sentry.",
-  irondome: "Roadrunner Hive — cost-efficient reusable VTOL interceptor hive; stops artillery, drones & missiles (33% vs Mach-9) + AA. Limit 3.",
+  sam: "Anti-Air Turret — cost-efficient kinetic counter-drone & anti-air defense. Needs power + Radar Tower.",
+  arc: "Arc Spire — heavy ground & anti-air (AA) lightning defense in every direction. Needs power + Radar Tower.",
+  irondome: "Iron Dome — reusable interceptor battery; stops artillery shells, drones & missiles (33% vs Mach-9) + AA. Limit 3.",
   lasertower: "Helios Laser — high-energy beam tower that melts heavy armor & aircraft. Needs power + Tech Lab.",
-  thaad: "Lattice Aegis — cost-efficient next-gen missile shield stopping Nuclear ICBMs (18 tiles) & Barracuda Mach-9 (16 tiles) at 80% chance + detects B-21 Stealth (limit 2)",
+  thaad: "Anti-Nuke — heavy missile shield stopping Nuclear ICBMs (18 tiles) & Mach-9 Missiles (16 tiles) at 80% chance + detects B-21 Stealth (limit 2).",
   purifier: "Ore Purifier — +25% on every harvester deposit.",
   depot: "Service Depot — repairs nearby vehicles automatically.",
-  superweapon: "Nuclear Silo — launches a devastating thermonuclear ICBM anywhere on the map (80% interceptable by enemy Lattice Aegis!)",
+  superweapon: "Nuclear Silo — launches a devastating thermonuclear ICBM anywhere on the map (80% interceptable by enemy Anti-Nuke!)",
   derrick: "Oil Derrick — capture with a Combat Engineer for +$500 bonus & +$25/s income.",
   coalmine: "Coal Mine — capture with a Combat Engineer for +$400 bonus, +$20/s income & +60⚡ power.",
   infantry: "Rifleman — cheap, fast, anti-infantry & light AA.",
@@ -71,24 +71,26 @@ const TOOLTIPS: Record<string, string> = {
   heavy: "Mastodon Tank — twin-cannon monster. Needs War Factory II.",
   spider: "Spider Drone — fast melee scout. Needs War Factory II.",
   himars: "HIMARS Launcher — ultra-long-range precision rocket artillery with heavy splash. Needs Radar.",
+  spy: "Spy — disguised infiltration infantry. Auto-defenses ignore it; only powered Radar-tier sensors blow its cover for 15s. Walk into enemy buildings to SABOTAGE: power plants black out 30s, defenses disable 45s, Radar scrambles 30s, production queues wipe, refineries & HQs get looted. Needs Radar Tower.",
+  ballistic: "Ballistic Missile TEL — mobile truck launching a long-range single-shot ballistic missile with massive splash. ONLY Anti-Nuke batteries can intercept it (80%, 18 tiles). Needs War Factory II.",
   railtank: "Aegis Railgun MBT — hyper-velocity electromagnetic main battle tank (Ground + AA). Needs War Factory II.",
   supplytruck: "Supply Convoy — mobile 500-pt Fuel & Ammo resupply truck for frontline armies",
   harvester: "Ore Harvester — collects ore; a full load is worth $1,125.",
   uav: "Reaper UCAV — reusable MALE hunter-killer recon & strike drone ($30M real-world class, 13-tile vision, Air + Ground).",
   shahed: "Delta Kamikaze — attritable $35K-class one-way attack drone; cheap mass saturation swarms vs bases.",
-  ewdrone: "Pulsar EW Drone — AI electronic warfare drone with 85m counter-drone jamming aura & wide recon optics. Needs Lattice Sentry.",
-  interceptor: "Fury CCA Wingman — autonomous loyal-wingman stealth fighter (1/3 the cost of crewed jets, Air + Ground, AA).",
+  ewdrone: "Jammer Drone — electronic warfare drone with an 85m counter-drone jamming aura & wide recon optics. Needs Radar Tower.",
+  interceptor: "Interceptor — autonomous loyal-wingman fighter jet (1/3 the cost of crewed jets, Air + Ground, AA).",
   chopper: "Hornet Gunship — agile Air Force gunship (Air + Ground, AA).",
   a10: "A-10 Warthog — cost-effective armored CAS jet with GAU-8 30mm rotary cannon (BRRRT! 1.5× vs tanks & AA).",
   ac130: "AC-130 Gunship — heavy 4-turboprop flying artillery raining 105mm splash shells from high altitude.",
   bomber: "Tempest Bomber — heavy Air Force splash strike bomber vs ground & ships. Needs Tech Lab.",
-  stealthbomber: "B-21 Stealth Bomber — apex $690M-class stealth bomber completely invisible without powered Lattice/Anvil/Aegis. Needs Air Command II.",
-  hypersonic: "Barracuda Mach-9 — mass-producible autonomous hypersonic glide missile (520 splash; Lattice Aegis 80% / Roadrunner 33% intercept!).",
+  stealthbomber: "B-21 Stealth Bomber — apex strategic bomber: drops one MASSIVE gravity bomb per run, then a long rearm. Completely invisible unless the enemy has powered Radar or missile defenses. Needs Air Command II.",
+  hypersonic: "Mach-9 Missile — one-way hypersonic glide missile that can cross the whole map (520 splash; Anti-Nuke 80% / Iron Dome 33% intercept!).",
   zeppelin: "Leviathan Airship — armored Air Force flying dreadnought with massive splash bombs. Needs Tech Lab.",
   usv: "Sea-Baby USV Drone — $250K-class stealth explosive drone boat; skims waves unseen to ram warships & docks.",
   gunboat: "Viper Hydrofoil — fast Navy patrol & anti-air (AA) picket craft.",
   destroyer: "Aegis Destroyer — versatile Navy warship with heavy cannons & anti-air (AA) defense.",
-  sub: "Dive-XL Stealth UUV — cost-efficient autonomous stealth undersea torpedo drone; invisible until firing or spotted. Needs Lattice Sentry.",
+  sub: "Submarine — stealth torpedo boat; invisible until firing or spotted. Needs Radar Tower.",
   dreadnought: "Poseidon Cruiser — long-range Navy bombardment cruiser with splash cruise missiles. Needs Naval Shipyard II.",
   carrier: "Nimitz Drone Carrier — fleet flagship launching long-range drone strikes (Air + Ground, wide vision). Needs Naval Shipyard II.",
 };
@@ -167,6 +169,30 @@ const MAP_PREVIEW_PALETTES: Record<
     cliffEdge: "#44e2ff",
     accentGrid: "rgba(64, 230, 255, 0.1)",
   }, // Sleek dark carbon orbital deck + glowing cyan circuits
+  hormuz: {
+    bg: "#8a6f46",
+    grid: "rgba(255, 226, 170, 0.09)",
+    cliff: "#7a684a",
+    cliffEdge: "#a08a5e",
+    water: "#0e5a76",
+    waterGlint: "rgba(150, 226, 250, 0.3)",
+  }, // Gulf Strait golden coasts + teal shipping channels
+  delta: {
+    bg: "#2e5a30",
+    grid: "rgba(180, 240, 190, 0.08)",
+    cliff: "#3c5c40",
+    cliffEdge: "#5a7a56",
+    water: "#1a6a50",
+    waterGlint: "rgba(140, 235, 200, 0.3)",
+  }, // Mekong Delta jungle greens + muddy braided rivers
+  bering: {
+    bg: "#6d8296",
+    grid: "rgba(220, 240, 255, 0.1)",
+    cliff: "#8cb4d0",
+    cliffEdge: "#d2e8f8",
+    water: "#155272",
+    waterGlint: "rgba(160, 215, 245, 0.3)",
+  }, // Polar Strait ice fields + steel-blue arctic water
   europa: {
     bg: "#2d4029",
     grid: "rgba(186, 220, 174, 0.08)",
@@ -272,7 +298,7 @@ const SHORT_BUILDING_NAMES: Record<BuildingKind, string> = {
   supplyhub: "Supply Hub",
   barracks: "Barracks",
   barracks2: "Barracks II",
-  radar: "Lattice Sentry",
+  radar: "Radar Tower",
   factory: "War Factory",
   factory2: "Factory II",
   airfield: "Air Command",
@@ -282,11 +308,11 @@ const SHORT_BUILDING_NAMES: Record<BuildingKind, string> = {
   techlab: "Tech Lab",
   satlink: "Def Satellite",
   turret: "Vulcan",
-  sam: "Anvil Nest",
+  sam: "Anti-Air",
   arc: "Arc Spire",
-  irondome: "Roadrunner",
+  irondome: "Iron Dome",
   lasertower: "Helios Laser",
-  thaad: "Lattice Aegis",
+  thaad: "Anti-Nuke",
   purifier: "Purifier",
   depot: "Depot",
   superweapon: "Nuke Silo",
@@ -303,7 +329,7 @@ const COMPACT_BUILDING_NAMES: Record<BuildingKind, string> = {
   supplyhub: "Supply",
   barracks: "Barracks",
   barracks2: "Bks II",
-  radar: "Lattice",
+  radar: "Radar",
   factory: "Factory",
   factory2: "Factory II",
   airfield: "Air Cmd",
@@ -313,11 +339,11 @@ const COMPACT_BUILDING_NAMES: Record<BuildingKind, string> = {
   techlab: "Tech Lab",
   satlink: "Def Sat",
   turret: "Vulcan",
-  sam: "Anvil",
+  sam: "Anti-Air",
   arc: "Arc Spire",
-  irondome: "Roadrunner",
+  irondome: "Iron Dome",
   lasertower: "Laser",
-  thaad: "Aegis Shield",
+  thaad: "Anti-Nuke",
   purifier: "Purifier",
   depot: "Depot",
   superweapon: "Nuke Silo",
@@ -410,6 +436,9 @@ export class Hud {
   onFilterSelection?: (kind: string) => void;
   onGroupClick?: (n: number, dbl: boolean) => void;
   onToggleWasd?: () => void;
+  onTogglePause?: () => void;
+  private pauseBtn: HTMLElement | null = null;
+  private paused = false;
   onToggleMute?: () => void;
   onToggleMusic?: () => void;
   onSwitchLocal?: () => void;
@@ -512,6 +541,8 @@ export class Hud {
       resignBtn.textContent = "RESIGN";
       this.onResign();
     });
+    this.pauseBtn = document.getElementById("pause-btn");
+    this.pauseBtn?.addEventListener("click", () => this.onTogglePause?.());
     const copy = (e: Event) => {
       navigator.clipboard?.writeText(location.href).catch(() => {});
       this.toast("invite link copied", true);
@@ -2291,6 +2322,21 @@ export class Hud {
     el("endscreen").classList.add("hidden");
   }
 
+  setPaused(p: boolean) {
+    this.paused = p;
+    el("paused-overlay")?.classList.toggle("hidden", !p);
+    if (this.pauseBtn) this.pauseBtn.textContent = p ? "▶ RESUME" : "⏸ PAUSE";
+  }
+
+  setPauseVisible(v: boolean) {
+    this.pauseBtn?.classList.toggle("hidden", !v);
+    if (!v) this.setPaused(false);
+  }
+
+  isPaused() {
+    return this.paused;
+  }
+
   toast(msg: string, info = false) {
     const box = el("toasts");
     while (box.children.length >= 4) box.firstChild?.remove();
@@ -2893,7 +2939,9 @@ export class Hud {
     for (const id of sel) {
       const t = tracked.get(id);
       if (!t) continue;
-      counts.set(t.last.k, (counts.get(t.last.k) ?? 0) + 1);
+      // Owner sees their disguised spy's real kind; enemies still see the rifleman cover
+      const effK = t.last.disg && t.last.o === mySlot ? t.last.disg : t.last.k;
+      counts.set(effK, (counts.get(effK) ?? 0) + 1);
       hpSum += t.last.hp;
       hpMax += t.last.mhp;
       if ((t.last.vet ?? 0) > maxVet) maxVet = t.last.vet ?? 0;
@@ -2913,7 +2961,7 @@ export class Hud {
       }
       if (sel.size === 1 && t.last.o === mySlot) {
         singleId = id;
-        singleKind = t.last.k;
+        singleKind = effK;
       }
     }
     if (!hpMax) {

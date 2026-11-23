@@ -1034,6 +1034,7 @@ export class Input {
     this.placing = kind;
     this.ghost = makePlacementGhost(kind);
     this.gs.scene.add(this.ghost);
+    if (BUILDINGS[kind].range) this.r.setDefenseRangesVisible(true);
     this.updateBuildZones(true);
     this.moveGhost();
     this.syncCursor();
@@ -1044,6 +1045,7 @@ export class Input {
     this.placing = null;
     this.ghostOk = false;
     this.ghostReason = null;
+    this.r.setDefenseRangesVisible(false);
     this.updateBuildZones(false);
     this.syncCursor();
     if (this.ghost) {

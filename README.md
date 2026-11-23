@@ -12,17 +12,22 @@ A real-time, multiplayer, browser-based strategy game — harvest ore, build you
 
 ## Features
 
-- **Multiplayer rooms** over WebSockets — host a room, share the link, up to 4 players + spectators
+- **Multiplayer rooms** over WebSockets — host a room, share the link, up to **8 players** + live spectators, on **19 maps** from cramped crossroads to 128×128 ocean theaters
 - **Authoritative server sim** — 10 Hz fixed-step simulation in a Cloudflare Durable Object; clients only render and send commands
-- **Full economy loop** — ore fields that regrow and spread, harvesters, refineries, an ore purifier bonus
-- **Power system** — reactors power your base; low power halves production and disables defenses
-- **Tech tree** — barracks → radar uplink → tech lab → war factory upgrade → heavy armor, plus static defenses and a service depot
-- **12 buildings, 8 units** — riflemen, rocket troopers, sappers that *capture* enemy buildings, tanks, siege launchers, spider drones, and the twin-barreled Mastodon
-- **Combat** — attack-move orders, formation moves, tank-crushes-infantry, veterancy-free but brutal
-- **CABAL AI opponent** — phase-aware server bot (early/mid/late game) that plays through the same command API as humans
-- **RL gym** (`src/server/gym.ts`) — `GymEnv` with structured obs + **visual obs** (`featureMaps()` 6×64×64 channels, `rgbFrame()` rendered minimap), action schema incl. factory upgrade, shaped rewards, scripted/idle/mirror opponents — **1:1 state parity with live MCP** so models finetuned in `GymEnv` can drop straight into live AI-vs-AI matches
+- **Full economy loop** — ore fields that regrow and spread, harvesters, refineries, oil derricks, coal mines, an ore purifier bonus, and supply-convoy logistics (fuel + ammunition)
+- **Upgradable power** — start with a basic Power Plant, upgrade it in place to a Thermal Coal Plant and finally a Fusion Reactor; low power halves production and disables defenses
+- **Three theaters of war** — land armies, full air wings (Reaper UCAVs, helicopter gunships, A-10s, AC-130 gunships, B-21 stealth bombers, Fury wingmen, Mach-9 hypersonics), and blue-water navies (gunboats, destroyers, submarines, cruisers, carriers)
+- **Modern drone warfare** — $45 FPV kamikazes, Shahed-style delta drones, sea drones, and EW jammers, priced and countered the way real battlefields do
+- **Covert ops** — disguised Spies slip past auto-defenses and sabotage power, radar, production, or superweapons; only powered radar blows their cover
+- **Strategic missile game** — mobile Ballistic Missile TELs outrange everything, defeated only by Anti-Nuke batteries at ~80% odds — bait the interceptors, then fire the nuke
+- **Deep defense tree** — Vulcan turrets, anti-air nests, Iron Dome, Anti-Nuke shields, Helios lasers, Arc Spires — every tier has a real counter
+- **First-person mode** — jump into *any* unit with `F`: 30 bespoke cockpits, sprint/boost, aircraft altitude control, ADS/crouch, AC-130 weapon select, guided lock-on, kill feed, medals, objectives, and radio chatter
+- **Pause in solo games** — freeze the sim mid-match when it's just you vs bots (one click, honest freeze — nothing moves, earns, or burns while paused)
+- **CABAL AI opponents** — phase-aware server bots (easy → brutal) that play through the same command API as humans, and will happily sabotage you back
+- **Adaptive graphics governor** — real-time quality scaling (raytracing → shadows → bloom → low path) driven by your FPS and the live entity count, so 800-unit battles stay smooth
+- **RL gym** (`src/server/gym.ts`) — `GymEnv` with structured obs + **visual obs** (`featureMaps()` 6×64×64 channels, `rgbFrame()` rendered minimap), shaped rewards, scripted/idle/mirror opponents — **1:1 state parity with live MCP** so models finetuned in `GymEnv` can drop straight into live AI-vs-AI matches
 - **LLM player & AI-vs-AI MCP Arena** (`test/llmbot.mjs`, `/mcp`) — pit any MCP-connected AI or finetuned model against another live while spectators watch in 3D on `/?watch=1`
-- **3D renderer** — Three.js with ACES tone mapping, bloom, shadows, HDR environment, PBR terrain, and generated art
+- **3D renderer** — Three.js with ACES tone mapping, optional raytraced shadows, bloom, HDR environment, PBR terrain with per-biome water palettes, and procedural art
 
 ## Quick start
 
@@ -97,6 +102,7 @@ Watch ongoing AI vs. AI, Claude vs. CABAL, and multiplayer matches live in 3D fr
 | `node test/visual.mjs` | headless-Chrome gameplay screenshot pass |
 | `node test/spectate.mjs <room> [secs]` | screenshot a live match as spectator (reload-safe) |
 | `node test/bot.mjs <room>` | run a CABAL bot against a room |
+| `node test/covert.mjs` | covert ops: spy disguise/reveal/sabotage, ballistic interception, pause freeze |
 | `node test/llmbot.mjs <room>` | run an LLM-driven player (set `OA_LLM_URL`/`OA_LLM_MODEL`) |
 | `node test/gym.mjs` | RL environment assertion suite |
 | `node test/gym-client.mjs` | RL environment scripted demo |
@@ -108,13 +114,18 @@ Watch ongoing AI vs. AI, Claude vs. CABAL, and multiplayer matches live in 3D fr
 | left-click / drag | select units |
 | right-click | move · attack · harvest |
 | `A` + right-click | attack-move |
-| `S` | stop |
+| `P` / `G` / `S` | patrol / hold / stop |
 | `$` / `R` | sell / repair mode |
+| `Shift` + orders | queue waypoints |
+| `F` | enter / exit first-person mode on the selected unit |
 | right-click sidebar item | cancel & refund |
 | wheel / arrows / edge / mid-drag | zoom & pan camera |
+| `⏸ PAUSE` button | freeze the sim (solo vs bots only) |
 | `Enter` | chat |
 | `Esc` | cancel mode |
 | `?` | help overlay |
+
+**First-person (`F`)**: WASD drive, mouse aim, `Shift` sprint/boost, `C` crouch, RMB aim-down-sights, pitch controls aircraft altitude, `1`/`2`/`3` weapon select (AC-130), hold reticle on target for guided lock-on.
 
 ## Architecture
 

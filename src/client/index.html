@@ -39,10 +39,13 @@
         <button id="music-btn" class="on" title="Toggle tactical soundtrack">BGM</button>
         <button id="gfx-btn" type="button" title="Graphics, Raytracing &amp; GPU Settings">GFX</button>
         <button id="wasd-btn" title="Toggle WASD camera pan vs Classic RTS hotkeys">KEYS: RTS</button>
+        <button id="pause-btn" type="button" class="hidden" title="Pause the game (solo vs bots only)">⏸ PAUSE</button>
         <button id="resign-btn" title="Self-destruct your base and leave the game">RESIGN</button>
         <button id="help-btn" title="Controls & hotkeys">?</button>
       </div>
     </div>
+
+    <div id="paused-overlay" class="hidden"><div class="paused-card">⏸ PAUSED<div class="paused-sub">click PAUSE to resume</div></div></div>
 
     <div id="verbbar" class="hidden">
       <button id="verb-amove" title="Attack-move (A): fight everything on the way">ATTACK-MOVE <kbd>A</kbd></button>

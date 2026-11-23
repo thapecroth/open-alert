@@ -200,7 +200,7 @@ function buildDestroyerVm(kit: VmKit): void {
   kit.addMuzzleFlash(R, 0, -0.33, -1.2, 1.9, 0xffb33a);
 }
 
-// Dive-XL attack center: periscope column + etched reticle glass, depth dial,
+// Submarine attack center: periscope column + etched reticle glass, depth dial,
 // dive-plane indicator, torpedo ready lights, sonar ping arcs, cramped trim.
 function buildSubVm(kit: VmKit): void {
   const { swayGroup: S, recoilGroup: R, mats: M, glowPulses } = kit;
