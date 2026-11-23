@@ -128,7 +128,40 @@
             <path d="M76 84 L84 84 L84 76" fill="none" />
           </g>
         </svg>
+        <div id="fpv-hitmark" aria-hidden="true">
+          <svg viewBox="0 0 48 48" width="48" height="48">
+            <line x1="12" y1="16" x2="23" y2="27" />
+            <line x1="36" y1="16" x2="25" y2="27" />
+            <line x1="12" y1="32" x2="23" y2="21" />
+            <line x1="36" y1="32" x2="25" y2="21" />
+          </svg>
+        </div>
         <div id="fpv-target" class="hidden"></div>
+        <div id="fpv-lock" class="hidden"></div>
+      </div>
+
+      <div id="fpv-objective" class="hidden">
+        <div class="fpv-obj-head">
+          <span>OBJECTIVE</span>
+          <span id="fpv-obj-prog">0/1</span>
+        </div>
+        <div id="fpv-obj-title">BOOT CAMP — FIRE YOUR WEAPON</div>
+        <div class="fpv-obj-track"><div id="fpv-obj-fill"></div></div>
+      </div>
+
+      <div id="fpv-streak" class="hidden">
+        <span id="fpv-kills">☠ 0</span>
+        <span id="fpv-spree"></span>
+      </div>
+
+      <div id="fpv-feed"></div>
+
+      <div id="fpv-altape" class="hidden">
+        <div class="fpv-altape-track">
+          <div id="fpv-altape-fill"></div>
+          <div class="fpv-altape-cruise"></div>
+        </div>
+        <div id="fpv-altape-text">ALT 0m</div>
       </div>
 
       <div id="fpv-status">
@@ -158,9 +191,15 @@
           <span id="fpv-fuel" class="hidden">FUEL 100%</span>
           <span id="fpv-ammo" class="hidden">AMMO 100%</span>
         </div>
+        <div id="fpv-chips" class="fpv-chips hidden">
+          <span id="fpv-chip-sprint" class="fpv-chip">SPRINT</span>
+          <span id="fpv-chip-crouch" class="fpv-chip">CROUCH</span>
+          <span id="fpv-chip-sub" class="fpv-chip">SUBMERGED</span>
+        </div>
       </div>
 
       <div id="fpv-weapon">
+        <div id="fpv-wpn" class="hidden"></div>
         <div class="fpv-wpn-head">
           <span id="fpv-wpn-status">WEAPON READY</span>
           <span id="fpv-wpn-range">RNG 0m</span>
