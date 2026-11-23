@@ -183,7 +183,7 @@ export const BUILDINGS: Record<BuildingKind, BuildingDef> = {
   supplyhub: { w: 2, h: 2, cost: 650, hp: 580, power: -15, buildTicks: 60, requires: ["refinery"], forwardRange: 26 },
   barracks: { w: 2, h: 2, cost: 500, hp: 500, power: -20, buildTicks: 70 },
   barracks2: { w: 2, h: 2, cost: 0, hp: 750, power: -30, buildTicks: 0, noBuild: true },
-  radar: { w: 2, h: 2, cost: 700, hp: 500, power: -45, buildTicks: 80, requires: ["barracks"] },
+  radar: { w: 2, h: 2, cost: 550, hp: 500, power: -40, buildTicks: 60, requires: ["barracks"] },
   factory: { w: 3, h: 3, cost: 1000, hp: 900, power: -30, buildTicks: 110 },
   factory2: { w: 3, h: 3, cost: 0, hp: 1300, power: -40, buildTicks: 0, noBuild: true },
   airfield: { w: 3, h: 2, cost: 1000, hp: 750, power: -40, buildTicks: 95, requires: ["radar"] },
@@ -196,13 +196,13 @@ export const BUILDINGS: Record<BuildingKind, BuildingDef> = {
   satlink: { w: 3, h: 3, cost: 2000, hp: 950, power: -80, buildTicks: 135, requires: ["techlab"], limit: 1, range: 15, dmg: 38, rof: 28, canHitAir: true },
   superweapon: { w: 3, h: 3, cost: 2500, hp: 1100, power: -100, buildTicks: 150, requires: ["satlink"], limit: 1 },
 
-  // Dedicated Parallel Defense Category (constructs simultaneously with Structures!)
-  turret: { w: 1, h: 1, cost: 500, hp: 420, power: -25, buildTicks: 55, category: "defense", range: 6.5, dmg: 15, rof: 14, canHitAir: true },
-  sam: { w: 2, h: 2, cost: 750, hp: 520, power: -35, buildTicks: 65, category: "defense", range: 11.5, dmg: 36, rof: 20, canHitAir: true, canHitGround: false, requires: ["radar"] },
-  arc: { w: 1, h: 1, cost: 800, hp: 550, power: -40, buildTicks: 70, category: "defense", range: 7.5, dmg: 32, rof: 24, canHitAir: true, requires: ["radar"] },
-  irondome: { w: 2, h: 2, cost: 1400, hp: 720, power: -55, buildTicks: 85, category: "defense", range: 10.5, dmg: 24, rof: 14, canHitAir: true, canHitGround: false, requires: ["radar", "techlab"], limit: 3 },
-  lasertower: { w: 2, h: 2, cost: 1600, hp: 820, power: -70, buildTicks: 95, category: "defense", range: 9.5, dmg: 68, rof: 28, canHitAir: true, requires: ["techlab"] },
-  thaad: { w: 2, h: 2, cost: 1800, hp: 780, power: -65, buildTicks: 105, category: "defense", range: 14, dmg: 54, rof: 26, canHitAir: true, canHitGround: false, requires: ["satlink"], limit: 2 },
+  // Dedicated Parallel Defense Category (cost-efficient modern defense-tech stack!)
+  turret: { w: 1, h: 1, cost: 400, hp: 420, power: -20, buildTicks: 45, category: "defense", range: 6.5, dmg: 15, rof: 14, canHitAir: true },
+  sam: { w: 2, h: 2, cost: 420, hp: 520, power: -30, buildTicks: 45, category: "defense", range: 11.5, dmg: 36, rof: 18, canHitAir: true, canHitGround: false, requires: ["radar"] },
+  arc: { w: 1, h: 1, cost: 700, hp: 550, power: -40, buildTicks: 60, category: "defense", range: 7.5, dmg: 32, rof: 24, canHitAir: true, requires: ["radar"] },
+  irondome: { w: 2, h: 2, cost: 850, hp: 720, power: -45, buildTicks: 60, category: "defense", range: 10.5, dmg: 26, rof: 14, canHitAir: true, canHitGround: false, requires: ["radar", "techlab"], limit: 3 },
+  lasertower: { w: 2, h: 2, cost: 1350, hp: 820, power: -65, buildTicks: 80, category: "defense", range: 9.5, dmg: 68, rof: 28, canHitAir: true, requires: ["techlab"] },
+  thaad: { w: 2, h: 2, cost: 1150, hp: 780, power: -55, buildTicks: 75, category: "defense", range: 14, dmg: 54, rof: 24, canHitAir: true, canHitGround: false, requires: ["satlink"], limit: 2 },
 
   // Neutral Captureable Resource Landmarks
   derrick: { w: 2, h: 2, cost: 0, hp: 850, power: 0, buildTicks: 0, noBuild: true },
@@ -306,35 +306,35 @@ export const UNITS: Record<UnitKind, UnitDef> = {
   infantry: { hp: 90, speed: 0.1, range: 4, dmg: 6, rof: 15, cost: 100, buildTicks: 30, trainsAt: "barracks", domain: "land", canHitAir: true },
   engineer: { hp: 70, speed: 0.1, range: 0, dmg: 0, rof: 0, cost: 500, buildTicks: 40, trainsAt: "barracks", domain: "land" },
   rocket: { hp: 80, speed: 0.11, range: 6.5, dmg: 11, rof: 18, cost: 300, buildTicks: 35, trainsAt: "barracks", domain: "land", requires: "radar", canHitAir: true },
-  fpvdrone: { hp: 48, speed: 0.36, range: 1.45, dmg: 150, rof: 10, cost: 180, buildTicks: 26, trainsAt: "barracks", domain: "air", kamikaze: true, vision: 10 },
+  fpvdrone: { hp: 48, speed: 0.36, range: 1.45, dmg: 135, rof: 10, cost: 45, buildTicks: 14, trainsAt: "barracks", domain: "air", kamikaze: true, vision: 10 },
   // Modern Armor & Logistics
   tank: { hp: 340, speed: 0.16, range: 5, dmg: 22, rof: 22, cost: 700, buildTicks: 70, trainsAt: "factory", domain: "land" },
-  himars: { hp: 220, speed: 0.13, range: 12.5, dmg: 68, rof: 44, cost: 1350, buildTicks: 95, trainsAt: "factory", domain: "land", requires: "radar" },
+  himars: { hp: 220, speed: 0.13, range: 12.5, dmg: 68, rof: 44, cost: 1100, buildTicks: 85, trainsAt: "factory", domain: "land", requires: "radar" },
   railtank: { hp: 720, speed: 0.13, range: 7.5, dmg: 62, rof: 26, cost: 1650, buildTicks: 105, trainsAt: "factory", domain: "land", requires: "factory2", canHitAir: true },
-  supplytruck: { hp: 320, speed: 0.17, range: 0, dmg: 0, rof: 0, cost: 500, buildTicks: 50, trainsAt: "factory", domain: "land", requires: "refinery", capacity: 500 },
+  supplytruck: { hp: 320, speed: 0.17, range: 0, dmg: 0, rof: 0, cost: 420, buildTicks: 45, trainsAt: "factory", domain: "land", requires: "refinery", capacity: 500 },
   harvester: { hp: 620, speed: 0.11, range: 0, dmg: 0, rof: 0, cost: 1400, buildTicks: 100, trainsAt: "factory", domain: "land", requires: "refinery", capacity: 45 },
   // Retired legacy land units (hidden from modern UI roster)
   arty: { hp: 140, speed: 0.1, range: 9, dmg: 42, rof: 42, cost: 1100, buildTicks: 90, trainsAt: "factory", domain: "land", requires: "radar", retired: true },
   heavy: { hp: 560, speed: 0.12, range: 5, dmg: 36, rof: 24, cost: 1100, buildTicks: 95, trainsAt: "factory", domain: "land", requires: "factory2", retired: true },
   spider: { hp: 90, speed: 0.26, range: 1.4, dmg: 9, rof: 9, cost: 500, buildTicks: 45, trainsAt: "factory", domain: "land", requires: "factory2", retired: true },
-  // Modern Air Force & Drones
-  uav: { hp: 130, speed: 0.30, range: 6.5, dmg: 16, rof: 16, cost: 450, buildTicks: 45, trainsAt: "airfield", domain: "air", canHitAir: true, vision: 13 },
-  shahed: { hp: 95, speed: 0.28, range: 1.65, dmg: 230, rof: 10, cost: 320, buildTicks: 38, trainsAt: "airfield", domain: "air", kamikaze: true, vision: 9 },
-  ewdrone: { hp: 185, speed: 0.24, range: 0, dmg: 0, rof: 0, cost: 650, buildTicks: 55, trainsAt: "airfield", domain: "air", ewJamRadius: 8.5, vision: 12, requires: "radar" },
-  interceptor: { hp: 190, speed: 0.34, range: 6.5, dmg: 26, rof: 18, cost: 900, buildTicks: 65, trainsAt: "airfield", domain: "air", canHitAir: true },
-  chopper: { hp: 310, speed: 0.22, range: 6, dmg: 22, rof: 14, cost: 1100, buildTicks: 75, trainsAt: "airfield", domain: "air", canHitAir: true },
-  a10: { hp: 460, speed: 0.27, range: 6.8, dmg: 22, rof: 6, cost: 1250, buildTicks: 80, trainsAt: "airfield", domain: "air", canHitAir: true, requires: "radar" },
-  ac130: { hp: 980, speed: 0.14, range: 8.8, dmg: 74, rof: 20, cost: 2300, buildTicks: 115, trainsAt: "airfield", domain: "air", vision: 13, requires: "airfield2" },
-  stealthbomber: { hp: 480, speed: 0.23, range: 6.5, dmg: 125, rof: 48, cost: 2100, buildTicks: 115, trainsAt: "airfield", domain: "air", stealth: true, requires: "airfield2" },
-  hypersonic: { hp: 180, speed: 1.25, range: 2.2, dmg: 520, rof: 10, cost: 1200, buildTicks: 75, trainsAt: "airfield", domain: "air", kamikaze: true, vision: 10, requires: "airfield2" },
+  // Modern Air Force & Real-World Proportionate Drone Warfare (Anduril / Attritable Tech!)
+  uav: { hp: 130, speed: 0.30, range: 6.5, dmg: 18, rof: 16, cost: 550, buildTicks: 50, trainsAt: "airfield", domain: "air", canHitAir: true, vision: 13 },
+  shahed: { hp: 95, speed: 0.28, range: 1.65, dmg: 210, rof: 10, cost: 110, buildTicks: 24, trainsAt: "airfield", domain: "air", kamikaze: true, vision: 9 },
+  ewdrone: { hp: 185, speed: 0.24, range: 0, dmg: 0, rof: 0, cost: 280, buildTicks: 40, trainsAt: "airfield", domain: "air", ewJamRadius: 8.5, vision: 12, requires: "radar" },
+  interceptor: { hp: 190, speed: 0.34, range: 6.5, dmg: 26, rof: 18, cost: 750, buildTicks: 55, trainsAt: "airfield", domain: "air", canHitAir: true },
+  chopper: { hp: 310, speed: 0.22, range: 6, dmg: 22, rof: 14, cost: 1000, buildTicks: 70, trainsAt: "airfield", domain: "air", canHitAir: true },
+  a10: { hp: 460, speed: 0.27, range: 6.8, dmg: 22, rof: 6, cost: 950, buildTicks: 70, trainsAt: "airfield", domain: "air", canHitAir: true, requires: "radar" },
+  ac130: { hp: 980, speed: 0.14, range: 8.8, dmg: 74, rof: 20, cost: 2100, buildTicks: 110, trainsAt: "airfield", domain: "air", vision: 13, requires: "airfield2" },
+  stealthbomber: { hp: 480, speed: 0.23, range: 6.5, dmg: 125, rof: 48, cost: 2600, buildTicks: 120, trainsAt: "airfield", domain: "air", stealth: true, requires: "airfield2" },
+  hypersonic: { hp: 180, speed: 1.25, range: 2.2, dmg: 520, rof: 10, cost: 750, buildTicks: 55, trainsAt: "airfield", domain: "air", kamikaze: true, vision: 10, requires: "airfield2" },
   // Retired legacy air units (hidden from modern UI roster)
   bomber: { hp: 420, speed: 0.18, range: 5.5, dmg: 80, rof: 46, cost: 1600, buildTicks: 95, trainsAt: "airfield", domain: "air", requires: "techlab", retired: true },
   zeppelin: { hp: 1400, speed: 0.085, range: 3.6, dmg: 135, rof: 38, cost: 2200, buildTicks: 120, trainsAt: "airfield", domain: "air", requires: "techlab", retired: true },
-  // Modern Navy & Unmanned Drone Boats
-  usv: { hp: 115, speed: 0.30, range: 1.75, dmg: 280, rof: 10, cost: 350, buildTicks: 40, trainsAt: "shipyard", domain: "sea", kamikaze: true, stealth: true, vision: 9 },
-  gunboat: { hp: 240, speed: 0.24, range: 6.5, dmg: 16, rof: 14, cost: 600, buildTicks: 55, trainsAt: "shipyard", domain: "sea", canHitAir: true },
+  // Modern Navy & Unmanned Autonomous Vessels
+  usv: { hp: 115, speed: 0.30, range: 1.75, dmg: 260, rof: 10, cost: 190, buildTicks: 30, trainsAt: "shipyard", domain: "sea", kamikaze: true, stealth: true, vision: 9 },
+  gunboat: { hp: 240, speed: 0.24, range: 6.5, dmg: 16, rof: 14, cost: 550, buildTicks: 50, trainsAt: "shipyard", domain: "sea", canHitAir: true },
   destroyer: { hp: 580, speed: 0.14, range: 7.5, dmg: 32, rof: 22, cost: 1100, buildTicks: 80, trainsAt: "shipyard", domain: "sea", canHitAir: true },
-  sub: { hp: 460, speed: 0.15, range: 7, dmg: 52, rof: 30, cost: 1200, buildTicks: 85, trainsAt: "shipyard", domain: "sea", stealth: true, requires: "radar" },
+  sub: { hp: 460, speed: 0.15, range: 7, dmg: 52, rof: 30, cost: 850, buildTicks: 68, trainsAt: "shipyard", domain: "sea", stealth: true, requires: "radar" },
   dreadnought: { hp: 1150, speed: 0.09, range: 13, dmg: 92, rof: 46, cost: 2200, buildTicks: 115, trainsAt: "shipyard", domain: "sea", requires: "shipyard2" },
   carrier: { hp: 1350, speed: 0.10, range: 12, dmg: 64, rof: 26, cost: 2400, buildTicks: 125, trainsAt: "shipyard", domain: "sea", canHitAir: true, vision: 13, requires: "shipyard2" },
 };
@@ -350,21 +350,21 @@ export const TRAIN_ORDER: { unit: UnitKind; label: string; group: "land" | "air"
   { unit: "railtank", label: "Aegis Railgun MBT", group: "land" },
   { unit: "supplytruck", label: "Supply Convoy", group: "land" },
   { unit: "harvester", label: "Ore Harvester", group: "land" },
-  // Modern Air Force & Drone Warfare
-  { unit: "uav", label: "Reaper UAV", group: "air" },
+  // Modern Air Force & Autonomous Defense-Tech Drones
+  { unit: "uav", label: "Reaper UCAV", group: "air" },
   { unit: "shahed", label: "Delta Kamikaze", group: "air" },
-  { unit: "ewdrone", label: "EW Jammer Drone", group: "air" },
-  { unit: "interceptor", label: "Valkyrie Stealth Jet", group: "air" },
+  { unit: "ewdrone", label: "Pulsar EW Drone", group: "air" },
+  { unit: "interceptor", label: "Fury CCA Wingman", group: "air" },
   { unit: "chopper", label: "Hornet Gunship", group: "air" },
   { unit: "a10", label: "A-10 Warthog", group: "air" },
   { unit: "ac130", label: "AC-130 Gunship", group: "air" },
   { unit: "stealthbomber", label: "B-21 Stealth Bomber", group: "air" },
-  { unit: "hypersonic", label: "Mach-9 Kamikaze", group: "air" },
-  // Modern Navy & Unmanned Surface Vessels
+  { unit: "hypersonic", label: "Barracuda Mach-9", group: "air" },
+  // Modern Navy & Unmanned Autonomous Vessels
   { unit: "usv", label: "Sea-Baby USV Drone", group: "sea" },
   { unit: "gunboat", label: "Viper Hydrofoil", group: "sea" },
   { unit: "destroyer", label: "Aegis Destroyer", group: "sea" },
-  { unit: "sub", label: "Kraken Stealth Sub", group: "sea" },
+  { unit: "sub", label: "Dive-XL Stealth UUV", group: "sea" },
   { unit: "dreadnought", label: "Poseidon Cruiser", group: "sea" },
   { unit: "carrier", label: "Nimitz Drone Carrier", group: "sea" },
 ];
@@ -379,7 +379,7 @@ export const BUILDING_NAMES: Record<BuildingKind, string> = {
   supplyhub: "Forward Supply Hub",
   barracks: "Barracks",
   barracks2: "Barracks II",
-  radar: "Radar Uplink",
+  radar: "Lattice Sentry",
   factory: "War Factory",
   factory2: "War Factory II",
   airfield: "Air Command",
@@ -391,13 +391,13 @@ export const BUILDING_NAMES: Record<BuildingKind, string> = {
   purifier: "Ore Purifier",
   satlink: "Defense Satellite",
   superweapon: "Nuclear Silo",
-  // Defenses
+  // Cost-Efficient Defense-Tech Stack
   turret: "Vulcan Turret",
-  sam: "Patriot SAM",
+  sam: "Anvil Interceptor",
   arc: "Arc Spire",
-  irondome: "Iron Dome",
+  irondome: "Roadrunner Hive",
   lasertower: "Helios Laser",
-  thaad: "THAAD Defense",
+  thaad: "Lattice Aegis",
   // Resource landmarks
   derrick: "Oil Derrick",
   coalmine: "Coal Mine",

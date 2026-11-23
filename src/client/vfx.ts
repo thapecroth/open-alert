@@ -1920,7 +1920,7 @@ export class VfxSystem {
         }
 
         // Crisp floating "🛡 THAAD INTERCEPTED NUKE!" popup right at the sky-high intercept!
-        this.spawnPopup(tx, ty, "🛡 THAAD INTERCEPTED NUKE!", "#5cf4ff", 17.6);
+        this.spawnPopup(tx, ty, "🛡 LATTICE AEGIS INTERCEPTED NUKE!", "#5cf4ff", 17.6);
       }
     });
   }

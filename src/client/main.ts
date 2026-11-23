@@ -723,7 +723,7 @@ net.onMsg = (m: S2C) => {
           noteCombatPos(ev.tx, ev.ty, 7.0);
           audio.playNukeIntercept();
           audio.noteCombat(0.8);
-          hud.toast("🛡 THAAD INTERCEPTED NUCLEAR MISSILE!", ev.slot === mySlot || allies.has(ev.slot));
+          hud.toast("🛡 LATTICE AEGIS INTERCEPTED NUCLEAR MISSILE!", ev.slot === mySlot || allies.has(ev.slot));
           hud.ping(ev.tx, ev.ty);
           input.setLastAlert(ev.tx, ev.ty);
         } else if (ev.e === "intercept") {
