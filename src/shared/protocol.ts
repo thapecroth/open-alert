@@ -99,6 +99,8 @@ export interface EntSnap {
   mhp: number;
   d: number; // facing, radians * 10 quantized
   cargo?: number;
+  fl?: number; // fuel 0..100 (omitted when 100 or logistics off)
+  am?: number; // ammo 0..100 (omitted when 100 or logistics off)
   vet?: number; // 0..3 veterancy rank
   hold?: boolean; // unit holding position (fires in range, will not chase)
   sub?: boolean; // submarine currently submerged (stealth)

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
-import { MAP_W, MAP_H, TICK_MS, UNITS, EntKind, UnitKind, UnitDomain } from "../shared/gamedefs";
+import { TICK_MS, UNITS, EntKind, UnitKind, UnitDomain } from "../shared/gamedefs";
 import type { GameEvent } from "../shared/protocol";
 import { GameScene } from "./scene";
 import { Renderer } from "./render";
@@ -15,6 +15,8 @@ export interface FpvTelemetry {
   hp: number;
   mhp: number;
   vet: number;
+  fuel?: number;
+  ammo?: number;
   speed: number;
   altitude: number;
   headingDeg: number;
@@ -192,6 +194,20 @@ const UNIT_PROFILES: Record<UnitKind, UnitCameraProfile> = {
     recoilKickZ: 0.17,
     recoilPitch: 0.042,
     recoilShake: 0.34,
+  },
+  supplytruck: {
+    eyeY: 1.18,
+    fov: 70,
+    initPitch: -0.04,
+    minPitch: -0.48,
+    maxPitch: 0.56,
+    bobAmp: 0.013,
+    bobFreq: 11.5,
+    strafeMode: "steer",
+    turnRate: 1.95,
+    recoilKickZ: 0.025,
+    recoilPitch: 0.008,
+    recoilShake: 0.05,
   },
   harvester: {
     eyeY: 1.22,
@@ -388,6 +404,7 @@ interface ViewmodelRig {
   muzzleFlashes: THREE.Mesh[];
   spinners: { obj: THREE.Object3D; axis: "x" | "y" | "z"; speed: number }[];
   glowPulses: THREE.Mesh[];
+  supplyBar?: { mesh: THREE.Mesh; baseX: number; halfW: number };
   geometries: THREE.BufferGeometry[];
   uniqueMaterials: THREE.Material[];
 }
@@ -434,6 +451,7 @@ function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
   const muzzleFlashes: THREE.Mesh[] = [];
   const spinners: { obj: THREE.Object3D; axis: "x" | "y" | "z"; speed: number }[] = [];
   const glowPulses: THREE.Mesh[] = [];
+  let supplyBar: ViewmodelRig["supplyBar"];
 
   const trackGeo = <T extends THREE.BufferGeometry>(g: T): T => {
     geometries.push(g);
@@ -896,6 +914,59 @@ function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
     addPart(swayGroup, new THREE.TorusGeometry(0.36, 0.008, 6, 32, Math.PI * 0.55), cyanGlow, 0, 0.04, -0.46, 0, 0, Math.PI * 0.225);
     addPart(swayGroup, new THREE.TorusGeometry(0.36, 0.008, 6, 32, Math.PI * 0.45), cyanGlow, 0, -0.04, -0.46, 0, 0, Math.PI * 1.275);
     addMuzzleFlash(recoilGroup, 0, -0.18, -0.74, 1.1, 0x4ef6ff);
+  } else if (kind === "supplytruck") {
+    // Supply Convoy: sloped military logistics cab windshield pillars, live dashboard supply-level bar & wing side mirrors!
+    const oliveArmor = getChassisMat("#323d35", 0.46, 0.56);
+    // Sloped military cab windshield A-pillars (left & right) + inner faction stripes
+    addPart(swayGroup, new RoundedBoxGeometry(0.064, 0.62, 0.085, 2, 0.01), cockpitTrim, -0.5, 0.05, -0.45, -0.18, 0.22, -0.15);
+    addPart(swayGroup, new RoundedBoxGeometry(0.064, 0.62, 0.085, 2, 0.01), cockpitTrim, 0.5, 0.05, -0.45, -0.18, -0.22, 0.15);
+    addPart(swayGroup, new THREE.BoxGeometry(0.014, 0.34, 0.02), factionMat, -0.468, 0.04, -0.43, -0.18, 0.22, -0.15);
+    addPart(swayGroup, new THREE.BoxGeometry(0.014, 0.34, 0.02), factionMat, 0.468, 0.04, -0.43, -0.18, -0.22, 0.15);
+    // Heavy sloped upper cab brow & rain visor + slim top center mullion stub (keeps windshield panoramic!)
+    addPart(swayGroup, new RoundedBoxGeometry(1.06, 0.072, 0.14, 2, 0.012), oliveArmor, 0, 0.355, -0.45, 0.18, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.68, 0.024, 0.04, 1, 0.005), factionMat, 0, 0.325, -0.415, 0.18, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.024, 0.13, 0.045, 1, 0.004), darkMetal, 0, 0.29, -0.45, 0.12, 0, 0);
+    // Dual amber convoy roof clearance lights along upper brow corners
+    glowPulses.push(
+      addPart(swayGroup, new THREE.BoxGeometry(0.042, 0.014, 0.012), amberGlow, -0.37, 0.33, -0.4),
+      addPart(swayGroup, new THREE.BoxGeometry(0.042, 0.014, 0.012), amberGlow, 0.37, 0.33, -0.4),
+    );
+    // Left & right heavy-duty military side mirrors (twin tubular steel support arms + beveled housing + tinted mirror glass)
+    for (const sx of [-1, 1]) {
+      // Upper & lower steel mirror arm struts projecting out from outer A-pillars
+      addPart(swayGroup, new THREE.CylinderGeometry(0.006, 0.006, 0.1, 8), darkMetal, sx * 0.54, 0.11, -0.48, 0, 0, Math.PI / 2);
+      addPart(swayGroup, new THREE.CylinderGeometry(0.006, 0.006, 0.1, 8), darkMetal, sx * 0.54, -0.05, -0.48, 0, 0, Math.PI / 2);
+      // Rectangular armored side-mirror casing angled toward driver
+      addPart(swayGroup, new RoundedBoxGeometry(0.068, 0.19, 0.026, 2, 0.006), cockpitTrim, sx * 0.585, 0.03, -0.49, 0, -sx * 0.34, 0);
+      // Reflective tinted side-mirror glass face
+      addPart(swayGroup, new THREE.BoxGeometry(0.054, 0.165, 0.006), glassTint, sx * 0.578, 0.03, -0.476, 0, -sx * 0.34, 0);
+      // Side clearance amber marker pip on outer mirror edge
+      addPart(swayGroup, new THREE.BoxGeometry(0.01, 0.024, 0.012), amberGlow, sx * 0.618, 0.03, -0.495, 0, -sx * 0.34, 0);
+    }
+    // Lower armored logistics dashboard cowl + faction corner badges
+    addPart(swayGroup, new RoundedBoxGeometry(1.06, 0.11, 0.22, 2, 0.015), cockpitTrim, 0, -0.325, -0.46, -0.22, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.18, 0.022, 0.032, 1, 0.004), factionMat, -0.34, -0.278, -0.415, -0.22, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.18, 0.022, 0.032, 1, 0.004), factionMat, 0.34, -0.278, -0.415, -0.22, 0, 0);
+    // Heavy military steering wheel upper rim peeking cleanly at lower-left
+    addPart(swayGroup, new THREE.TorusGeometry(0.115, 0.014, 10, 24, Math.PI * 1.15), darkMetal, -0.23, -0.365, -0.39, 0.52, 0, -Math.PI * 0.075);
+    addPart(swayGroup, new THREE.CylinderGeometry(0.028, 0.032, 0.016, 12), gunMetal, -0.23, -0.365, -0.39, 0.52 + Math.PI / 2, 0, 0);
+    // Center illuminated logistics console with LIVE emerald-green dashboard supply-level bar!
+    addPart(swayGroup, new RoundedBoxGeometry(0.28, 0.056, 0.032, 2, 0.006), darkMetal, 0, -0.272, -0.415, -0.34, 0, 0);
+    // Recessed meter backing track
+    addPart(swayGroup, new THREE.BoxGeometry(0.21, 0.02, 0.006), cockpitTrim, 0, -0.266, -0.398, -0.34, 0, 0);
+    // Dynamic emerald supply-level bar (scaled horizontally by live truck cargo in updateViewmodel!)
+    const barW = 0.196;
+    const barMesh = addPart(swayGroup, new THREE.BoxGeometry(barW, 0.014, 0.007), greenGlow, 0, -0.266, -0.394, -0.34, 0, 0);
+    supplyBar = { mesh: barMesh, baseX: 0, halfW: barW * 0.5 };
+    // Flanking dashboard telemetry pips (fuel pressure cyan + convoy beacon amber)
+    glowPulses.push(
+      addPart(swayGroup, new THREE.BoxGeometry(0.055, 0.007, 0.006), cyanGlow, -0.068, -0.284, -0.394, -0.34, 0, 0),
+      addPart(swayGroup, new THREE.BoxGeometry(0.055, 0.007, 0.006), amberGlow, 0.068, -0.284, -0.394, -0.34, 0, 0),
+    );
+    // Sloped armored logistics hood nose & steel radiator grille peeking low ahead
+    addPart(swayGroup, new RoundedBoxGeometry(0.54, 0.06, 0.42, 2, 0.012), oliveArmor, 0, -0.365, -0.76, 0.06, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.32, 0.018, 0.34, 1, 0.004), gunMetal, 0, -0.332, -0.76, 0.06, 0, 0);
+    addPart(swayGroup, new THREE.BoxGeometry(0.14, 0.01, 0.025), greenGlow, 0, -0.335, -0.94, 0.06, 0, 0);
   } else if (kind === "harvester") {
     // Heavy industrial cab roll-cage frame + spinning ore-scoop prongs visible low ahead
     addPart(swayGroup, new RoundedBoxGeometry(0.068, 0.62, 0.075, 2, 0.01), cockpitTrim, -0.49, 0.04, -0.45, -0.12, 0.2, -0.14);
@@ -1245,6 +1316,7 @@ function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
     muzzleFlashes,
     spinners,
     glowPulses,
+    supplyBar,
     geometries,
     uniqueMaterials,
   };
@@ -1269,8 +1341,8 @@ export class FirstPersonController {
   private profile: UnitCameraProfile = UNIT_PROFILES.tank;
 
   // Predicted world position & damped camera orientation
-  private predX = MAP_W / 2;
-  private predY = MAP_H / 2;
+  private predX = 32;
+  private predY = 32;
   private curEyeY = 1.0;
   private targetYaw = 0;
   private targetPitch = 0;
@@ -1331,6 +1403,8 @@ export class FirstPersonController {
     this.net = net;
     this.getSlot = getSlot;
     this.isAlly = isAlly;
+    this.predX = gs.mapW / 2;
+    this.predY = gs.mapH / 2;
 
     this.boundKeyDown = (e) => this.onKeyDown(e);
     this.boundKeyUp = (e) => this.onKeyUp(e);
@@ -1582,7 +1656,9 @@ export class FirstPersonController {
       vy /= vLen;
     }
 
-    const maxTilesPerSec = def.speed * 1.15 * 10;
+    const baseMaxTilesPerSec = def.speed * 1.15 * 10;
+    const fuelMult = t.last.fl !== undefined && t.last.fl <= 0 ? 0.38 : 1;
+    const maxTilesPerSec = baseMaxTilesPerSec * fuelMult;
     const step = maxTilesPerSec * clampedDt;
     const prevX = this.predX;
     const prevY = this.predY;
@@ -1632,6 +1708,10 @@ export class FirstPersonController {
       }
     }
 
+    const { w: mapW, h: mapH } = this.getMapBounds();
+    this.predX = clamp(this.predX, 0.6, mapW - 0.6);
+    this.predY = clamp(this.predY, 0.6, mapH - 0.6);
+
     const actualDisp = Math.hypot(this.predX - prevX, this.predY - prevY);
     const instantSpeed = actualDisp / clampedDt;
     this.curSpeed += (instantSpeed - this.curSpeed) * (1 - Math.exp(-12 * clampedDt));
@@ -1641,7 +1721,7 @@ export class FirstPersonController {
     const targetEyeY = submerged && prof.subEyeY !== undefined ? prof.subEyeY : prof.eyeY;
     this.curEyeY += (targetEyeY - this.curEyeY) * (1 - Math.exp(-6 * clampedDt));
 
-    const moveRatio = clamp(this.curSpeed / Math.max(0.5, maxTilesPerSec), 0, 1);
+    const moveRatio = clamp(this.curSpeed / Math.max(0.5, baseMaxTilesPerSec), 0, 1);
     if (moveRatio > 0.05) {
       this.bobPhase += clampedDt * prof.bobFreq * (0.65 + moveRatio * 0.45);
     } else if (this.domain === "sea" || this.domain === "air") {
@@ -1673,7 +1753,11 @@ export class FirstPersonController {
     this.gs.camera.updateMatrixWorld();
 
     // 6. Animate camera-attached 3D weapon / cockpit viewmodel
-    this.updateViewmodel(clampedDt, moveRatio);
+    const supplyFrac =
+      this.kind === "supplytruck"
+        ? clamp((t.last.cargo ?? (UNITS.supplytruck.capacity ?? 500)) / Math.max(1, UNITS.supplytruck.capacity ?? 500), 0.04, 1)
+        : 1;
+    this.updateViewmodel(clampedDt, moveRatio, supplyFrac);
 
     // 7. Center-Screen 3D Crosshair Raycast for aiming & telemetry
     const aim = this.computeCrosshairAim(def);
@@ -1711,6 +1795,8 @@ export class FirstPersonController {
       hp: t.last.hp,
       mhp: t.last.mhp,
       vet: t.last.vet ?? 0,
+      fuel: t.last.fl,
+      ammo: t.last.am,
       speed: Number(this.curSpeed.toFixed(2)),
       altitude: this.domain === "air" ? Number((camY * 10).toFixed(0)) : 0,
       headingDeg,
@@ -1740,8 +1826,13 @@ export class FirstPersonController {
 
   // ---------- internal helpers ----------
 
+  private getMapBounds(): { w: number; h: number } {
+    return { w: this.gs.mapW, h: this.gs.mapH };
+  }
+
   private canOccupy(x: number, y: number, domain: UnitDomain): boolean {
-    if (x < 0.6 || x > MAP_W - 0.6 || y < 0.6 || y > MAP_H - 0.6) return false;
+    const { w: mapW, h: mapH } = this.getMapBounds();
+    if (x < 0.6 || x > mapW - 0.6 || y < 0.6 || y > mapH - 0.6) return false;
     if (domain === "air") return true;
     if (domain === "sea") return this.gs.isWater(x, y);
     return !this.gs.isCliff(x, y) && !this.gs.isWater(x, y);
@@ -1753,6 +1844,7 @@ export class FirstPersonController {
     aimDist: number;
     target: FpvTelemetry["target"];
   } {
+    const { w: mapW, h: mapH } = this.getMapBounds();
     this.raycaster.setFromCamera(CENTER_NDC, this.gs.camera);
     const visibleRoots = this.gs.pickables.filter(
       (r) => r.visible && r.userData?.entityId !== this.entId,
@@ -1787,8 +1879,8 @@ export class FirstPersonController {
       const inRange = def.range > 0 && canEngageDomain && dist <= def.range + 0.75;
 
       return {
-        aimX: clamp(hitT.last.x, 0, MAP_W),
-        aimY: clamp(hitT.last.y, 0, MAP_H),
+        aimX: clamp(hitT.last.x, 0, mapW),
+        aimY: clamp(hitT.last.y, 0, mapH),
         aimDist: dist,
         target: {
           id: foundId,
@@ -1805,10 +1897,10 @@ export class FirstPersonController {
     // No entity under reticle — intersect ground plane y = 0
     if (this.raycaster.ray.intersectPlane(GROUND_PLANE, this.groundHit)) {
       const dist = Math.hypot(this.groundHit.x - this.predX, this.groundHit.z - this.predY);
-      if (dist <= 80) {
+      if (dist <= Math.max(80, mapW, mapH)) {
         return {
-          aimX: clamp(this.groundHit.x, 0, MAP_W),
-          aimY: clamp(this.groundHit.z, 0, MAP_H),
+          aimX: clamp(this.groundHit.x, 0, mapW),
+          aimY: clamp(this.groundHit.z, 0, mapH),
           aimDist: dist,
           target: null,
         };
@@ -1818,14 +1910,14 @@ export class FirstPersonController {
     // Looking above horizon — project 24 tiles along renderYaw
     const fallbackDist = Math.max(12, def.range > 0 ? def.range : 16);
     return {
-      aimX: clamp(this.predX + Math.cos(this.renderYaw) * fallbackDist, 0, MAP_W),
-      aimY: clamp(this.predY + Math.sin(this.renderYaw) * fallbackDist, 0, MAP_H),
+      aimX: clamp(this.predX + Math.cos(this.renderYaw) * fallbackDist, 0, mapW),
+      aimY: clamp(this.predY + Math.sin(this.renderYaw) * fallbackDist, 0, mapH),
       aimDist: fallbackDist,
       target: null,
     };
   }
 
-  private updateViewmodel(dt: number, moveRatio: number): void {
+  private updateViewmodel(dt: number, moveRatio: number, supplyFrac = 1): void {
     const vm = this.viewmodel;
     if (!vm) return;
 
@@ -1876,6 +1968,13 @@ export class FirstPersonController {
     const pulseScale = 0.92 + Math.sin(this.elapsed * 5.2) * 0.08;
     for (const g of vm.glowPulses) {
       g.scale.setScalar(pulseScale);
+    }
+
+    // Live dashboard supply-level bar for Supply Convoy cab
+    if (vm.supplyBar) {
+      const f = clamp(supplyFrac, 0.04, 1);
+      vm.supplyBar.mesh.scale.x = f;
+      vm.supplyBar.mesh.position.x = vm.supplyBar.baseX - (1 - f) * vm.supplyBar.halfW;
     }
   }
 

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { MAP_W, MAP_H, SPAWNS, MapId, getMapLayout } from "../shared/gamedefs";
+import { MapId, getMapLayout, getSpawns } from "../shared/gamedefs";
 
 // Deterministic PRNG so procedural textures are consistent across frames and clients
 function mulberry32(seed: number) {
@@ -885,6 +885,57 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
       capMetal: 0.86,
       accent: 0x28ecff,
     },
+    europa: {
+      // Continental European steppe/highlands: rugged slate-granite mountain ridges & rich olive-emerald conifers
+      wall: 0x494f54,
+      cap: 0x6c7566,
+      boulder: 0x575d60,
+      foliage: 0x265c32,
+      trunk: 0x4a3524,
+      wallRough: 0.84,
+      capRough: 0.82,
+      wallMetal: 0.08,
+    },
+    pacific_theatre: {
+      // Coral Sea: dark volcanic basalt atoll crags, vivid tropical emerald palms & turquoise coral sea
+      wall: 0x2d3238,
+      cap: 0x46584a,
+      boulder: 0x3c4347,
+      foliage: 0x249c42,
+      trunk: 0x6b4c30,
+      wallRough: 0.84,
+      capRough: 0.78,
+      wallMetal: 0.08,
+      accent: 0x38ba54,
+      water: 0x14b4c8,
+    },
+    arctic_front: {
+      // Polar War: ice-blue glacial ridges, snow-frosted caps & icy steel-blue polar ocean
+      wall: 0x5786ad,
+      cap: 0xdceefa,
+      boulder: 0x7ca2c0,
+      foliage: 0x204542,
+      trunk: 0x3b2f28,
+      wallRough: 0.4,
+      capRough: 0.48,
+      wallMetal: 0.18,
+      capMetal: 0.1,
+      accent: 0xeaf6ff,
+      water: 0x16547c,
+    },
+    megacontinent: {
+      // Eurasia Grand Theater: alpine granite peaks, snow-dusted crests, steppe pines & deep azure sea strait
+      wall: 0x4a4f58,
+      cap: 0x9aa4a8,
+      boulder: 0x5b6066,
+      foliage: 0x285834,
+      trunk: 0x4c3726,
+      wallRough: 0.78,
+      capRough: 0.72,
+      wallMetal: 0.1,
+      accent: 0xdbe6ee,
+      water: 0x125e94,
+    },
   };
   const p = palette[mapId] ?? palette.crossroads;
 
@@ -909,6 +960,7 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
   const isGlowingVolcano = mapId === "volcano";
   const isGlowingCyber = mapId === "cybergrid";
   const isAtlantis = mapId === "atlantis";
+  const isArctic = mapId === "tundra" || mapId === "arctic_front";
   const isMetallicBiome = mapId === "cybergrid" || mapId === "oilrig";
 
   const mats: CliffBiomeMats = {
@@ -919,7 +971,7 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
       roughnessMap: rockRoughTex!,
       roughness: p.wallRough ?? 0.9,
       metalness: p.wallMetal ?? 0.06,
-      envMapIntensity: mapId === "tundra" ? 0.95 : isMetallicBiome ? 1.25 : isAtlantis ? 0.9 : 0.6,
+      envMapIntensity: isArctic ? 0.95 : isMetallicBiome ? 1.25 : isAtlantis ? 0.9 : 0.6,
     }),
     cap: new THREE.MeshStandardMaterial({
       color: p.cap,
@@ -928,7 +980,7 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
       roughnessMap: rockRoughTex!,
       roughness: p.capRough ?? 0.86,
       metalness: p.capMetal ?? 0.05,
-      envMapIntensity: mapId === "tundra" ? 0.9 : isMetallicBiome ? 1.2 : isAtlantis ? 0.95 : 0.55,
+      envMapIntensity: isArctic ? 0.9 : isMetallicBiome ? 1.2 : isAtlantis ? 0.95 : 0.55,
     }),
     boulder: new THREE.MeshStandardMaterial({
       color: p.boulder,
@@ -956,8 +1008,8 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
       p.accent !== undefined
         ? new THREE.MeshStandardMaterial({
             color: p.accent,
-            roughness: mapId === "tundra" ? 0.38 : isAtlantis ? 0.28 : isGlowingVolcano || isGlowingCyber ? 0.22 : 0.78,
-            metalness: mapId === "tundra" ? 0.16 : isAtlantis ? 0.58 : isGlowingCyber ? 0.45 : 0.08,
+            roughness: isArctic ? 0.38 : isAtlantis ? 0.28 : isGlowingVolcano || isGlowingCyber ? 0.22 : 0.78,
+            metalness: isArctic ? 0.16 : isAtlantis ? 0.58 : isGlowingCyber ? 0.45 : 0.08,
             emissive: isGlowingVolcano
               ? new THREE.Color(0xff4a08)
               : isGlowingCyber
@@ -965,7 +1017,7 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
                 : new THREE.Color(0x000000),
             emissiveIntensity: isGlowingVolcano ? 1.55 : isGlowingCyber ? 1.45 : 0,
             flatShading: true,
-            envMapIntensity: mapId === "tundra" || isAtlantis || isGlowingCyber ? 1.2 : 0.6,
+            envMapIntensity: isArctic || isAtlantis || isGlowingCyber ? 1.2 : 0.6,
           })
         : undefined,
     water: cliffWaterMat,
@@ -1087,6 +1139,10 @@ export function createOceanWaterMaterial(mapId: MapId): THREE.MeshStandardMateri
     shipwreck: { color: 0x103f52, emissive: 0x061d28, ei: 0.2, normalScale: 0.78, opacity: 0.88 },
     volcano: { color: 0x1a3e50, emissive: 0x102834, ei: 0.24, normalScale: 0.68, opacity: 0.86 },
     oilrig: { color: 0x0f4478, emissive: 0x061f42, ei: 0.22, normalScale: 0.7, opacity: 0.87 },
+    europa: { color: 0x186c88, emissive: 0x083448, ei: 0.24, normalScale: 0.62, opacity: 0.85 },
+    pacific_theatre: { color: 0x14b6cc, emissive: 0x0a6476, ei: 0.3, normalScale: 0.56, opacity: 0.84 },
+    arctic_front: { color: 0x1a567c, emissive: 0x0a2c44, ei: 0.24, normalScale: 0.68, opacity: 0.87 },
+    megacontinent: { color: 0x125e94, emissive: 0x082e52, ei: 0.26, normalScale: 0.64, opacity: 0.86 },
   };
   const c = cfg[mapId] ?? cfg.islands;
 
@@ -1340,6 +1396,67 @@ const BIOMES: Record<MapId, BiomePalette> = {
     talus: [24, 60, 82],
     trackStroke: "rgba(38, 214, 248, 0.22)",
   },
+  europa: {
+    // Continental European steppe & highlands: rich olive-emerald fields, slate-granite ridges & golden-hour roads
+    seedA: 2903,
+    seedB: 8147,
+    base: [68, 92, 54],
+    altDelta: [-12, 20, -6],
+    noiseAmp: [20, 22, 14],
+    road: [126, 114, 88],
+    spawn: [94, 100, 88],
+    cliff: [58, 62, 66],
+    talus: [76, 78, 70],
+    trackStroke: "rgba(40, 38, 26, 0.16)",
+  },
+  pacific_theatre: {
+    // Coral Sea: vivid tropical turquoise ocean, golden sandy shores & lush volcanic emerald atolls
+    seedA: 9623,
+    seedB: 4871,
+    base: [60, 126, 62],
+    altDelta: [22, 24, -6],
+    noiseAmp: [16, 22, 14],
+    road: [184, 160, 112],
+    spawn: [124, 136, 106],
+    cliff: [44, 48, 54],
+    talus: [78, 84, 68],
+    trackStroke: "rgba(48, 44, 28, 0.15)",
+    beach: [228, 198, 132],
+    seabedShallow: [36, 188, 194],
+    seabedDeep: [10, 74, 112],
+  },
+  arctic_front: {
+    // Polar War: crisp blue-white arctic snowfields, icy steel-blue polar ocean & glacial ridges
+    seedA: 4937,
+    seedB: 8513,
+    base: [196, 212, 228],
+    altDelta: [-20, -10, 10],
+    noiseAmp: [16, 18, 16],
+    road: [144, 166, 188],
+    spawn: [156, 174, 192],
+    cliff: [88, 130, 168],
+    talus: [132, 162, 188],
+    trackStroke: "rgba(56, 82, 110, 0.2)",
+    beach: [176, 198, 216],
+    seabedShallow: [34, 96, 136],
+    seabedDeep: [10, 36, 64],
+  },
+  megacontinent: {
+    // Eurasia Grand Theater: sweeping warm steppe & alpine peaks split by a deep azure sea strait
+    seedA: 7529,
+    seedB: 3187,
+    base: [96, 94, 62],
+    altDelta: [-16, 18, -8],
+    noiseAmp: [24, 22, 14],
+    road: [134, 118, 88],
+    spawn: [104, 104, 94],
+    cliff: [62, 66, 72],
+    talus: [84, 82, 74],
+    trackStroke: "rgba(44, 38, 26, 0.16)",
+    beach: [192, 172, 126],
+    seabedShallow: [26, 110, 152],
+    seabedDeep: [9, 40, 82],
+  },
 };
 
 export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
@@ -1356,9 +1473,12 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
   const noiseC = valueNoise2D(bio.seedA ^ (bio.seedB + 193));
   const rand = mulberry32(5519 + bio.seedA);
   const layout = getMapLayout(mapId);
+  const W = layout.w;
+  const H = layout.h;
+  const spawns = getSpawns(W, H);
 
   const isSandy = mapId === "oasis" || mapId === "canyon" || mapId === "fortress";
-  const isTundra = mapId === "tundra";
+  const isTundra = mapId === "tundra" || mapId === "arctic_front";
   const isAtlantis = mapId === "atlantis";
   const isVolcano = mapId === "volcano";
   const isOilrig = mapId === "oilrig";
@@ -1369,34 +1489,37 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
     mapId === "jungle" ||
     mapId === "archipelago" ||
     mapId === "coastline" ||
-    mapId === "islands";
+    mapId === "islands" ||
+    mapId === "europa" ||
+    mapId === "pacific_theatre" ||
+    mapId === "megacontinent";
 
   // Precompute tile-level cliff and navigable water masks
-  const cliffGrid = new Uint8Array(MAP_W * MAP_H);
+  const cliffGrid = new Uint8Array(W * H);
   for (const [cx, cy] of layout.cliffs) {
-    if (cx >= 0 && cy >= 0 && cx < MAP_W && cy < MAP_H) cliffGrid[cy * MAP_W + cx] = 1;
+    if (cx >= 0 && cy >= 0 && cx < W && cy < H) cliffGrid[cy * W + cx] = 1;
   }
 
-  const waterGrid = new Uint8Array(MAP_W * MAP_H);
+  const waterGrid = new Uint8Array(W * H);
   const hasWater = layout.water.length > 0;
   for (const [wx0, wy0] of layout.water) {
-    if (wx0 >= 0 && wy0 >= 0 && wx0 < MAP_W && wy0 < MAP_H) waterGrid[wy0 * MAP_W + wx0] = 1;
+    if (wx0 >= 0 && wy0 >= 0 && wx0 < W && wy0 < H) waterGrid[wy0 * W + wx0] = 1;
   }
 
   const cliffNear = (wx: number, wy: number): { inside: boolean; dist: number } => {
     const tx = Math.floor(wx);
     const ty = Math.floor(wy);
-    if (tx >= 0 && ty >= 0 && tx < MAP_W && ty < MAP_H && cliffGrid[ty * MAP_W + tx]) {
+    if (tx >= 0 && ty >= 0 && tx < W && ty < H && cliffGrid[ty * W + tx]) {
       return { inside: true, dist: 0 };
     }
     let minD = 99;
     const x0 = Math.max(0, tx - 2);
-    const x1 = Math.min(MAP_W - 1, tx + 2);
+    const x1 = Math.min(W - 1, tx + 2);
     const y0 = Math.max(0, ty - 2);
-    const y1 = Math.min(MAP_H - 1, ty + 2);
+    const y1 = Math.min(H - 1, ty + 2);
     for (let y = y0; y <= y1; y++) {
       for (let x = x0; x <= x1; x++) {
-        if (!cliffGrid[y * MAP_W + x]) continue;
+        if (!cliffGrid[y * W + x]) continue;
         const dx = Math.max(x - wx, 0, wx - (x + 1));
         const dy = Math.max(y - wy, 0, wy - (y + 1));
         const dd = Math.hypot(dx, dy);
@@ -1410,17 +1533,17 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
     if (!hasWater) return { inside: false, dist: 99, landDist: 0 };
     const tx = Math.floor(wx);
     const ty = Math.floor(wy);
-    const inW = tx >= 0 && ty >= 0 && tx < MAP_W && ty < MAP_H && waterGrid[ty * MAP_W + tx] === 1;
+    const inW = tx >= 0 && ty >= 0 && tx < W && ty < H && waterGrid[ty * W + tx] === 1;
     const rad = 3;
     const x0 = Math.max(0, tx - rad);
-    const x1 = Math.min(MAP_W - 1, tx + rad);
+    const x1 = Math.min(W - 1, tx + rad);
     const y0 = Math.max(0, ty - rad);
-    const y1 = Math.min(MAP_H - 1, ty + rad);
+    const y1 = Math.min(H - 1, ty + rad);
     let minD = 99;
     if (inW) {
       for (let y = y0; y <= y1; y++) {
         for (let x = x0; x <= x1; x++) {
-          if (waterGrid[y * MAP_W + x]) continue;
+          if (waterGrid[y * W + x]) continue;
           const dx = Math.max(x - wx, 0, wx - (x + 1));
           const dy = Math.max(y - wy, 0, wy - (y + 1));
           const dd = Math.hypot(dx, dy);
@@ -1431,7 +1554,7 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
     }
     for (let y = y0; y <= y1; y++) {
       for (let x = x0; x <= x1; x++) {
-        if (!waterGrid[y * MAP_W + x]) continue;
+        if (!waterGrid[y * W + x]) continue;
         const dx = Math.max(x - wx, 0, wx - (x + 1));
         const dy = Math.max(y - wy, 0, wy - (y + 1));
         const dd = Math.hypot(dx, dy);
@@ -1445,13 +1568,13 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
   const seaShallow = bio.seabedShallow ?? [28, 114, 134];
   const seaDeep = bio.seabedDeep ?? [12, 48, 72];
   const beachSpan =
-    mapId === "archipelago"
+    mapId === "archipelago" || mapId === "pacific_theatre"
       ? 2.45
       : isAtlantis
         ? 2.2
         : isOilrig
           ? 0.9
-          : mapId === "coastline" || isShipwreck
+          : mapId === "coastline" || isShipwreck || mapId === "arctic_front"
             ? 1.85
             : 2.05;
 
@@ -1461,12 +1584,13 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
   const b = bimg.data;
   const heightField = new Float32Array(S * S);
 
-  // Compute natural worn convoy road factor between corners and center
+  // Compute natural worn convoy road factor between perimeter spawns and theater center
+  const ringRadius = Math.min(W, H) * 0.28;
   const roadDist = (wx: number, wy: number) => {
-    const cx = MAP_W / 2,
-      cy = MAP_H / 2;
+    const cx = W / 2,
+      cy = H / 2;
     let best = 999;
-    for (const s of SPAWNS) {
+    for (const s of spawns) {
       const sx = s.x + 1.5,
         sy = s.y + 1.5;
       const dx = cx - sx,
@@ -1478,14 +1602,14 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
       const dd = Math.hypot(wx - px, wy - py);
       if (dd < best) best = dd;
     }
-    const ringDist = Math.abs(Math.hypot(wx - cx, wy - cy) - 18);
+    const ringDist = Math.abs(Math.hypot(wx - cx, wy - cy) - ringRadius);
     return Math.min(best, ringDist * 1.15);
   };
 
   for (let py = 0; py < S; py++) {
-    const wy = (py / S) * MAP_H;
+    const wy = (py / S) * H;
     for (let px = 0; px < S; px++) {
-      const wx = (px / S) * MAP_W;
+      const wx = (px / S) * W;
       const n1 = noiseA(wx * 0.14, wy * 0.14);
       const n2 = noiseB(wx * 0.42, wy * 0.42);
       const n3 = noiseA(wx * 0.14 + 0.18, wy * 0.14 + 0.18);
@@ -1555,7 +1679,7 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
         g -= (1 - ridge) * 9;
         bl -= (1 - ridge) * 8;
         bumpExtra += ridge * 24 - 12;
-        if (crackNoise < 0.022 && Math.hypot(wx - MAP_W / 2, wy - MAP_H / 2) < 22) {
+        if (crackNoise < 0.022 && Math.hypot(wx - W / 2, wy - H / 2) < 22) {
           const glow = 1 - crackNoise / 0.022;
           r = r * (1 - glow) + 245 * glow;
           g = g * (1 - glow) + 112 * glow;
@@ -1646,7 +1770,7 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
       }
 
       // Flattened compacted gravel clearings at each spawn base
-      for (const sp of SPAWNS) {
+      for (const sp of spawns) {
         const sd = Math.hypot(wx - (sp.x + 1.5), wy - (sp.y + 1.5));
         if (sd < 7.5) {
           const k = Math.max(0, 1 - sd / 7.5);
@@ -1766,7 +1890,7 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
       }
 
       // Subtle tactical vignette near map border
-      const edge = Math.min(wx, wy, MAP_W - wx, MAP_H - wy);
+      const edge = Math.min(wx, wy, W - wx, H - wy);
       const edgeDark = edge < 2.5 ? 0.72 + (edge / 2.5) * 0.28 : 1;
       const maxC = isVolcano || isCyber ? 250 : isTundra || isAtlantis ? 238 : 228;
 
@@ -1791,9 +1915,9 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
   for (let i = 0; i < pebbleCount; i++) {
     const px = Math.floor(rand() * S);
     const py = Math.floor(rand() * S);
-    const tx = Math.min(MAP_W - 1, Math.floor((px / S) * MAP_W));
-    const ty = Math.min(MAP_H - 1, Math.floor((py / S) * MAP_H));
-    if (waterGrid[ty * MAP_W + tx]) continue;
+    const tx = Math.min(W - 1, Math.floor((px / S) * W));
+    const ty = Math.min(H - 1, Math.floor((py / S) * H));
+    if (waterGrid[ty * W + tx]) continue;
 
     const rad = 1.0 + rand() * 2.1;
     const bright = rand() > 0.45;
@@ -1842,33 +1966,33 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
   dctx.strokeStyle = bio.trackStroke;
   dctx.lineWidth = 3;
   dctx.setLineDash([12, 10]);
-  for (const sp of SPAWNS) {
+  for (const sp of spawns) {
     const sx = sp.x + 1.5;
     const sy = sp.y + 1.5;
-    const ex = MAP_W / 2;
-    const ey = MAP_H / 2;
+    const ex = W / 2;
+    const ey = H / 2;
     if (!hasWater) {
       dctx.beginPath();
-      dctx.moveTo((sx / MAP_W) * S, (sy / MAP_H) * S);
-      dctx.lineTo((ex / MAP_W) * S, (ey / MAP_H) * S);
+      dctx.moveTo((sx / W) * S, (sy / H) * S);
+      dctx.lineTo((ex / W) * S, (ey / H) * S);
       dctx.stroke();
     } else {
-      const steps = 40;
+      const steps = Math.max(40, Math.round(Math.max(W, H) * 0.7));
       let drawing = false;
       dctx.beginPath();
       for (let i = 0; i <= steps; i++) {
         const u = i / steps;
         const wx = sx + (ex - sx) * u;
         const wy = sy + (ey - sy) * u;
-        const tx = Math.max(0, Math.min(MAP_W - 1, Math.floor(wx)));
-        const ty = Math.max(0, Math.min(MAP_H - 1, Math.floor(wy)));
-        const dry = !waterGrid[ty * MAP_W + tx];
+        const tx = Math.max(0, Math.min(W - 1, Math.floor(wx)));
+        const ty = Math.max(0, Math.min(H - 1, Math.floor(wy)));
+        const dry = !waterGrid[ty * W + tx];
         if (dry) {
           if (!drawing) {
-            dctx.moveTo((wx / MAP_W) * S, (wy / MAP_H) * S);
+            dctx.moveTo((wx / W) * S, (wy / H) * S);
             drawing = true;
           } else {
-            dctx.lineTo((wx / MAP_W) * S, (wy / MAP_H) * S);
+            dctx.lineTo((wx / W) * S, (wy / H) * S);
           }
         } else {
           drawing = false;

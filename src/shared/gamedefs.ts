@@ -1,10 +1,10 @@
 // Shared game constants & definitions (must stay lib-agnostic: no DOM, no workerd types)
 
-export const MAP_W = 64;
-export const MAP_H = 64;
+export const MAP_W = 64; // default standard map width (individual maps may be 64, 96, or 128)
+export const MAP_H = 64; // default standard map height
 export const TICK_MS = 100; // sim runs at 10 Hz
 export const SNAP_EVERY = 2; // broadcast every 2 ticks => 5 Hz
-export const MAX_PLAYERS = 4;
+export const MAX_PLAYERS = 8;
 export const START_CREDITS = 5000;
 export const ORE_VALUE = 25; // credits per unit of cargo
 
@@ -14,6 +14,7 @@ export type BuildingKind =
   | "coalplant"
   | "fusion"
   | "refinery"
+  | "supplyhub"
   | "barracks"
   | "barracks2"
   | "radar"
@@ -52,6 +53,7 @@ export type UnitKind =
   | "spider"
   | "himars"
   | "railtank"
+  | "supplytruck"
   | "harvester"
   // Air Force
   | "uav"
@@ -87,7 +89,12 @@ export type MapId =
   | "shipwreck"
   | "volcano"
   | "oilrig"
-  | "cybergrid";
+  | "cybergrid"
+  // Huge 8-Player Grand Theater Maps (96x96 & 128x128)
+  | "europa"
+  | "pacific_theatre"
+  | "megacontinent"
+  | "arctic_front";
 
 export type ArtifactKind =
   | "shipwreck"
@@ -119,6 +126,7 @@ export interface GameConfig {
   crates: boolean;
   derricks: boolean;
   fog: boolean;
+  logistics?: boolean; // real-world Fuel & Ammo logistics (default true)
 }
 
 export const DEFAULT_CONFIG: GameConfig = {
@@ -128,6 +136,7 @@ export const DEFAULT_CONFIG: GameConfig = {
   crates: true,
   derricks: true,
   fog: true,
+  logistics: true,
 };
 
 export const BOT_PROFILES: { id: BotProfile; label: string; desc: string }[] = [
@@ -154,6 +163,7 @@ export interface BuildingDef {
   noBuild?: true; // exists in the world but can't be queued (upgrade/neutral structures)
   limit?: number; // max count per player
   waterOnly?: true; // must be placed on water tiles (Naval Shipyard)
+  forwardRange?: number; // extended build distance for Forward Supply Hubs
 }
 
 export const BUILDINGS: Record<BuildingKind, BuildingDef> = {
@@ -163,6 +173,7 @@ export const BUILDINGS: Record<BuildingKind, BuildingDef> = {
   coalplant: { w: 2, h: 2, cost: 480, hp: 520, power: 165, buildTicks: 65, requires: ["refinery"] },
   fusion: { w: 3, h: 2, cost: 1350, hp: 850, power: 380, buildTicks: 105, requires: ["techlab"] },
   refinery: { w: 3, h: 2, cost: 600, hp: 700, power: -35, buildTicks: 80 },
+  supplyhub: { w: 2, h: 2, cost: 650, hp: 580, power: -15, buildTicks: 60, requires: ["refinery"], forwardRange: 26 },
   barracks: { w: 2, h: 2, cost: 500, hp: 500, power: -20, buildTicks: 70 },
   barracks2: { w: 2, h: 2, cost: 0, hp: 750, power: -30, buildTicks: 0, noBuild: true },
   radar: { w: 2, h: 2, cost: 700, hp: 500, power: -45, buildTicks: 80, requires: ["barracks"] },
@@ -198,6 +209,7 @@ export const BUILD_ORDER: BuildingKind[] = [
   "power",
   "coalplant",
   "refinery",
+  "supplyhub",
   "barracks",
   "radar",
   "factory",
@@ -289,6 +301,7 @@ export const UNITS: Record<UnitKind, UnitDef> = {
   spider: { hp: 90, speed: 0.26, range: 1.4, dmg: 9, rof: 9, cost: 500, buildTicks: 45, trainsAt: "factory", domain: "land", requires: "factory2" },
   himars: { hp: 220, speed: 0.13, range: 12.5, dmg: 68, rof: 44, cost: 1650, buildTicks: 105, trainsAt: "factory", domain: "land", requires: "satlink" },
   railtank: { hp: 720, speed: 0.13, range: 7.5, dmg: 62, rof: 26, cost: 1750, buildTicks: 110, trainsAt: "factory", domain: "land", requires: "satlink", canHitAir: true },
+  supplytruck: { hp: 320, speed: 0.17, range: 0, dmg: 0, rof: 0, cost: 500, buildTicks: 50, trainsAt: "factory", domain: "land", requires: "refinery", capacity: 500 },
   harvester: { hp: 620, speed: 0.11, range: 0, dmg: 0, rof: 0, cost: 1400, buildTicks: 100, trainsAt: "factory", domain: "land", requires: "refinery", capacity: 45 },
   // Air Force
   uav: { hp: 130, speed: 0.30, range: 6.5, dmg: 16, rof: 16, cost: 450, buildTicks: 45, trainsAt: "airfield", domain: "air", canHitAir: true, vision: 13 },
@@ -316,6 +329,7 @@ export const TRAIN_ORDER: { unit: UnitKind; label: string; group: "land" | "air"
   { unit: "spider", label: "Spider Drone", group: "land" },
   { unit: "himars", label: "HIMARS Launcher", group: "land" },
   { unit: "railtank", label: "Aegis Railgun", group: "land" },
+  { unit: "supplytruck", label: "Supply Convoy", group: "land" },
   { unit: "harvester", label: "Ore Harvester", group: "land" },
   // Air Force
   { unit: "uav", label: "Reaper Drone", group: "air" },
@@ -340,6 +354,7 @@ export const BUILDING_NAMES: Record<BuildingKind, string> = {
   coalplant: "Thermal Coal Plant",
   fusion: "Fusion Reactor",
   refinery: "Ore Refinery",
+  supplyhub: "Forward Supply Hub",
   barracks: "Barracks",
   barracks2: "Barracks II",
   radar: "Radar Uplink",
@@ -374,6 +389,9 @@ export const CAPTURE_RANGE = 1.9; // engineer must be this close to capture
 export const SHIPYARD_BUILD_DIST = 13; // max gap from own base to place Naval Shipyard on water
 export const IRONDOME_RADIUS = 9.5; // active projectile interception radius
 export const IRONDOME_COOLDOWN = 22; // ticks between missile/shell intercepts per Iron Dome
+export const SUPPLY_HUB_RADIUS = 12; // Forward Supply Hub fuel/ammo/repair aura radius
+export const SUPPLY_TRUCK_RADIUS = 5.5; // Mobile Logistics Supply Truck aura radius
+export const BASE_SUPPLY_RADIUS = 8.5; // Base buildings (conyard/refinery/depot/airfield/shipyard/carrier) resupply radius
 
 // Veterancy (0=Rookie, 1=Veteran ★, 2=Elite ★★, 3=Heroic ★★★)
 export const VET_XP = [0, 260, 750, 1600] as const;
@@ -418,37 +436,73 @@ export const ORE_CELL_MAX = 180; // 3x deeper ore cells (survives epic late-game
 export const ORE_SPREAD_CHANCE = 0.08; // healthy regrowth around active fields
 export const AGGRO_RANGE = 5; // idle units fire at enemies within this radius (no pursuit)
 
-export const PLAYER_COLORS = ["#e03030", "#3390ff", "#f0c020", "#40c060"];
-export const PLAYER_COLOR_NAMES = ["Red", "Blue", "Gold", "Green"];
-
-// Corner spawn positions (top-left tile of the conyard footprint)
-export const SPAWNS: { x: number; y: number }[] = [
-  { x: 5, y: 5 },
-  { x: MAP_W - 8, y: MAP_H - 8 },
-  { x: MAP_W - 8, y: 5 },
-  { x: 5, y: MAP_H - 8 },
+export const PLAYER_COLORS = [
+  "#e03030", // 0 Red
+  "#3390ff", // 1 Blue
+  "#f0c020", // 2 Gold
+  "#40c060", // 3 Green
+  "#b84dff", // 4 Violet
+  "#ff7a20", // 5 Orange
+  "#22d4d4", // 6 Cyan
+  "#ff4da6", // 7 Crimson
 ];
+export const PLAYER_COLOR_NAMES = ["Red", "Blue", "Gold", "Green", "Violet", "Orange", "Cyan", "Crimson"];
 
-// ---------- Deterministic Handcrafted Maps (15 Biomes & Creative Ocean/Artifact Theaters) ----------
-export const MAP_LIST: { id: MapId; name: string; biome: string; naval?: boolean; desc: string }[] = [
-  { id: "crossroads", name: "Twin Crossroads", biome: "Steppe", desc: "Balanced flank mesas, twin Oil Derricks & Coal Mines" },
-  { id: "canyon", name: "Iron Canyon", biome: "Canyon", desc: "Twin sandstone canyon walls channeling fights across 3 lanes" },
-  { id: "basin", name: "Shattered Basin", biome: "Alpine", desc: "Open volcanic ore basin ringed by 4 captureable Oil Derricks & Coal" },
-  { id: "tundra", name: "Frostbite Pass", biome: "Arctic", desc: "Frozen glacial divide with wide north/south bypasses & rich center ice field" },
-  { id: "fortress", name: "Citadel Bastion", biome: "Desert", desc: "Walled central citadel with 4 gates guarding a mega ore cache" },
-  { id: "jungle", name: "Emerald Valley", biome: "Jungle", desc: "Diagonal ridge corridors built for ambushes & flanking raids" },
-  { id: "islands", name: "Bridgehead Crossing", biome: "Riverland", naval: true, desc: "Navigable river channels, lighthouses & bridges — Land, Air & Sea" },
-  { id: "oasis", name: "Scorched Oasis", biome: "Sahara", desc: "Golden dune ring with fast open flank tank lanes & twin oasis passes" },
-  { id: "archipelago", name: "Pacific Atoll", biome: "Ocean", naval: true, desc: "4 corner islands & volcanic atoll with sea-stacks & blinking buoys" },
-  { id: "coastline", name: "Storm Coast", biome: "Coastal", naval: true, desc: "Stormy North Sea straits with coastal lighthouses & dreadnought lanes" },
-  { id: "atlantis", name: "Sunken Atlantis", biome: "Mythic Sea", naval: true, desc: "Ancient submerged crystal obelisks, glowing sea-gates & golden causeways" },
-  { id: "shipwreck", name: "Titan Graveyard", biome: "Abyssal", naval: true, desc: "Colossal sunken dreadnought wrecks, reefs & salvage ore shoals" },
-  { id: "volcano", name: "Caldera Forge", biome: "Volcanic", naval: true, desc: "Steaming coastal sea ringing a glowing molten caldera & obsidian bridges" },
-  { id: "oilrig", name: "Offshore Megarig", biome: "Deep Sea", naval: true, desc: "Open-ocean platform bridges converging on a giant central oil megastructure" },
-  { id: "cybergrid", name: "Neon Megastructure", biome: "Orbital", desc: "High-tech titanium battle deck with floating crystal monoliths & energy trenches" },
+// Dynamic 8-player perimeter spawns for any map dimensions (slots 0..3 stay exact corners!)
+export function getSpawns(w = MAP_W, h = MAP_H): { x: number; y: number }[] {
+  const mx = Math.floor(w / 2) - 1;
+  const my = Math.floor(h / 2) - 1;
+  return [
+    { x: 5, y: 5 }, // 0 NW
+    { x: w - 8, y: h - 8 }, // 1 SE
+    { x: w - 8, y: 5 }, // 2 NE
+    { x: 5, y: h - 8 }, // 3 SW
+    { x: mx, y: 5 }, // 4 N
+    { x: mx, y: h - 8 }, // 5 S
+    { x: 5, y: my }, // 6 W
+    { x: w - 8, y: my }, // 7 E
+  ];
+}
+
+// Legacy 64x64 spawns array kept for backward compatibility
+export const SPAWNS: { x: number; y: number }[] = getSpawns(MAP_W, MAP_H);
+
+// ---------- Deterministic Handcrafted Maps (19 Biomes incl. Huge 96x96 & 128x128 8-Player Theaters) ----------
+export const MAP_LIST: {
+  id: MapId;
+  name: string;
+  biome: string;
+  w?: number;
+  h?: number;
+  maxPlayers?: number;
+  naval?: boolean;
+  desc: string;
+}[] = [
+  { id: "crossroads", name: "Twin Crossroads", biome: "Steppe", w: 64, h: 64, maxPlayers: 8, desc: "Balanced flank mesas, twin Oil Derricks & Coal Mines" },
+  { id: "canyon", name: "Iron Canyon", biome: "Canyon", w: 64, h: 64, maxPlayers: 8, desc: "Twin sandstone canyon walls channeling fights across 3 lanes" },
+  { id: "basin", name: "Shattered Basin", biome: "Alpine", w: 64, h: 64, maxPlayers: 8, desc: "Open volcanic ore basin ringed by captureable Oil Derricks & Coal" },
+  { id: "tundra", name: "Frostbite Pass", biome: "Arctic", w: 64, h: 64, maxPlayers: 8, desc: "Frozen glacial divide with wide north/south bypasses & rich center ice field" },
+  { id: "fortress", name: "Citadel Bastion", biome: "Desert", w: 64, h: 64, maxPlayers: 8, desc: "Walled central citadel with 4 gates guarding a mega ore cache" },
+  { id: "jungle", name: "Emerald Valley", biome: "Jungle", w: 64, h: 64, maxPlayers: 8, desc: "Diagonal ridge corridors built for ambushes & flanking raids" },
+  { id: "islands", name: "Bridgehead Crossing", biome: "Riverland", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Navigable river channels, lighthouses & bridges — Land, Air & Sea" },
+  { id: "oasis", name: "Scorched Oasis", biome: "Sahara", w: 64, h: 64, maxPlayers: 8, desc: "Golden dune ring with fast open flank tank lanes & twin oasis passes" },
+  { id: "archipelago", name: "Pacific Atoll", biome: "Ocean", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "4 corner islands & volcanic atoll with sea-stacks & blinking buoys" },
+  { id: "coastline", name: "Storm Coast", biome: "Coastal", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Stormy North Sea straits with coastal lighthouses & dreadnought lanes" },
+  { id: "atlantis", name: "Sunken Atlantis", biome: "Mythic Sea", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Ancient submerged crystal obelisks, glowing sea-gates & golden causeways" },
+  { id: "shipwreck", name: "Titan Graveyard", biome: "Abyssal", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Colossal sunken dreadnought wrecks, reefs & salvage ore shoals" },
+  { id: "volcano", name: "Caldera Forge", biome: "Volcanic", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Steaming coastal sea ringing a glowing molten caldera & obsidian bridges" },
+  { id: "oilrig", name: "Offshore Megarig", biome: "Deep Sea", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Open-ocean platform bridges converging on a giant central oil megastructure" },
+  { id: "cybergrid", name: "Neon Megastructure", biome: "Orbital", w: 64, h: 64, maxPlayers: 8, desc: "High-tech titanium battle deck with floating crystal monoliths & energy trenches" },
+  // HUGE 8-Player Grand Strategy Theaters (96x96 & 128x128 — built for 4v4 / 8P FFA & Real Logistics!)
+  { id: "europa", name: "Iron Frontier (96×96 · 8P)", biome: "Continental", w: 96, h: 96, maxPlayers: 8, desc: "Huge 96×96 European theater — mountain ridges, long supply lines, 4 Oil & 4 Coal" },
+  { id: "pacific_theatre", name: "Coral Sea Theatre (96×96 · 8P)", biome: "Grand Ocean", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Massive 96×96 8-player naval archipelago with central carrier atoll & sea lanes" },
+  { id: "arctic_front", name: "Polar Sea Front (96×96 · 8P)", biome: "Polar War", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Huge 96×96 frozen sea channels, icebreaker passages & contested polar fuel hubs" },
+  { id: "megacontinent", name: "Eurasia Supertheater (128×128 · 8P)", biome: "Grand Theater", w: 128, h: 128, maxPlayers: 8, naval: true, desc: "Colossal 128×128 (4× area) 8-player super-map — twin continents, sea strait & real supply logistics!" },
 ];
 
 export interface MapLayout {
+  w: number;
+  h: number;
   cliffs: [number, number][]; // impassable elevated rocky/glacial/lava/monolith tiles (aircraft fly over!)
   water: [number, number][]; // navigable ocean/river tiles (ships sail on, aircraft fly over!)
   derricks: [number, number][]; // top-left 2x2 tile of neutral Oil Derricks (+$25/s)
@@ -462,19 +516,22 @@ const mapCache = new Map<MapId, MapLayout>();
 export function getMapLayout(id: MapId = "crossroads"): MapLayout {
   const cached = mapCache.get(id);
   if (cached) return cached;
+  const meta = MAP_LIST.find((m) => m.id === id);
+  const W = meta?.w ?? MAP_W;
+  const H = meta?.h ?? MAP_H;
   const cliffSet = new Set<number>();
   const waterSet = new Set<number>();
   const addRect = (set: Set<number>, x0: number, y0: number, w: number, h: number) => {
     for (let y = y0; y < y0 + h; y++) {
       for (let x = x0; x < x0 + w; x++) {
-        if (x >= 0 && y >= 0 && x < MAP_W && y < MAP_H) set.add(y * MAP_W + x);
+        if (x >= 0 && y >= 0 && x < W && y < H) set.add(y * W + x);
       }
     }
   };
   const clearRect = (set: Set<number>, x0: number, y0: number, w: number, h: number) => {
     for (let y = y0; y < y0 + h; y++) {
       for (let x = x0; x < x0 + w; x++) {
-        if (x >= 0 && y >= 0 && x < MAP_W && y < MAP_H) set.delete(y * MAP_W + x);
+        if (x >= 0 && y >= 0 && x < W && y < H) set.delete(y * W + x);
       }
     }
   };
@@ -882,6 +939,183 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       { kind: "monolith", x: 22, y: 43, scale: 0.95 },
       { kind: "monolith", x: 42, y: 43, scale: 0.95 },
     ];
+  } else if (id === "europa") {
+    // Iron Frontier (96x96, 8-player continental theater): mountain ridges, 4 regional hubs, 4 Oil & 4 Coal
+    addRect(cliffSet, 24, 24, 10, 4);
+    addRect(cliffSet, 62, 24, 10, 4);
+    addRect(cliffSet, 24, 68, 10, 4);
+    addRect(cliffSet, 62, 68, 10, 4);
+    addRect(cliffSet, 24, 42, 4, 12);
+    addRect(cliffSet, 68, 42, 4, 12);
+    addRect(cliffSet, 42, 24, 12, 4);
+    addRect(cliffSet, 42, 68, 12, 4);
+    derricks = [
+      [47, 17],
+      [47, 77],
+      [17, 47],
+      [77, 47],
+    ];
+    coalmines = [
+      [29, 31],
+      [65, 31],
+      [29, 63],
+      [65, 63],
+    ];
+    extraOre = [
+      [48, 48, 6],
+      [24, 48, 3],
+      [72, 48, 3],
+      [48, 24, 3],
+      [48, 72, 3],
+    ];
+  } else if (id === "pacific_theatre") {
+    // Coral Sea Theatre (96x96, 8-player grand ocean): 8 perimeter islands + central Carrier Atoll + causeways
+    addRect(waterSet, 0, 0, W, H);
+    // 8 generous 18x18 perimeter spawn islands
+    for (const sp of getSpawns(W, H)) {
+      clearRect(waterSet, Math.max(0, sp.x - 6), Math.max(0, sp.y - 6), 17, 17);
+    }
+    // Central Carrier Atoll (20x20) + ring causeways linking all 8 islands & center
+    clearRect(waterSet, 38, 38, 20, 20);
+    clearRect(waterSet, 12, 46, 72, 4);
+    clearRect(waterSet, 46, 12, 4, 72);
+    clearRect(waterSet, 12, 14, 72, 4);
+    clearRect(waterSet, 12, 78, 72, 4);
+    clearRect(waterSet, 14, 12, 4, 72);
+    clearRect(waterSet, 78, 12, 4, 72);
+    // 4 coal mine resource islets
+    clearRect(waterSet, 23, 23, 6, 6);
+    clearRect(waterSet, 67, 23, 6, 6);
+    clearRect(waterSet, 23, 67, 6, 6);
+    clearRect(waterSet, 67, 67, 6, 6);
+    addRect(cliffSet, 40, 40, 3, 3);
+    addRect(cliffSet, 53, 40, 3, 3);
+    addRect(cliffSet, 40, 53, 3, 3);
+    addRect(cliffSet, 53, 53, 3, 3);
+    derricks = [
+      [47, 25],
+      [47, 69],
+      [25, 47],
+      [69, 47],
+    ];
+    coalmines = [
+      [25, 25],
+      [69, 25],
+      [25, 69],
+      [69, 69],
+    ];
+    extraOre = [
+      [48, 48, 5],
+      [30, 30, 3],
+      [66, 66, 3],
+    ];
+    artifacts = [
+      { kind: "lighthouse", x: 38, y: 38, scale: 1.1 },
+      { kind: "lighthouse", x: 58, y: 58, scale: 1.1 },
+      { kind: "shipwreck", x: 31, y: 20, rot: 0.5, scale: 1.4 },
+      { kind: "shipwreck", x: 65, y: 76, rot: -2.6, scale: 1.4 },
+      { kind: "seastack", x: 24, y: 60, scale: 1.3 },
+      { kind: "seastack", x: 72, y: 36, scale: 1.3 },
+      { kind: "buoy", x: 32, y: 34 },
+      { kind: "buoy", x: 64, y: 62 },
+    ];
+  } else if (id === "arctic_front") {
+    // Polar Sea Front (96x96, 8-player arctic ocean & glacier lanes)
+    addRect(waterSet, 36, 0, 24, H);
+    addRect(waterSet, 0, 36, W, 24);
+    for (const sp of getSpawns(W, H)) {
+      clearRect(waterSet, Math.max(0, sp.x - 6), Math.max(0, sp.y - 6), 16, 16);
+    }
+    // Ice bridges & central polar fortress
+    clearRect(waterSet, 38, 38, 20, 20);
+    clearRect(waterSet, 12, 46, 72, 4);
+    clearRect(waterSet, 46, 12, 4, 72);
+    clearRect(waterSet, 20, 34, 6, 28);
+    clearRect(waterSet, 70, 34, 6, 28);
+    clearRect(waterSet, 34, 20, 28, 6);
+    clearRect(waterSet, 34, 70, 28, 6);
+    addRect(cliffSet, 28, 28, 5, 4);
+    addRect(cliffSet, 63, 28, 5, 4);
+    addRect(cliffSet, 28, 64, 5, 4);
+    addRect(cliffSet, 63, 64, 5, 4);
+    derricks = [
+      [47, 22],
+      [47, 72],
+      [22, 47],
+      [72, 47],
+    ];
+    coalmines = [
+      [41, 41],
+      [53, 53],
+    ];
+    extraOre = [
+      [48, 48, 5],
+      [25, 25, 3],
+      [71, 71, 3],
+    ];
+    artifacts = [
+      { kind: "lighthouse", x: 38, y: 22, scale: 1.05 },
+      { kind: "lighthouse", x: 58, y: 74, scale: 1.05 },
+      { kind: "shipwreck", x: 48, y: 8, rot: 0.2, scale: 1.3 },
+      { kind: "shipwreck", x: 48, y: 88, rot: -2.9, scale: 1.3 },
+      { kind: "buoy", x: 37, y: 12 },
+      { kind: "buoy", x: 59, y: 84 },
+    ];
+  } else if (id === "megacontinent") {
+    // Eurasia Supertheater (128x128 — 4x area! 8-player twin continents + central navigable sea strait + supply highways!)
+    addRect(waterSet, 52, 0, 24, H);
+    // Keep north/south mid-spawns (slots 4, 5) on fortified bridgehead peninsulas!
+    for (const sp of getSpawns(W, H)) {
+      clearRect(waterSet, Math.max(0, sp.x - 7), Math.max(0, sp.y - 7), 18, 18);
+    }
+    // 4 wide strategic land highways across the grand central sea strait
+    clearRect(waterSet, 50, 22, 28, 6);
+    clearRect(waterSet, 50, 61, 28, 6);
+    clearRect(waterSet, 50, 100, 28, 6);
+    // Coastal harbors near west/east spawns for Naval Shipyards
+    addRect(waterSet, 16, 0, 16, 12);
+    addRect(waterSet, 96, 0, 16, 12);
+    addRect(waterSet, 16, 116, 16, 12);
+    addRect(waterSet, 96, 116, 16, 12);
+    // Continental mountain ranges
+    addRect(cliffSet, 28, 32, 6, 16);
+    addRect(cliffSet, 94, 32, 6, 16);
+    addRect(cliffSet, 28, 80, 6, 16);
+    addRect(cliffSet, 94, 80, 6, 16);
+    addRect(cliffSet, 36, 61, 8, 6);
+    addRect(cliffSet, 84, 61, 8, 6);
+    derricks = [
+      [63, 24],
+      [56, 63],
+      [63, 102],
+      [22, 63],
+      [104, 63],
+    ];
+    coalmines = [
+      [38, 28],
+      [88, 28],
+      [38, 98],
+      [88, 98],
+    ];
+    extraOre = [
+      [64, 64, 5],
+      [30, 64, 4],
+      [98, 64, 4],
+      [34, 34, 3],
+      [94, 94, 3],
+      [94, 34, 3],
+      [34, 94, 3],
+    ];
+    artifacts = [
+      { kind: "lighthouse", x: 51, y: 22, scale: 1.2 },
+      { kind: "lighthouse", x: 77, y: 106, scale: 1.2 },
+      { kind: "shipwreck", x: 64, y: 42, rot: 0.4, scale: 1.6 },
+      { kind: "shipwreck", x: 64, y: 84, rot: -2.7, scale: 1.6 },
+      { kind: "oilrig_tower", x: 64, y: 12, scale: 1.25 },
+      { kind: "oilrig_tower", x: 64, y: 116, scale: 1.25 },
+      { kind: "buoy", x: 58, y: 36 },
+      { kind: "buoy", x: 70, y: 92 },
+    ];
   } else {
     addRect(cliffSet, 24, 15, 16, 2);
     addRect(cliffSet, 24, 47, 16, 2);
@@ -901,13 +1135,44 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     ];
   }
 
+  // Ensure all 8 perimeter spawns on every map sit on solid dry land and bridge cleanly across any adjacent water channel
+  const cx = Math.floor(W / 2),
+    cy = Math.floor(H / 2);
+  for (const sp of getSpawns(W, H)) {
+    clearRect(cliffSet, sp.x - 1, sp.y - 1, 5, 5);
+    clearRect(waterSet, sp.x - 2, sp.y - 2, 7, 7);
+    let tx = sp.x + 1,
+      ty = sp.y + 1;
+    let enteredWater = false;
+    let steps = 0;
+    while ((tx !== cx || ty !== cy) && steps++ < Math.max(W, H)) {
+      const dx = tx < cx ? 1 : tx > cx ? -1 : 0;
+      const dy = ty < cy ? 1 : ty > cy ? -1 : 0;
+      tx += dx;
+      ty += dy;
+      const k = ty * W + tx;
+      if (waterSet.has(k)) {
+        enteredWater = true;
+        // Clear perpendicular 3-tile bridge width WITHOUT clearing ahead along (dx, dy)
+        if (dx === 0) clearRect(waterSet, tx - 1, ty, 3, 1);
+        else if (dy === 0) clearRect(waterSet, tx, ty - 1, 1, 3);
+        else {
+          clearRect(waterSet, tx - 1, ty, 3, 1);
+          clearRect(waterSet, tx, ty - 1, 1, 3);
+        }
+      } else if (enteredWater && !cliffSet.has(k)) {
+        break; // reached mainland on far side of channel
+      }
+    }
+  }
+
   for (const k of cliffSet) waterSet.delete(k);
 
   const cliffs: [number, number][] = [];
-  for (const k of cliffSet) cliffs.push([k % MAP_W, (k / MAP_W) | 0]);
+  for (const k of cliffSet) cliffs.push([k % W, (k / W) | 0]);
   const water: [number, number][] = [];
-  for (const k of waterSet) water.push([k % MAP_W, (k / MAP_W) | 0]);
-  const layout: MapLayout = { cliffs, water, derricks, coalmines, extraOre, artifacts };
+  for (const k of waterSet) water.push([k % W, (k / W) | 0]);
+  const layout: MapLayout = { w: W, h: H, cliffs, water, derricks, coalmines, extraOre, artifacts };
   mapCache.set(id, layout);
   return layout;
 }
