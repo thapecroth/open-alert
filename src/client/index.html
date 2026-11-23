@@ -54,9 +54,14 @@
     </div>
 
     <div id="sidebar" class="hidden">
-      <button id="ready-pill" type="button" class="ready-pill hidden" title="Click (or press B) to place finished structure · Right-click in sidebar to cancel & refund"></button>
+      <div id="ready-stack" class="ready-stack">
+        <button id="ready-pill" type="button" class="ready-pill hidden" title="Click (or press B) to place finished structure · Right-click to cancel &amp; refund"></button>
+        <button id="ready-def-pill" type="button" class="ready-pill ready-def-pill hidden" title="Click (or press B) to place finished defense · Right-click to cancel &amp; refund"></button>
+      </div>
       <div class="side-title">STRUCTURES</div>
       <div id="build-list"></div>
+      <div class="side-title side-title-def">DEFENSES</div>
+      <div id="defense-list"></div>
       <div class="side-title side-title-row"><span>ARMY</span><span id="prod-boost" class="prod-boost hidden"></span></div>
       <div id="train-list"></div>
       <div id="side-info" class="hidden"></div>

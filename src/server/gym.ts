@@ -12,7 +12,7 @@
 
 import { World } from "./world";
 import { MAP_W, MAP_H, BUILDINGS, UNITS, ORE_CELL_MAX, PLAYER_COLORS, SHIPYARD_BUILD_DIST } from "../shared/gamedefs";
-import type { BuildingKind, UnitKind, EntKind, ProdCat } from "../shared/gamedefs";
+import type { BuildingKind, BuildCategory, UnitKind, EntKind, ProdCat } from "../shared/gamedefs";
 import type { OrderKind, PlayerState, ProdQueue } from "../shared/protocol";
 
 const hasOwn = (o: object, k: unknown): boolean =>
@@ -21,6 +21,12 @@ const isB = (k: EntKind): k is BuildingKind => k in BUILDINGS;
 const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 // Mirrors worker.ts ORDER_KINDS.
 const ORDER_KINDS = new Set<string>(["move", "amove", "attack", "harvest", "patrol"]);
+const UPGRADED_OF: Partial<Record<BuildingKind, BuildingKind>> = {
+  barracks: "barracks2",
+  factory: "factory2",
+  airfield: "airfield2",
+  shipyard: "shipyard2",
+};
 
 export interface GymObs {
   tick: number;
@@ -33,6 +39,8 @@ export interface GymObs {
     eliminated: boolean;
     bq: PlayerState["bq"];
     awaiting: BuildingKind | null;
+    dq?: PlayerState["dq"];
+    awaitingDef?: BuildingKind | null;
     queues: PlayerState["queues"];
   };
   ents: {
@@ -50,7 +58,7 @@ export interface GymObs {
 
 export interface GymAction {
   build?: string | null;
-  place?: { tx: number; ty: number } | null;
+  place?: { tx: number; ty: number; cat?: BuildCategory } | null;
   train?: string | null;
   cancelTrain?: string | null;
   order?: { ids: number[]; kind: string; x: number; y: number; target?: number } | null;
@@ -95,7 +103,8 @@ export function getGymActionSchema(): Record<string, unknown> {
       properties: {
         build: {
           anyOf: [{ type: "string", enum: Object.keys(BUILDINGS) }, { type: "null" }],
-          description: "start constructing a building (needs conyard + credits); finish with `place` once `you.awaiting` is set",
+          description:
+            "start constructing a structure or defense in parallel queues (needs conyard + credits); finish with `place` once `you.awaiting` or `you.awaitingDef` is set",
         },
         place: {
           anyOf: [
@@ -103,11 +112,15 @@ export function getGymActionSchema(): Record<string, unknown> {
               type: "object",
               additionalProperties: false,
               required: ["tx", "ty"],
-              properties: { tx: { type: "integer" }, ty: { type: "integer" } },
+              properties: {
+                tx: { type: "integer" },
+                ty: { type: "integer" },
+                cat: { type: "string", enum: ["structure", "defense"] },
+              },
             },
             { type: "null" },
           ],
-          description: "top-left tile for the awaiting building; must sit within 2 tiles of your buildings on clear non-ore ground",
+          description: "top-left tile for the awaiting structure or defense; optional `cat` selects queue ('structure'|'defense')",
         },
         train: {
           anyOf: [{ type: "string", enum: Object.keys(UNITS) }, { type: "null" }],
@@ -141,7 +154,8 @@ export function getGymActionSchema(): Record<string, unknown> {
         },
         upgrade: {
           anyOf: [{ type: "integer" }, { type: "null" }],
-          description: "upgrade your war factory ent id to MKII (needs techlab + $1500) — unlocks heavy/spider",
+          description:
+            "upgrade a production building ent id to MKII (barracks→barracks2, factory→factory2, airfield→airfield2, shipyard→shipyard2)",
         },
         superweapon: {
           anyOf: [
@@ -196,6 +210,8 @@ export function extractGymObs(w: World, slot: number): GymObs {
       eliminated: p ? p.eliminated : true,
       bq: p?.bq ? { ...p.bq } : null,
       awaiting: p ? p.awaiting : null,
+      dq: p?.dq ? { ...p.dq } : null,
+      awaitingDef: p ? p.awaitingDef : null,
       queues,
     },
     ents,
@@ -379,7 +395,8 @@ export class GymEnv {
         if (e) denied.push(`build: ${e}`);
       }
       if (a.place != null) {
-        const e = this.w.cmdPlace(this.slot, Math.floor(a.place.tx), Math.floor(a.place.ty));
+        const cat = a.place.cat === "structure" || a.place.cat === "defense" ? a.place.cat : undefined;
+        const e = this.w.cmdPlace(this.slot, Math.floor(a.place.tx), Math.floor(a.place.ty), cat);
         if (e) denied.push(`place: ${e}`);
       }
       if (a.train != null) {
@@ -509,6 +526,7 @@ export class GymEnv {
     if (a.place != null) {
       const p = a.place;
       if (!p || typeof p !== "object" || !num(p.tx) || !num(p.ty)) return { ok: false, reason: "bad place coords" };
+      if (p.cat != null && p.cat !== "structure" && p.cat !== "defense") return { ok: false, reason: "bad place cat" };
     }
     if (a.order != null) {
       const o = a.order;
@@ -558,7 +576,10 @@ export class GymEnv {
   }
 
   private has(slot: number, k: EntKind): boolean {
-    for (const e of this.w.ents.values()) if (e.o === slot && e.k === k) return true;
+    const upg = isB(k) ? UPGRADED_OF[k] : undefined;
+    for (const e of this.w.ents.values()) {
+      if (e.o === slot && (e.k === k || (upg !== undefined && e.k === upg))) return true;
+    }
     return false;
   }
 
@@ -574,9 +595,13 @@ export class GymEnv {
     const p = w.players.get(s);
     if (!p || p.eliminated) return;
 
+    if (p.awaitingDef) {
+      const spot = this.findSpot(s, p.awaitingDef);
+      if (spot) w.cmdPlace(s, spot.tx, spot.ty, "defense");
+    }
     if (p.awaiting) {
       const spot = this.findSpot(s, p.awaiting);
-      if (spot) w.cmdPlace(s, spot.tx, spot.ty);
+      if (spot) w.cmdPlace(s, spot.tx, spot.ty, "structure");
       return;
     }
     if (!p.bq) {
@@ -586,8 +611,10 @@ export class GymEnv {
       else if (!this.has(s, "barracks")) want = "barracks";
       else if (!this.has(s, "factory")) want = "factory";
       else if (p.lowPower) want = "power";
-      else if (!this.has(s, "turret") && p.credits > 2500) want = "turret";
       if (want && p.credits >= BUILDINGS[want].cost) w.cmdBuild(s, want);
+    }
+    if (!p.dq && !p.awaitingDef && this.has(s, "factory") && !this.has(s, "turret") && p.credits > 2500) {
+      w.cmdBuild(s, "turret");
     }
     if (this.has(s, "barracks")) {
       const q = p.queues.barracks;
@@ -628,9 +655,13 @@ export class GymEnv {
     if (a.build != null) w.cmdBuild(s, a.build as BuildingKind);
     if (a.train != null) w.cmdTrain(s, a.train as UnitKind);
     if (a.cancelTrain != null) w.cmdTrainCancel(s, a.cancelTrain as UnitKind);
-    if (a.place != null && p.awaiting) {
-      const spot = this.findSpot(s, p.awaiting);
-      if (spot) w.cmdPlace(s, spot.tx, spot.ty);
+    if (a.place != null) {
+      const cat = a.place.cat;
+      const kind = cat === "defense" ? p.awaitingDef : cat === "structure" ? p.awaiting : p.awaiting ?? p.awaitingDef;
+      if (kind) {
+        const spot = this.findSpot(s, kind);
+        if (spot) w.cmdPlace(s, spot.tx, spot.ty, cat);
+      }
     }
     if (a.order != null) {
       const harvest = a.order.kind === "harvest";
@@ -643,13 +674,19 @@ export class GymEnv {
     if (a.superweapon != null) w.cmdSuperweapon(s, MAP_W - a.superweapon.x, MAP_H - a.superweapon.y);
   }
 
-  /** Mirror housekeeping each tick: never leave a finished building unplaced. */
+  /** Mirror housekeeping each tick: never leave a finished building or defense unplaced. */
   private mirrorHousekeeping() {
     const w = this.w,
       s = this.opp;
     const p = w.players.get(s);
-    if (!p || p.eliminated || !p.awaiting || w.tick % 4 !== 0) return;
-    const spot = this.findSpot(s, p.awaiting);
-    if (spot) w.cmdPlace(s, spot.tx, spot.ty);
+    if (!p || p.eliminated || w.tick % 4 !== 0) return;
+    if (p.awaiting) {
+      const spot = this.findSpot(s, p.awaiting);
+      if (spot) w.cmdPlace(s, spot.tx, spot.ty, "structure");
+    }
+    if (p.awaitingDef) {
+      const spot = this.findSpot(s, p.awaitingDef);
+      if (spot) w.cmdPlace(s, spot.tx, spot.ty, "defense");
+    }
   }
 }

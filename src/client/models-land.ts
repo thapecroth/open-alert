@@ -315,12 +315,64 @@ function makeOreLoadGeo(w: number, h: number, d: number): THREE.BufferGeometry {
   return faceted;
 }
 
+// Sculpted geodesic-style radome shell for Iron Dome (LatheGeometry, base y=0, height=1, radius=0.5)
+function makeRadomeGeo(): THREE.BufferGeometry {
+  const pts: THREE.Vector2[] = [];
+  const steps = 12;
+  pts.push(new THREE.Vector2(0.5, 0.0));
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const ang = t * (Math.PI / 2);
+    const r = Math.max(0.002, Math.cos(ang) * 0.5);
+    const y = 0.08 + Math.sin(ang) * 0.92;
+    pts.push(new THREE.Vector2(r, y));
+  }
+  return new THREE.LatheGeometry(pts, 12);
+}
+
+// Tall sleek futuristic faceted dark-titanium spire for Helios Laser Battery (LatheGeometry, 6-sided)
+function makeLaserSpireGeo(): THREE.BufferGeometry {
+  const pts: THREE.Vector2[] = [
+    new THREE.Vector2(0.002, 0.0),
+    new THREE.Vector2(0.54, 0.0),
+    new THREE.Vector2(0.46, 0.16),
+    new THREE.Vector2(0.38, 0.36),
+    new THREE.Vector2(0.42, 0.4),
+    new THREE.Vector2(0.33, 0.44),
+    new THREE.Vector2(0.24, 0.74),
+    new THREE.Vector2(0.28, 0.79),
+    new THREE.Vector2(0.2, 0.84),
+    new THREE.Vector2(0.16, 1.0),
+    new THREE.Vector2(0.002, 1.0),
+  ];
+  return new THREE.LatheGeometry(pts, 6);
+}
+
+// Futuristic clean-energy tokamak containment dome crown (LatheGeometry, base y=0, height=1)
+function makeFusionDomeGeo(): THREE.BufferGeometry {
+  const pts: THREE.Vector2[] = [];
+  const steps = 14;
+  pts.push(new THREE.Vector2(0.52, 0.0));
+  pts.push(new THREE.Vector2(0.5, 0.14));
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const ang = t * (Math.PI / 2);
+    const r = Math.max(0.002, Math.cos(ang) * 0.48);
+    const y = 0.14 + Math.sin(ang) * 0.86;
+    pts.push(new THREE.Vector2(r, y));
+  }
+  return new THREE.LatheGeometry(pts, 24);
+}
+
 const geoTankHull = makeSlopedHullGeo(1.78, 0.36, 0.98, 0.042);
 const geoHeavyHull = makeSlopedHullGeo(2.14, 0.44, 1.28, 0.05);
+const geoRailHull = makeSlopedHullGeo(2.08, 0.38, 1.16, 0.044);
 const geoTankTurret = makeFacetedTurretGeo(0.76, 0.27, 0.98);
 const geoHeavyTurret = makeFacetedTurretGeo(1.02, 0.33, 1.2);
+const geoRailTurret = makeFacetedTurretGeo(0.92, 0.24, 1.22);
 const geoSentryPod = makeFacetedTurretGeo(0.58, 0.25, 0.78);
 const geoArtyCab = makeSlopedCabGeo(0.62, 0.44, 0.84);
+const geoHimarsCab = makeSlopedCabGeo(0.68, 0.46, 0.86);
 const geoHarvesterCab = makeSlopedCabGeo(0.74, 0.58, 0.96);
 const geoSpiderCarapace = makeSpiderCarapaceGeo();
 const geoHorsehead = makeHorseheadGeo();
@@ -330,8 +382,15 @@ const geoSilo = makeSiloGeo();
 const geoCentrifuge = makeCentrifugeGeo();
 const geoMissileCone = makeMissileConeGeo();
 const geoIonAperture = makeIonApertureGeo();
+const geoRadome = makeRadomeGeo();
+const geoLaserSpire = makeLaserSpireGeo();
+const geoFusionDome = makeFusionDomeGeo();
 const geoFlag = makeFlagGeo();
 const geoOreLoad = makeOreLoadGeo(1.02, 0.42, 0.92);
+const geoCoalHeap = makeOreLoadGeo(0.86, 0.46, 0.86);
+const geoFusionPlasma = new THREE.TorusGeometry(0.68, 0.135, 14, 36);
+const geoFusionPlasmaCore = new THREE.TorusGeometry(0.68, 0.062, 10, 32);
+const geoSatOrbitTrack = new THREE.TorusGeometry(0.64, 0.018, 8, 36);
 
 // ---------- Lazily Cached Contact Shadow Material ----------
 let contactShadowMatCache: THREE.MeshBasicMaterial | null = null;
@@ -2077,6 +2136,891 @@ export function buildLandModel(kind: EntKind, colorHex: string, body: THREE.Grou
 
       smokePos = new THREE.Vector3(-0.48, 1.44, -0.36);
       topY = 2.24;
+      break;
+    }
+
+    // =========================================================================
+    // NEW MODERN DEFENSES (3): sam, irondome, lasertower
+    // =========================================================================
+    case "sam": {
+      // Patriot SAM Battery (2x2) — Armored Radar-Trailer Pad, Quad-Tube Canister Launcher & Phased-Array Radar
+      body.add(foundationPad(2, 2, colorHex, 0.2));
+
+      const matPatriotWhite = getChassisMat("#d4dde6", 0.36, 0.32);
+
+      // Armored launcher trailer concrete-anchored chassis deck + 4 corner hydraulic outriggers
+      add(rbox(1.66, 0.2, 1.62, matDk), 0, 0.31, 0);
+      for (const [ox, oz] of [
+        [-0.78, -0.74],
+        [0.78, -0.74],
+        [-0.78, 0.74],
+        [0.78, 0.74],
+      ]) {
+        const jack = rbox(0.16, 0.24, 0.16, matGun, true);
+        add(jack, ox, 0.28, oz);
+        add(rbox(0.22, 0.055, 0.22, matHaz, true), ox, 0.14, oz);
+      }
+      // Side armored munitions & generator cabinets
+      add(rbox(0.32, 0.24, 0.74, matCer, true), -0.68, 0.5, 0.34);
+      add(rbox(0.06, 0.12, 0.56, matAcc, true), -0.84, 0.52, 0.34);
+
+      // Phased-array AN/MPQ-65 tracking radar module (front-left)
+      const radarPed = new THREE.Group();
+      radarPed.position.set(-0.56, 0.52, -0.44);
+      radarPed.rotation.y = 0.42;
+      body.add(radarPed);
+      add(rbox(0.54, 0.22, 0.46, matGun, true), 0, 0.04, 0, radarPed);
+      const panelTilt = new THREE.Group();
+      panelTilt.position.set(0, 0.34, 0.04);
+      panelTilt.rotation.x = -0.34;
+      radarPed.add(panelTilt);
+      add(rbox(0.56, 0.54, 0.18, matCer, true), 0, 0, 0, panelTilt);
+      add(rbox(0.46, 0.44, 0.04, matLt, true), 0, 0, 0.09, panelTilt);
+      // Glowing phased-array active scan emitter face & tracking beacon (powerGlow)
+      const arrayFace = rbox(0.38, 0.34, 0.03, getGlowMat(CYAN_GLOW, 0.82), true);
+      add(arrayFace, 0, 0, 0.115, panelTilt);
+      trackPowerGlow(arrayFace, powerGlow);
+      const arrayBar = rbox(0.42, 0.05, 0.04, getGlowMat(AMBER_GLOW, 0.94), true);
+      add(arrayBar, 0, 0.22, 0.11, panelTilt);
+      trackPowerGlow(arrayBar, powerGlow);
+      pulse.push(arrayBar);
+      add(cyl(0.024, 0.54, matLt), -0.22, 0.42, -0.1, panelTilt);
+
+      // Heavy armored turntable ring + glowing power status collar
+      add(cyl(0.92, 0.18, matGun, "oct"), 0.18, 0.48, 0.08);
+      const pwrCollar = torus(0.88, getGlowMat(CYAN_GLOW, 0.84), true);
+      pwrCollar.rotation.x = Math.PI / 2;
+      add(pwrCollar, 0.18, 0.54, 0.08);
+      trackPowerGlow(pwrCollar, powerGlow);
+
+      // Rotating Patriot Quad-Tube Missile Canister Launcher (`turret`, `recoil`)
+      turret = new THREE.Group();
+      turret.position.set(0.18, 0.62, 0.08);
+      body.add(turret);
+
+      add(rbox(0.76, 0.18, 0.72, matDk, true), 0, 0.06, 0, turret);
+      for (const sx of [-0.36, 0.36]) {
+        add(rbox(0.12, 0.42, 0.46, matCer, true), sx, 0.26, -0.06, turret);
+        add(rbox(0.04, 0.18, 0.34, matAcc, true), sx + (sx > 0 ? 0.06 : -0.06), 0.28, -0.06, turret);
+        const ram = cyl(0.055, 0.52, matLt);
+        ram.rotation.x = 0.32;
+        add(ram, sx * 0.72, 0.36, 0.16, turret);
+      }
+
+      // Elevated launcher cradle angled sharply skyward
+      const pitchCradle = new THREE.Group();
+      pitchCradle.position.set(0, 0.46, -0.04);
+      pitchCradle.rotation.x = -0.58;
+      turret.add(pitchCradle);
+
+      recoil = new THREE.Group();
+      recoil.position.set(0, 0.04, 0.12);
+      pitchCradle.add(recoil);
+
+      // Structural steel clamping bands binding the 4 angled Patriot canisters
+      for (const rz of [-0.38, 0.22]) {
+        add(rbox(0.68, 0.58, 0.08, matGun, true), 0, 0, rz, recoil);
+      }
+      add(rbox(0.66, 0.07, 0.96, matAcc, true), 0, 0.31, -0.08, recoil);
+
+      // 2x2 Quad-tube white/steel Patriot missile canisters with visible ogive warheads
+      const matSamTip = getGlowMat(HEAT_GLOW, 0.88);
+      for (const cx of [-0.175, 0.175]) {
+        for (const cy of [-0.145, 0.145]) {
+          add(rbox(0.26, 0.24, 1.24, matPatriotWhite, true), cx, cy, 0, recoil);
+          add(rbox(0.28, 0.26, 0.1, matGun, true), cx, cy, 0.58, recoil);
+          add(rbox(0.28, 0.26, 0.1, matDk, true), cx, cy, -0.58, recoil);
+          // Crisp Patriot warhead nose peeking from launch cap
+          const wh = meshOf(geoMissileCone, matSamTip, false, false);
+          wh.scale.set(0.12, 0.2, 0.12);
+          wh.rotation.x = Math.PI / 2;
+          add(wh, cx, cy, 0.68, recoil);
+        }
+      }
+
+      smokePos = new THREE.Vector3(-0.32, 1.15, -0.35);
+      topY = 1.72;
+      break;
+    }
+
+    case "irondome": {
+      // Iron Dome Interceptor (2x2) — Geodesic Radar Dome, Twin 6-Cell Interceptor Pods & Protective Ring
+      body.add(foundationPad(2, 2, colorHex, 0.2));
+
+      // Sleek octagonal armored pedestal base + 4 radial armor ribs
+      add(cyl(1.66, 0.34, matDk, "oct"), 0, 0.38, 0);
+      add(cyl(1.42, 0.14, matCer, "oct"), 0, 0.58, 0);
+      for (let i = 0; i < 4; i++) {
+        const a = (i * Math.PI) / 2 + Math.PI / 4;
+        const buttress = rbox(0.2, 0.38, 0.32, matCer, true);
+        buttress.rotation.y = -a + Math.PI / 2;
+        add(buttress, Math.cos(a) * 0.74, 0.4, Math.sin(a) * 0.74);
+        const node = sph(0.09, getGlowMat(CYAN_GLOW, 0.9), true);
+        add(node, Math.cos(a) * 0.84, 0.58, Math.sin(a) * 0.84);
+        trackPowerGlow(node, powerGlow);
+      }
+
+      // Subtle glowing cyan protective perimeter ring around the pedestal
+      const shieldRing = torus(1.78, getGlowMat(CYAN_GLOW, 0.84), true);
+      shieldRing.rotation.x = Math.PI / 2;
+      add(shieldRing, 0, 0.48, 0);
+      trackPowerGlow(shieldRing, powerGlow);
+      pulse.push(shieldRing);
+
+      // Prominent glowing geodesic-style radar dome (rear-center)
+      const domeX = 0;
+      const domeZ = -0.38;
+      add(cyl(0.84, 0.22, matGun, "oct"), domeX, 0.7, domeZ);
+      const radome = meshOf(geoRadome, getChassisMat("#ccd8e4", 0.3, 0.42));
+      radome.scale.set(0.78, 0.66, 0.78);
+      add(radome, domeX, 0.78, domeZ);
+      // Glowing cyan equatorial radar scan ring + meridian rib arcs
+      const domeBand = torus(0.78, getGlowMat(CYAN_GLOW, 0.92), true);
+      domeBand.rotation.x = Math.PI / 2;
+      add(domeBand, domeX, 0.9, domeZ);
+      trackPowerGlow(domeBand, powerGlow);
+      pulse.push(domeBand);
+      const domeCrown = sph(0.14, getGlowMat(CYAN_GLOW, 0.96), true);
+      add(domeCrown, domeX, 1.46, domeZ);
+      trackPowerGlow(domeCrown, powerGlow);
+      pulse.push(domeCrown);
+
+      // Rotating Twin 6-Cell Vertical-Angled Interceptor Missile Turret (`turret`, `recoil`)
+      turret = new THREE.Group();
+      turret.position.set(0, 0.66, 0.24);
+      body.add(turret);
+
+      add(cyl(0.68, 0.16, matGun, "oct"), 0, 0.06, 0, turret);
+      add(rbox(0.42, 0.34, 0.42, matCer, true), 0, 0.28, 0, turret);
+      add(rbox(0.46, 0.08, 0.44, matAcc, true), 0, 0.44, 0, turret);
+      const lockSensor = rbox(0.28, 0.09, 0.06, getGlowMat(CYAN_GLOW, 0.94), true);
+      add(lockSensor, 0, 0.32, 0.22, turret);
+      trackPowerGlow(lockSensor, powerGlow);
+
+      // Steep vertical-angled Tamir interceptor cradle
+      const launchTilt = new THREE.Group();
+      launchTilt.position.set(0, 0.34, 0);
+      launchTilt.rotation.x = -0.76;
+      turret.add(launchTilt);
+
+      recoil = new THREE.Group();
+      recoil.position.set(0, 0.06, 0.12);
+      launchTilt.add(recoil);
+
+      // Cross-axle linking twin 6-cell pods
+      add(rbox(1.18, 0.12, 0.16, matGun, true), 0, 0, -0.06, recoil);
+
+      const matTipCyan = getGlowMat(WHITE_GLOW, 0.95);
+      for (const sx of [-0.46, 0.46]) {
+        // Armored 6-cell interceptor canister pod
+        add(rbox(0.42, 0.32, 0.96, matCer, true), sx, 0.06, 0.02, recoil);
+        add(rbox(0.45, 0.08, 0.72, matAcc, true), sx, 0.23, 0, recoil);
+        add(rbox(0.44, 0.34, 0.08, matGun, true), sx, 0.06, 0.48, recoil);
+        // 6 visible vertical-angled interceptor cells (3x2 grid per pod = 12 interceptors total!)
+        for (const mx of [-0.125, 0, 0.125]) {
+          for (const my of [-0.07, 0.07]) {
+            const cell = cyl(0.086, 0.14, matDk);
+            cell.rotation.x = Math.PI / 2;
+            add(cell, sx + mx, 0.06 + my, 0.51, recoil);
+            const tip = meshOf(geoMissileCone, matTipCyan, false, false);
+            tip.scale.set(0.072, 0.13, 0.072);
+            tip.rotation.x = Math.PI / 2;
+            add(tip, sx + mx, 0.06 + my, 0.6, recoil);
+          }
+        }
+      }
+
+      smokePos = new THREE.Vector3(0, 1.24, -0.2);
+      topY = 1.92;
+      break;
+    }
+
+    case "lasertower": {
+      // Helios Laser Battery (2x2) — Tall Faceted Dark-Titanium Spire, Focusing Mirrors & Amber-Gold Crystal Lens
+      body.add(foundationPad(2, 2, colorHex, 0.22));
+
+      const matDarkTi = getChassisMat("#1f2630", 0.3, 0.78);
+
+      // Heavy armored octagonal capacitor base + 4 radial cooling fin buttresses
+      add(cyl(1.56, 0.38, matDarkTi, "oct"), 0, 0.41, 0);
+      add(cyl(1.24, 0.22, matDk, "oct"), 0, 0.68, 0);
+      for (let i = 0; i < 4; i++) {
+        const a = (i * Math.PI) / 2 + Math.PI / 4;
+        const fin = rbox(0.18, 0.58, 0.38, matCer, true);
+        fin.rotation.y = -a + Math.PI / 2;
+        add(fin, Math.cos(a) * 0.66, 0.56, Math.sin(a) * 0.66);
+        const stripe = rbox(0.07, 0.44, 0.12, matAcc, true);
+        stripe.rotation.y = -a + Math.PI / 2;
+        add(stripe, Math.cos(a) * 0.8, 0.58, Math.sin(a) * 0.8);
+      }
+
+      // Dramatic tall sleek futuristic faceted dark-titanium spire
+      const spire = meshOf(geoLaserSpire, matDarkTi);
+      spire.scale.set(1.02, 1.56, 1.02);
+      add(spire, 0, 0.62, 0);
+
+      // 3 sleek vertical ceramic-steel structural blades rising around the spire
+      for (let i = 0; i < 3; i++) {
+        const a = (i * Math.PI * 2) / 3 + Math.PI / 6;
+        const blade = rbox(0.1, 1.44, 0.24, matCer, true);
+        blade.position.set(Math.cos(a) * 0.36, 1.38, Math.sin(a) * 0.36);
+        blade.rotation.y = -a + Math.PI / 2;
+        blade.rotation.x = 0.08;
+        body.add(blade);
+        const edgeGlow = rbox(0.04, 1.12, 0.05, getGlowMat(AMBER_GLOW, 0.9), true);
+        edgeGlow.position.set(Math.cos(a) * 0.45, 1.38, Math.sin(a) * 0.45);
+        edgeGlow.rotation.y = -a + Math.PI / 2;
+        edgeGlow.rotation.x = 0.08;
+        body.add(edgeGlow);
+        trackPowerGlow(edgeGlow, powerGlow);
+      }
+
+      // Glowing amber-gold capacitor rings stepped along the spire
+      for (const [ry, rd] of [
+        [1.14, 0.72],
+        [1.56, 0.56],
+        [1.92, 0.44],
+      ]) {
+        const ring = torus(rd, getGlowMat(AMBER_GLOW, 0.9), true);
+        ring.rotation.x = Math.PI / 2;
+        add(ring, 0, ry, 0);
+        trackPowerGlow(ring, powerGlow);
+      }
+
+      // Crown optical assembly: twin focusing mirrors + incandescent amber-gold crystal emitter lens
+      const matMirrorGlass = getGlassMat("#ffe08a");
+      for (const sx of [-0.36, 0.36]) {
+        const arm = rbox(0.1, 0.34, 0.1, matLt, true);
+        arm.rotation.z = sx > 0 ? -0.34 : 0.34;
+        add(arm, sx * 0.78, 2.16, 0);
+        const mirrorBack = rbox(0.08, 0.42, 0.34, matDarkTi, true);
+        mirrorBack.rotation.z = sx > 0 ? 0.28 : -0.28;
+        add(mirrorBack, sx, 2.32, 0);
+        const mirrorFace = rbox(0.04, 0.34, 0.28, matMirrorGlass, true);
+        mirrorFace.rotation.z = sx > 0 ? 0.28 : -0.28;
+        add(mirrorFace, sx > 0 ? sx - 0.045 : sx + 0.045, 2.31, 0);
+      }
+
+      // Incandescent amber-gold crystal emitter lens (pulsing & powerGlow-tracked!)
+      const lensCore = sph(0.42, getGlowMat(AMBER_GLOW, 0.98), true);
+      add(lensCore, 0, 2.34, 0);
+      trackPowerGlow(lensCore, powerGlow);
+      pulse.push(lensCore);
+
+      const lensRing = torus(0.56, getGlowMat("#ffe580", 0.94), true);
+      lensRing.rotation.x = Math.PI / 2 + 0.36;
+      add(lensRing, 0, 2.34, 0);
+      trackPowerGlow(lensRing, powerGlow);
+      pulse.push(lensRing);
+
+      const topRing = torus(0.36, matGold, true);
+      topRing.rotation.x = Math.PI / 2;
+      add(topRing, 0, 2.6, 0);
+
+      smokePos = new THREE.Vector3(0, 1.5, 0);
+      topY = 2.74;
+      break;
+    }
+
+    // =========================================================================
+    // NEW STRUCTURES & UPGRADES (5): coalplant, fusion, satlink, coalmine, barracks2
+    // =========================================================================
+    case "coalplant": {
+      // Thermal Coal Plant (2x2) — Boiler Hall, Coal Bunker Hopper, Conveyor Ramp & Twin Banded Smokestacks
+      body.add(foundationPad(2, 2, colorHex, 0.22));
+
+      const matCoal = getChassisMat("#151920", 0.3, 0.44);
+
+      // Heavy industrial boiler hall (right side)
+      add(rbox(1.06, 0.82, 1.48, matDk), 0.34, 0.62, 0.02);
+      add(rbox(0.88, 0.22, 1.24, matCer), 0.34, 1.1, 0.02);
+      // Faction fascia bands along upper boiler hall
+      add(rbox(1.1, 0.1, 0.18, matAcc, true), 0.34, 0.98, 0.68);
+      add(rbox(1.1, 0.1, 0.18, matAcc, true), 0.34, 0.98, -0.64);
+      // Glowing molten-orange furnace grates along front & side walls
+      for (const vz of [-0.36, 0.04, 0.44]) {
+        const fVent = rbox(0.05, 0.24, 0.24, getGlowMat(HEAT_GLOW, 0.92), true);
+        add(fVent, 0.88, 0.56, vz);
+        if (vz === 0.04) pulse.push(fVent);
+      }
+      const frontFurnace = rbox(0.68, 0.24, 0.06, getGlowMat(AMBER_GLOW, 0.92), true);
+      add(frontFurnace, 0.34, 0.54, 0.77);
+      pulse.push(frontFurnace);
+
+      // Dark coal bunker hopper (front-left) with sculpted glossy coal mound
+      add(rbox(0.76, 0.34, 0.74, matGun, true), -0.54, 0.39, 0.44);
+      add(rbox(0.8, 0.06, 0.78, matHaz, true), -0.54, 0.56, 0.44);
+      const bunkerCoal = meshOf(geoCoalHeap, matCoal);
+      bunkerCoal.scale.set(0.76, 0.82, 0.76);
+      add(bunkerCoal, -0.54, 0.46, 0.44);
+
+      // Inclined steel coal conveyor ramp from hopper up into boiler hall
+      const conv = new THREE.Group();
+      conv.position.set(-0.26, 0.82, 0.36);
+      conv.rotation.z = 0.54;
+      body.add(conv);
+      add(rbox(0.86, 0.08, 0.26, matLt, true), 0, 0, 0, conv);
+      add(rbox(0.82, 0.05, 0.18, matGraph, true), 0, 0.05, 0, conv);
+      for (const cx of [-0.26, 0, 0.26]) {
+        add(sph(0.11, matCoal), cx, 0.09, 0, conv);
+      }
+      add(rbox(0.08, 0.48, 0.08, matGun, true), -0.26, 0.54, 0.36);
+
+      // Twin tall banded industrial smokestacks (rear)
+      for (const sx of [-0.46, 0.28]) {
+        add(cyl(0.36, 1.72, matCer, "taper"), sx, 1.12, -0.56);
+        // Bold warning / faction collar bands near stack crown
+        const band1 = torus(0.31, matAcc, true);
+        band1.rotation.x = Math.PI / 2;
+        add(band1, sx, 1.62, -0.56);
+        const band2 = torus(0.28, matHaz, true);
+        band2.rotation.x = Math.PI / 2;
+        add(band2, sx, 1.8, -0.56);
+        add(cyl(0.32, 0.08, matGun), sx, 1.98, -0.56);
+        const flueGlow = cyl(0.19, 0.04, getGlowMat(HEAT_GLOW, 0.82));
+        add(flueGlow, sx, 2.01, -0.56);
+      }
+
+      smokePos = new THREE.Vector3(-0.46, 2.04, -0.56);
+      topY = 2.12;
+      break;
+    }
+
+    case "fusion": {
+      // Tokamak Fusion Reactor (3x2) — Clean-Energy Dome, Magnetic Torus Plasma Ring & Superconducting Coils
+      body.add(foundationPad(3, 2, colorHex, 0.24));
+
+      // Sleek futuristic clean-energy armored plinth + edge accents
+      add(rbox(2.72, 0.3, 1.72, matDk), 0, 0.38, 0);
+      add(rbox(2.54, 0.07, 1.56, matCer, true), 0, 0.55, 0);
+      for (const sz of [-0.82, 0.82]) {
+        add(rbox(1.92, 0.06, 0.08, matAcc, true), 0, 0.56, sz);
+      }
+
+      // Flanking cryogenic spherical coolant tanks (left & right ends)
+      for (const sx of [-1.1, 1.1]) {
+        add(cyl(0.42, 0.24, matGun, "oct"), sx, 0.64, -0.36);
+        add(sph(0.48, matLt), sx, 0.96, -0.36);
+        const tankBand = torus(0.49, matAcc, true);
+        tankBand.rotation.x = Math.PI / 2;
+        add(tankBand, sx, 0.96, -0.36);
+        // Coolant feed pipe into central tokamak
+        const pipe = cyl(0.085, 0.56, matLt);
+        pipe.rotation.z = Math.PI / 2;
+        add(pipe, sx * 0.68, 0.92, -0.22);
+        // Front diagnostic cooling module
+        add(rbox(0.36, 0.38, 0.52, matCer, true), sx, 0.74, 0.36);
+        add(rbox(0.28, 0.14, 0.04, getGlowMat(CYAN_GLOW, 0.85), true), sx, 0.76, 0.63);
+      }
+
+      // Prominent glowing cyan magnetic-confinement TorusGeometry plasma ring (`spin` + `pulse`)
+      spin = new THREE.Group();
+      spin.position.set(0, 0.94, 0);
+      body.add(spin);
+
+      const plasmaOuter = meshOf(geoFusionPlasma, getGlowMat(CYAN_GLOW, 0.94), false, false);
+      plasmaOuter.rotation.x = Math.PI / 2;
+      spin.add(plasmaOuter);
+      pulse.push(plasmaOuter);
+
+      const plasmaCore = meshOf(geoFusionPlasmaCore, getGlowMat(WHITE_GLOW, 0.98), false, false);
+      plasmaCore.rotation.x = Math.PI / 2;
+      spin.add(plasmaCore);
+      pulse.push(plasmaCore);
+
+      // 4 swirling plasma node sparks riding inside the tokamak torus
+      for (let i = 0; i < 4; i++) {
+        const a = (i * Math.PI) / 2;
+        const spark = sph(0.14, getGlowMat(WHITE_GLOW, 0.96), true);
+        add(spark, Math.cos(a) * 0.68, 0, Math.sin(a) * 0.68, spin);
+      }
+
+      // 8 radial superconducting D-shaped toroidal magnet coils wrapping the plasma ring
+      for (let i = 0; i < 8; i++) {
+        const a = (i * Math.PI) / 4;
+        const coilGrp = new THREE.Group();
+        coilGrp.position.set(Math.cos(a) * 0.68, 0.94, Math.sin(a) * 0.68);
+        coilGrp.rotation.y = -a + Math.PI / 2;
+        body.add(coilGrp);
+
+        // Outer C-clamp superconducting magnet housing
+        add(rbox(0.11, 0.56, 0.12, matCer, true), 0, 0, 0.24, coilGrp);
+        add(rbox(0.12, 0.1, 0.42, matLt, true), 0, 0.26, 0.06, coilGrp);
+        add(rbox(0.12, 0.1, 0.42, matLt, true), 0, -0.26, 0.06, coilGrp);
+        add(rbox(0.06, 0.44, 0.06, i % 2 === 0 ? matAcc : matCopper, true), 0, 0, 0.3, coilGrp);
+      }
+
+      // Central solenoid core & sculpted clean-energy dome crown
+      add(cyl(0.56, 0.96, matGun, "oct"), 0, 1.0, 0);
+      add(cyl(0.44, 0.72, matGlass), 0, 1.0, 0);
+      const crownDome = meshOf(geoFusionDome, matCer);
+      crownDome.scale.set(1.04, 0.58, 1.04);
+      add(crownDome, 0, 1.38, 0);
+      const crownTrim = torus(0.98, matAcc, true);
+      crownTrim.rotation.x = Math.PI / 2;
+      add(crownTrim, 0, 1.46, 0);
+      const topBeacon = sph(0.18, getGlowMat(CYAN_GLOW, 0.96), true);
+      add(topBeacon, 0, 2.02, 0);
+      pulse.push(topBeacon);
+
+      smokePos = new THREE.Vector3(0, 1.85, 0);
+      topY = 2.12;
+      break;
+    }
+
+    case "satlink": {
+      // Defense Satellite Uplink (3x3) — Huge Tilted Telemetry Dish, Uplink Beam Pylon & Orbiting Mini-Satellite
+      body.add(foundationPad(3, 3, colorHex, 0.24));
+
+      // Monumental armored orbital command bunker base
+      add(rbox(2.56, 0.54, 2.56, matDk), 0, 0.51, 0);
+      for (const [bx, bz] of [
+        [-1.18, -1.18],
+        [1.18, -1.18],
+        [-1.18, 1.18],
+        [1.18, 1.18],
+      ]) {
+        add(rbox(0.32, 0.62, 0.32, matCer, true), bx, 0.55, bz);
+      }
+      // Panoramic mission-control glass + satin faction fascia
+      add(rbox(1.56, 0.18, 0.07, matGlass, true), -0.22, 0.58, 1.29);
+      add(rbox(0.07, 0.18, 1.56, matGlass, true), -1.29, 0.58, -0.14);
+      add(rbox(2.6, 0.1, 2.6, matAcc, true), 0, 0.8, 0);
+
+      // Stepped orbital dish pedestal (rear-left)
+      add(cyl(1.18, 0.38, matCer, "oct"), -0.44, 1.02, -0.32);
+      add(cyl(0.46, 0.32, matGun, "oct"), -0.44, 1.32, -0.32);
+
+      // Huge tilted LatheGeometry laser-telemetry dish (`spin` rotates smoothly around Y)
+      spin = new THREE.Group();
+      spin.position.set(-0.44, 1.56, -0.32);
+      body.add(spin);
+      const dishYoke = rbox(0.36, 0.24, 0.36, matDk, true);
+      spin.add(dishYoke);
+      const satDish = meshOf(geoParabolicDish, matLt);
+      satDish.scale.set(1.58, 1.52, 1.58);
+      satDish.rotation.x = 0.72;
+      satDish.position.set(0, 0.08, -0.04);
+      spin.add(satDish);
+      const satRim = torus(1.56, matAcc, true);
+      satRim.rotation.x = Math.PI / 2 + 0.72;
+      satRim.position.set(0, 0.34, 0.2);
+      spin.add(satRim);
+      const satFeed = cyl(0.07, 0.66, matGun);
+      satFeed.rotation.x = 0.72;
+      add(satFeed, 0, 0.36, 0.22, spin);
+      const satLaser = sph(0.14, getGlowMat(CYAN_GLOW, 0.96), true);
+      add(satLaser, 0, 0.6, 0.44, spin);
+      pulse.push(satLaser);
+
+      // Glowing vertical orbital uplink beam pylon (front-right deck)
+      const px = 0.78;
+      const pz = 0.68;
+      add(cyl(0.74, 0.36, matGun, "oct"), px, 1.02, pz);
+      add(cyl(0.56, 0.22, matCer, "oct"), px, 1.28, pz);
+      for (let i = 0; i < 3; i++) {
+        const a = (i * Math.PI * 2) / 3 + 0.4;
+        add(rbox(0.08, 1.08, 0.14, matAcc, true), px + Math.cos(a) * 0.26, 1.66, pz + Math.sin(a) * 0.26);
+      }
+      const beamCol = cyl(0.15, 1.38, getGlowMat(CYAN_GLOW, 0.92));
+      add(beamCol, px, 1.84, pz);
+      pulse.push(beamCol);
+      const beamCrown = torus(0.46, getGlowMat(CYAN_GLOW, 0.88), true);
+      beamCrown.rotation.x = Math.PI / 2;
+      add(beamCrown, px, 2.28, pz);
+      pulse.push(beamCrown);
+
+      // Levitating rotating miniature Defense Satellite orbiting gently above the roof (`spin2`)
+      spin2 = new THREE.Group();
+      spin2.position.set(0.14, 2.66, 0.12);
+      body.add(spin2);
+
+      // Subtle holographic orbital track ring
+      const orbitTrack = meshOf(geoSatOrbitTrack, getGlowMat(CYAN_GLOW, 0.46), false, false);
+      orbitTrack.rotation.x = Math.PI / 2;
+      spin2.add(orbitTrack);
+
+      // Miniature Defense Satellite offset at orbital radius r = 0.64 so it orbits around the roof!
+      const miniSat = new THREE.Group();
+      miniSat.position.set(0.64, 0.04, 0);
+      miniSat.rotation.z = -0.18;
+      spin2.add(miniSat);
+
+      // Gold-foil octagonal satellite bus + ceramic sensor ring
+      add(cyl(0.24, 0.22, matGold, "oct"), 0, 0, 0, miniSat);
+      add(cyl(0.28, 0.06, matAcc, "oct"), 0, 0.06, 0, miniSat);
+      // Twin unfolded photovoltaic solar-array wings
+      const matSolar = getGlassMat("#2278d8");
+      for (const sx of [-0.34, 0.34]) {
+        add(rbox(0.46, 0.025, 0.2, matSolar, true), sx, 0, 0, miniSat);
+        add(rbox(0.48, 0.018, 0.03, matLt, true), sx, 0, 0, miniSat);
+        add(rbox(0.05, 0.03, 0.21, matAcc, true), sx + (sx > 0 ? 0.22 : -0.22), 0, 0, miniSat);
+      }
+      // Downward-pointing orbital defense laser aperture
+      const satLens = sph(0.1, getGlowMat(CYAN_GLOW, 0.98), true);
+      add(satLens, 0, -0.14, 0, miniSat);
+      pulse.push(satLens);
+      add(cyl(0.03, 0.2, matLt), 0, 0.18, 0, miniSat);
+
+      smokePos = new THREE.Vector3(-0.55, 1.55, -0.55);
+      topY = 3.04;
+      break;
+    }
+
+    case "coalmine": {
+      // Neutral Coal Mine (2x2) — Rugged Steel Headframe Gantry, Glossy Coal Heap, Chute & Ownership Beacon
+      body.add(foundationPad(2, 2, colorHex, 0.2));
+
+      const matCoal = getChassisMat("#141820", 0.28, 0.46);
+
+      // Recessed armored mine shaft collar (left-rear)
+      const hx = -0.24;
+      const hz = -0.24;
+      add(rbox(0.86, 0.18, 0.86, matGun, true), hx, 0.3, hz);
+      add(rbox(0.62, 0.08, 0.62, matGraph, true), hx, 0.36, hz);
+
+      // Rugged 4-legged inclined steel A-frame headframe gantry tower
+      for (const [lx, lz] of [
+        [-0.32, -0.32],
+        [0.32, -0.32],
+        [-0.32, 0.32],
+        [0.32, 0.32],
+      ]) {
+        const leg = rbox(0.08, 1.52, 0.08, matLt, true);
+        leg.position.set(hx + lx * 0.65, 1.06, hz + lz * 0.65);
+        leg.rotation.z = lx > 0 ? 0.15 : -0.15;
+        leg.rotation.x = lz > 0 ? -0.15 : 0.15;
+        body.add(leg);
+      }
+      // Horizontal steel cross-girders & headframe crown deck
+      add(rbox(0.56, 0.07, 0.56, matDk, true), hx, 0.98, hz);
+      add(rbox(0.44, 0.08, 0.44, matGun, true), hx, 1.48, hz);
+      add(rbox(0.48, 0.12, 0.48, matCer, true), hx, 1.82, hz);
+      add(rbox(0.52, 0.06, 0.52, matAcc, true), hx, 1.9, hz);
+
+      // Twin yellow winding sheave wheels & vertical hoist cables
+      for (const sx of [-0.1, 0.1]) {
+        const wheel = torus(0.36, matHaz);
+        wheel.rotation.y = Math.PI / 2;
+        add(wheel, hx + sx, 1.66, hz);
+        add(cyl(0.025, 1.24, matLt), hx + sx, 1.0, hz);
+      }
+
+      // Hoist winch machinery house behind headframe
+      add(rbox(0.52, 0.44, 0.48, matDk, true), -0.66, 0.44, 0.48);
+      add(rbox(0.54, 0.07, 0.5, matAcc, true), -0.66, 0.68, 0.48);
+      // Angled hoist cable running from winch house up to sheave wheel
+      const backCable = cyl(0.028, 1.42, matLt);
+      backCable.position.set(-0.46, 1.12, 0.12);
+      backCable.rotation.x = -0.48;
+      backCable.rotation.z = -0.28;
+      body.add(backCable);
+
+      // Dark glossy anthracite coal heap (front-right) + retaining kerbs
+      add(rbox(0.86, 0.14, 0.86, matDk, true), 0.44, 0.28, 0.42);
+      const coalPile = meshOf(geoCoalHeap, matCoal);
+      coalPile.scale.set(0.94, 1.08, 0.94);
+      add(coalPile, 0.44, 0.28, 0.42);
+
+      // Angled conveyor chute from headframe hopper onto the coal heap
+      const chute = new THREE.Group();
+      chute.position.set(0.12, 0.86, 0.1);
+      chute.rotation.y = -0.78;
+      chute.rotation.z = -0.44;
+      body.add(chute);
+      add(rbox(0.84, 0.09, 0.26, matLt, true), 0, 0, 0, chute);
+      add(rbox(0.16, 0.14, 0.28, matHaz, true), 0.36, 0.02, 0, chute);
+      add(rbox(0.08, 0.56, 0.08, matGun, true), 0.18, 0.52, 0.14);
+
+      // Pulsing faction ownership beacon atop headframe mast
+      add(cyl(0.045, 0.36, matLt), hx, 2.08, hz);
+      const ownerBeacon = sph(0.17, getGlowMat(colorHex, 0.96), true);
+      add(ownerBeacon, hx, 2.3, hz);
+      pulse.push(ownerBeacon);
+      const ownerRing = torus(0.32, getGlowMat(colorHex, 0.84), true);
+      ownerRing.rotation.x = Math.PI / 2;
+      add(ownerRing, hx, 2.16, hz);
+      pulse.push(ownerRing);
+
+      smokePos = new THREE.Vector3(-0.66, 0.82, 0.48);
+      topY = 2.46;
+      break;
+    }
+
+    case "barracks2": {
+      // Barracks II Elite Command (2x2) — Reinforced Bunker, Upper Command Deck, Gold Chevrons, Twin Antennas & Banner
+      body.add(foundationPad(2, 2, colorHex, 0.22));
+
+      // Reinforced lower garrison bunker + heavy sloped corner bastions
+      add(rbox(1.74, 0.78, 1.66, matDk), 0, 0.61, -0.02);
+      for (const [bx, bz] of [
+        [-0.82, -0.78],
+        [0.82, -0.78],
+        [-0.82, 0.74],
+        [0.82, 0.74],
+      ]) {
+        add(rbox(0.3, 0.86, 0.3, matCer, true), bx, 0.64, bz);
+        add(rbox(0.32, 0.07, 0.32, matGold, true), bx, 1.06, bz);
+      }
+
+      // Armored upper command deck perched atop the main bunker
+      add(rbox(1.38, 0.44, 1.24, matCer), 0, 1.22, -0.1);
+      add(rbox(1.46, 0.09, 1.32, matAcc, true), 0, 1.46, -0.1);
+      add(rbox(1.48, 0.055, 1.34, matGold, true), 0, 1.52, -0.1);
+      // Panoramic wraparound elite command glass visor
+      add(rbox(1.06, 0.18, 0.07, matGlass, true), 0, 1.24, 0.53);
+      for (const sx of [-0.7, 0.7]) {
+        add(rbox(0.06, 0.16, 0.78, matGlass, true), sx, 1.24, -0.1);
+      }
+
+      // Glowing gold/faction elite chevrons mounted prominently on front parapet
+      const matEliteGlow = getGlowMat(AMBER_GLOW, 0.94);
+      for (const cy of [0.96, 1.08]) {
+        const chL = rbox(0.28, 0.055, 0.06, matEliteGlow, true);
+        chL.rotation.z = 0.42;
+        add(chL, -0.11, cy, 0.84);
+        const chR = rbox(0.28, 0.055, 0.06, matEliteGlow, true);
+        chR.rotation.z = -0.42;
+        add(chR, 0.11, cy, 0.84);
+        if (cy === 1.08) pulse.push(chL, chR);
+      }
+      add(rbox(1.26, 0.08, 0.12, matGold, true), 0, 0.88, 0.82);
+
+      // Expanded illuminated troop deployment portal with armored bollards
+      add(rbox(0.84, 0.62, 0.16, matGun, true), 0, 0.52, 0.78);
+      add(rbox(0.64, 0.48, 0.05, getGlowMat(WHITE_GLOW, 0.88), true), 0, 0.49, 0.84);
+      for (const sx of [-0.52, 0.52]) {
+        add(rbox(0.1, 0.34, 0.1, matHaz, true), sx, 0.38, 0.9);
+      }
+
+      // Twin tall elite comms antennas on left upper command deck
+      for (const [ax, az, ah] of [
+        [-0.58, -0.56, 0.84],
+        [-0.58, 0.34, 0.66],
+      ]) {
+        add(cyl(0.036, ah, matLt), ax, 1.54 + ah / 2, az);
+        add(rbox(0.28, 0.035, 0.035, matGold, true), ax, 1.54 + ah * 0.72, az);
+        const tip = sph(0.075, getGlowMat(CYAN_GLOW, 0.92), true);
+        add(tip, ax, 1.56 + ah, az);
+        pulse.push(tip);
+      }
+
+      // Tall gold-topped mast & waving elite faction banner (`flag`)
+      add(cyl(0.058, 1.38, matLt), 0.68, 1.66, 0.54);
+      add(sph(0.095, matGold), 0.68, 2.36, 0.54);
+      flag = meshOf(geoFlag, matAcc);
+      add(flag, 0.68, 2.14, 0.54);
+
+      smokePos = new THREE.Vector3(-0.42, 1.58, -0.44);
+      topY = 2.46;
+      break;
+    }
+
+    // =========================================================================
+    // NEW LAND VEHICLES (2): himars, railtank
+    // =========================================================================
+    case "himars": {
+      // HIMARS Hypersonic Launcher — Sleek 6x6 Armored Truck, Sloped Glass Cab & Elevated 6-Tube Pod
+      addContactShadow(body, 0.98, 1.24);
+
+      // 6 rugged tactical off-road armored tires with machined alloy rims
+      for (const [wx, wz] of [
+        [-0.56, 0.68],
+        [0.56, 0.68],
+        [-0.56, -0.02],
+        [0.56, -0.02],
+        [-0.56, -0.68],
+        [0.56, -0.68],
+      ]) {
+        const tire = cyl(0.41, 0.24, matGraph);
+        tire.rotation.z = Math.PI / 2;
+        add(tire, wx, 0.205, wz);
+        const rim = cyl(0.22, 0.258, matLt, "oct");
+        rim.rotation.z = Math.PI / 2;
+        add(rim, wx, 0.205, wz);
+      }
+
+      // Low-slung armored 6x6 chassis, wheel-well fenders & side equipment lockers
+      add(rbox(0.96, 0.2, 1.96, matGun, true), 0, 0.36, 0);
+      add(rbox(1.12, 0.1, 1.82, matCer, true), 0, 0.48, 0);
+      for (const sx of [-0.54, 0.54]) {
+        add(rbox(0.12, 0.16, 0.64, matDk, true), sx, 0.4, 0.04);
+        add(rbox(0.03, 0.06, 0.54, matAcc, true), sx + (sx > 0 ? 0.06 : -0.06), 0.42, 0.04);
+      }
+      // Heavy front tactical bumper & glowing LED headlights
+      add(rbox(1.08, 0.14, 0.14, matDk, true), 0, 0.36, 0.98);
+      for (const hx of [-0.36, 0.36]) {
+        add(rbox(0.13, 0.055, 0.03, getGlowMat(WHITE_GLOW, 0.92), true), hx, 0.54, 0.98);
+      }
+
+      // Sloped modern armored forward cab with tinted panoramic glass windshield
+      add(meshOf(geoHimarsCab, matCer), 0, 0.72, 0.62);
+      add(rbox(0.78, 0.055, 0.48, matAcc, true), 0, 0.96, 0.54);
+      const cabWind = rbox(0.74, 0.18, 0.06, matGlass, true);
+      cabWind.rotation.x = -0.36;
+      add(cabWind, 0, 0.8, 0.92);
+      // Rooftop satellite GPS puck + comms whip
+      add(cyl(0.22, 0.055, matLt), 0.18, 1.01, 0.48);
+      add(cyl(0.022, 0.52, matLt), -0.34, 1.2, 0.36);
+
+      // Rotating rear launcher slew turntable (`turret`, `recoil`)
+      turret = new THREE.Group();
+      turret.position.set(0, 0.56, -0.34);
+      body.add(turret);
+
+      add(cyl(0.62, 0.12, matGun, "oct"), 0, 0.04, 0, turret);
+      for (const sx of [-0.34, 0.34]) {
+        add(rbox(0.1, 0.34, 0.46, matDk, true), sx, 0.22, -0.04, turret);
+        const hyd = cyl(0.05, 0.46, matLt);
+        hyd.rotation.x = 0.32;
+        add(hyd, sx * 0.72, 0.28, 0.18, turret);
+      }
+
+      // Elevated 6-tube precision hypersonic missile pod (angled upward inside turret)
+      const podPitch = new THREE.Group();
+      podPitch.position.set(0, 0.38, 0.02);
+      podPitch.rotation.x = -0.52;
+      turret.add(podPitch);
+
+      recoil = new THREE.Group();
+      recoil.position.set(0, 0.06, 0.14);
+      podPitch.add(recoil);
+
+      // Armored precision launcher pod shell with gold trim & faction shroud
+      add(rbox(0.72, 0.4, 1.54, matCer, true), 0, 0, 0, recoil);
+      add(rbox(0.74, 0.075, 1.32, matAcc, true), 0, 0.22, -0.02, recoil);
+      add(rbox(0.76, 0.04, 1.24, matGold, true), 0, 0.26, -0.02, recoil);
+      for (const rz of [-0.52, 0, 0.52]) {
+        add(rbox(0.76, 0.42, 0.07, matGun, true), 0, 0, rz, recoil);
+      }
+
+      // 6 visible precision hypersonic launch tubes (2x3) with glowing red-gold nose cones
+      const matHyperCone = getGlowMat(HEAT_GLOW, 0.96);
+      for (const mx of [-0.21, 0, 0.21]) {
+        for (const my of [-0.095, 0.095]) {
+          const tube = cyl(0.15, 0.16, matLt);
+          tube.rotation.x = Math.PI / 2;
+          add(tube, mx, my, 0.76, recoil);
+          const collar = cyl(0.155, 0.05, matGold);
+          collar.rotation.x = Math.PI / 2;
+          add(collar, mx, my, 0.84, recoil);
+          const nose = meshOf(geoMissileCone, matHyperCone, false, false);
+          nose.scale.set(0.135, 0.26, 0.135);
+          nose.rotation.x = Math.PI / 2;
+          add(nose, mx, my, 0.92, recoil);
+          pulse.push(nose);
+        }
+      }
+
+      smokePos = new THREE.Vector3(0, 0.68, -0.82);
+      topY = 1.66;
+      break;
+    }
+
+    case "railtank": {
+      // Aegis Railgun MBT — Next-Gen Stealth-Faceted Main Battle Tank with Twin Electromagnetic Railgun Barrels
+      addContactShadow(body, 1.08, 1.32);
+
+      // Wide armored twin tracks + reactive ERA stealth side skirts
+      for (const sx of [-0.66, 0.66]) {
+        add(rbox(0.36, 0.32, 2.04, getTreadMat(), true), sx, 0.2, 0);
+        // Sloped stealth track glacis guards
+        const fGuard = rbox(0.38, 0.14, 0.32, matDk, true);
+        fGuard.rotation.x = 0.42;
+        add(fGuard, sx, 0.34, 0.92);
+        const rGuard = rbox(0.38, 0.14, 0.28, matDk, true);
+        rGuard.rotation.x = -0.38;
+        add(rGuard, sx, 0.34, -0.92);
+        // Faceted ERA composite reactive side armor skirt + satin faction stripe
+        const sideOut = sx + (sx > 0 ? 0.18 : -0.18);
+        add(rbox(0.08, 0.24, 1.84, matCer, true), sideOut, 0.31, 0);
+        add(rbox(0.09, 0.06, 1.66, matAcc, true), sideOut + (sx > 0 ? 0.01 : -0.01), 0.37, 0.02);
+        for (const ez of [-0.66, -0.22, 0.22, 0.66]) {
+          add(rbox(0.045, 0.16, 0.34, matDk, true), sideOut + (sx > 0 ? 0.036 : -0.036), 0.24, ez);
+        }
+        // 5 pairs of roadwheels & metallic hubcaps
+        for (const sz of [-0.74, -0.37, 0, 0.37, 0.74]) {
+          const wh = cyl(0.23, 0.38, matGraph);
+          wh.rotation.z = Math.PI / 2;
+          add(wh, sx, 0.15, sz);
+          const hub = cyl(0.095, 0.395, matLt);
+          hub.rotation.z = Math.PI / 2;
+          add(hub, sx, 0.15, sz);
+        }
+      }
+
+      // Sleek stealth-faceted composite hull
+      add(meshOf(geoRailHull, matCer), 0, 0.46, 0);
+      const glacis = rbox(0.96, 0.08, 0.46, matDk, true);
+      glacis.rotation.x = 0.34;
+      add(glacis, 0, 0.54, 0.74);
+      // Driver electro-optical glass slit + recessed cyan-white LED headlights
+      add(rbox(0.3, 0.055, 0.07, matGlass, true), 0, 0.64, 0.64);
+      for (const hx of [-0.42, 0.42]) {
+        add(rbox(0.14, 0.055, 0.04, getGlowMat(WHITE_GLOW, 0.92), true), hx, 0.48, 1.02);
+      }
+      // Rear capacitor cooling deck vents (cyan reactor glow!)
+      add(rbox(0.76, 0.06, 0.5, matGun, true), 0, 0.66, -0.66);
+      for (const rx of [-0.22, 0.22]) {
+        const vent = rbox(0.24, 0.03, 0.36, getGlowMat(CYAN_GLOW, 0.85), true);
+        add(vent, rx, 0.69, -0.68);
+        pulse.push(vent);
+      }
+
+      // Sleek low-profile stealth rotating railgun turret (`turret`, `recoil`)
+      turret = new THREE.Group();
+      turret.position.set(0, 0.74, -0.06);
+      body.add(turret);
+
+      turret.add(meshOf(geoRailTurret, matCer));
+      // Dark-titanium angular cheek armor & bold faction top chevron trim
+      for (const cx of [-0.44, 0.44]) {
+        const cheek = rbox(0.09, 0.18, 0.62, matDk, true);
+        cheek.rotation.y = cx > 0 ? 0.24 : -0.24;
+        add(cheek, cx, 0.0, 0.14, turret);
+      }
+      add(rbox(0.56, 0.055, 0.58, matAcc, true), 0, 0.155, -0.06, turret);
+      // Rear capacitor bustle with glowing cyan charge strips
+      add(rbox(0.78, 0.18, 0.34, matGun, true), 0, 0.03, -0.68, turret);
+      const capStrip = rbox(0.62, 0.055, 0.04, getGlowMat(CYAN_GLOW, 0.94), true);
+      add(capStrip, 0, 0.06, -0.86, turret);
+      pulse.push(capStrip);
+      // Low-profile commander panoramic optic & twin comms whips
+      add(cyl(0.22, 0.08, matDk, "oct"), -0.18, 0.18, -0.24, turret);
+      add(cyl(0.13, 0.08, matGlass), 0.2, 0.19, -0.1, turret);
+      for (const ax of [-0.34, 0.34]) {
+        add(cyl(0.02, 0.56, matLt), ax, 0.36, -0.58, turret);
+      }
+
+      // Twin Parallel Electromagnetic Railgun Barrels lined with glowing cyan accelerator coils (`recoil`)
+      recoil = new THREE.Group();
+      recoil.position.set(0, 0.03, 0.4);
+      turret.add(recoil);
+
+      add(rbox(0.58, 0.2, 0.24, matDk, true), 0, 0, 0, recoil);
+      const matRailGlow = getGlowMat(CYAN_GLOW, 0.96);
+      for (const bx of [-0.18, 0.18]) {
+        // Upper & lower parallel conductive electromagnetic rail beams
+        add(rbox(0.095, 0.046, 1.44, matGun, true), bx, 0.048, 0.68, recoil);
+        add(rbox(0.095, 0.046, 1.44, matGun, true), bx, -0.048, 0.68, recoil);
+        // Side machined titanium shrouds near breech
+        add(rbox(0.13, 0.12, 0.42, matCer, true), bx, 0, 0.24, recoil);
+        // Continuous glowing cyan plasma accelerator channel between the parallel rails!
+        const railCore = rbox(0.048, 0.042, 1.28, matRailGlow, true);
+        add(railCore, bx, 0, 0.72, recoil);
+        pulse.push(railCore);
+        // 4 segmented electromagnetic accelerator coil collars along each rail barrel
+        for (const cz of [0.46, 0.74, 1.02, 1.28]) {
+          const coil = rbox(0.135, 0.135, 0.055, matLt, true);
+          add(coil, bx, 0, cz, recoil);
+          const coilGlow = rbox(0.145, 0.036, 0.03, matRailGlow, true);
+          add(coilGlow, bx, 0, cz, recoil);
+          pulse.push(coilGlow);
+        }
+      }
+
+      smokePos = new THREE.Vector3(0, 0.76, -0.94);
+      topY = 1.26;
       break;
     }
 

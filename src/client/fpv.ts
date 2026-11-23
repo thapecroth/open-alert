@@ -165,6 +165,34 @@ const UNIT_PROFILES: Record<UnitKind, UnitCameraProfile> = {
     recoilPitch: 0.02,
     recoilShake: 0.1,
   },
+  himars: {
+    eyeY: 1.32,
+    fov: 68,
+    initPitch: 0.02,
+    minPitch: -0.42,
+    maxPitch: 0.66,
+    bobAmp: 0.011,
+    bobFreq: 11.5,
+    strafeMode: "steer",
+    turnRate: 1.85,
+    recoilKickZ: 0.12,
+    recoilPitch: 0.044,
+    recoilShake: 0.28,
+  },
+  railtank: {
+    eyeY: 1.36,
+    fov: 66,
+    initPitch: -0.02,
+    minPitch: -0.46,
+    maxPitch: 0.6,
+    bobAmp: 0.013,
+    bobFreq: 12.5,
+    strafeMode: "steer",
+    turnRate: 1.85,
+    recoilKickZ: 0.17,
+    recoilPitch: 0.042,
+    recoilShake: 0.34,
+  },
   harvester: {
     eyeY: 1.22,
     fov: 68,
@@ -180,6 +208,20 @@ const UNIT_PROFILES: Record<UnitKind, UnitCameraProfile> = {
     recoilShake: 0.06,
   },
   // Air Force
+  uav: {
+    eyeY: 3.15,
+    fov: 76,
+    initPitch: -0.24,
+    minPitch: -1.1,
+    maxPitch: 0.72,
+    bobAmp: 0.014,
+    bobFreq: 5.0,
+    strafeMode: "steer",
+    turnRate: 2.7,
+    recoilKickZ: 0.045,
+    recoilPitch: 0.014,
+    recoilShake: 0.09,
+  },
   interceptor: {
     eyeY: 3.42,
     fov: 78,
@@ -221,6 +263,34 @@ const UNIT_PROFILES: Record<UnitKind, UnitCameraProfile> = {
     recoilKickZ: 0.09,
     recoilPitch: 0.026,
     recoilShake: 0.24,
+  },
+  stealthbomber: {
+    eyeY: 3.68,
+    fov: 70,
+    initPitch: -0.24,
+    minPitch: -1.05,
+    maxPitch: 0.74,
+    bobAmp: 0.012,
+    bobFreq: 3.4,
+    strafeMode: "steer",
+    turnRate: 2.0,
+    recoilKickZ: 0.085,
+    recoilPitch: 0.024,
+    recoilShake: 0.22,
+  },
+  hypersonic: {
+    eyeY: 3.55,
+    fov: 82,
+    initPitch: -0.2,
+    minPitch: -1.05,
+    maxPitch: 0.8,
+    bobAmp: 0.014,
+    bobFreq: 6.8,
+    strafeMode: "steer",
+    turnRate: 2.35,
+    recoilKickZ: 0.08,
+    recoilPitch: 0.022,
+    recoilShake: 0.18,
   },
   zeppelin: {
     eyeY: 3.78,
@@ -293,6 +363,20 @@ const UNIT_PROFILES: Record<UnitKind, UnitCameraProfile> = {
     recoilKickZ: 0.14,
     recoilPitch: 0.044,
     recoilShake: 0.34,
+  },
+  carrier: {
+    eyeY: 2.05,
+    fov: 68,
+    initPitch: -0.05,
+    minPitch: -0.48,
+    maxPitch: 0.62,
+    bobAmp: 0.02,
+    bobFreq: 1.8,
+    strafeMode: "steer",
+    turnRate: 1.25,
+    recoilKickZ: 0.085,
+    recoilPitch: 0.024,
+    recoilShake: 0.2,
   },
 };
 
@@ -898,6 +982,230 @@ function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
     addPart(swayGroup, new RoundedBoxGeometry(0.92, 0.044, 0.06, 1, 0.006), factionMat, 0, 0.35, -0.46, 0.14, 0, 0);
     glowPulses.push(addPart(swayGroup, new THREE.BoxGeometry(0.24, 0.018, 0.01), redGlow, 0, -0.26, -0.405, -0.36, 0, 0));
     addMuzzleFlash(recoilGroup, 0, -0.32, -0.82, 1.9, 0xff5a28);
+  } else if (kind === "himars") {
+    // HIMARS Launcher: rugged armored tactical truck cab + elevated 6-tube rocket pod rails!
+    // Armored cab windscreen pillars, top brow & center armored divider
+    addPart(swayGroup, new RoundedBoxGeometry(1.06, 0.078, 0.14, 2, 0.012), cockpitTrim, 0, 0.35, -0.44, 0.16, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.074, 0.64, 0.1, 2, 0.012), cockpitTrim, -0.5, 0.03, -0.44, -0.08, 0.22, -0.1);
+    addPart(swayGroup, new RoundedBoxGeometry(0.074, 0.64, 0.1, 2, 0.012), cockpitTrim, 0.5, 0.03, -0.44, -0.08, -0.22, 0.1);
+    addPart(swayGroup, new RoundedBoxGeometry(0.026, 0.16, 0.05, 1, 0.005), darkMetal, 0, 0.27, -0.44, 0.08, 0, 0);
+    // Lower armored dash + tactical fire-control console
+    addPart(swayGroup, new RoundedBoxGeometry(1.06, 0.105, 0.2, 2, 0.014), cockpitTrim, 0, -0.33, -0.46, -0.24, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.24, 0.024, 0.035, 1, 0.004), factionMat, -0.31, -0.285, -0.42, -0.24, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.24, 0.024, 0.035, 1, 0.004), factionMat, 0.31, -0.285, -0.42, -0.24, 0, 0);
+    // Illuminated fire-control ballistic MFD
+    addPart(swayGroup, new RoundedBoxGeometry(0.26, 0.05, 0.026, 2, 0.005), darkMetal, 0, -0.275, -0.415, -0.36, 0, 0);
+    glowPulses.push(
+      addPart(swayGroup, new THREE.BoxGeometry(0.11, 0.01, 0.006), amberGlow, -0.055, -0.268, -0.4, -0.36, 0, 0),
+      addPart(swayGroup, new THREE.BoxGeometry(0.09, 0.01, 0.006), greenGlow, 0.06, -0.268, -0.4, -0.36, 0, 0),
+      addPart(swayGroup, new THREE.BoxGeometry(0.18, 0.006, 0.006), cyanGlow, 0, -0.282, -0.398, -0.36, 0, 0),
+    );
+
+    // Elevated 6-tube rocket launcher rails (2 rows x 3 tubes) mounted prominently on right gantry + port stabilizer rail
+    const pod = new THREE.Group();
+    pod.position.set(0.36, 0.02, -0.54);
+    pod.rotation.set(0.22, -0.09, -0.03);
+    recoilGroup.add(pod);
+    // Armored 6-tube pod housing & faction stripe
+    addPart(pod, new RoundedBoxGeometry(0.24, 0.175, 0.56, 3, 0.016), gunMetal, 0, 0, 0);
+    addPart(pod, new RoundedBoxGeometry(0.252, 0.052, 0.36, 2, 0.008), factionMat, 0, 0.01, 0.02);
+    // Heavy steel elevation guide rails along top & sides
+    addPart(pod, new RoundedBoxGeometry(0.024, 0.022, 0.62, 1, 0.004), lightAlloy, -0.085, 0.098, -0.02);
+    addPart(pod, new RoundedBoxGeometry(0.024, 0.022, 0.62, 1, 0.004), lightAlloy, 0.085, 0.098, -0.02);
+    // 6 rocket launch tubes (2 rows x 3 columns) with glowing warhead noses
+    for (let r = 0; r < 2; r++) {
+      for (let c = 0; c < 3; c++) {
+        const tx = (c - 1) * 0.068;
+        const ty = (r === 0 ? 1 : -1) * 0.038;
+        addPart(pod, new THREE.CylinderGeometry(0.026, 0.026, 0.09, 10), cockpitTrim, tx, ty, -0.27, Math.PI / 2, 0, 0);
+        addPart(
+          pod,
+          new THREE.ConeGeometry(0.018, 0.052, 10),
+          (r + c) % 2 === 0 ? redGlow : amberGlow,
+          tx,
+          ty,
+          -0.31,
+          -Math.PI / 2,
+          0,
+          0,
+        );
+      }
+    }
+    addMuzzleFlash(pod, 0, 0, -0.44, 2.15, 0xff7826);
+
+    // Left elevated rangefinder / secondary stabilizer rail balancing the cab silhouette
+    const leftRail = new THREE.Group();
+    leftRail.position.set(-0.39, -0.08, -0.56);
+    leftRail.rotation.set(0.18, 0.09, 0.03);
+    recoilGroup.add(leftRail);
+    addPart(leftRail, new RoundedBoxGeometry(0.075, 0.09, 0.44, 2, 0.01), darkMetal, 0, 0, 0);
+    addPart(leftRail, new RoundedBoxGeometry(0.024, 0.024, 0.48, 1, 0.004), lightAlloy, 0, 0.056, -0.02);
+    glowPulses.push(addPart(leftRail, new THREE.BoxGeometry(0.042, 0.026, 0.014), cyanGlow, 0, 0.01, -0.22));
+    addMuzzleFlash(leftRail, 0, 0.02, -0.34, 1.35, 0xff9238);
+  } else if (kind === "railtank") {
+    // Aegis Railgun MBT: heavy gunner cowl + twin long glowing electromagnetic railgun barrels!
+    addGunnerCowl(0.35, -0.34, "#38f2ff", true);
+
+    for (const side of [-1, 1]) {
+      const ox = side * 0.165;
+      const oy = -0.245;
+      // Heavy armored electromagnetic breech housing & capacitor block
+      addPart(recoilGroup, new RoundedBoxGeometry(0.155, 0.135, 0.28, 2, 0.014), darkMetal, ox, oy, -0.48);
+      addPart(recoilGroup, new RoundedBoxGeometry(0.165, 0.05, 0.24, 2, 0.008), factionMat, ox, oy + 0.045, -0.52);
+      // Glowing cyan capacitor readiness bars along breech top
+      glowPulses.push(
+        addPart(recoilGroup, new THREE.BoxGeometry(0.058, 0.01, 0.085), cyanGlow, ox, oy + 0.075, -0.51),
+      );
+      // Parallel upper & lower machined titanium magnetic accelerator rails
+      addPart(recoilGroup, new RoundedBoxGeometry(0.048, 0.024, 0.78, 2, 0.005), lightAlloy, ox, oy + 0.028, -0.92);
+      addPart(recoilGroup, new RoundedBoxGeometry(0.048, 0.024, 0.78, 2, 0.005), lightAlloy, ox, oy - 0.028, -0.92);
+      // Outer side armor fins flanking rails
+      addPart(recoilGroup, new RoundedBoxGeometry(0.016, 0.064, 0.62, 1, 0.004), gunMetal, ox + side * 0.032, oy, -0.84);
+      // Blazing continuous cyan electromagnetic plasma core channel sandwiched between the rails
+      glowPulses.push(
+        addPart(recoilGroup, new THREE.BoxGeometry(0.018, 0.022, 0.74), cyanGlow, ox, oy, -0.92),
+      );
+      // 4 glowing electromagnetic accelerator coil collars spaced along each barrel
+      for (let c = 0; c < 4; c++) {
+        const cz = -0.66 - c * 0.18;
+        addPart(recoilGroup, new RoundedBoxGeometry(0.074, 0.086, 0.026, 2, 0.005), darkMetal, ox, oy, cz);
+        glowPulses.push(
+          addPart(recoilGroup, new THREE.BoxGeometry(0.08, 0.014, 0.014), cyanGlow, ox, oy, cz),
+        );
+      }
+      // Electromagnetic muzzle prong tips
+      addPart(recoilGroup, new RoundedBoxGeometry(0.068, 0.026, 0.08, 1, 0.004), darkMetal, ox, oy + 0.032, -1.32);
+      addPart(recoilGroup, new RoundedBoxGeometry(0.068, 0.026, 0.08, 1, 0.004), darkMetal, ox, oy - 0.032, -1.32);
+      addMuzzleFlash(recoilGroup, ox, oy, -1.4, 2.15, 0x5cf6ff);
+    }
+  } else if (kind === "uav") {
+    // Reaper Drone: sleek remote optical sensor feed frame + FLIR telemetry rails + wing micro-pods
+    // Outer carbon-fiber optical viewport L-corner brackets (keeps entire center view razor-clear)
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        addPart(swayGroup, new RoundedBoxGeometry(0.16, 0.022, 0.04, 1, 0.004), cockpitTrim, sx * 0.42, sy * 0.31, -0.45);
+        addPart(swayGroup, new RoundedBoxGeometry(0.022, 0.14, 0.04, 1, 0.004), cockpitTrim, sx * 0.49, sy * 0.25, -0.45);
+        glowPulses.push(
+          addPart(swayGroup, new THREE.BoxGeometry(0.05, 0.006, 0.01), cyanGlow, sx * 0.42, sy * 0.295, -0.43),
+        );
+      }
+    }
+    // Thin upper & lower optical gimbal telemetry bars + faction sensor tabs
+    addPart(swayGroup, new RoundedBoxGeometry(0.54, 0.018, 0.035, 1, 0.004), darkMetal, 0, 0.325, -0.46);
+    addPart(swayGroup, new RoundedBoxGeometry(0.58, 0.026, 0.05, 1, 0.005), darkMetal, 0, -0.325, -0.46);
+    addPart(swayGroup, new RoundedBoxGeometry(0.11, 0.014, 0.02, 1, 0.003), factionMat, -0.22, -0.315, -0.44);
+    addPart(swayGroup, new RoundedBoxGeometry(0.11, 0.014, 0.02, 1, 0.003), factionMat, 0.22, -0.315, -0.44);
+    // Rotating gyro-stabilized laser designator lens ring at lower center
+    const gimbalRing = addPart(swayGroup, new THREE.TorusGeometry(0.042, 0.0045, 8, 24), cyanGlow, 0, -0.3, -0.45);
+    spinners.push({ obj: gimbalRing, axis: "z", speed: 2.1 });
+    glowPulses.push(
+      addPart(swayGroup, new THREE.BoxGeometry(0.024, 0.008, 0.008), greenGlow, -0.21, 0.315, -0.435),
+      addPart(swayGroup, new THREE.BoxGeometry(0.024, 0.008, 0.008), cyanGlow, 0.21, 0.315, -0.435),
+    );
+    // Translucent FLIR azimuth calibration arc along upper frame
+    addPart(swayGroup, new THREE.TorusGeometry(0.39, 0.0035, 6, 32, Math.PI * 0.42), cyanGlow, 0, -0.02, -0.46, 0, 0, Math.PI * 0.29);
+    // Under-wing twin Reaper micro-missile pylons peeking at lower left & right
+    for (const sx of [-1, 1]) {
+      addPart(recoilGroup, new THREE.CylinderGeometry(0.016, 0.018, 0.32, 10), gunMetal, sx * 0.29, -0.26, -0.74, Math.PI / 2, 0, 0);
+      addPart(recoilGroup, new THREE.ConeGeometry(0.017, 0.055, 8), amberGlow, sx * 0.29, -0.26, -0.92, -Math.PI / 2, 0, 0);
+      addMuzzleFlash(recoilGroup, sx * 0.29, -0.26, -0.98, 1.15, 0x62f2ff);
+    }
+  } else if (kind === "stealthbomber") {
+    // B-21 Phantom: angular matte-obsidian stealth flying-wing canopy + low-glare stealth HUD
+    const obsidianMat = getChassisMat("#11151b", 0.58, 0.38);
+    // Sharp radar-deflecting faceted angular canopy brow (V-angled stealth mullions)
+    addPart(swayGroup, new RoundedBoxGeometry(0.56, 0.042, 0.075, 2, 0.006), obsidianMat, -0.24, 0.32, -0.45, 0.16, 0.06, 0.12);
+    addPart(swayGroup, new RoundedBoxGeometry(0.56, 0.042, 0.075, 2, 0.006), obsidianMat, 0.24, 0.32, -0.45, 0.16, -0.06, -0.12);
+    // Swept angular matte-obsidian A-pillar struts with subtle gold radar-absorbent edge sheen
+    addPart(swayGroup, new RoundedBoxGeometry(0.052, 0.56, 0.075, 2, 0.008), obsidianMat, -0.5, 0.05, -0.45, -0.22, 0.28, -0.26);
+    addPart(swayGroup, new RoundedBoxGeometry(0.052, 0.56, 0.075, 2, 0.008), obsidianMat, 0.5, 0.05, -0.45, -0.22, -0.28, 0.26);
+    addPart(swayGroup, new THREE.BoxGeometry(0.008, 0.42, 0.012), brassMat, -0.47, 0.05, -0.43, -0.22, 0.28, -0.26);
+    addPart(swayGroup, new THREE.BoxGeometry(0.008, 0.42, 0.012), brassMat, 0.47, 0.05, -0.43, -0.22, -0.28, 0.26);
+    // Minimalist faceted stealth glareshield + low-observable faction accents
+    addPart(swayGroup, new RoundedBoxGeometry(0.92, 0.11, 0.24, 2, 0.014), obsidianMat, 0, -0.32, -0.48, -0.28, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.16, 0.016, 0.05, 1, 0.003), factionMat, -0.3, -0.265, -0.44, -0.28, 0.12, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.16, 0.016, 0.05, 1, 0.003), factionMat, 0.3, -0.265, -0.44, -0.28, -0.12, 0);
+    // Dim emerald/cyan stealth cloak & internal bomb-bay status indicators
+    glowPulses.push(
+      addPart(swayGroup, new THREE.BoxGeometry(0.12, 0.009, 0.007), cyanGlow, 0, -0.264, -0.405, -0.38, 0, 0),
+      addPart(swayGroup, new THREE.BoxGeometry(0.075, 0.008, 0.007), greenGlow, -0.18, -0.272, -0.408, -0.34, 0.1, 0),
+      addPart(swayGroup, new THREE.BoxGeometry(0.075, 0.008, 0.007), amberGlow, 0.18, -0.272, -0.408, -0.34, -0.1, 0),
+    );
+    // Sleek stealth HUD combiner glass with emerald-cyan bomb-drop chevrons
+    const stealthHudMat = trackMat(
+      new THREE.MeshBasicMaterial({
+        color: 0x38f2ff,
+        transparent: true,
+        opacity: 0.12,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    const sPane = addPart(swayGroup, new THREE.PlaneGeometry(0.22, 0.088), stealthHudMat, 0, -0.205, -0.43, 0.16, 0, 0);
+    sPane.renderOrder = 3;
+    addPart(swayGroup, new THREE.BoxGeometry(0.068, 0.003, 0.002), cyanGlow, -0.055, -0.205, -0.425, 0.16, 0, 0);
+    addPart(swayGroup, new THREE.BoxGeometry(0.068, 0.003, 0.002), cyanGlow, 0.055, -0.205, -0.425, 0.16, 0, 0);
+    addMuzzleFlash(recoilGroup, 0, -0.34, -0.86, 1.65, 0x52f2ff);
+  } else if (kind === "hypersonic") {
+    // Mach-9 Strike: ultra-sleek high-speed Mach-9 visor + delta needle nose + scramjet plasma rails!
+    const titaniumMat = getChassisMat("#323d4c", 0.24, 0.86);
+    addAircraftCanopy(false, false);
+    // Slept aerodynamic Mach-9 thermal visor arch overlay
+    addPart(swayGroup, new RoundedBoxGeometry(0.76, 0.026, 0.07, 2, 0.006), titaniumMat, 0, 0.345, -0.45, 0.22, 0, 0);
+    // Long needle-sharp hypersonic delta nose cone & chine strakes extending forward!
+    addPart(swayGroup, new THREE.ConeGeometry(0.068, 0.68, 6), titaniumMat, 0, -0.315, -0.92, -Math.PI / 2, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.14, 0.022, 0.42, 1, 0.004), factionMat, 0, -0.302, -0.78, 0.04, 0, 0);
+    // Blazing cyan scramjet plasma glow rails along the swept nose chines
+    for (const sx of [-1, 1]) {
+      glowPulses.push(
+        addPart(swayGroup, new THREE.BoxGeometry(0.012, 0.012, 0.44), cyanGlow, sx * 0.095, -0.305, -0.82, 0.04, -sx * 0.14, 0),
+      );
+      // Conformal Mach-9 strike missile rails low left & right
+      addPart(recoilGroup, new THREE.CylinderGeometry(0.016, 0.02, 0.42, 10), lightAlloy, sx * 0.24, -0.275, -0.84, Math.PI / 2, 0, 0);
+      addPart(recoilGroup, new THREE.ConeGeometry(0.018, 0.08, 8), cyanGlow, sx * 0.24, -0.275, -1.08, -Math.PI / 2, 0, 0);
+      addMuzzleFlash(recoilGroup, sx * 0.24, -0.275, -1.14, 1.7, 0x72f8ff);
+    }
+  } else if (kind === "carrier") {
+    // Nimitz Carrier: commanding panoramic supercarrier island bridge + helm radar + catapult flight deck!
+    // Wide commanding bridge window brow & heavy sloped bridge stanchions
+    addPart(swayGroup, new RoundedBoxGeometry(1.18, 0.07, 0.16, 2, 0.012), cockpitTrim, 0, 0.355, -0.45, 0.14, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.056, 0.62, 0.09, 2, 0.008), cockpitTrim, -0.54, 0.04, -0.45, -0.1, 0.2, -0.1);
+    addPart(swayGroup, new RoundedBoxGeometry(0.056, 0.62, 0.09, 2, 0.008), cockpitTrim, 0.54, 0.04, -0.45, -0.1, -0.2, 0.1);
+    // Subtle slim upper bridge window mullions (leaves wide panoramic view clear)
+    addPart(swayGroup, new RoundedBoxGeometry(0.022, 0.14, 0.04, 1, 0.004), gunMetal, -0.25, 0.295, -0.45, 0.12, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.022, 0.14, 0.04, 1, 0.004), gunMetal, 0.25, 0.295, -0.45, 0.12, 0, 0);
+    // Commanding bridge console desk + faction fleet insignia trim
+    addPart(swayGroup, new RoundedBoxGeometry(1.14, 0.115, 0.26, 2, 0.016), cockpitTrim, 0, -0.33, -0.48, -0.22, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.24, 0.024, 0.04, 1, 0.004), factionMat, -0.38, -0.275, -0.43, -0.22, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.24, 0.024, 0.04, 1, 0.004), factionMat, 0.38, -0.275, -0.43, -0.22, 0, 0);
+    // Central illuminated tactical fleet radar table with sweeping cyan radar beam!
+    addPart(swayGroup, new THREE.CylinderGeometry(0.072, 0.078, 0.022, 20), darkMetal, 0, -0.275, -0.42, 0.42, 0, 0);
+    addPart(swayGroup, new THREE.CylinderGeometry(0.062, 0.062, 0.006, 20), glassTint, 0, -0.266, -0.415, 0.42, 0, 0);
+    const radarSweep = new THREE.Group();
+    radarSweep.position.set(0, -0.262, -0.412);
+    radarSweep.rotation.x = 0.42;
+    swayGroup.add(radarSweep);
+    addPart(radarSweep, new THREE.BoxGeometry(0.006, 0.004, 0.056), cyanGlow, 0, 0, -0.028);
+    spinners.push({ obj: radarSweep, axis: "y", speed: -2.4 });
+    // Port & starboard fleet air-wing telemetry MFD strips + brass telegraph levers
+    glowPulses.push(
+      addPart(swayGroup, new THREE.BoxGeometry(0.11, 0.012, 0.008), greenGlow, -0.2, -0.272, -0.415, -0.3, 0.1, 0),
+      addPart(swayGroup, new THREE.BoxGeometry(0.11, 0.012, 0.008), cyanGlow, 0.2, -0.272, -0.415, -0.3, -0.1, 0),
+    );
+    addPart(swayGroup, new THREE.CylinderGeometry(0.009, 0.009, 0.07, 8), brassMat, -0.115, -0.265, -0.42, -0.22, 0, 0);
+    addPart(swayGroup, new THREE.CylinderGeometry(0.009, 0.009, 0.07, 8), brassMat, 0.115, -0.265, -0.42, -0.22, 0, 0);
+    // Forward flight deck bow strip & twin electromagnetic catapult launch rails visible low ahead
+    addPart(swayGroup, new RoundedBoxGeometry(0.56, 0.024, 0.58, 2, 0.006), gunMetal, 0, -0.365, -0.88, 0.04, 0, 0);
+    glowPulses.push(
+      addPart(swayGroup, new THREE.BoxGeometry(0.014, 0.006, 0.48), amberGlow, -0.12, -0.35, -0.88, 0.04, 0, 0),
+      addPart(swayGroup, new THREE.BoxGeometry(0.014, 0.006, 0.48), amberGlow, 0.12, -0.35, -0.88, 0.04, 0, 0),
+    );
+    // Twin forward CIWS / drone-catapult launch muzzle flashes
+    addPart(recoilGroup, new THREE.CylinderGeometry(0.018, 0.02, 0.28, 10), lightAlloy, -0.24, -0.3, -0.78, Math.PI / 2, 0, 0);
+    addPart(recoilGroup, new THREE.CylinderGeometry(0.018, 0.02, 0.28, 10), lightAlloy, 0.24, -0.3, -0.78, Math.PI / 2, 0, 0);
+    addMuzzleFlash(recoilGroup, -0.24, -0.3, -0.96, 1.5, 0x62f2ff);
+    addMuzzleFlash(recoilGroup, 0.24, -0.3, -0.96, 1.5, 0x62f2ff);
   } else {
     // Kraken Sub: armored periscope visor bezel framing the ocean surface
     // Outer thick dark submarine steel ring (leaves huge clean optical viewport in center)

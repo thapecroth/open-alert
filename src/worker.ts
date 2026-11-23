@@ -23,8 +23,9 @@ import {
   UNITS,
   SPAWNS,
   SHIPYARD_BUILD_DIST,
+  UPGRADE_PATHS,
 } from "./shared/gamedefs";
-import type { MapId, BotDiff, BotProfile, GameConfig, BuildingKind, UnitKind } from "./shared/gamedefs";
+import type { MapId, BotDiff, BotProfile, GameConfig, BuildingKind, BuildCategory, UnitKind } from "./shared/gamedefs";
 
 interface Env {
   GameRoom: DurableObjectNamespace;
@@ -125,7 +126,7 @@ const MCP_TOOLS = [
   {
     name: "build_structure",
     description:
-      "Start constructing a building in your Construction Yard queue (power, refinery, barracks, radar, factory, airfield, shipyard, turret, arc, depot, techlab, purifier, superweapon).",
+      "Start constructing a structure or defense in your Construction Yard parallel queues (structures & defenses build simultaneously).",
     inputSchema: {
       type: "object",
       properties: {
@@ -142,7 +143,7 @@ const MCP_TOOLS = [
   {
     name: "place_structure",
     description:
-      "Place the finished structure currently in `awaiting`. If tx/ty are omitted, automatically scans for a legal valid placement tile near your base.",
+      "Place the finished structure or defense currently in `awaiting` / `awaitingDef`. Optional `cat` ('structure' | 'defense') selects which queue; if tx/ty are omitted, automatically scans for a legal valid placement tile near your base.",
     inputSchema: {
       type: "object",
       properties: {
@@ -150,6 +151,7 @@ const MCP_TOOLS = [
         token: { type: "string" },
         tx: { type: "integer", minimum: 0, maximum: MAP_W - 1 },
         ty: { type: "integer", minimum: 0, maximum: MAP_H - 1 },
+        cat: { type: "string", enum: ["structure", "defense"] },
       },
       required: ["room", "token"],
     },
@@ -257,8 +259,10 @@ function buildGymSchemaResponse() {
           pwrUse: "integer — total power consumed",
           lowPower: "boolean — true when pwrUse > pwrHave (halves production & disables defenses)",
           eliminated: "boolean — true if your faction has been eliminated",
-          bq: "{ kind: BuildingKind, left: number, total: number } | null — active building construction queue",
-          awaiting: "BuildingKind | null — finished building waiting to be placed",
+          bq: "{ kind: BuildingKind, left: number, total: number } | null — active structure construction queue",
+          awaiting: "BuildingKind | null — finished structure waiting to be placed",
+          dq: "{ kind: BuildingKind, left: number, total: number } | null — active parallel defense construction queue",
+          awaitingDef: "BuildingKind | null — finished defense waiting to be placed",
           queues: "Partial<Record<'barracks'|'factory'|'airfield'|'shipyard', { unit: UnitKind, left: number, total: number, count: number }>>",
         },
         ents: "Array<{ id: number, o: number, k: EntKind, x: number, y: number, hp: number, mhp: number, cargo?: number }>",
@@ -545,12 +549,19 @@ export class GameRoom extends Server<Env> {
       case "build":
         err = typeof m.kind === "string" ? this.world.cmdBuild(slot, m.kind) : "bad kind";
         break;
-      case "buildCancel":
-        this.world.cmdBuildCancel(slot);
+      case "buildCancel": {
+        const cat: BuildCategory | undefined = m.cat === "structure" || m.cat === "defense" ? m.cat : undefined;
+        this.world.cmdBuildCancel(slot, cat);
         break;
-      case "place":
-        err = Number.isFinite(m.tx) && Number.isFinite(m.ty) ? this.world.cmdPlace(slot, Math.floor(m.tx), Math.floor(m.ty)) : "bad coords";
+      }
+      case "place": {
+        const cat: BuildCategory | undefined = m.cat === "structure" || m.cat === "defense" ? m.cat : undefined;
+        err =
+          Number.isFinite(m.tx) && Number.isFinite(m.ty)
+            ? this.world.cmdPlace(slot, Math.floor(m.tx), Math.floor(m.ty), cat)
+            : "bad coords";
         break;
+      }
       case "train":
         err = typeof m.unit === "string" ? this.world.cmdTrain(slot, m.unit) : "bad unit";
         break;
@@ -1212,6 +1223,8 @@ export class GameRoom extends Server<Env> {
               eliminated: false,
               bq: null,
               awaiting: null,
+              dq: null,
+              awaitingDef: null,
               queues: {},
             },
             ents: [],
@@ -1229,15 +1242,20 @@ export class GameRoom extends Server<Env> {
       const ownBuildings: Record<string, unknown>[] = [];
       const ownUnits: Record<string, unknown>[] = [];
       const neutralDerricks: Record<string, unknown>[] = [];
-      const visionSources: { x: number; y: number; r: number; subR: number }[] = [];
+      const neutralCoalmines: Record<string, unknown>[] = [];
+      const visionSources: { x: number; y: number; r: number }[] = [];
       let baseX = SPAWNS[p.slot]?.x ?? 8;
       let baseY = SPAWNS[p.slot]?.y ?? 8;
 
       for (const e of w.ents.values()) {
         if (w.isAlly(p.slot, e.o)) {
-          const r = e.k === "radar" || e.k === "superweapon" ? 17 : 14;
-          const subR = e.k === "gunboat" || e.k === "destroyer" || e.k === "sub" ? 9 : 5.5;
-          visionSources.push({ x: e.x, y: e.y, r, subR });
+          const r =
+            e.k === "radar" || e.k === "superweapon" || e.k === "satlink"
+              ? 17
+              : !hasOwn(BUILDINGS, e.k) && UNITS[e.k as UnitKind].vision
+                ? UNITS[e.k as UnitKind].vision!
+                : 14;
+          visionSources.push({ x: e.x, y: e.y, r });
         }
         if (e.o === p.slot) {
           if (hasOwn(BUILDINGS, e.k)) {
@@ -1270,20 +1288,25 @@ export class GameRoom extends Server<Env> {
           }
         } else if (e.o === -1 && e.k === "derrick") {
           neutralDerricks.push({ id: e.id, x: round1(e.x), y: round1(e.y), hp: Math.round(e.hp), mhp: e.mhp });
+        } else if (e.o === -1 && e.k === "coalmine") {
+          neutralCoalmines.push({ id: e.id, x: round1(e.x), y: round1(e.y), hp: Math.round(e.hp), mhp: e.mhp });
         }
       }
 
       const visibleEnemies: Record<string, unknown>[] = [];
       for (const e of w.ents.values()) {
         if (e.o < 0 || w.isAlly(p.slot, e.o)) continue;
-        const subStealth = e.k === "sub" && w.tick >= e.subSurfaceUntil;
-        let visible = !this.config.fog && !subStealth;
-        if (!visible) {
+        const stealthed = w.isStealthed(e);
+        let visible = false;
+        if (stealthed) {
+          visible = w.isStealthDetected(e, p.slot);
+        } else if (!this.config.fog) {
+          visible = true;
+        } else {
           for (const v of visionSources) {
             const dx = v.x - e.x;
             const dy = v.y - e.y;
-            const lim = subStealth ? v.subR : v.r;
-            if (dx * dx + dy * dy <= lim * lim) {
+            if (dx * dx + dy * dy <= v.r * v.r) {
               visible = true;
               break;
             }
@@ -1324,6 +1347,7 @@ export class GameRoom extends Server<Env> {
         `t=${w.tick} | $${Math.floor(wp.credits)} | pwr ${wp.pwrHave}/${wp.pwrUse}${wp.lowPower ? " LOW" : ""}` +
         ` | bld=${ownBuildings.length} units=${ownUnits.length} enemies_seen=${visibleEnemies.length}` +
         (wp.awaiting ? ` | awaiting=${wp.awaiting}` : "") +
+        (wp.awaitingDef ? ` | awaitingDef=${wp.awaitingDef}` : "") +
         (w.winner !== null ? ` | winner=${w.winner}` : "");
 
       const state: Record<string, unknown> = {
@@ -1343,6 +1367,8 @@ export class GameRoom extends Server<Env> {
         eliminated: wp.eliminated,
         awaiting: wp.awaiting,
         bq: wp.bq,
+        awaitingDef: wp.awaitingDef,
+        dq: wp.dq,
         queues: wp.queues,
         swLeft: wp.swLeft >= 0 ? wp.swLeft : null,
         reconLeft: wp.reconLeft >= 0 ? wp.reconLeft : null,
@@ -1350,6 +1376,7 @@ export class GameRoom extends Server<Env> {
         own_units: ownUnits,
         visible_enemies: visibleEnemies,
         neutral_derricks: neutralDerricks,
+        neutral_coalmines: neutralCoalmines,
         crates: [...w.crates.values()].map((c) => ({ id: c.id, kind: c.kind, x: round1(c.x), y: round1(c.y) })),
         nearest_ore: nearestOre,
         ore_tiles: oreSnap.length,
@@ -1392,12 +1419,15 @@ export class GameRoom extends Server<Env> {
       }
       const err = w.cmdBuild(p.slot, args.kind as BuildingKind);
       if (err) return { ok: false, error: err };
-      return { ok: true, kind: args.kind, bq: w.players.get(p.slot)?.bq ?? null };
+      const wp = w.players.get(p.slot);
+      return { ok: true, kind: args.kind, bq: wp?.bq ?? null, dq: wp?.dq ?? null };
     }
 
     if (op === "place_structure") {
       const wp = w.players.get(p.slot);
-      const kind = wp?.awaiting;
+      const cat: BuildCategory | undefined =
+        args.cat === "structure" || args.cat === "defense" ? args.cat : undefined;
+      const kind = cat === "defense" ? wp?.awaitingDef : cat === "structure" ? wp?.awaiting : wp?.awaiting ?? wp?.awaitingDef;
       if (!kind) return { ok: false, error: "nothing to place" };
       let tx: number;
       let ty: number;
@@ -1410,7 +1440,7 @@ export class GameRoom extends Server<Env> {
         tx = spot.tx;
         ty = spot.ty;
       }
-      const err = w.cmdPlace(p.slot, tx, ty);
+      const err = w.cmdPlace(p.slot, tx, ty, cat);
       if (err) return { ok: false, error: err };
       return { ok: true, kind, tx, ty };
     }
@@ -1452,7 +1482,13 @@ export class GameRoom extends Server<Env> {
           if (
             (grp === "all_combat" && u.dmg > 0) ||
             (grp === "infantry" && (e.k === "infantry" || e.k === "rocket" || e.k === "engineer")) ||
-            (grp === "tanks" && (e.k === "tank" || e.k === "heavy" || e.k === "arty" || e.k === "spider")) ||
+            (grp === "tanks" &&
+              (e.k === "tank" ||
+                e.k === "heavy" ||
+                e.k === "arty" ||
+                e.k === "spider" ||
+                e.k === "himars" ||
+                e.k === "railtank")) ||
             (grp === "air" && u.domain === "air") ||
             (grp === "sea" && u.domain === "sea") ||
             (grp === "harvesters" && e.k === "harvester")
@@ -1514,7 +1550,15 @@ export class GameRoom extends Server<Env> {
               }
             }
           }
-          if (id < 0) return { ok: false, error: "no factory to upgrade" };
+          if (id < 0) {
+            for (const e of w.ents.values()) {
+              if (e.o === p.slot && hasOwn(UPGRADE_PATHS, e.k)) {
+                id = e.id;
+                break;
+              }
+            }
+          }
+          if (id < 0) return { ok: false, error: "no upgradeable building found" };
           const err = w.cmdUpgrade(p.slot, id);
           return err ? { ok: false, error: err } : { ok: true, action, id };
         }

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { CrateSnap, EntSnap, GameEvent, OrderKind, PlayerState } from "../shared/protocol";
-import type { CrateKind } from "../shared/gamedefs";
+import { UNITS, type CrateKind, type UnitKind } from "../shared/gamedefs";
 import { makeEntVis, makeCrateVis, setVetBadge, tagEntity, applyFacing, EntVis, CrateVis } from "./models";
 import { createAnimState, stepEntityAnim, triggerFireAnim, triggerHitFlash, AnimState } from "./anim";
 import { VfxSystem, WaypointOverlay } from "./vfx";
@@ -551,7 +551,7 @@ export class Renderer {
             if (rig.smokePos && t.vis.root.visible) {
               const k = t.last.k;
               const damaged = t.last.hp < t.last.mhp * 0.55;
-              const isStack = k === "factory" || k === "factory2" || k === "refinery" || k === "power";
+              const isStack = k === "factory" || k === "factory2" || k === "refinery" || k === "power" || k === "coalplant";
               if (damaged || isStack) {
                 t.anim.smokeCd -= safeDt;
                 if (t.anim.smokeCd <= 0) {
@@ -635,10 +635,13 @@ export class Renderer {
           if (
             t.last.rally &&
             (t.last.k === "barracks" ||
+              t.last.k === "barracks2" ||
               t.last.k === "factory" ||
               t.last.k === "factory2" ||
               t.last.k === "airfield" ||
-              t.last.k === "shipyard")
+              t.last.k === "airfield2" ||
+              t.last.k === "shipyard" ||
+              t.last.k === "shipyard2")
           ) {
             const ri = this.rallyEntries.length;
             let rEntry = this.rallyEntryPool[ri];
@@ -676,6 +679,7 @@ export class Renderer {
     for (const ev of events) {
       if (ev.e === "shot") {
         const shooter = ev.src != null ? this.tracked.get(ev.src) : undefined;
+        const isSatLaser = shooter?.last.k === "satlink" && ev.w === "laser";
         this.vfx.spawnShot(
           ev.fx,
           ev.fy,
@@ -683,9 +687,12 @@ export class Renderer {
           ev.ty,
           ev.w ?? "bullet",
           ev.vet ?? 0,
-          shooter?.vis.rig.altitude,
+          isSatLaser ? 24 : shooter?.vis.rig.altitude,
+          shooter?.last.k,
         );
         if (shooter) triggerFireAnim(shooter.anim, ev.fx, ev.fy, ev.tx, ev.ty);
+      } else if (ev.e === "intercept") {
+        this.vfx.spawnIntercept(ev.fx, ev.fy, ev.tx, ev.ty);
       } else if (ev.e === "boom") {
         this.vfx.spawnBoom(ev.x, ev.y, ev.r);
         if (ev.r >= 1.5) {
@@ -772,13 +779,36 @@ export class Renderer {
     }
 
     const isFriendly = (o: number) => o === mySlot || (allies?.has(o) ?? false);
-    const visionSources: { x: number; y: number; r: number; subDetectR: number }[] = [];
+    let hasSatlink = false;
+    for (const t of this.tracked.values()) {
+      if (isFriendly(t.last.o) && t.last.k === "satlink") {
+        hasSatlink = true;
+        break;
+      }
+    }
+    const visionMult = hasSatlink ? 1.4 : 1.0;
+
+    const visionSources: { x: number; y: number; r: number; subDetectR: number; stealthAirDetectR: number }[] = [];
     for (const t of this.tracked.values()) {
       if (isFriendly(t.last.o)) {
         const k = t.last.k;
-        const r = k === "radar" || k === "superweapon" ? 17 : 14;
-        const subDetectR = k === "gunboat" || k === "destroyer" || k === "sub" ? 9 : 5.5;
-        visionSources.push({ x: t.last.x, y: t.last.y, r, subDetectR });
+        const baseR = t.isBuilding
+          ? k === "radar" || k === "superweapon" || k === "satlink"
+            ? 17
+            : 14
+          : (UNITS[k as UnitKind]?.vision ?? 9);
+        const r = baseR * visionMult;
+        const subDetectR = k === "gunboat" || k === "destroyer" || k === "sub" || k === "carrier" ? 9 : 5.5;
+        const stealthAirDetectR =
+          k === "radar" ||
+          k === "sam" ||
+          k === "irondome" ||
+          k === "satlink" ||
+          k === "interceptor" ||
+          k === "uav"
+            ? 11
+            : 6.5;
+        visionSources.push({ x: t.last.x, y: t.last.y, r, subDetectR, stealthAirDetectR });
       }
     }
     const reconZones = this.gs.getActiveReconReveals();
@@ -794,11 +824,12 @@ export class Renderer {
         continue;
       }
       const isStealthedSub = e.k === "sub" && Boolean(e.sub);
+      const isStealthedAir = e.k === "stealthbomber" && Boolean(e.sub);
       let vis = false;
       for (const m of visionSources) {
         const dx = m.x - e.x;
         const dy = m.y - e.y;
-        const lim = isStealthedSub ? m.subDetectR : m.r;
+        const lim = isStealthedSub ? m.subDetectR : isStealthedAir ? m.stealthAirDetectR : m.r;
         if (dx * dx + dy * dy <= lim * lim) {
           vis = true;
           break;

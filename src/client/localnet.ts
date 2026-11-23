@@ -316,10 +316,10 @@ export class LocalRoom {
         err = w.cmdBuild(slot, m.kind);
         break;
       case "buildCancel":
-        w.cmdBuildCancel(slot);
+        w.cmdBuildCancel(slot, m.cat);
         break;
       case "place":
-        err = w.cmdPlace(slot, m.tx, m.ty);
+        err = w.cmdPlace(slot, m.tx, m.ty, m.cat);
         break;
       case "train":
         err = w.cmdTrain(slot, m.unit);

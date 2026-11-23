@@ -76,7 +76,7 @@ export function createAnimState(e: EntSnap, animateConstruct: boolean): AnimStat
     dustCd: 0.12 + ((e.id * 0.09) % 0.12),
     contrailCd: 0.05 + ((e.id * 0.03) % 0.05),
     subY: e.sub ? -0.18 : 0.06,
-    subAlpha: e.sub ? 0.42 : 1,
+    subAlpha: e.sub ? (e.k === "stealthbomber" ? 0.38 : 0.42) : 1,
     hitFlash: 0,
     flashing: false,
     matMode: "normal",
@@ -296,8 +296,8 @@ export function stepEntityAnim(
   }
 
   // ---------- 3. Tracked / Wheeled Vehicles (Suspension, Hull Rock-Back & Dust Plumes) ----------
-  else if (k === "tank" || k === "heavy" || k === "arty" || k === "harvester") {
-    const heavyScale = k === "heavy" ? 1.15 : k === "arty" ? 1.05 : 1.0;
+  else if (k === "tank" || k === "heavy" || k === "arty" || k === "harvester" || k === "himars" || k === "railtank") {
+    const heavyScale = k === "heavy" || k === "railtank" ? 1.15 : k === "arty" || k === "himars" ? 1.08 : 1.0;
 
     // Suspension roll into turns & acceleration/braking pitch driven by jitter-free moveBlend
     const targetRoll = Math.max(-0.13, Math.min(0.13, yawRate * 0.055 * m));
@@ -313,7 +313,7 @@ export function stepEntityAnim(
     if (st.hullKick > 0 && k !== "harvester") {
       // Damped oscillation: sharp kick back then quick spring settle
       const osc = Math.sin((1 - st.hullKick) * Math.PI * 1.45 + 0.35) * st.hullKick;
-      const mag = (k === "heavy" ? 0.115 : k === "arty" ? 0.13 : 0.095) * osc;
+      const mag = (k === "heavy" || k === "railtank" ? 0.12 : k === "arty" || k === "himars" ? 0.135 : 0.095) * osc;
       firePitch = -Math.cos(st.kickLocalYaw) * mag;
       fireRoll = Math.sin(st.kickLocalYaw) * mag * 0.85;
     }
@@ -326,7 +326,7 @@ export function stepEntityAnim(
     rig.body.rotation.x = st.pitch + rum * 0.014 * m + firePitch;
     rig.body.rotation.z = st.roll + Math.cos(st.phase * 0.7) * 0.012 * m + fireRoll;
 
-    // Independent turret yaw tracking (tanks, heavy tanks, arty)
+    // Independent turret yaw tracking (tanks, heavy tanks, railtank, arty/himars)
     if (rig.turret) {
       const hullYaw = Math.PI / 2 - headingRad;
       if (st.turretHold > 0) {
@@ -341,9 +341,9 @@ export function stepEntityAnim(
 
     // Crisp barrel / rocket-rack recoil kickback (preserves authored baseZ)
     if (rig.recoil) {
-      const fallbackZ = k === "arty" ? -0.26 : k === "heavy" ? 0.42 : 0.35;
+      const fallbackZ = k === "arty" || k === "himars" ? -0.26 : k === "heavy" || k === "railtank" ? 0.42 : 0.35;
       const baseZ = getBaseRecoilZ(rig.recoil, fallbackZ);
-      const kickDist = k === "heavy" ? 0.32 : k === "arty" ? 0.24 : 0.28;
+      const kickDist = k === "heavy" || k === "railtank" ? 0.34 : k === "arty" || k === "himars" ? 0.25 : 0.28;
       rig.recoil.position.z = baseZ - st.recoil * kickDist;
     }
 
@@ -359,8 +359,8 @@ export function stepEntityAnim(
       st.dustCd -= safeDt;
       if (st.dustCd <= 0) {
         st.dustCd = Math.max(0.09, 0.21 - st.speed * 0.025);
-        const rearDist = k === "heavy" || k === "harvester" ? 0.92 : 0.78;
-        const treadHalf = k === "heavy" ? 0.62 : 0.46;
+        const rearDist = k === "heavy" || k === "harvester" || k === "railtank" || k === "himars" ? 0.94 : 0.78;
+        const treadHalf = k === "heavy" || k === "railtank" ? 0.62 : 0.48;
         const cosH = Math.cos(headingRad);
         const sinH = Math.sin(headingRad);
         const side = Math.random() > 0.5 ? treadHalf : -treadHalf;
@@ -371,8 +371,16 @@ export function stepEntityAnim(
     }
   }
 
-  // ---------- 4. Air Force (Smooth Banking, Hover Float, Rotors & Wingtip Contrails) ----------
-  else if (k === "interceptor" || k === "chopper" || k === "bomber" || k === "zeppelin") {
+  // ---------- 4. Air Force (Smooth Banking, Hover Float, Stealth Cloak, Rotors & Wingtip Contrails) ----------
+  else if (
+    k === "interceptor" ||
+    k === "chopper" ||
+    k === "bomber" ||
+    k === "zeppelin" ||
+    k === "uav" ||
+    k === "stealthbomber" ||
+    k === "hypersonic"
+  ) {
     const alt = rig.altitude ?? 3.2;
     let bob = 0;
 
@@ -384,6 +392,45 @@ export function stepEntityAnim(
       rig.body.rotation.z = st.bank;
       const targetPitch = 0.02 * (1 - m) + (-0.04 + Math.abs(st.bank) * 0.06) * m;
       rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * (1 - Math.exp(-7 * safeDt));
+    } else if (k === "uav") {
+      bob = Math.sin(nowSec * 3.4 + last.id) * 0.08;
+      rig.body.position.y = alt + bob;
+      const targetBank = Math.max(-0.52, Math.min(0.52, yawRate * 0.18));
+      st.bank += (targetBank - st.bank) * (1 - Math.exp(-8.5 * safeDt));
+      rig.body.rotation.z = st.bank;
+      const targetPitch = 0.015 * (1 - m) + (-0.03 + Math.abs(st.bank) * 0.05) * m;
+      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * (1 - Math.exp(-7 * safeDt));
+      if (rig.spin) rig.spin.rotation.z += safeDt * 34; // Reaper UAV rear pusher propeller
+    } else if (k === "stealthbomber") {
+      bob = Math.sin(nowSec * 2.0 + last.id) * 0.07;
+      rig.body.position.y = alt + bob;
+      const targetBank = Math.max(-0.38, Math.min(0.38, yawRate * 0.14));
+      st.bank += (targetBank - st.bank) * (1 - Math.exp(-6.2 * safeDt));
+      rig.body.rotation.z = st.bank;
+      const targetPitch = 0.008 * (1 - m) - 0.02 * m;
+      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * (1 - Math.exp(-6 * safeDt));
+
+      // Smooth stealth translucency (subMats opacity 0.38) when cloaked (e.sub === true)
+      const targetAlpha = last.sub ? 0.38 : 1.0;
+      st.subAlpha += (targetAlpha - st.subAlpha) * Math.min(1, safeDt * 5.5);
+      if (rig.subMats && st.matMode === "normal") {
+        const isTrans = st.subAlpha < 0.98;
+        for (const subMat of rig.subMats) {
+          if (subMat.transparent !== isTrans) {
+            subMat.transparent = isTrans;
+            subMat.needsUpdate = true;
+          }
+          subMat.opacity = st.subAlpha;
+        }
+      }
+    } else if (k === "hypersonic") {
+      bob = Math.sin(nowSec * 5.2 + last.id) * 0.06;
+      rig.body.position.y = alt + bob;
+      const targetBank = Math.max(-0.78, Math.min(0.78, yawRate * 0.24));
+      st.bank += (targetBank - st.bank) * (1 - Math.exp(-11 * safeDt));
+      rig.body.rotation.z = st.bank;
+      const targetPitch = 0.01 * (1 - m) + (-0.06 + Math.abs(st.bank) * 0.07) * m;
+      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * (1 - Math.exp(-8.5 * safeDt));
     } else if (k === "chopper") {
       bob = Math.sin(nowSec * 3.2 + last.id) * 0.1 + Math.cos(nowSec * 5.6 + last.id) * 0.025;
       rig.body.position.y = alt + bob;
@@ -419,18 +466,53 @@ export function stepEntityAnim(
       rig.shadow.scale.set(baseSh.x * shScale, 1, baseSh.z * shScale);
     }
 
-    // Crisp faint white-cyan wingtip jet contrails behind moving Valkyrie Jets & Tempest Bombers
-    if (emitContrail && (k === "interceptor" || k === "bomber") && moving && vis.root.visible) {
+    // Crisp white-cyan wingtip jet contrails (extra blazing white-cyan contrails for Mach-9 hypersonic!)
+    if (
+      emitContrail &&
+      (k === "interceptor" || k === "bomber" || k === "uav" || k === "stealthbomber" || k === "hypersonic") &&
+      moving &&
+      vis.root.visible
+    ) {
       st.contrailCd -= safeDt;
       if (st.contrailCd <= 0) {
-        st.contrailCd = k === "interceptor" ? 0.042 : 0.055;
-        const span = k === "bomber" ? 1.28 : 0.92;
-        const trailZ = k === "bomber" ? -0.44 : -0.5;
+        st.contrailCd =
+          k === "hypersonic"
+            ? 0.022
+            : k === "interceptor"
+              ? 0.042
+              : k === "bomber"
+                ? 0.055
+                : k === "stealthbomber"
+                  ? 0.06
+                  : 0.062;
+        const span =
+          k === "stealthbomber"
+            ? 1.32
+            : k === "bomber"
+              ? 1.28
+              : k === "interceptor"
+                ? 0.92
+                : k === "hypersonic"
+                  ? 0.86
+                  : 0.78;
+        const trailZ =
+          k === "hypersonic" ? -0.64 : k === "bomber" ? -0.44 : k === "stealthbomber" ? -0.38 : k === "uav" ? -0.35 : -0.5;
         const cosH = Math.cos(headingRad);
         const sinH = Math.sin(headingRad);
         const cosB = Math.cos(st.bank);
         const sinB = Math.sin(st.bank);
-        const cScale = k === "bomber" ? 1.15 : 0.88;
+        const cScale =
+          k === "hypersonic"
+            ? 1.36
+            : k === "bomber"
+              ? 1.15
+              : k === "stealthbomber"
+                ? last.sub
+                  ? 0.62
+                  : 1.05
+                : k === "uav"
+                  ? 0.65
+                  : 0.88;
         for (const sx of [-1, 1]) {
           const lx = sx * span * cosB;
           const ly = sx * span * sinB;
@@ -439,13 +521,17 @@ export function stepEntityAnim(
           const wz = y - lx * cosH + trailZ * sinH;
           emitContrail(wx, wy, wz, cScale);
         }
+        // Extra blazing central Mach-9 scramjet shock-cone contrail for hypersonic strike craft!
+        if (k === "hypersonic") {
+          emitContrail(x - 0.92 * cosH, rig.body.position.y, y - 0.92 * sinH, 1.55);
+        }
       }
     }
   }
 
   // ---------- 5. Navy (Organic Ocean Swells, Naval Turrets, Submarine Dive & Wakes) ----------
-  else if (k === "gunboat" || k === "destroyer" || k === "sub" || k === "dreadnought") {
-    const heavyShip = k === "dreadnought";
+  else if (k === "gunboat" || k === "destroyer" || k === "sub" || k === "dreadnought" || k === "carrier") {
+    const heavyShip = k === "dreadnought" || k === "carrier";
     const wavePitch =
       Math.sin(nowSec * 2.0 + last.id) * (heavyShip ? 0.018 : 0.032) +
       Math.sin(nowSec * 3.3 + last.id * 2.1) * (heavyShip ? 0.008 : 0.014);
@@ -524,24 +610,27 @@ export function stepEntityAnim(
     if (emitWake && moving && vis.root.visible) {
       st.wakeCd -= safeDt;
       if (st.wakeCd <= 0) {
-        st.wakeCd = k === "gunboat" ? 0.13 : k === "dreadnought" ? 0.24 : 0.18;
+        st.wakeCd = k === "gunboat" ? 0.13 : heavyShip ? 0.24 : 0.18;
         const cosH = Math.cos(headingRad);
         const sinH = Math.sin(headingRad);
-        const sternOff = k === "dreadnought" ? 1.42 : k === "destroyer" ? 1.08 : k === "sub" ? 0.96 : 0.74;
+        const sternOff =
+          k === "carrier" ? 1.65 : k === "dreadnought" ? 1.42 : k === "destroyer" ? 1.08 : k === "sub" ? 0.96 : 0.74;
         const wakeScale =
-          k === "dreadnought"
-            ? 1.5
-            : k === "destroyer"
-              ? 1.1
-              : k === "sub"
-                ? last.sub
-                  ? 0.52
-                  : 0.84
-                : 0.8;
+          k === "carrier"
+            ? 1.72
+            : k === "dreadnought"
+              ? 1.5
+              : k === "destroyer"
+                ? 1.1
+                : k === "sub"
+                  ? last.sub
+                    ? 0.52
+                    : 0.84
+                  : 0.8;
         emitWake(x - cosH * sternOff, y - sinH * sternOff, wakeScale);
         // Subtle bow-wave crest for fast surface warships
         if (k !== "sub") {
-          const bowOff = k === "dreadnought" ? 1.55 : k === "destroyer" ? 1.25 : 0.85;
+          const bowOff = k === "carrier" ? 1.75 : k === "dreadnought" ? 1.55 : k === "destroyer" ? 1.25 : 0.85;
           emitWake(x + cosH * bowOff, y + sinH * bowOff, wakeScale * 0.56);
         }
       }
@@ -550,10 +639,11 @@ export function stepEntityAnim(
 
   // ---------- 6. Buildings Idle Loops & Low-Power Dimming ----------
   else if (isBuildingKind(k)) {
-    const offlineDef = lowPower && (k === "turret" || k === "arc");
+    const offlineDef =
+      lowPower && (k === "turret" || k === "arc" || k === "sam" || k === "irondome" || k === "lasertower" || k === "satlink");
     const powerSpeed = lowPower ? 0.28 : 1.0;
 
-    if (k === "turret" && rig.turret) {
+    if ((k === "turret" || k === "sam" || k === "irondome" || k === "lasertower" || k === "satlink") && rig.turret) {
       if (!offlineDef) {
         const targetYaw = Math.PI / 2 - headingRad;
         const diff = angleDiff(rig.turret.rotation.y, targetYaw);
@@ -566,17 +656,17 @@ export function stepEntityAnim(
     }
     if (rig.spin) {
       const rate =
-        (k === "superweapon"
+        (k === "superweapon" || k === "satlink"
           ? 1.6 + 0.55 * Math.sin(nowSec * 0.9)
-          : k === "techlab" || k === "airfield"
+          : k === "techlab" || k === "airfield" || k === "airfield2" || k === "irondome"
             ? 1.5
-            : k === "shipyard"
+            : k === "shipyard" || k === "shipyard2" || k === "sam"
               ? 1.3
               : 0.95) * powerSpeed;
       rig.spin.rotation.y += safeDt * rate;
     }
     if (rig.spin2) {
-      const rate2 = (k === "superweapon" ? 2.8 + 0.85 * Math.sin(nowSec * 1.4) : 1.95) * powerSpeed;
+      const rate2 = (k === "superweapon" || k === "satlink" ? 2.8 + 0.85 * Math.sin(nowSec * 1.4) : 1.95) * powerSpeed;
       rig.spin2.rotation.y -= safeDt * rate2;
     }
     if (rig.flag) {
@@ -584,7 +674,7 @@ export function stepEntityAnim(
     }
     if (rig.crane) {
       if (k === "depot") rig.crane.position.x = Math.sin(nowSec * 1.1 + last.id) * 0.55;
-      else if (k === "shipyard") rig.crane.position.z = 0.1 + Math.sin(nowSec * 0.85 + last.id) * 0.68;
+      else if (k === "shipyard" || k === "shipyard2") rig.crane.position.z = 0.1 + Math.sin(nowSec * 0.85 + last.id) * 0.68;
       else if (k === "derrick") {
         const pumpSpeed = last.o >= 0 ? 2.45 : 1.15;
         rig.crane.rotation.x = Math.sin(nowSec * pumpSpeed + last.id) * 0.28;
@@ -595,7 +685,9 @@ export function stepEntityAnim(
 
     // Visual low-power dimming & slow offline pulse for powered buildings/defenses
     if (rig.powerGlow && st.matMode === "normal") {
-      const dimmed = offlineDef || (lowPower && (k === "radar" || k === "superweapon" || k === "techlab"));
+      const dimmed =
+        offlineDef ||
+        (lowPower && (k === "radar" || k === "superweapon" || k === "techlab" || k === "sam" || k === "irondome" || k === "lasertower" || k === "satlink"));
       const dimFactor = dimmed ? 0.18 + 0.08 * Math.sin(nowSec * 2.4 + last.id) : 1.0;
       for (const gm of rig.powerGlow) {
         const mat = gm.material;
@@ -613,10 +705,12 @@ export function stepEntityAnim(
 
   // ---------- 7. Pulsing Energy Cores, Afterburners & Navigation Beacons ----------
   if (rig.pulse) {
-    const offlinePulse = lowPower && (k === "turret" || k === "arc" || k === "radar");
-    const isJetBurner = k === "interceptor" || k === "bomber";
-    const freq = isJetBurner ? 18.0 : k === "superweapon" ? 5.2 : 3.6;
-    const amp = isJetBurner ? 0.16 : k === "superweapon" ? 0.18 : 0.14;
+    const offlinePulse =
+      lowPower && (k === "turret" || k === "arc" || k === "radar" || k === "sam" || k === "irondome" || k === "lasertower" || k === "satlink");
+    const isJetBurner =
+      k === "interceptor" || k === "bomber" || k === "uav" || k === "stealthbomber" || k === "hypersonic";
+    const freq = isJetBurner ? 18.0 : k === "superweapon" || k === "satlink" ? 5.2 : 3.6;
+    const amp = isJetBurner ? 0.16 : k === "superweapon" || k === "satlink" ? 0.18 : 0.14;
     const s = offlinePulse
       ? 0.78 + 0.04 * Math.sin(nowSec * 2.4 + last.id)
       : 0.94 + amp * Math.sin(nowSec * freq + last.id);
@@ -637,7 +731,7 @@ export function stepEntityAnim(
   // ---------- 9. Damaged Smoke & Industrial Exhaust Emitter ----------
   if (emitSmoke && rig.smokePos && vis.root.visible) {
     const damaged = last.hp < last.mhp * 0.55;
-    const isStack = k === "factory" || k === "factory2" || k === "refinery" || k === "power";
+    const isStack = k === "factory" || k === "factory2" || k === "refinery" || k === "power" || k === "coalplant";
     if (damaged || isStack) {
       st.smokeCd -= safeDt;
       if (st.smokeCd <= 0) {
