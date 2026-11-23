@@ -11,7 +11,7 @@ import {
 import { makeEntVis, makeCrateVis, setVetBadge, tagEntity, applyFacing, EntVis, CrateVis } from "./models";
 import { createAnimState, stepEntityAnim, triggerFireAnim, triggerHitFlash, AnimState } from "./anim";
 import { VfxSystem, WaypointOverlay } from "./vfx";
-import { isBuildingKind } from "./util";
+import { BUILDINGS, isBuildingKind } from "./util";
 import { GameScene } from "./scene";
 
 const INTERP_MS = 250; // 50ms WAN jitter cushion above 200ms (5 Hz) snapshot interval
@@ -56,11 +56,25 @@ interface Tracked {
   isStaticBld: boolean;
   staticFrozen: boolean;
   lastLowPower: boolean;
+  cullR: number; // bounding-sphere radius for frustum update culling (includes stale-matrix margin)
+  cullY: number; // bounding-sphere center height
 }
 
 function isStaticBuildingRig(vis: EntVis): boolean {
   const r = vis.rig;
   return !r.crane && !r.spin && !r.spin2 && !r.flag && !r.turret && !r.pulse?.length;
+}
+
+// Generous bounding sphere per entity so a 1-frame-stale camera frustum can
+// never wrongly cull update work at screen edges or during fast pans.
+function entityCullSphere(vis: EntVis, isBuilding: boolean, kind: string): { r: number; y: number } {
+  if (isBuilding) {
+    const d = BUILDINGS[kind as keyof typeof BUILDINGS];
+    const m = d ? Math.max(d.w, d.h) : 3;
+    return { r: m * 0.9 + 2.5, y: 1.4 };
+  }
+  const alt = vis.rig.altitude ?? 0;
+  return { r: alt * 0.5 + 2.6, y: alt > 0 ? alt * 0.5 : 0.9 };
 }
 
 function freezeStaticBuilding(vis: EntVis): void {
@@ -381,13 +395,28 @@ export class Renderer {
   private readonly rallyEntries: { x: number; y: number; rx: number; ry: number }[] = [];
   private readonly rallyEntryPool: { x: number; y: number; rx: number; ry: number }[] = [];
 
+  // Per-frame update culling & adaptive quality budgets
+  private readonly frustum = new THREE.Frustum();
+  private readonly frustumMat = new THREE.Matrix4();
+  private readonly cullSphere = new THREE.Sphere();
+  private frameIdx = 0;
+  private vfxScale = 1;
+
   constructor(private gs: GameScene) {
     this.vfx = new VfxSystem(gs.scene);
     this.waypoints = new WaypointOverlay(gs.scene);
-    this.emitSmoke = (x, y, z, dark) => this.vfx.spawnSmoke(x, y, z, dark);
-    this.emitWake = (x, z, scale) => this.vfx.spawnWake(x, z, scale);
-    this.emitDust = (x, z, scale) => this.vfx.spawnDust(x, z, scale);
-    this.emitContrail = (x, y, z, scale) => this.vfx.spawnContrail(x, y, z, scale);
+    this.emitSmoke = (x, y, z, dark) => {
+      if (Math.random() <= this.vfxScale) this.vfx.spawnSmoke(x, y, z, dark);
+    };
+    this.emitWake = (x, z, scale) => {
+      if (Math.random() <= this.vfxScale) this.vfx.spawnWake(x, z, scale);
+    };
+    this.emitDust = (x, z, scale) => {
+      if (Math.random() <= this.vfxScale) this.vfx.spawnDust(x, z, scale);
+    };
+    this.emitContrail = (x, y, z, scale) => {
+      if (Math.random() <= this.vfxScale) this.vfx.spawnContrail(x, y, z, scale);
+    };
   }
 
   setPlayerPower(players: Record<number, PlayerState>): void {
@@ -484,6 +513,7 @@ export class Renderer {
         supplyAura = makeSupplyAura(e.k);
         vis.root.add(supplyAura);
       }
+      const cs = entityCullSphere(vis, isBuilding, e.k);
       this.tracked.set(e.id, {
         vis,
         last: e,
@@ -497,6 +527,8 @@ export class Renderer {
         isStaticBld,
         staticFrozen: false,
         lastLowPower: false,
+        cullR: cs.r,
+        cullY: cs.y,
       });
     }
     this.hasInitialSnap = true;
@@ -633,6 +665,9 @@ export class Renderer {
         t.isStaticBld = t.isBuilding && isStaticBuildingRig(vis);
         t.staticFrozen = false;
         t.lastLowPower = false;
+        const cs = entityCullSphere(vis, t.isBuilding, e.k);
+        t.cullR = cs.r;
+        t.cullY = cs.y;
         if (ownerChanged) {
           this.selection.delete(id);
           this.onOwnerLost?.(id);
@@ -819,6 +854,25 @@ export class Renderer {
 
     const pos = this.scratchPos;
 
+    // Adaptive budgets: report live entity count to the quality governor, then
+    // fetch this frame's work budgets (anim LOD distance, VFX scale, fx cap)
+    this.frameIdx++;
+    this.gs.graphics.setEntityCount(this.tracked.size);
+    const budget = this.gs.graphics.getBudgets();
+    this.vfxScale = budget.vfxScale;
+    this.vfx.setBudget(budget.vfxScale, budget.fxCap);
+    const zoomScale = Math.min(2.4, Math.max(0.85, this.gs.camHeight / 26));
+    const farSq = budget.animFarDist * zoomScale * (budget.animFarDist * zoomScale);
+    const animSkip = Math.max(1, Math.round(budget.animSkip));
+    const camX = this.gs.camTarget.x;
+    const camZ = this.gs.camTarget.z;
+    // Frustum built from last frame's camera matrices — generous cull radii absorb the staleness
+    const cam = this.gs.camera;
+    cam.updateMatrixWorld();
+    this.frustumMat.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+    this.frustum.setFromProjectionMatrix(this.frustumMat);
+    const cullSphere = this.cullSphere;
+
     if (snapA && snapB) {
       for (const [id, t] of this.tracked) {
         const lowPwr = this.playerLowPower.get(t.last.o) === true;
@@ -847,8 +901,12 @@ export class Renderer {
             t.vis.root.updateMatrixWorld(true);
           }
 
+          cullSphere.center.set(px, t.cullY, py);
+          cullSphere.radius = t.cullR;
+          const onScreen = this.frustum.intersectsSphere(cullSphere);
+
           const hasPowerGlow = Boolean(t.vis.rig.powerGlow?.length);
-          if (hasPowerGlow && (lowPwr || t.lastLowPower)) {
+          if (onScreen && hasPowerGlow && (lowPwr || t.lastLowPower)) {
             stepEntityAnim(
               t.vis,
               t.anim,
@@ -864,7 +922,7 @@ export class Renderer {
               this.emitDust,
               this.emitContrail,
             );
-          } else {
+          } else if (onScreen) {
             // Only tick smoke stack / battle-damage smoke timer on settled static buildings
             const rig = t.vis.rig;
             if (rig.smokePos && t.vis.root.visible) {
@@ -875,7 +933,7 @@ export class Renderer {
                 t.anim.smokeCd -= safeDt;
                 if (t.anim.smokeCd <= 0) {
                   t.anim.smokeCd = damaged ? 0.28 + Math.random() * 0.2 : 0.9 + Math.random() * 0.5;
-                  this.vfx.spawnSmoke(
+                  this.emitSmoke(
                     px + rig.smokePos.x * 0.5,
                     rig.smokePos.y,
                     py + rig.smokePos.z * 0.5,
@@ -919,21 +977,39 @@ export class Renderer {
           if (!t.isBuilding) {
             applyFacing(t.vis.root, t.visYaw);
           }
-          stepEntityAnim(
-            t.vis,
-            t.anim,
-            t.last,
-            px,
-            py,
-            t.visYaw,
-            dt,
-            nowSec,
-            this.emitSmoke,
-            this.emitWake,
-            lowPwr,
-            this.emitDust,
-            this.emitContrail,
-          );
+
+          // Per-entity update culling: skip animation & ambient VFX work when the
+          // entity is outside the camera frustum; far on-screen entities animate
+          // at a staggered reduced rate. Position/heading still update every frame
+          // so picking, FPV & waypoint overlays stay exact.
+          const dxC = px - camX;
+          const dzC = py - camZ;
+          const far = dxC * dxC + dzC * dzC > farSq;
+          cullSphere.center.set(px, t.cullY, py);
+          cullSphere.radius = t.cullR;
+          const onScreen = this.frustum.intersectsSphere(cullSphere);
+          if (onScreen && (!far || this.selection.has(id) || (this.frameIdx + id) % animSkip === 0)) {
+            stepEntityAnim(
+              t.vis,
+              t.anim,
+              t.last,
+              px,
+              py,
+              t.visYaw,
+              far ? Math.min(0.1, dt * animSkip) : dt,
+              nowSec,
+              this.emitSmoke,
+              this.emitWake,
+              lowPwr,
+              this.emitDust,
+              this.emitContrail,
+            );
+          } else {
+            // Keep velocity anchors fresh so re-entry doesn't read a phantom speed burst
+            t.anim.prevX = px;
+            t.anim.prevY = py;
+            t.anim.prevHeading = t.visYaw;
+          }
           t.lastLowPower = lowPwr;
         }
 

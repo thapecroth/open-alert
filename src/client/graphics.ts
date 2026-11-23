@@ -8,6 +8,16 @@ export interface GraphicsSettings {
   contactShadows: boolean;
   bloom: boolean;
   dynamicRes: boolean;
+  autoQuality: boolean;
+}
+
+// Per-frame CPU/GPU work budgets consumed by the entity renderer & VFX system.
+// Derived from the effective quality tier + live entity count pressure.
+export interface RenderBudgets {
+  animFarDist: number; // world tiles from camera target beyond which entity anim throttles
+  animSkip: number; // far entities step animation every Nth frame (with accumulated dt)
+  vfxScale: number; // probability scale for ambient particle emission (dust/smoke/wake/contrail)
+  fxCap: number; // max simultaneous beam/tracer/flash one-shot fx objects
 }
 
 export interface GpuInfo {
@@ -43,6 +53,26 @@ interface PresetSpec {
 
 const STORAGE_KEY = "oa-gfx-v1";
 const VALID_PRESETS: readonly QualityPreset[] = ["low", "medium", "high", "ultra"];
+
+const PRESET_BUDGETS: Record<QualityPreset, Omit<RenderBudgets, never>> = {
+  low: { animFarDist: 38, animSkip: 4, vfxScale: 0.4, fxCap: 90 },
+  medium: { animFarDist: 55, animSkip: 3, vfxScale: 0.65, fxCap: 170 },
+  high: { animFarDist: 75, animSkip: 2, vfxScale: 0.85, fxCap: 280 },
+  ultra: { animFarDist: 95, animSkip: 2, vfxScale: 1.0, fxCap: 400 },
+};
+
+// Adaptive Quality Governor: autoTier sheds rendering cost in steps while the
+// user's chosen preset stays the ceiling. T3 removes all post-FX so the scene
+// hits the zero-composer direct render path regardless of preset.
+const AUTO_TIER_MAX = 3;
+const AUTO_DOWN_FPS = 44;
+const AUTO_UP_FPS = 56;
+const AUTO_DOWN_MS = 1400;
+const AUTO_UP_MS = 6000;
+const AUTO_DWELL_MS = 4000;
+const TIER_VFX = [1, 0.8, 0.55, 0.3];
+const TIER_FX = [1, 0.75, 0.5, 0.35];
+const TIER_ANIM = [1, 0.85, 0.7, 0.55];
 
 const PRESET_SPECS: Record<QualityPreset, PresetSpec> = {
   low: {
@@ -95,6 +125,7 @@ function makePresetSettings(preset: QualityPreset): GraphicsSettings {
     contactShadows: spec.contactShadows,
     bloom: spec.bloom,
     dynamicRes: spec.dynamicRes,
+    autoQuality: true,
   };
 }
 
@@ -159,6 +190,7 @@ function loadSavedSettings(): GraphicsSettings | null {
       contactShadows: typeof parsed.contactShadows === "boolean" ? parsed.contactShadows : base.contactShadows,
       bloom: typeof parsed.bloom === "boolean" ? parsed.bloom : base.bloom,
       dynamicRes: typeof parsed.dynamicRes === "boolean" ? parsed.dynamicRes : base.dynamicRes,
+      autoQuality: typeof parsed.autoQuality === "boolean" ? parsed.autoQuality : true,
     };
   } catch {
     return null;
@@ -201,6 +233,14 @@ export class GraphicsManager {
   private hasSample = false;
   private govFrameCount = 0;
 
+  // Adaptive Quality Governor state (runtime-only, never persisted)
+  autoTier = 0;
+  private eff: GraphicsSettings;
+  private entityCount = 0;
+  private lowMs = 0;
+  private highMs = 0;
+  private lastTierChangeMs = 0;
+
   constructor(
     renderer: THREE.WebGLRenderer,
     onChange?: (settings: GraphicsSettings, gpu: GpuInfo) => void,
@@ -213,6 +253,7 @@ export class GraphicsManager {
 
     const saved = loadSavedSettings();
     this.settings = saved ?? makePresetSettings(this.gpu.recommended);
+    this.eff = this.settings;
 
     this.stats = {
       fps: 60,
@@ -264,7 +305,23 @@ export class GraphicsManager {
 
     const isMac = detectMac();
     const appleSilicon = detectAppleSilicon(rendererName, vendor, isMac);
-    const recommended = classifyGpu(rendererName, vendor, appleSilicon);
+    let recommended = classifyGpu(rendererName, vendor, appleSilicon);
+
+    // Hardware safety caps: weak/rasterized environments start conservative.
+    // The adaptive governor can still shed below this, and users can raise it.
+    const rank: Record<QualityPreset, number> = { low: 0, medium: 1, high: 2, ultra: 3 };
+    const capAt = (p: QualityPreset, max: QualityPreset): QualityPreset => (rank[p] > rank[max] ? max : p);
+    const ua = typeof navigator !== "undefined" ? navigator.userAgent ?? "" : "";
+    const mobile = /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle/i.test(ua);
+    const devMem =
+      typeof navigator !== "undefined" ? (navigator as unknown as { deviceMemory?: number }).deviceMemory : undefined;
+    if (!renderer.capabilities.isWebGL2 || mobile || cores <= 4 || maxTextureSize < 8192) {
+      recommended = capAt(recommended, "medium");
+    }
+    if (typeof devMem === "number" && devMem > 0) {
+      if (devMem < 4) recommended = capAt(recommended, "medium");
+      else if (devMem < 8) recommended = capAt(recommended, "high");
+    }
 
     return {
       backend,
@@ -327,6 +384,7 @@ export class GraphicsManager {
 
   applyPreset(p: QualityPreset): void {
     this.settings = makePresetSettings(p);
+    this.recomputeEffective();
     this.dynamicScale = 1.0;
     this.govFrameCount = 0;
     saveSettings(this.settings);
@@ -344,17 +402,81 @@ export class GraphicsManager {
       this.dynamicScale = 1.0;
       this.govFrameCount = 0;
     }
+    if (k === "autoQuality" && !v) {
+      this.autoTier = 0;
+      this.lowMs = 0;
+      this.highMs = 0;
+    }
+    this.recomputeEffective();
     saveSettings(this.settings);
     this.emitChange();
   }
 
+  // ---------- Adaptive Quality Governor ----------
+
+  // Live entity pressure fed by the entity renderer each frame
+  setEntityCount(n: number): void {
+    this.entityCount = n;
+    if (this.settings.autoQuality) {
+      const floor = this.entityFloor();
+      if (this.autoTier < floor) this.setAutoTier(floor);
+    }
+  }
+
+  private entityFloor(): number {
+    if (this.entityCount > 480) return 2;
+    if (this.entityCount > 300) return 1;
+    return 0;
+  }
+
+  private setAutoTier(t: number): void {
+    if (t === this.autoTier) return;
+    this.autoTier = t;
+    this.lowMs = 0;
+    this.highMs = 0;
+    this.lastTierChangeMs = performance.now();
+    this.recomputeEffective();
+    this.emitChange();
+  }
+
+  private recomputeEffective(): void {
+    const s = this.settings;
+    if (this.autoTier === 0) this.eff = s;
+    else if (this.autoTier === 1) this.eff = { ...s, raytracing: false };
+    else if (this.autoTier === 2) this.eff = { ...s, raytracing: false, contactShadows: false };
+    else this.eff = { ...s, raytracing: false, contactShadows: false, bloom: false };
+  }
+
+  // Effective runtime settings = user settings shed by the current auto tier.
+  // `settings` stays the user's ceiling; consumers should use this.
+  getEffectiveSettings(): GraphicsSettings {
+    return this.eff;
+  }
+
+  private effPreset(): QualityPreset {
+    return this.autoTier >= AUTO_TIER_MAX ? "low" : this.settings.preset;
+  }
+
+  getBudgets(): RenderBudgets {
+    const base = PRESET_BUDGETS[this.effPreset()];
+    const ent =
+      this.entityCount > 480 ? 0.6 : this.entityCount > 300 ? 0.78 : this.entityCount > 180 ? 0.9 : 1;
+    return {
+      animFarDist: Math.max(18, base.animFarDist * TIER_ANIM[this.autoTier] * ent),
+      animSkip: Math.min(6, base.animSkip + (this.autoTier >= 2 ? 1 : 0)),
+      vfxScale: base.vfxScale * TIER_VFX[this.autoTier] * ent,
+      fxCap: Math.round(base.fxCap * TIER_FX[this.autoTier] * (this.entityCount > 480 ? 0.7 : 1)),
+    };
+  }
+
   getTargetDpr(): number {
     const deviceDpr = typeof window !== "undefined" && typeof window.devicePixelRatio === "number" ? window.devicePixelRatio : 1;
-    let maxDpr = PRESET_SPECS[this.settings.preset].maxDpr;
+    let maxDpr = PRESET_SPECS[this.effPreset()].maxDpr;
     // On Retina Apple Silicon MacBooks, cap Ultra DPR at 1.75 (saves ~24% fragment fillrate on 3K+ screens with crisp Retina sharpness)
-    if (this.gpu.appleSilicon && this.settings.preset === "ultra") {
+    if (this.gpu.appleSilicon && this.effPreset() === "ultra") {
       maxDpr = Math.min(maxDpr, 1.75);
     }
+    if (this.autoTier === 2) maxDpr *= 0.85;
     const baseDpr = Math.min(Math.max(1, deviceDpr), maxDpr);
     const scaled = this.settings.dynamicRes ? baseDpr * this.dynamicScale : baseDpr;
     return Math.max(0.5, Math.round(scaled * 100) / 100);
@@ -362,15 +484,17 @@ export class GraphicsManager {
 
   getBloomScale(): number {
     // Half-res bloom cuts Metal TBDR tile-memory bandwidth by ~70% with identical visual glow
-    return this.gpu.appleSilicon || this.settings.preset !== "ultra" ? 0.5 : 0.75;
+    return this.gpu.appleSilicon || this.effPreset() !== "ultra" ? 0.5 : 0.75;
   }
 
   getShadowSize(): number {
-    return PRESET_SPECS[this.settings.preset].shadowSize;
+    const spec = PRESET_SPECS[this.effPreset()].shadowSize;
+    return this.autoTier >= 2 ? Math.min(spec, 1024) : spec;
   }
 
   getShadowUpdateStride(): number {
-    return PRESET_SPECS[this.settings.preset].shadowUpdateStride;
+    const entExtra = this.entityCount > 480 ? 2 : this.entityCount > 300 ? 1 : 0;
+    return Math.min(6, PRESET_SPECS[this.effPreset()].shadowUpdateStride + (this.autoTier >= 2 ? 1 : 0) + entExtra);
   }
 
   sampleFrame(dtMs: number, renderer: THREE.WebGLRenderer): { scaleChanged: boolean; targetDpr: number } {
@@ -391,6 +515,33 @@ export class GraphicsManager {
     this.stats.calls = renderer.info.render.calls;
     this.stats.triangles = renderer.info.render.triangles;
     this.stats.dpr = renderer.getPixelRatio();
+
+    // Adaptive Quality Governor: shed cost on sustained low FPS / heavy entity
+    // pressure, restore gradually on sustained headroom. Hysteresis + min dwell
+    // prevents oscillation; entityFloor() pins a minimum tier in big battles.
+    if (this.settings.autoQuality) {
+      const now = performance.now();
+      const floor = this.entityFloor();
+      if (this.autoTier < floor) {
+        this.setAutoTier(floor);
+      } else if (now - this.lastTierChangeMs >= AUTO_DWELL_MS) {
+        if (emaFps < AUTO_DOWN_FPS) {
+          this.lowMs += clampedDt;
+          this.highMs = 0;
+        } else if (emaFps > AUTO_UP_FPS) {
+          this.highMs += clampedDt;
+          this.lowMs = 0;
+        } else {
+          this.lowMs = 0;
+          this.highMs = 0;
+        }
+        if (this.lowMs >= AUTO_DOWN_MS && this.autoTier < AUTO_TIER_MAX) {
+          this.setAutoTier(this.autoTier + 1);
+        } else if (this.highMs >= AUTO_UP_MS && this.autoTier > floor) {
+          this.setAutoTier(Math.max(floor, this.autoTier - 1));
+        }
+      }
+    }
 
     let scaleChanged = false;
 

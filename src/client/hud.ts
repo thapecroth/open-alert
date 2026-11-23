@@ -206,6 +206,7 @@ export interface GraphicsSettings {
   contactShadows: boolean;
   bloom: boolean;
   dynamicRes: boolean;
+  autoQuality: boolean;
 }
 
 export interface GpuInfo {
@@ -233,8 +234,9 @@ export interface GraphicsBridge {
   settings: GraphicsSettings;
   gpu: GpuInfo;
   stats: GraphicsStats;
+  autoTier: number;
   applyPreset(p: QualityPreset): void;
-  setOption(k: "raytracing" | "contactShadows" | "bloom" | "dynamicRes", v: boolean): void;
+  setOption(k: "raytracing" | "contactShadows" | "bloom" | "dynamicRes" | "autoQuality", v: boolean): void;
 }
 
 const GFX_PRESET_DESCS: Record<QualityPreset, string> = {
@@ -634,7 +636,7 @@ export class Hud {
         this.updateGraphicsTelemetry(true);
       });
     }
-    const wireGfxOpt = (id: string, key: "raytracing" | "contactShadows" | "bloom" | "dynamicRes") => {
+    const wireGfxOpt = (id: string, key: "raytracing" | "contactShadows" | "bloom" | "dynamicRes" | "autoQuality") => {
       const inp = document.getElementById(id) as HTMLInputElement | null;
       inp?.addEventListener("change", () => {
         if (!this.gfx) return;
@@ -647,6 +649,7 @@ export class Hud {
     wireGfxOpt("gfx-ao", "contactShadows");
     wireGfxOpt("gfx-bloom", "bloom");
     wireGfxOpt("gfx-dyn", "dynamicRes");
+    wireGfxOpt("gfx-auto", "autoQuality");
     el("wasd-btn")?.addEventListener("click", () => this.onToggleWasd?.());
     document.getElementById("mute-btn")?.addEventListener("click", () => this.onToggleMute?.());
     document.getElementById("music-btn")?.addEventListener("click", () => this.onToggleMusic?.());
@@ -1469,7 +1472,7 @@ export class Hud {
       pbtn.classList.toggle("active", pbtn.dataset.preset === settings.preset);
     }
     const desc = document.getElementById("gfx-preset-desc");
-    if (desc) desc.textContent = GFX_PRESET_DESCS[settings.preset] ?? "";
+    if (desc) desc.textContent = this.gfxDescText(settings);
     const rec = document.getElementById("gfx-rec-note");
     if (rec && gpu?.recommended) {
       rec.textContent = `Recommended: ${fmtPresetName(gpu.recommended)}`;
@@ -1484,6 +1487,7 @@ export class Hud {
     syncChk("gfx-ao", settings.contactShadows);
     syncChk("gfx-bloom", settings.bloom);
     syncChk("gfx-dyn", settings.dynamicRes);
+    syncChk("gfx-auto", settings.autoQuality);
   }
 
   updateGraphicsTelemetry(force = false) {
@@ -1507,11 +1511,14 @@ export class Hud {
     // Keep GFX button indicator synced if settings changed externally
     const gfxBtn = document.getElementById("gfx-btn");
     if (gfxBtn) {
-      const desired = settings.raytracing ? "GFX: RT" : settings.preset === "low" ? "GFX: LOW" : "GFX";
+      const tier = settings.autoQuality ? this.gfx.autoTier : 0;
+      const desired =
+        tier > 0 ? `GFX: L${tier}` : settings.raytracing ? "GFX: RT" : settings.preset === "low" ? "GFX: LOW" : "GFX";
       if (gfxBtn.textContent !== desired) {
         gfxBtn.textContent = desired;
         gfxBtn.classList.toggle("on", settings.raytracing || settings.preset === "high" || settings.preset === "ultra");
       }
+      if (tier > 0) gfxBtn.title = `Auto Quality: shed to tier ${tier} to hold 60 FPS (click to configure)`;
     }
 
     const panel = document.getElementById("gfx-panel");
@@ -1572,6 +1579,20 @@ export class Hud {
     if (mTris) mTris.textContent = fmtTris(stats.triangles);
     const mDpr = document.getElementById("gfx-m-dpr");
     if (mDpr) mDpr.textContent = stats.dpr > 0 ? `${stats.dpr.toFixed(2)}×` : "--";
+
+    // Live adaptive-governor status on the preset description line
+    const desc = document.getElementById("gfx-preset-desc");
+    if (desc) desc.textContent = this.gfxDescText(settings);
+  }
+
+  private gfxDescText(settings: GraphicsSettings): string {
+    const tier = settings.autoQuality ? (this.gfx?.autoTier ?? 0) : 0;
+    const autoNote = !settings.autoQuality
+      ? ""
+      : tier > 0
+        ? ` · AUTO governor: shed to tier ${tier} to hold 60 FPS`
+        : " · AUTO governor armed";
+    return (GFX_PRESET_DESCS[settings.preset] ?? "") + autoNote;
   }
 
   tick(dt: number) {
