@@ -773,7 +773,7 @@ export class GameScene {
   }
 
   public applyGraphicsSettings(): void {
-    const s = this.graphics.settings;
+    const s = this.graphics.getEffectiveSettings();
     const targetDpr = this.graphics.getTargetDpr();
     this.renderer.setPixelRatio(targetDpr);
 
@@ -2824,9 +2824,11 @@ export class GameScene {
     }
     this.frameCount++;
 
-    // Zero-Composer Ultra-Fast Laptop Path: bypass post-processing render targets completely when Low & effects OFF
-    const s = this.graphics.settings;
-    if (s.preset === "low" && !s.raytracing && !s.contactShadows && !s.bloom) {
+    // Zero-Composer fast path: bypass post-processing render targets whenever the
+    // EFFECTIVE settings have all post-FX off (Low preset, manual toggles, or the
+    // adaptive governor shedding to tier 3 under load)
+    const s = this.graphics.getEffectiveSettings();
+    if (!s.raytracing && !s.contactShadows && !s.bloom) {
       this.renderer.render(this.scene, this.camera);
     } else {
       if (this.composer.readBuffer.depthTexture) {

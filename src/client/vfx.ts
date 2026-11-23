@@ -192,6 +192,22 @@ export class VfxSystem {
   private craters: CraterItem[] = [];
   private lastNow = performance.now();
 
+  // Adaptive quality budgets (fed from GraphicsManager each frame)
+  private fxCap = 400;
+  private smokeCapEff = SMOKE_CAP;
+  private wakeCapEff = WAKE_CAP;
+  private puffCapEff = PUFF_CAP;
+
+  // Scale ambient particle pools + cap one-shot beam/tracer/flash objects so
+  // massive battles degrade gracefully instead of flooding draw calls.
+  setBudget(vfxScale: number, fxCap: number) {
+    const s = Math.max(0.1, Math.min(1, vfxScale));
+    this.fxCap = Math.max(24, Math.round(fxCap));
+    this.smokeCapEff = Math.max(16, Math.round(SMOKE_CAP * s));
+    this.wakeCapEff = Math.max(12, Math.round(WAKE_CAP * s));
+    this.puffCapEff = Math.max(16, Math.round(PUFF_CAP * s));
+  }
+
   // Fixed-capacity GPU InstancedMesh particle pools (zero per-particle Mesh/Material GC)
   private smokeInst: THREE.InstancedMesh;
   private smokeAlphaArr: Float32Array;
@@ -311,7 +327,7 @@ export class VfxSystem {
   }
 
   spawnSmoke(x: number, y: number, z: number, dark: boolean) {
-    if (this.smokeCount >= SMOKE_CAP) return;
+    if (this.smokeCount >= this.smokeCapEff) return;
     const s = this.smokeSlots[this.smokeCount++];
     s.born = performance.now();
     s.life = dark ? 1150 : 1400;
@@ -327,7 +343,7 @@ export class VfxSystem {
   }
 
   spawnWake(x: number, z: number, scale = 1.0) {
-    if (this.wakeCount >= WAKE_CAP) return;
+    if (this.wakeCount >= this.wakeCapEff) return;
     const w = this.wakeSlots[this.wakeCount++];
     w.born = performance.now();
     w.life = 880;
@@ -337,7 +353,7 @@ export class VfxSystem {
   }
 
   spawnDust(x: number, z: number, scale = 1.0) {
-    if (this.puffCount >= PUFF_CAP) return;
+    if (this.puffCount >= this.puffCapEff) return;
     const p = this.puffSlots[this.puffCount++];
     p.born = performance.now();
     p.life = 720;
@@ -352,7 +368,7 @@ export class VfxSystem {
   }
 
   spawnContrail(x: number, y: number, z: number, scale = 1.0) {
-    if (this.puffCount >= PUFF_CAP) return;
+    if (this.puffCount >= this.puffCapEff) return;
     const p = this.puffSlots[this.puffCount++];
     p.born = performance.now();
     p.life = scale >= 1.5 ? 540 : scale >= 1.3 ? 620 : 760;
@@ -380,6 +396,9 @@ export class VfxSystem {
       this.spawnIntercept(fx, fy, tx, ty);
       return;
     }
+    // Adaptive cap: drop cosmetic tracer/beam spawns once the battle is already
+    // saturated with one-shot fx objects (the dominant draw-call source).
+    if (this.fxs.length >= this.fxCap) return;
     const heroic = vet >= 3;
     const a = new THREE.Vector3(fx, startY ?? (weapon === "arc" ? 1.35 : weapon === "laser" ? 1.65 : weapon === "brrrt" ? 3.1 : 0.72), fy);
     const b = new THREE.Vector3(tx, 0.48, ty);
@@ -1020,6 +1039,7 @@ export class VfxSystem {
   }
 
   private spawnFlash(pos: THREE.Vector3, color: THREE.Color, size: number, life: number) {
+    if (this.fxs.length >= this.fxCap) return;
     const mat = new THREE.SpriteMaterial({
       map: getSoftPuffTex(),
       color,
@@ -1038,6 +1058,7 @@ export class VfxSystem {
   }
 
   private spawnImpactRing(x: number, z: number, radius: number, color: THREE.Color, life = 380) {
+    if (this.fxs.length >= this.fxCap) return;
     const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.88, depthWrite: false });
     const ring = new THREE.Mesh(sharedRing, mat);
     ring.rotation.x = -Math.PI / 2;
@@ -1166,8 +1187,9 @@ export class VfxSystem {
     this.spawnImpactRing(x, y, rad * 1.08, new THREE.Color(2.7, 1.35, 0.36), 440);
     this.spawnImpactRing(x, y, rad * 0.72, new THREE.Color(3.6, 2.8, 1.4), 260);
 
-    // 4. Glowing HDR ember sparks & tumbling dark armor debris
-    const chunks = Math.min(11, Math.max(5, Math.round(rad * 3.4)));
+    // 4. Glowing HDR ember sparks & tumbling dark armor debris — shed first under fx pressure
+    const lite = this.fxs.length >= this.fxCap;
+    const chunks = lite ? 0 : Math.min(11, Math.max(5, Math.round(rad * 3.4)));
     for (let i = 0; i < chunks; i++) {
       const isEmber = i % 3 !== 2;
       const ang = (i / chunks) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
