@@ -57,6 +57,7 @@ export type WeaponFx =
   | "bomb"
   | "laser"
   | "railgun"
+  | "brrrt"
   | "intercept";
 
 // ---------- server -> client ----------

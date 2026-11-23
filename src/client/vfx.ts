@@ -92,7 +92,8 @@ const SMOKE_DARK_COL = new THREE.Color(0x26292e);
 const SMOKE_LIGHT_COL = new THREE.Color(0x8ea0ad);
 const WAKE_COL = new THREE.Color(0xdcf8ff);
 const CONTRAIL_COL = new THREE.Color(0xe6f9ff);
-const HYPER_CONTRAIL_COL = new THREE.Color(2.0, 3.0, 3.6);
+const HYPER_CONTRAIL_COL = new THREE.Color(1.8, 3.3, 4.2);
+const HYPER_PLASMA_GOLD_COL = new THREE.Color(4.2, 2.55, 0.72);
 const DUST_COLOR_OBJS = DUST_TINTS.map((hex) => new THREE.Color(hex));
 
 const RALLY_COL = 0x44f0ff;
@@ -351,7 +352,7 @@ export class VfxSystem {
     if (this.puffCount >= PUFF_CAP) return;
     const p = this.puffSlots[this.puffCount++];
     p.born = performance.now();
-    p.life = scale >= 1.3 ? 620 : 760;
+    p.life = scale >= 1.5 ? 540 : scale >= 1.3 ? 620 : 760;
     p.isDust = false;
     p.sx = x;
     p.sy = y;
@@ -359,7 +360,7 @@ export class VfxSystem {
     p.driftX = 0;
     p.driftZ = 0;
     p.scale = scale;
-    p.color = scale >= 1.3 ? HYPER_CONTRAIL_COL : CONTRAIL_COL;
+    p.color = scale >= 1.5 ? HYPER_PLASMA_GOLD_COL : scale >= 1.3 ? HYPER_CONTRAIL_COL : CONTRAIL_COL;
   }
 
   spawnShot(
@@ -377,10 +378,139 @@ export class VfxSystem {
       return;
     }
     const heroic = vet >= 3;
-    const a = new THREE.Vector3(fx, startY ?? (weapon === "arc" ? 1.35 : weapon === "laser" ? 1.65 : 0.72), fy);
+    const a = new THREE.Vector3(fx, startY ?? (weapon === "arc" ? 1.35 : weapon === "laser" ? 1.65 : weapon === "brrrt" ? 3.1 : 0.72), fy);
     const b = new THREE.Vector3(tx, 0.48, ty);
     const dir = b.clone().sub(a);
     const len = Math.max(0.05, dir.length());
+
+    if (weapon === "brrrt") {
+      // Iconic A-10 Warthog GAU-8 Avenger 30mm rotary burst: dense 3-bolt golden-amber tracer stream + fiery ground dust/spark impacts!
+      const muzzlePos = new THREE.Vector3(fx, startY ?? 3.1, fy);
+      const baseTarget = new THREE.Vector3(tx, 0.16, ty);
+      const horizDir = new THREE.Vector3(tx - fx, 0, ty - fy);
+      const hLen = horizDir.length();
+      if (hLen > 0.01) horizDir.divideScalar(hLen);
+      else horizDir.set(1, 0, 0);
+      const perp = new THREE.Vector3(-horizDir.z, 0, horizDir.x);
+
+      // Blazing GAU-8 nose muzzle flash & gun-gas smoke puff
+      this.spawnFlash(
+        muzzlePos,
+        heroic ? new THREE.Color(4.4, 2.1, 0.55) : new THREE.Color(4.2, 2.65, 0.65),
+        heroic ? 1.35 : 1.05,
+        170,
+      );
+      this.spawnSmoke(muzzlePos.x, muzzlePos.y - 0.12, muzzlePos.z, false);
+
+      const offsets: [number, number][] = [
+        [-0.22, -0.18],
+        [0.04, 0.02],
+        [0.24, 0.2],
+      ];
+
+      for (let i = 0; i < 3; i++) {
+        const [lat, lng] = offsets[i];
+        const impactP = baseTarget
+          .clone()
+          .addScaledVector(perp, lat + (Math.random() - 0.5) * 0.14)
+          .addScaledVector(horizDir, lng + (Math.random() - 0.5) * 0.14);
+        const startP = muzzlePos.clone().addScaledVector(perp, (i - 1) * 0.06);
+        const bDir = impactP.clone().sub(startP);
+        const bLen = Math.max(0.2, bDir.length());
+        const bUnit = bDir.clone().normalize();
+        const segLen = Math.min(bLen * 0.62, heroic ? 2.85 : 2.35);
+
+        const boltGroup = new THREE.Group();
+        boltGroup.quaternion.setFromUnitVectors(UP, bUnit);
+
+        const coreMat = new THREE.MeshBasicMaterial({
+          color: heroic ? new THREE.Color(4.6, 1.85, 0.4) : new THREE.Color(4.5, 2.75, 0.55),
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+        });
+        const coreMesh = new THREE.Mesh(sharedCyl, coreMat);
+        const cThick = heroic ? 1.85 : 1.45;
+        coreMesh.scale.set(cThick, segLen, cThick);
+        boltGroup.add(coreMesh);
+
+        const glowMat = new THREE.MeshBasicMaterial({
+          color: heroic ? new THREE.Color(4.0, 1.3, 0.25) : new THREE.Color(3.8, 2.0, 0.35),
+          transparent: true,
+          opacity: 0,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        const glowMesh = new THREE.Mesh(sharedCyl, glowMat);
+        glowMesh.scale.set(cThick * 2.3, segLen * 1.12, cThick * 2.3);
+        boltGroup.add(glowMesh);
+
+        const delay = i * 0.15;
+        const lifeMs = 215 + i * 38;
+        let struck = false;
+
+        this.add(boltGroup, lifeMs, (o, t) => {
+          if (t < delay) {
+            coreMat.opacity = 0;
+            glowMat.opacity = 0;
+            return;
+          }
+          const u = (t - delay) / (1 - delay);
+          const travel = Math.min(1, u * 1.15);
+          o.position.copy(startP).lerp(impactP, travel);
+          const fade = u < 0.72 ? 1.0 : Math.max(0, 1 - (u - 0.72) / 0.28);
+          coreMat.opacity = 0.98 * fade;
+          glowMat.opacity = 0.68 * fade;
+
+          if (travel >= 0.88 && !struck) {
+            struck = true;
+            // Fiery 30mm depleted-uranium impact flash + ground dust + flying hot sparks!
+            this.spawnFlash(
+              impactP,
+              heroic ? new THREE.Color(4.4, 1.75, 0.35) : new THREE.Color(4.2, 2.35, 0.52),
+              heroic ? 1.18 : 0.92,
+              185,
+            );
+            this.spawnDust(impactP.x, impactP.z, heroic ? 1.25 : 0.96);
+            if (i === 1) {
+              this.spawnImpactRing(
+                impactP.x,
+                impactP.z,
+                heroic ? 1.22 : 0.92,
+                new THREE.Color(3.8, 1.95, 0.4),
+                260,
+              );
+              this.spawnSmoke(impactP.x, 0.28, impactP.z, true);
+            }
+            for (let s = 0; s < 3; s++) {
+              const sMat = new THREE.MeshBasicMaterial({
+                color: s === 0 ? new THREE.Color(4.4, 3.1, 0.9) : new THREE.Color(3.8, 1.7, 0.3),
+                transparent: true,
+                opacity: 0.96,
+              });
+              const spark = new THREE.Mesh(sharedSpark, sMat);
+              spark.position.set(impactP.x, 0.22, impactP.z);
+              const ang = Math.random() * Math.PI * 2;
+              const spd = 1.6 + Math.random() * 2.6;
+              const vx = Math.cos(ang) * spd;
+              const vz = Math.sin(ang) * spd;
+              const vy = 2.4 + Math.random() * 2.8;
+              this.add(spark, 240 + Math.random() * 110, (so, st) => {
+                so.position.set(
+                  impactP.x + vx * st * 0.36,
+                  Math.max(0.06, 0.22 + vy * st * 0.34 - 4.8 * st * st * 0.24),
+                  impactP.z + vz * st * 0.36,
+                );
+                const sc = (1 - st) * (heroic ? 1.2 : 0.9);
+                so.scale.set(sc * 0.7, sc * 1.4, sc * 0.7);
+                sMat.opacity = 1 - st;
+              });
+            }
+          }
+        });
+      }
+      return;
+    }
 
     if (weapon === "laser") {
       // Helios Laser / Defense Satellite: intense searing continuous golden-cyan focused thermal beam (240ms)

@@ -398,6 +398,8 @@ export function stepEntityAnim(
     k === "ewdrone" ||
     k === "interceptor" ||
     k === "chopper" ||
+    k === "a10" ||
+    k === "ac130" ||
     k === "bomber" ||
     k === "zeppelin" ||
     k === "uav" ||
@@ -482,14 +484,47 @@ export function stepEntityAnim(
           subMat.opacity = st.subAlpha;
         }
       }
-    } else if (k === "hypersonic") {
-      bob = Math.sin(nowSec * 5.2 + last.id) * 0.06;
+    } else if (k === "a10") {
+      // A-10 Warthog: crisp agile close-air-support dive-banking + GAU-8 gun-run nose dip & shudder!
+      bob = Math.sin(nowSec * 3.5 + last.id) * 0.08;
       rig.body.position.y = alt + bob;
-      const targetBank = Math.max(-0.78, Math.min(0.78, yawRate * 0.24));
-      st.bank += (targetBank - st.bank) * (1 - Math.exp(-11 * safeDt));
-      rig.body.rotation.z = st.bank;
-      const targetPitch = 0.01 * (1 - m) + (-0.06 + Math.abs(st.bank) * 0.07) * m;
+      const targetBank = Math.max(-0.72, Math.min(0.72, yawRate * 0.25));
+      st.bank += (targetBank - st.bank) * (1 - Math.exp(-10.5 * safeDt));
+      const gunShudder = st.recoil > 0 ? Math.sin(nowSec * 92) * 0.02 * st.recoil : 0;
+      rig.body.rotation.z = st.bank + gunShudder;
+      const strafeDive = st.recoil > 0 ? 0.14 * st.recoil : 0;
+      const targetPitch = 0.02 * (1 - m) + (0.048 + Math.abs(st.bank) * 0.055) * m + strafeDive;
       rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * (1 - Math.exp(-8.5 * safeDt));
+    } else if (k === "ac130") {
+      // AC-130 Spectre Gunship: steady majestic high-altitude circling + pylon bank + 4-prop turboprop spin!
+      bob = Math.sin(nowSec * 1.55 + last.id) * 0.095;
+      rig.body.position.y = alt + bob;
+      const pylonFireBank = st.recoil > 0 ? 0.065 * st.recoil : 0;
+      const targetBank = Math.max(-0.34, Math.min(0.34, yawRate * 0.16)) + pylonFireBank;
+      st.bank += (targetBank - st.bank) * (1 - Math.exp(-4.8 * safeDt));
+      rig.body.rotation.z = st.bank;
+      const targetPitch = 0.008 * (1 - m) - 0.014 * m;
+      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * (1 - Math.exp(-5.0 * safeDt));
+      const propSpeed = 30 + 16 * m;
+      if (rig.spin) {
+        for (let i = 0; i < rig.spin.children.length; i++) {
+          rig.spin.children[i].rotation.z += safeDt * propSpeed;
+        }
+      }
+      if (rig.spin2) {
+        for (let i = 0; i < rig.spin2.children.length; i++) {
+          rig.spin2.children[i].rotation.z -= safeDt * propSpeed;
+        }
+      }
+    } else if (k === "hypersonic") {
+      // Mach-9 Kamikaze: blazing supersonic dive-glide banking & razor-sharp attitude response
+      bob = Math.sin(nowSec * 5.8 + last.id) * 0.05;
+      rig.body.position.y = alt + bob;
+      const targetBank = Math.max(-0.82, Math.min(0.82, yawRate * 0.26));
+      st.bank += (targetBank - st.bank) * (1 - Math.exp(-12 * safeDt));
+      rig.body.rotation.z = st.bank;
+      const targetPitch = 0.025 * (1 - m) + (0.065 + Math.abs(st.bank) * 0.06) * m;
+      rig.body.rotation.x += (targetPitch - rig.body.rotation.x) * (1 - Math.exp(-9.5 * safeDt));
     } else if (k === "chopper") {
       bob = Math.sin(nowSec * 3.2 + last.id) * 0.1 + Math.cos(nowSec * 5.6 + last.id) * 0.025;
       rig.body.position.y = alt + bob;
@@ -525,10 +560,17 @@ export function stepEntityAnim(
       rig.shadow.scale.set(baseSh.x * shScale, 1, baseSh.z * shScale);
     }
 
-    // Crisp white-cyan wingtip jet contrails (extra blazing white-cyan contrails for Mach-9 hypersonic!)
+    // Crisp wingtip jet contrails + blazing cyan-gold plasma contrails for Mach-9 Kamikaze!
     if (
       emitContrail &&
-      (k === "interceptor" || k === "bomber" || k === "uav" || k === "shahed" || k === "stealthbomber" || k === "hypersonic") &&
+      (k === "interceptor" ||
+        k === "a10" ||
+        k === "ac130" ||
+        k === "bomber" ||
+        k === "uav" ||
+        k === "shahed" ||
+        k === "stealthbomber" ||
+        k === "hypersonic") &&
       moving &&
       vis.root.visible
     ) {
@@ -536,56 +578,72 @@ export function stepEntityAnim(
       if (st.contrailCd <= 0) {
         st.contrailCd =
           k === "hypersonic"
-            ? 0.022
+            ? 0.016
             : k === "interceptor"
               ? 0.042
-              : k === "bomber" || k === "shahed"
-                ? 0.055
-                : k === "stealthbomber"
-                  ? 0.06
-                  : 0.062;
+              : k === "a10"
+                ? 0.052
+                : k === "ac130"
+                  ? 0.068
+                  : k === "bomber" || k === "shahed"
+                    ? 0.055
+                    : k === "stealthbomber"
+                      ? 0.06
+                      : 0.062;
         const span =
-          k === "stealthbomber"
-            ? 1.32
-            : k === "bomber"
-              ? 1.28
-              : k === "interceptor"
-                ? 0.92
-                : k === "hypersonic"
-                  ? 0.86
-                  : k === "shahed"
-                    ? 0.72
-                    : 0.78;
+          k === "ac130"
+            ? 1.72
+            : k === "stealthbomber"
+              ? 1.32
+              : k === "bomber"
+                ? 1.28
+                : k === "a10"
+                  ? 1.24
+                  : k === "interceptor"
+                    ? 0.92
+                    : k === "hypersonic"
+                      ? 0.62
+                      : k === "shahed"
+                        ? 0.72
+                        : 0.78;
         const trailZ =
           k === "hypersonic"
-            ? -0.64
-            : k === "bomber"
-              ? -0.44
-              : k === "stealthbomber"
-                ? -0.38
-                : k === "shahed"
-                  ? -0.52
-                  : k === "uav"
-                    ? -0.35
-                    : -0.5;
+            ? -0.78
+            : k === "ac130"
+              ? -0.06
+              : k === "a10"
+                ? -0.14
+                : k === "bomber"
+                  ? -0.44
+                  : k === "stealthbomber"
+                    ? -0.38
+                    : k === "shahed"
+                      ? -0.52
+                      : k === "uav"
+                        ? -0.35
+                        : -0.5;
         const cosH = Math.cos(headingRad);
         const sinH = Math.sin(headingRad);
         const cosB = Math.cos(st.bank);
         const sinB = Math.sin(st.bank);
         const cScale =
           k === "hypersonic"
-            ? 1.36
+            ? 1.38
             : k === "bomber"
               ? 1.15
-              : k === "stealthbomber"
-                ? last.sub
-                  ? 0.62
-                  : 1.05
-                : k === "shahed"
-                  ? 0.56
-                  : k === "uav"
-                    ? 0.65
-                    : 0.88;
+              : k === "ac130"
+                ? 0.88
+                : k === "a10"
+                  ? 0.72
+                  : k === "stealthbomber"
+                    ? last.sub
+                      ? 0.62
+                      : 1.05
+                    : k === "shahed"
+                      ? 0.56
+                      : k === "uav"
+                        ? 0.65
+                        : 0.88;
         for (const sx of [-1, 1]) {
           const lx = sx * span * cosB;
           const ly = sx * span * sinB;
@@ -594,9 +652,11 @@ export function stepEntityAnim(
           const wz = y - lx * cosH + trailZ * sinH;
           emitContrail(wx, wy, wz, cScale);
         }
-        // Extra blazing central Mach-9 scramjet shock-cone contrail for hypersonic strike craft!
+        // High-speed blazing cyan-gold plasma trail for Mach-9 Kamikaze!
         if (k === "hypersonic") {
-          emitContrail(x - 0.92 * cosH, rig.body.position.y, y - 0.92 * sinH, 1.55);
+          // Superheated golden plasma scramjet core wake (scale >= 1.5 triggers HYPER_PLASMA_GOLD_COL)
+          emitContrail(x - 0.96 * cosH, rig.body.position.y, y - 0.96 * sinH, 1.62);
+          emitContrail(x - 1.32 * cosH, rig.body.position.y, y - 1.32 * sinH, 1.44);
         }
       }
     }
@@ -831,7 +891,12 @@ export function stepEntityAnim(
         k === "lasertower" ||
         k === "satlink");
     const isJetBurner =
-      k === "interceptor" || k === "bomber" || k === "uav" || k === "stealthbomber" || k === "hypersonic";
+      k === "interceptor" ||
+      k === "a10" ||
+      k === "bomber" ||
+      k === "uav" ||
+      k === "stealthbomber" ||
+      k === "hypersonic";
     const isArmedKamikaze = k === "fpvdrone" || k === "shahed" || k === "usv";
     const freq = isJetBurner
       ? 18.0

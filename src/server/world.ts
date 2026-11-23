@@ -191,15 +191,21 @@ const canHitGroundOf = (k: EntKind): boolean =>
 const isInfantry = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer";
 const usesFuel = (k: EntKind): boolean =>
   !isBuilding(k) && !isInfantry(k) && k !== "supplytruck" && k !== "harvester";
+const fuelBurnOf = (k: EntKind, dom: UnitDomain): number => {
+  if (k === "hypersonic") return 0.04;
+  if (isKamikaze(k)) return 0.18;
+  return dom === "air" ? 0.55 : dom === "sea" ? 0.25 : 0.35;
+};
 const ammoCostOf = (k: EntKind): number => {
   if (isKamikaze(k)) return 0;
+  if (k === "a10") return 2;
+  if (k === "ac130") return 6;
   if (
     k === "himars" ||
     k === "arty" ||
     k === "dreadnought" ||
     k === "bomber" ||
     k === "stealthbomber" ||
-    k === "hypersonic" ||
     k === "zeppelin"
   ) {
     return 12;
@@ -259,12 +265,27 @@ const armorMult = (attacker: EntKind, target: EntKind): number => {
   } else if (
     attacker === "bomber" ||
     attacker === "stealthbomber" ||
-    attacker === "hypersonic" ||
     attacker === "himars" ||
     attacker === "zeppelin" ||
     attacker === "dreadnought"
   ) {
     if (isBuilding(target)) return 1.3;
+  } else if (attacker === "hypersonic") {
+    if (isBuilding(target) || isSeaShip(target)) return 1.5;
+  } else if (attacker === "a10") {
+    if (
+      target === "tank" ||
+      target === "himars" ||
+      target === "railtank" ||
+      target === "harvester" ||
+      target === "supplytruck" ||
+      target === "heavy" ||
+      target === "arty"
+    ) {
+      return 1.5;
+    }
+  } else if (attacker === "ac130") {
+    if (isInfantry(target) || isVehicle(target) || isBuilding(target)) return 1.3;
   } else if (attacker === "gunboat" || attacker === "destroyer") {
     if (tDom === "air") return 1.35;
   } else if (attacker === "fpvdrone") {
@@ -308,9 +329,10 @@ const entityDist = (a: Ent, b: Ent) => {
 const weaponFxOf = (k: EntKind): WeaponFx => {
   if (k === "lasertower" || k === "satlink") return "laser";
   if (k === "railtank") return "railgun";
+  if (k === "a10") return "brrrt";
   if (k === "tank" || k === "heavy" || k === "destroyer") return "cannon";
   if (k === "rocket" || k === "interceptor" || k === "sam" || k === "irondome" || k === "uav") return "rocket";
-  if (k === "arty") return "arty";
+  if (k === "arty" || k === "ac130") return "arty";
   if (k === "arc") return "arc";
   if (k === "spider") return "melee";
   if (k === "dreadnought" || k === "himars" || k === "hypersonic" || k === "carrier") return "missile";
@@ -1875,8 +1897,7 @@ export class World {
       if (logisticsOn && usesFuel(e.k)) {
         const moved = Math.hypot(e.x - prevX, e.y - prevY);
         if (moved > 0) {
-          const burn = isKamikaze(e.k) ? 0.18 : dom === "air" ? 0.55 : dom === "sea" ? 0.25 : 0.35;
-          e.fuel = Math.max(0, e.fuel - moved * burn);
+          e.fuel = Math.max(0, e.fuel - moved * fuelBurnOf(e.k, dom));
         }
       }
     }
@@ -2483,7 +2504,7 @@ export class World {
       e.x += ((gx - e.x) / d) * step;
       e.y += ((gy - e.y) / d) * step;
       if (logisticsOn && usesFuel(e.k)) {
-        e.fuel = Math.max(0, e.fuel - step * (isKamikaze(e.k) ? 0.18 : 0.55));
+        e.fuel = Math.max(0, e.fuel - step * fuelBurnOf(e.k, dom));
       }
       e.d = Math.atan2(gy - e.y, gx - e.x);
       return false;
@@ -2525,7 +2546,7 @@ export class World {
     e.x += ((wx - e.x) / d) * step;
     e.y += ((wy - e.y) / d) * step;
     if (logisticsOn && usesFuel(e.k)) {
-      e.fuel = Math.max(0, e.fuel - step * (isKamikaze(e.k) ? 0.18 : dom === "sea" ? 0.25 : 0.35));
+      e.fuel = Math.max(0, e.fuel - step * fuelBurnOf(e.k, dom));
     }
     e.d = Math.atan2(wy - e.y, wx - e.x);
     return false;

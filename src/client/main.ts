@@ -313,10 +313,10 @@ const isAlly = (slot: number) => allies.has(slot);
 function weaponFxOf(k: EntKind): WeaponFx {
   if (k === "tank" || k === "heavy" || k === "destroyer") return "cannon";
   if (k === "rocket" || k === "interceptor" || k === "sam") return "rocket";
-  if (k === "arty") return "arty";
+  if (k === "arty" || k === "ac130") return "arty";
   if (k === "arc") return "arc";
   if (k === "spider") return "melee";
-  if (k === "dreadnought" || k === "himars" || k === "hypersonic" || k === "carrier") return "missile";
+  if (k === "dreadnought" || k === "himars" || k === "carrier") return "missile";
   if (k === "sub") return "torpedo";
   if (
     k === "bomber" ||
@@ -324,11 +324,13 @@ function weaponFxOf(k: EntKind): WeaponFx {
     k === "zeppelin" ||
     k === "fpvdrone" ||
     k === "shahed" ||
+    k === "hypersonic" ||
     k === "usv"
   )
     return "bomb";
   if (k === "lasertower" || k === "satlink") return "laser";
   if (k === "railtank") return "railgun";
+  if (k === "a10") return "brrrt";
   if (k === "irondome") return "intercept";
   return "bullet";
 }

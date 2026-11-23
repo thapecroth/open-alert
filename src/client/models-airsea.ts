@@ -731,6 +731,166 @@ function makeUsvHullGeo(): THREE.BufferGeometry {
   return g;
 }
 
+// 28. A-10 Warthog: Sculpted Armored Thunderbolt II Fuselage Side Profile (+x -> +Z)
+function makeA10FuselageGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(1.06, -0.02); // rounded armored Warthog nose cone
+  s.lineTo(0.92, 0.08); // sloped armored windscreen brow
+  s.lineTo(0.62, 0.13); // cockpit titanium tub sill
+  s.lineTo(0.06, 0.15); // aft canopy fairing spine
+  s.lineTo(-0.56, 0.12); // straight dorsal tail spine
+  s.lineTo(-1.08, 0.07); // tapered tailcone top
+  s.lineTo(-1.08, -0.02); // tailcone bottom
+  s.lineTo(-0.46, -0.1); // tapered aft belly
+  s.lineTo(0.46, -0.13); // armored titanium cockpit bathtub belly
+  s.lineTo(0.94, -0.1); // GAU-8 chin gun fairing
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.22,
+    bevelEnabled: true,
+    bevelThickness: 0.048,
+    bevelSize: 0.034,
+    bevelSegments: 2,
+  });
+  g.center();
+  g.rotateY(-Math.PI / 2);
+  return g;
+}
+
+// 29. A-10 Warthog: Iconic Broad Straight Low-Mounted Wing Planform (+y -> +Z)
+function makeA10WingGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(-1.22, 0.22); // port straight leading edge
+  s.lineTo(1.22, 0.22); // starboard straight leading edge
+  s.lineTo(1.24, -0.16); // broad Hershey-bar wingtip chord
+  s.lineTo(0.42, -0.22); // wide straight trailing edge
+  s.lineTo(-0.42, -0.22);
+  s.lineTo(-1.24, -0.16);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.048,
+    bevelEnabled: true,
+    bevelThickness: 0.018,
+    bevelSize: 0.016,
+    bevelSegments: 2,
+  });
+  g.center();
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
+// 30. A-10 Warthog: Iconic Outboard Vertical H-Tail Stabilizer Fin (+x -> +Z)
+function makeA10TailFinGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(0.24, -0.06); // forward fin root
+  s.lineTo(0.08, 0.34); // distinctive swept upper leading edge
+  s.quadraticCurveTo(0.02, 0.42, -0.08, 0.41); // rounded Warthog fin crown
+  s.lineTo(-0.2, 0.36);
+  s.lineTo(-0.24, -0.06); // straight vertical rudder trailing edge
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.026,
+    bevelEnabled: true,
+    bevelThickness: 0.008,
+    bevelSize: 0.007,
+    bevelSegments: 1,
+  });
+  g.center();
+  g.rotateY(-Math.PI / 2);
+  return g;
+}
+
+// 31. A-10 Warthog: Rear High-Bypass TF34 Turbofan Engine Nacelle Pod (LatheGeometry along +Z)
+function makeA10EnginePodGeo(): THREE.BufferGeometry {
+  const pts: THREE.Vector2[] = [
+    new THREE.Vector2(0.085, -0.34), // exhaust nozzle lip
+    new THREE.Vector2(0.118, -0.22),
+    new THREE.Vector2(0.145, -0.02), // full high-bypass fan cowling
+    new THREE.Vector2(0.148, 0.22),
+    new THREE.Vector2(0.132, 0.33), // rounded intake lip
+    new THREE.Vector2(0.105, 0.35),
+  ];
+  const g = new THREE.LatheGeometry(pts, 18);
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
+// 32. AC-130 Spectre Gunship: Long Cylindrical C-130 Hercules Transport Fuselage (LatheGeometry along +Z)
+function makeAc130FuselageGeo(): THREE.BufferGeometry {
+  const pts: THREE.Vector2[] = [];
+  const steps = 28;
+  const sternZ = -1.42;
+  const noseZ = 1.36;
+  const span = noseZ - sternZ;
+  for (let i = 0; i <= steps; i++) {
+    const u = i / steps; // 0 = stern, 1 = nose
+    const y = sternZ + u * span;
+    let r: number;
+    if (u > 0.84) {
+      // Iconic rounded bulbous C-130 weather-radome nose
+      const v = (u - 0.84) / 0.16;
+      r = 0.26 * Math.sqrt(Math.max(0, 1 - v * v));
+    } else if (u > 0.28) {
+      // Long cylindrical pressurized cargo-deck fuselage barrel
+      const mid = (u - 0.28) / 0.56;
+      r = 0.265 + 0.012 * Math.sin(mid * Math.PI);
+    } else {
+      // Tapered rear cargo ramp & tailcone
+      const v = u / 0.28;
+      r = 0.055 + 0.21 * Math.pow(v, 0.72);
+    }
+    pts.push(new THREE.Vector2(Math.max(0.002, r), y));
+  }
+  const g = new THREE.LatheGeometry(pts, 24);
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
+// 33. AC-130 Spectre Gunship: Imposing Wide High-Mounted Straight Hercules Wing (+y -> +Z)
+function makeAc130WingGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(-1.82, 0.18); // port wingtip leading edge
+  s.lineTo(-0.62, 0.3); // straight wide center wingbox leading edge
+  s.lineTo(0.62, 0.3);
+  s.lineTo(1.82, 0.18); // starboard wingtip leading edge
+  s.lineTo(1.82, -0.06); // clipped wingtip trailing edge
+  s.lineTo(0.64, -0.24); // tapered outer trailing edge
+  s.lineTo(-0.64, -0.24);
+  s.lineTo(-1.82, -0.06);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.065,
+    bevelEnabled: true,
+    bevelThickness: 0.022,
+    bevelSize: 0.018,
+    bevelSegments: 2,
+  });
+  g.center();
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
+// 34. AC-130 Spectre Gunship: Tall Commanding High T-Tail Vertical Stabilizer Fin (+x -> +Z)
+function makeAc130TailFinGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(0.46, 0.0); // long dorsal fillet root
+  s.lineTo(0.16, 0.26);
+  s.lineTo(-0.04, 0.88); // towering vertical fin leading crown
+  s.lineTo(-0.34, 0.86); // broad T-tail cap
+  s.lineTo(-0.38, 0.0); // tall vertical rudder trailing edge
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.046,
+    bevelEnabled: true,
+    bevelThickness: 0.014,
+    bevelSize: 0.012,
+    bevelSegments: 2,
+  });
+  g.center();
+  g.rotateY(-Math.PI / 2);
+  return g;
+}
+
 const geoHangarArch = makeHangarArchGeo();
 const geoInterceptorPlanform = makeInterceptorPlanformGeo();
 const geoJetTailFin = makeJetTailFinGeo();
@@ -757,6 +917,16 @@ const geoShahedWing = makeShahedWingGeo();
 const geoShahedTipFin = makeShahedTipFinGeo();
 const geoEwDroneWing = makeEwDroneWingGeo();
 const geoUsvHull = makeUsvHullGeo();
+const geoA10Fuselage = makeA10FuselageGeo();
+const geoA10Wing = makeA10WingGeo();
+const geoA10TailFin = makeA10TailFinGeo();
+const geoA10EnginePod = makeA10EnginePodGeo();
+const geoAc130Fuselage = makeAc130FuselageGeo();
+const geoAc130Wing = makeAc130WingGeo();
+const geoAc130TailFin = makeAc130TailFinGeo();
+const geoA10ExhaustRing = new THREE.TorusGeometry(0.095, 0.024, 8, 20);
+const geoPropBlurDisc = new THREE.CircleGeometry(0.28, 22);
+const geoPropBlurRing = new THREE.RingGeometry(0.24, 0.285, 22);
 const geoGunboatTurret = makeNavalTurretGeo(0.36, 0.16, 0.44);
 const geoDestroyerTurret = makeNavalTurretGeo(0.5, 0.22, 0.6);
 const geoSubShroud = new THREE.TorusGeometry(0.17, 0.024, 8, 20);
@@ -2577,6 +2747,311 @@ export function buildAirSeaModel(
 
       smokePos = new THREE.Vector3(0, 0.26, -0.45);
       topY = 0.62;
+      break;
+    }
+
+    // =========================================================================
+    // 21. A-10 WARTHOG (Air) — Broad Straight Wings, Twin Rear Turbofans, H-Tail & GAU-8 30mm
+    // =========================================================================
+    case "a10": {
+      altitude = 3.1;
+      body.position.y = altitude;
+
+      const warthogGray = getChassisMat("#546270", 0.36, 0.58);
+      const warthogDark = getChassisMat("#38434f", 0.42, 0.56);
+      const maverickWhite = getChassisMat("#dce4ec", 0.34, 0.32);
+      const hudGreen = getGlowMat(EMERALD, 1.35);
+      const exhaustRingGlow = getGlowMat(AFTERBURN, 1.85);
+      const exhaustCoreGlow = getGlowMat("#ffd86a", 1.95);
+
+      // Sculpted armored Thunderbolt II fuselage + titanium cockpit tub & dorsal spine
+      add(mesh(geoA10Fuselage, warthogGray), 0, 0.02, 0);
+      add(rbox(0.32, 0.14, 0.78, warthogDark, 0.04), 0, 0.01, 0.42);
+      add(rbox(0.18, 0.075, 0.94, accent, 0.025), 0, 0.145, -0.22);
+      // Warthog nose shark-stripe / armored gun-bay nose collar
+      add(rbox(0.24, 0.085, 0.22, accentBright, 0.02), 0, 0.015, 0.88);
+
+      // Teardrop bubble glass cockpit canopy (`getGlassMat`) + armored flat windscreen + green HUD glint
+      const canopyBubble = rbox(0.24, 0.17, 0.52, getGlassMat("#62d4ff"), 0.075, false);
+      add(canopyBubble, 0, 0.185, 0.44);
+      const windscreen = rbox(0.21, 0.12, 0.2, getGlassMat("#7ee2ff"), 0.03, false);
+      windscreen.rotation.x = 0.36;
+      add(windscreen, 0, 0.16, 0.72);
+      add(box(0.25, 0.028, 0.032, gunm), 0, 0.23, 0.62);
+      add(box(0.08, 0.045, 0.018, hudGreen, false), 0, 0.175, 0.69);
+
+      // Prominent protruding nose GAU-8/A Avenger 30mm 7-barrel rotary gatling cannon!
+      const gauHousing = cyl(0.115, 0.34, gunm);
+      gauHousing.rotation.x = Math.PI / 2;
+      add(gauHousing, 0, -0.08, 0.94);
+      // Central core + 6-barrel rotary gatling cluster extending boldly forward past the nose
+      const gauCore = cyl(0.036, 0.46, steel);
+      gauCore.rotation.x = Math.PI / 2;
+      add(gauCore, 0, -0.08, 1.18);
+      for (let i = 0; i < 6; i++) {
+        const ang = (i * Math.PI * 2) / 6;
+        const barrel = cyl(0.022, 0.48, gunm);
+        barrel.rotation.x = Math.PI / 2;
+        add(barrel, Math.cos(ang) * 0.036, -0.08 + Math.sin(ang) * 0.036, 1.19);
+      }
+      // Twin muzzle barrel-clamp rings
+      for (const cz of [1.14, 1.36]) {
+        const clampRing = cyl(0.098, 0.035, steel);
+        clampRing.rotation.x = Math.PI / 2;
+        add(clampRing, 0, -0.08, cz);
+      }
+
+      // Broad straight low-mounted A-10 wings (`geoA10Wing`)
+      add(mesh(geoA10Wing, warthogGray), 0, -0.055, 0.08);
+      // Wing-root fairing fillets & upper faction identification bands
+      for (const sx of [-1, 1]) {
+        add(box(0.36, 0.085, 0.42, accent), sx * 0.88, -0.045, 0.08);
+
+        // Iconic upturned wingtips + port/starboard nav strobes
+        const wingtip = rbox(0.24, 0.046, 0.36, warthogDark, 0.014);
+        wingtip.rotation.z = sx * 0.56;
+        add(wingtip, sx * 1.31, 0.015, 0.08);
+        const tipNav = sph(0.055, getGlowMat(sx < 0 ? CRIMSON : EMERALD, 1.45), false);
+        add(tipNav, sx * 1.42, 0.08, 0.14);
+        pulse.push(tipNav);
+
+        // Distinctive forward-jutting A-10 main landing-gear fairing pods on wing leading edge
+        const lgPod = cyl(0.105, 0.42, warthogDark, true);
+        lgPod.rotation.x = Math.PI / 2;
+        add(lgPod, sx * 0.42, -0.085, 0.24);
+        const lgCap = sph(0.105, gunm);
+        add(lgCap, sx * 0.42, -0.085, 0.45);
+
+        // Underwing Maverick missile racks (inboard AGM-65 pair + outboard Maverick + ECM pod)
+        for (const [px, hasRack] of [
+          [0.64, true],
+          [0.92, false],
+        ] as [number, boolean][]) {
+          // Wing pylon strut
+          add(box(0.035, 0.12, 0.26, gunm), sx * px, -0.125, 0.06);
+          if (hasRack) {
+            add(box(0.14, 0.025, 0.2, steel), sx * px, -0.18, 0.06);
+            for (const mx of [-0.052, 0.052]) {
+              const mav = cyl(0.052, 0.44, maverickWhite);
+              mav.rotation.x = Math.PI / 2;
+              add(mav, sx * px + mx, -0.215, 0.08);
+              const seeker = sph(0.05, gunm);
+              add(seeker, sx * px + mx, -0.215, 0.3);
+            }
+          } else {
+            const mav = cyl(0.054, 0.46, maverickWhite);
+            mav.rotation.x = Math.PI / 2;
+            add(mav, sx * px, -0.205, 0.08);
+            const seeker = cone(0.052, 0.11, getGlowMat(ORE_GLOW, 1.25), false);
+            seeker.rotation.x = Math.PI / 2;
+            add(seeker, sx * px, -0.205, 0.34);
+          }
+        }
+        // Far outboard ECM self-protection pod
+        const ecm = cyl(0.062, 0.36, gunm);
+        ecm.rotation.x = Math.PI / 2;
+        add(ecm, sx * 1.12, -0.135, 0.04);
+
+        // Twin rear fuselage-mounted high-bypass TF34 turbofan engine pods!
+        const engPylon = rbox(0.24, 0.055, 0.26, warthogDark, 0.014);
+        engPylon.rotation.z = sx * 0.28;
+        add(engPylon, sx * 0.19, 0.15, -0.46);
+
+        add(mesh(geoA10EnginePod, hullLt), sx * 0.33, 0.21, -0.48);
+        // Faction intake band + dark turbofan throat + bright steel fan spinner
+        const cowlBand = cyl(0.305, 0.11, accent);
+        cowlBand.rotation.x = Math.PI / 2;
+        add(cowlBand, sx * 0.33, 0.21, -0.32);
+        const intakeDisc = cyl(0.23, 0.03, gunm);
+        intakeDisc.rotation.x = Math.PI / 2;
+        add(intakeDisc, sx * 0.33, 0.21, -0.17);
+        const spinner = cone(0.085, 0.11, steel);
+        spinner.rotation.x = Math.PI / 2;
+        add(spinner, sx * 0.33, 0.21, -0.12);
+
+        // Glowing rear turbofan exhaust rings (`pulse`) + inner hot exhaust cone
+        const exhRing = mesh(geoA10ExhaustRing, exhaustRingGlow, false, false);
+        add(exhRing, sx * 0.33, 0.21, -0.83);
+        pulse.push(exhRing);
+        const exhCore = cone(0.11, 0.34, exhaustCoreGlow, false);
+        exhCore.rotation.x = -Math.PI / 2;
+        add(exhCore, sx * 0.33, 0.21, -0.96);
+        pulse.push(exhCore);
+      }
+
+      // Iconic H-Tail Horizontal Stabilizer + Twin Outboard Vertical Tail Fins!
+      add(rbox(1.06, 0.048, 0.34, warthogGray, 0.015), 0, 0.06, -0.98);
+      for (const sx of [-1, 1]) {
+        const vFin = mesh(geoA10TailFin, warthogGray);
+        add(vFin, sx * 0.54, 0.19, -0.98);
+        // Bold faction rudder stripe on twin outboard tail fins
+        add(box(0.048, 0.14, 0.34, accent), sx * 0.54, 0.29, -1.0);
+      }
+
+      smokePos = new THREE.Vector3(0, altitude + 0.18, -0.88);
+      topY = altitude + 0.64;
+      break;
+    }
+
+    // =========================================================================
+    // 22. AC-130 SPECTRE GUNSHIP (Air) — 4-Turboprop Heavy Gunship + Port 105mm/40mm/25mm + FLIR
+    // =========================================================================
+    case "ac130": {
+      altitude = 3.85;
+      body.position.y = altitude;
+
+      const spectreSlate = getChassisMat("#303a46", 0.42, 0.54);
+      const spectreDark = getChassisMat("#202730", 0.46, 0.58);
+      const spectreLt = getChassisMat("#4c5968", 0.36, 0.6);
+      const propTipYel = getChassisMat(CRANE_YEL, 0.4, 0.3);
+      const flirGlow = getGlowMat(CORE_GLOW, 1.85);
+      const muzzleHotGlow = getGlowMat(ORE_GLOW, 1.5);
+
+      // Long cylindrical C-130 Hercules transport fuselage (LatheGeometry)
+      add(mesh(geoAc130Fuselage, spectreSlate), 0, 0, 0);
+      // Lower twin armored main-landing-gear cheek sponsons & bold dorsal faction spine
+      for (const sx of [-1, 1]) {
+        add(rbox(0.14, 0.18, 1.18, spectreDark, 0.04), sx * 0.24, -0.13, -0.02);
+      }
+      add(rbox(0.2, 0.065, 1.66, accent, 0.025), 0, 0.255, -0.1);
+      // Black weather-radar nose dome cap
+      const radome = sph(0.32, gunm);
+      radome.scale.set(0.92, 0.88, 1.12);
+      add(radome, 0, -0.01, 1.24);
+
+      // Multi-pane glossy glass flight-deck nose windshield (`getGlassMat`) + cockpit brow
+      add(rbox(0.38, 0.13, 0.32, spectreLt, 0.04), 0, 0.14, 0.94);
+      const flightDeckGlass = rbox(0.39, 0.11, 0.22, getGlassMat("#66d4ff"), 0.028, false);
+      flightDeckGlass.rotation.x = 0.24;
+      add(flightDeckGlass, 0, 0.13, 1.07);
+      // Center windshield mullion post + dorsal satcom dome
+      add(box(0.032, 0.115, 0.04, gunm), 0, 0.13, 1.16);
+      add(rbox(0.24, 0.08, 0.38, spectreLt, 0.03), 0, 0.3, 0.56);
+
+      // Wide high-mounted straight C-130 wings (`geoAc130Wing`)
+      add(mesh(geoAc130Wing, spectreSlate), 0, 0.21, 0.1);
+      // Center wingbox fairing & faction wing stripes + underwing fuel pods + wingtip nav beacons
+      add(rbox(0.68, 0.11, 0.58, spectreLt, 0.035), 0, 0.25, 0.1);
+      for (const sx of [-1, 1]) {
+        add(box(0.42, 0.105, 0.36, accent), sx * 1.46, 0.21, 0.08);
+        // Underwing external fuel tank between inboard & outboard turboprops
+        const fuelTank = cyl(0.11, 0.62, spectreDark, true);
+        fuelTank.rotation.x = Math.PI / 2;
+        add(fuelTank, sx * 0.84, 0.06, 0.14);
+        const nav = sph(0.065, getGlowMat(sx < 0 ? CRIMSON : EMERALD, 1.5), false);
+        add(nav, sx * 1.83, 0.21, 0.12);
+        pulse.push(nav);
+      }
+
+      // 4 High-Power Turboprop Engine Nacelles + 4 Spinning 4-Blade Propellers (`spin` & `spin2`)
+      spin = new THREE.Group();
+      body.add(spin);
+      spin2 = new THREE.Group();
+      body.add(spin2);
+
+      const propMat = getChassisMat("#1b2128", 0.42, 0.58);
+      for (const px of [-1.14, -0.58, 0.58, 1.14]) {
+        const fwdZ = Math.abs(px) < 0.8 ? 0.3 : 0.24;
+        // Streamlined Allison T56 turboprop nacelle + chin air-intake scoop + exhaust shroud
+        add(rbox(0.17, 0.18, 0.62, spectreDark, 0.045), px, 0.16, fwdZ);
+        add(rbox(0.12, 0.085, 0.24, gunm, 0.02), px, 0.075, fwdZ + 0.16);
+        add(box(0.185, 0.055, 0.14, accent), px, 0.17, fwdZ + 0.06);
+
+        // Spinning 4-blade turboprop hub (`spin` = port props, `spin2` = starboard props)
+        const propHub = new THREE.Group();
+        propHub.position.set(px, 0.16, fwdZ + 0.35);
+        if (px < 0) spin.add(propHub);
+        else spin2.add(propHub);
+
+        const noseCone = cone(0.11, 0.18, steel);
+        noseCone.rotation.x = Math.PI / 2;
+        propHub.add(noseCone);
+
+        for (let b = 0; b < 4; b++) {
+          const ang = (b * Math.PI) / 2;
+          const blade = box(0.048, 0.26, 0.016, propMat);
+          blade.position.set(-Math.sin(ang) * 0.13, Math.cos(ang) * 0.13, 0);
+          blade.rotation.z = ang;
+          propHub.add(blade);
+          const tip = box(0.052, 0.075, 0.018, propTipYel);
+          tip.position.set(-Math.sin(ang) * 0.24, Math.cos(ang) * 0.24, 0);
+          tip.rotation.z = ang;
+          propHub.add(tip);
+        }
+
+        // Translucent vertical motion-blur prop disc + yellow caution rim
+        const disc = new THREE.Mesh(geoPropBlurDisc, rotorDiscMat);
+        disc.position.z = -0.01;
+        propHub.add(disc);
+        const rim = new THREE.Mesh(geoPropBlurRing, rotorRingMat);
+        rim.position.z = -0.008;
+        propHub.add(rim);
+      }
+
+      // Commanding High T-Tail Vertical Stabilizer Fin + High-Mounted Broad Tailplane
+      add(mesh(geoAc130TailFin, spectreSlate), 0, 0.52, -1.16);
+      add(box(0.075, 0.2, 0.38, accent), 0, 0.72, -1.24);
+      // High T-tail horizontal stabilizer perched cleanly near top of vertical fin
+      add(rbox(1.28, 0.055, 0.34, spectreLt, 0.018), 0, 0.88, -1.26);
+      add(box(0.32, 0.062, 0.24, accent), -0.46, 0.88, -1.26);
+      add(box(0.32, 0.062, 0.24, accent), 0.46, 0.88, -1.26);
+      // Top tail anti-collision crimson beacon (`pulse`)
+      const tailBeacon = sph(0.072, getGlowMat(CRIMSON, 1.75), false);
+      add(tailBeacon, 0, 0.96, -1.26);
+      pulse.push(tailBeacon);
+
+      // 3 Prominent Port-Side (+X) Protruding Heavy Gun Barrels (angled slightly down for pylon attack!)
+      const gunTiltZ = -0.26; // barrel slopes downward outward from +X fuselage wall
+      // 1. 105mm M102 Howitzer (aft gun bay — thickest, longest heavy artillery cannon!)
+      add(rbox(0.22, 0.2, 0.32, spectreDark, 0.03), 0.25, -0.07, -0.48);
+      const how105 = cyl(0.092, 0.68, gunm);
+      how105.rotation.z = Math.PI / 2 + gunTiltZ;
+      add(how105, 0.52, -0.14, -0.48);
+      const howBrake = cyl(0.118, 0.09, steel);
+      howBrake.rotation.z = Math.PI / 2 + gunTiltZ;
+      add(howBrake, 0.82, -0.22, -0.48);
+      const howGlow = sph(0.052, muzzleHotGlow, false);
+      add(howGlow, 0.87, -0.235, -0.48);
+      pulse.push(howGlow);
+
+      // 2. 40mm L/60 Bofors Autocannon (mid gun bay — sleek tapered barrel + conical flash hider)
+      add(rbox(0.18, 0.16, 0.24, spectreDark, 0.025), 0.25, -0.07, -0.04);
+      const bofors40 = cyl(0.058, 0.56, steel, true);
+      bofors40.rotation.z = Math.PI / 2 + gunTiltZ;
+      add(bofors40, 0.48, -0.13, -0.04);
+      const boforsFlash = cone(0.076, 0.11, gunm);
+      boforsFlash.rotation.z = Math.PI / 2 + gunTiltZ;
+      add(boforsFlash, 0.74, -0.2, -0.04);
+
+      // 3. 25mm GAU-12 Equalizer Rotary Gatling (forward gun bay — multi-barrel cluster)
+      add(rbox(0.16, 0.14, 0.22, gunm, 0.025), 0.25, -0.06, 0.38);
+      for (const [oy, oz] of [
+        [-0.02, -0.02],
+        [0.02, -0.02],
+        [0, 0.022],
+      ]) {
+        const g25 = cyl(0.024, 0.42, steel);
+        g25.rotation.z = Math.PI / 2 + gunTiltZ;
+        add(g25, 0.44, -0.11 + oy, 0.38 + oz);
+      }
+      const g25Clamp = cyl(0.064, 0.036, gunm);
+      g25Clamp.rotation.z = Math.PI / 2 + gunTiltZ;
+      add(g25Clamp, 0.6, -0.155, 0.38);
+
+      // Glowing Ventral FLIR / Infrared Targeting Ball (`pulse`) + Secondary Sensor Gimbal!
+      add(cyl(0.085, 0.12, gunm), 0.06, -0.26, 0.78);
+      add(sph(0.19, spectreDark), 0.06, -0.34, 0.78);
+      const flirLens = sph(0.105, flirGlow, false);
+      add(flirLens, 0.13, -0.36, 0.84);
+      pulse.push(flirLens);
+      const flirRing = mesh(geoA10ExhaustRing, flirGlow, false, false);
+      flirRing.rotation.x = Math.PI / 2;
+      flirRing.scale.setScalar(0.82);
+      add(flirRing, 0.06, -0.35, 0.78);
+      pulse.push(flirRing);
+
+      smokePos = new THREE.Vector3(0, altitude + 0.12, -1.24);
+      topY = altitude + 1.06;
       break;
     }
 
