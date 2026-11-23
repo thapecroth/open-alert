@@ -1202,7 +1202,7 @@ export class World {
     if (p.lowPower) return "low power";
     if (p.swLeft > 0 || p.swLeft < 0) return "superweapon charging";
     p.swLeft = SW_CHARGE_TICKS;
-    // Exo-atmospheric THAAD Nuclear ICBM interception scan (50% stop chance per ready THAAD in range!)
+    // Exo-atmospheric THAAD Nuclear ICBM interception scan (80% stop chance per ready THAAD in range!)
     const readyThaads: { ent: Ent; d: number }[] = [];
     for (const e of this.ents.values()) {
       if (e.k !== "thaad" || e.o < 0 || e.hp <= 0 || e.interceptCd > 0) continue;
@@ -1216,7 +1216,7 @@ export class World {
     for (const { ent: thaad } of readyThaads) {
       thaad.interceptCd = THAAD_NUKE_CD;
       this.face(thaad, x, y);
-      if (Math.random() < 0.5) {
+      if (Math.random() < 0.8) {
         this.events.push({ e: "nukeIntercept", fx: thaad.x, fy: thaad.y, tx: x, ty: y, slot: thaad.o });
         return null;
       }
@@ -2371,26 +2371,29 @@ export class World {
 
   private tryIntercept(attacker: Ent, tx: number, ty: number, defenderSlot?: number): boolean {
     if (!INTERCEPTABLE.has(attacker.k)) return false;
-    // Mach-9 Kamikaze hypersonic glide missile: ONLY THAAD can intercept it, and at a 50% stop chance per ready battery!
+    // Mach-9 Kamikaze hypersonic glide missile: THAAD stops at 80% (16 tiles), Iron Dome at 33% (9.5 tiles)!
     if (attacker.k === "hypersonic") {
-      const thaads: { ent: Ent; d: number }[] = [];
+      const candidates: { ent: Ent; d: number; chance: number; priority: number }[] = [];
       for (const dome of this.ents.values()) {
-        if (dome.k !== "thaad" || dome.o < 0 || dome.interceptCd > 0) continue;
+        const isThaad = dome.k === "thaad";
+        const isDome = dome.k === "irondome";
+        if ((!isThaad && !isDome) || dome.o < 0 || dome.interceptCd > 0) continue;
         if (this.players.get(dome.o)?.lowPower) continue;
         if (defenderSlot !== undefined && defenderSlot >= 0) {
           if (!this.isAlly(defenderSlot, dome.o)) continue;
         } else {
           if (this.isAlly(attacker.o, dome.o)) continue;
         }
+        const maxR = isThaad ? 16 : IRONDOME_RADIUS;
         const d = dist(dome.x, dome.y, tx, ty);
-        if (d <= 16) thaads.push({ ent: dome, d });
+        if (d <= maxR) candidates.push({ ent: dome, d, chance: isThaad ? 0.8 : 1 / 3, priority: isThaad ? 0 : 1 });
       }
-      thaads.sort((a, b) => a.d - b.d);
-      for (const { ent: thaad } of thaads) {
-        thaad.interceptCd = IRONDOME_COOLDOWN;
-        this.face(thaad, tx, ty);
-        if (Math.random() < 0.5) {
-          this.events.push({ e: "intercept", fx: thaad.x, fy: thaad.y, tx, ty, slot: thaad.o });
+      candidates.sort((a, b) => a.priority - b.priority || a.d - b.d);
+      for (const { ent: tower, chance } of candidates) {
+        tower.interceptCd = IRONDOME_COOLDOWN;
+        this.face(tower, tx, ty);
+        if (Math.random() < chance) {
+          this.events.push({ e: "intercept", fx: tower.x, fy: tower.y, tx, ty, slot: tower.o });
           return true;
         }
       }
