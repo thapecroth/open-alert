@@ -1158,17 +1158,17 @@ export class Renderer {
           k === "uav"
             ? 9
             : 5.5;
-        const stealthAirDetectR =
-          k === "thaad"
-            ? 14
-            : k === "radar" ||
-                k === "sam" ||
-                k === "irondome" ||
-                k === "satlink" ||
-                k === "interceptor" ||
-                k === "uav"
-              ? 11
-              : 6.5;
+        const lowPwr = this.playerLowPower.get(t.last.o) === true;
+        // B-21 Stealth Bomber is completely invisible without powered Radar-tier sensors
+        const stealthAirDetectR = lowPwr
+          ? 0
+          : k === "satlink"
+            ? 18
+            : k === "thaad"
+              ? 15
+              : k === "radar" || k === "sam" || k === "irondome"
+                ? 12
+                : 0;
         visionSources.push({ x: t.last.x, y: t.last.y, r, subDetectR, usvDetectR, stealthAirDetectR });
       }
     }
@@ -1198,6 +1198,7 @@ export class Renderer {
             : isStealthedAir
               ? m.stealthAirDetectR
               : m.r;
+        if (lim <= 0) continue;
         if (dx * dx + dy * dy <= lim * lim) {
           vis = true;
           break;
