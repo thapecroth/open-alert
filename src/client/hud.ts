@@ -10,7 +10,7 @@ import {
   buildCategoryOf,
   CAPTURE_RANGE,
   PLAYER_COLORS,
-  SPAWNS,
+  getSpawns,
   SW_CHARGE_TICKS,
   RECON_CHARGE_TICKS,
   MAP_LIST,
@@ -38,6 +38,7 @@ const TOOLTIPS: Record<string, string> = {
   coalplant: "Thermal Coal Plant — heavy coal-fired generator (+165⚡). Needs Ore Refinery.",
   fusion: "Fusion Reactor — massive late-game clean power (+380⚡). Needs Tech Lab.",
   refinery: "Ore Refinery — unlocks harvesters; deploys one free.",
+  supplyhub: "Forward Supply Hub — extends build zone (26 tiles) & refills Fuel, Ammo + light repair in 12-tile aura",
   barracks: "Barracks — trains infantry: Riflemen, Sappers, Rocket Troopers. Upgrade to MKII for Veteran ★ troops.",
   barracks2: "Barracks II — elite infantry command; trains Veteran ★ troops faster.",
   radar: "Radar Uplink — reveals the minimap; unlocks rockets, siege, air command, Patriot SAM & Arc Spire.",
@@ -68,6 +69,7 @@ const TOOLTIPS: Record<string, string> = {
   spider: "Spider Drone — fast melee scout. Needs War Factory II.",
   himars: "HIMARS Launcher — ultra-long-range precision rocket artillery with heavy splash. Needs Defense Satellite.",
   railtank: "Aegis Railgun — hyper-velocity electromagnetic MBT (Ground + AA). Needs Defense Satellite.",
+  supplytruck: "Supply Convoy — mobile 500-pt Fuel & Ammo resupply truck for frontline armies",
   harvester: "Ore Harvester — collects ore; a full load is worth $1,125.",
   uav: "Reaper Drone — fast wide-vision reconnaissance & strike UAV (Air + Ground, AA).",
   interceptor: "Valkyrie Jet — supersonic Air Force fighter (Air + Ground, AA).",
@@ -157,6 +159,36 @@ const MAP_PREVIEW_PALETTES: Record<
     cliffEdge: "#44e2ff",
     accentGrid: "rgba(64, 230, 255, 0.1)",
   }, // Sleek dark carbon orbital deck + glowing cyan circuits
+  europa: {
+    bg: "#2d4029",
+    grid: "rgba(186, 220, 174, 0.08)",
+    cliff: "#5e685f",
+    cliffEdge: "#829184",
+  }, // Iron Frontier (96x96 continental theater)
+  pacific_theatre: {
+    bg: "#345937",
+    grid: "rgba(180, 238, 204, 0.08)",
+    cliff: "#4e4740",
+    cliffEdge: "#766c61",
+    water: "#11668a",
+    waterGlint: "rgba(130, 238, 255, 0.36)",
+  }, // Coral Sea Theatre (96x96 grand ocean)
+  arctic_front: {
+    bg: "#334d5e",
+    grid: "rgba(215, 242, 255, 0.11)",
+    cliff: "#8db9d1",
+    cliffEdge: "#c4e4f5",
+    water: "#12344d",
+    waterGlint: "rgba(176, 228, 255, 0.34)",
+  }, // Polar Sea Front (96x96 arctic sea channels)
+  megacontinent: {
+    bg: "#314232",
+    grid: "rgba(195, 224, 184, 0.08)",
+    cliff: "#5c6158",
+    cliffEdge: "#878f82",
+    water: "#144b6d",
+    waterGlint: "rgba(136, 212, 246, 0.3)",
+  }, // Eurasia Supertheater (128x128 twin continents & sea strait)
 };
 
 export type QualityPreset = "low" | "medium" | "high" | "ultra";
@@ -227,6 +259,7 @@ const SHORT_BUILDING_NAMES: Record<BuildingKind, string> = {
   coalplant: "Coal Plant",
   fusion: "Fusion",
   refinery: "Refinery",
+  supplyhub: "Supply Hub",
   barracks: "Barracks",
   barracks2: "Barracks II",
   radar: "Radar",
@@ -256,6 +289,7 @@ const COMPACT_BUILDING_NAMES: Record<BuildingKind, string> = {
   coalplant: "Coal",
   fusion: "Fusion",
   refinery: "Refinery",
+  supplyhub: "Supply",
   barracks: "Barracks",
   barracks2: "Bks II",
   radar: "Radar",
@@ -389,6 +423,8 @@ export class Hud {
   private minimap = el<HTMLCanvasElement>("minimap");
   private mmCtx = this.minimap.getContext("2d")!;
   private mmLast = 0;
+  private mmW = MAP_W;
+  private mmH = MAP_H;
   private pinged: { x: number; y: number; t: number } | null = null;
   private chatLines: string[] = [];
   private selSig = "";
@@ -439,6 +475,9 @@ export class Hud {
     });
     (document.getElementById("cfg-fog") as HTMLInputElement | null)?.addEventListener("change", (e) => {
       this.onSetConfig({ fog: (e.target as HTMLInputElement).checked });
+    });
+    (document.getElementById("cfg-logistics") as HTMLInputElement | null)?.addEventListener("change", (e) => {
+      this.onSetConfig({ logistics: (e.target as HTMLInputElement).checked });
     });
     const resignBtn = document.getElementById("resign-btn");
     resignBtn?.addEventListener("click", () => {
@@ -768,16 +807,16 @@ export class Hud {
     // Minimap navigation, orders & pings
     const nav = (e: PointerEvent) => {
       const r = this.minimap.getBoundingClientRect();
-      const x = ((e.clientX - r.left) / r.width) * MAP_W;
-      const y = ((e.clientY - r.top) / r.height) * MAP_H;
+      const x = ((e.clientX - r.left) / r.width) * this.mmW;
+      const y = ((e.clientY - r.top) / r.height) * this.mmH;
       this.onMinimapNav(x, y);
     };
     let mmDrag = false;
     this.minimap.addEventListener("pointerdown", (e) => {
       if (e.button === 2) {
         const r = this.minimap.getBoundingClientRect();
-        const x = Math.max(0.5, Math.min(MAP_W - 0.5, ((e.clientX - r.left) / r.width) * MAP_W));
-        const y = Math.max(0.5, Math.min(MAP_H - 0.5, ((e.clientY - r.top) / r.height) * MAP_H));
+        const x = Math.max(0.5, Math.min(this.mmW - 0.5, ((e.clientX - r.left) / r.width) * this.mmW));
+        const y = Math.max(0.5, Math.min(this.mmH - 0.5, ((e.clientY - r.top) / r.height) * this.mmH));
         if (!e.altKey && this.onMinimapOrder?.(x, y, e.shiftKey)) return;
         this.onMinimapPing(x, y);
         return;
@@ -788,6 +827,11 @@ export class Hud {
     this.minimap.addEventListener("contextmenu", (e) => e.preventDefault());
     window.addEventListener("pointermove", (e) => mmDrag && nav(e));
     window.addEventListener("pointerup", () => (mmDrag = false));
+  }
+
+  setMapSize(w: number, h: number) {
+    this.mmW = w > 0 ? w : MAP_W;
+    this.mmH = h > 0 ? h : MAP_H;
   }
 
   private updateMapDesc(mapId: MapId) {
@@ -807,41 +851,54 @@ export class Hud {
 
     const w = canvas.width;
     const h = canvas.height;
-    const s = w / MAP_W;
     const pal = MAP_PREVIEW_PALETTES[mapId] ?? MAP_PREVIEW_PALETTES.crossroads;
     const layout = getMapLayout(mapId);
+    const mw = layout.w || MAP_W;
+    const mh = layout.h || MAP_H;
+    const sx = w / mw;
+    const sy = h / mh;
+    const s = Math.min(sx, sy);
 
     // Biome-tinted terrain background
     ctx.fillStyle = pal.bg;
     ctx.fillRect(0, 0, w, h);
 
     // Navigable ocean / river water tiles with subtle wave glints
-    const cs = Math.ceil(s);
+    const cw = Math.max(1, Math.ceil(sx));
+    const ch = Math.max(1, Math.ceil(sy));
     if (layout.water.length) {
       ctx.fillStyle = pal.water ?? "#19587a";
       for (let i = 0; i < layout.water.length; i++) {
         const [wx, wy] = layout.water[i];
-        ctx.fillRect(wx * s, wy * s, cs, cs);
+        ctx.fillRect(wx * sx, wy * sy, cw, ch);
       }
       ctx.fillStyle = pal.waterGlint ?? "rgba(130, 222, 255, 0.3)";
       for (let i = 0; i < layout.water.length; i++) {
         const [wx, wy] = layout.water[i];
         if (((wx * 13 + wy * 29) & 15) === 0) {
-          ctx.fillRect(wx * s, wy * s, Math.max(1.5, s * 1.15), Math.max(1, s * 0.45));
+          ctx.fillRect(wx * sx, wy * sy, Math.max(1.5, sx * 1.15), Math.max(1, sy * 0.45));
         }
       }
     }
 
     // Optional fine circuit sub-grid (e.g. Cybergrid orbital deck)
+    const qStepX = Math.max(16, Math.round(mw / 4));
+    const qStepY = Math.max(16, Math.round(mh / 4));
     if (pal.accentGrid) {
       ctx.strokeStyle = pal.accentGrid;
       ctx.lineWidth = 1;
-      for (let t = 8; t < MAP_W; t += 8) {
-        if (t % 16 === 0) continue;
-        const p = Math.round(t * s) + 0.5;
+      for (let t = 8; t < mw; t += 8) {
+        if (t % qStepX === 0) continue;
+        const p = Math.round(t * sx) + 0.5;
         ctx.beginPath();
         ctx.moveTo(p, 0);
         ctx.lineTo(p, h);
+        ctx.stroke();
+      }
+      for (let t = 8; t < mh; t += 8) {
+        if (t % qStepY === 0) continue;
+        const p = Math.round(t * sy) + 0.5;
+        ctx.beginPath();
         ctx.moveTo(0, p);
         ctx.lineTo(w, p);
         ctx.stroke();
@@ -851,11 +908,16 @@ export class Hud {
     // Subtle quadrant tactical grid
     ctx.strokeStyle = pal.grid;
     ctx.lineWidth = 1;
-    for (let t = 16; t < MAP_W; t += 16) {
-      const p = Math.round(t * s) + 0.5;
+    for (let t = qStepX; t < mw; t += qStepX) {
+      const p = Math.round(t * sx) + 0.5;
       ctx.beginPath();
       ctx.moveTo(p, 0);
       ctx.lineTo(p, h);
+      ctx.stroke();
+    }
+    for (let t = qStepY; t < mh; t += qStepY) {
+      const p = Math.round(t * sy) + 0.5;
+      ctx.beginPath();
       ctx.moveTo(0, p);
       ctx.lineTo(w, p);
       ctx.stroke();
@@ -863,9 +925,9 @@ export class Hud {
 
     // Center gold ore blob + bonus extraOre zones
     const drawOreBlob = (cx: number, cy: number, rTiles: number) => {
-      const px = cx * s;
-      const py = cy * s;
-      const pr = Math.max(2.6, rTiles * s);
+      const px = cx * sx;
+      const py = cy * sy;
+      const pr = Math.max(2.4, rTiles * s);
       ctx.fillStyle = "rgba(255, 196, 61, 0.28)";
       ctx.beginPath();
       ctx.arc(px, py, pr * 1.32, 0, Math.PI * 2);
@@ -875,7 +937,7 @@ export class Hud {
       ctx.arc(px, py, pr * 0.88, 0, Math.PI * 2);
       ctx.fill();
     };
-    drawOreBlob(MAP_W / 2, MAP_H / 2, 3.6);
+    drawOreBlob(mw / 2, mh / 2, mw >= 96 ? 4.4 : 3.6);
     if (layout.extraOre) {
       for (const [ox, oy, or] of layout.extraOre) {
         drawOreBlob(ox, oy, or);
@@ -886,19 +948,19 @@ export class Hud {
     ctx.fillStyle = pal.cliff;
     for (let i = 0; i < layout.cliffs.length; i++) {
       const [cx, cy] = layout.cliffs[i];
-      ctx.fillRect(cx * s, cy * s, cs, cs);
+      ctx.fillRect(cx * sx, cy * sy, cw, ch);
     }
     ctx.fillStyle = pal.cliffEdge;
     for (let i = 0; i < layout.cliffs.length; i++) {
       const [cx, cy] = layout.cliffs[i];
-      ctx.fillRect(cx * s, cy * s, cs, Math.max(1, s * 0.4));
+      ctx.fillRect(cx * sx, cy * sy, cw, Math.max(1, sy * 0.4));
     }
 
     // Creative map landmarks & ocean artifacts
     if (layout.artifacts?.length) {
       for (const art of layout.artifacts) {
-        const ax = art.x * s;
-        const ay = art.y * s;
+        const ax = art.x * sx;
+        const ay = art.y * sy;
         const sc = art.scale ?? 1;
         if (art.kind === "shipwreck") {
           ctx.save();
@@ -1019,15 +1081,15 @@ export class Hud {
     }
 
     // Neutral Oil Derricks (amber diamond markers)
+    const dRad = mw >= 96 ? 3.4 : 4;
     for (const [dx, dy] of layout.derricks) {
-      const mx = (dx + 1) * s;
-      const my = (dy + 1) * s;
-      const r = 4;
+      const mx = (dx + 1) * sx;
+      const my = (dy + 1) * sy;
       ctx.beginPath();
-      ctx.moveTo(mx, my - r);
-      ctx.lineTo(mx + r, my);
-      ctx.lineTo(mx, my + r);
-      ctx.lineTo(mx - r, my);
+      ctx.moveTo(mx, my - dRad);
+      ctx.lineTo(mx + dRad, my);
+      ctx.lineTo(mx, my + dRad);
+      ctx.lineTo(mx - dRad, my);
       ctx.closePath();
       ctx.fillStyle = "#ffc43d";
       ctx.fill();
@@ -1039,14 +1101,13 @@ export class Hud {
     // Neutral Coal Mines (slate-gold diamond markers)
     if (layout.coalmines?.length) {
       for (const [cx, cy] of layout.coalmines) {
-        const mx = (cx + 1) * s;
-        const my = (cy + 1) * s;
-        const r = 4;
+        const mx = (cx + 1) * sx;
+        const my = (cy + 1) * sy;
         ctx.beginPath();
-        ctx.moveTo(mx, my - r);
-        ctx.lineTo(mx + r, my);
-        ctx.lineTo(mx, my + r);
-        ctx.lineTo(mx - r, my);
+        ctx.moveTo(mx, my - dRad);
+        ctx.lineTo(mx + dRad, my);
+        ctx.lineTo(mx, my + dRad);
+        ctx.lineTo(mx - dRad, my);
         ctx.closePath();
         ctx.fillStyle = "#525e68";
         ctx.fill();
@@ -1056,17 +1117,19 @@ export class Hud {
       }
     }
 
-    // 4 corner player spawn dots
-    for (let i = 0; i < SPAWNS.length; i++) {
-      const sp = SPAWNS[i];
-      const sx = (sp.x + 1.5) * s;
-      const sy = (sp.y + 1.5) * s;
+    // All 8 perimeter player spawn dots (proportional to layout.w x layout.h)
+    const spawns = getSpawns(mw, mh);
+    const spR = mw >= 96 ? 3.1 : 3.4;
+    for (let i = 0; i < spawns.length; i++) {
+      const sp = spawns[i];
+      const px = (sp.x + 1.5) * sx;
+      const py = (sp.y + 1.5) * sy;
       ctx.beginPath();
-      ctx.arc(sx, sy, 3.8, 0, Math.PI * 2);
+      ctx.arc(px, py, spR, 0, Math.PI * 2);
       ctx.fillStyle = PLAYER_COLORS[i] ?? "#ffffff";
       ctx.fill();
       ctx.strokeStyle = "#0b1118";
-      ctx.lineWidth = 1.4;
+      ctx.lineWidth = 1.3;
       ctx.stroke();
     }
 
@@ -1616,6 +1679,7 @@ export class Hud {
     syncChk("cfg-crates", config.crates);
     syncChk("cfg-derricks", config.derricks);
     syncChk("cfg-fog", config.fog);
+    syncChk("cfg-logistics", config.logistics !== false);
     this.updateMapDesc(mapId);
 
     const list = el("player-list");
@@ -1639,15 +1703,15 @@ export class Hud {
       if (!p.spectator) {
         const team = p.team ?? 0;
         const tLabel = team === 0 ? "FFA" : `T${team}`;
-        const tClass = `tbadge ${team === 1 ? "t1" : team === 2 ? "t2" : "ffa"}`;
+        const tClass = `tbadge ${team >= 1 && team <= 4 ? `t${team}` : "ffa"}`;
         if (p.id === you || (isHost && p.bot)) {
           const tb = document.createElement("button");
           tb.type = "button";
           tb.className = tClass + " own";
           tb.textContent = tLabel;
-          tb.title = "Click to cycle team (FFA / Team 1 / Team 2)";
+          tb.title = "Click to cycle team (FFA / T1 / T2 / T3 / T4)";
           tb.addEventListener("click", () => {
-            const next = team === 0 ? 1 : team === 1 ? 2 : 0;
+            const next = (team + 1) % 5;
             this.onSetTeam(next, p.id === you ? undefined : p.id);
           });
           li.appendChild(tb);
@@ -1720,7 +1784,7 @@ export class Hud {
     document.getElementById("bot-diff")?.classList.toggle("hidden", !isHost);
     document.getElementById("bot-profile")?.classList.toggle("hidden", !isHost);
     el("lobby-hint").textContent = isHost
-      ? "you are host — configure match rules, bot difficulty & playstyles, then start (2-4 players)"
+      ? "you are host — configure match rules, bot difficulty & playstyles, then start (2-8 players)"
       : "waiting for host to start… (click your team badge to switch teams)";
   }
 
@@ -1904,6 +1968,34 @@ export class Hud {
       }
     }
 
+    const fuelEl = document.getElementById("fpv-fuel");
+    if (fuelEl) {
+      if (tel.fuel !== undefined) {
+        const fv = Math.max(0, Math.round(tel.fuel));
+        fuelEl.textContent = `FUEL ${fv}%`;
+        fuelEl.classList.toggle("warn", fv < 35 && fv >= 15);
+        fuelEl.classList.toggle("crit", fv < 15);
+        fuelEl.classList.remove("hidden");
+      } else {
+        fuelEl.classList.add("hidden");
+        fuelEl.classList.remove("warn", "crit");
+      }
+    }
+
+    const ammoEl = document.getElementById("fpv-ammo");
+    if (ammoEl) {
+      if (tel.ammo !== undefined) {
+        const av = Math.max(0, Math.round(tel.ammo));
+        ammoEl.textContent = `AMMO ${av}%`;
+        ammoEl.classList.toggle("warn", av < 35 && av >= 15);
+        ammoEl.classList.toggle("crit", av < 15);
+        ammoEl.classList.remove("hidden");
+      } else {
+        ammoEl.classList.add("hidden");
+        ammoEl.classList.remove("warn", "crit");
+      }
+    }
+
     // Bottom-right weapon & reload panel
     const wpnStatus = document.getElementById("fpv-wpn-status");
     const wpnRange = document.getElementById("fpv-wpn-range");
@@ -1921,6 +2013,12 @@ export class Hud {
         reloadFill.style.width = "100%";
         reloadFill.className = "utility";
         if (wpnRange) wpnRange.textContent = "ORE RIG";
+      } else if (tel.kind === "supplytruck") {
+        wpnStatus.textContent = "LOGISTICS RESUPPLY AURA";
+        wpnStatus.className = "utility";
+        reloadFill.style.width = "100%";
+        reloadFill.className = "utility";
+        if (wpnRange) wpnRange.textContent = "RESUPPLY 55m";
       } else {
         const readyFrac = Math.max(0, Math.min(1, 1 - tel.reloading));
         const ready = tel.reloading <= 0.01;
@@ -1975,7 +2073,7 @@ export class Hud {
           .map((st) => {
             const color = st.slot >= 0 ? PLAYER_COLORS[st.slot] ?? "#8a97a5" : "#8a97a5";
             const tLabel = st.team > 0 ? `T${st.team}` : "FFA";
-            const tCls = st.team === 1 ? "t1" : st.team === 2 ? "t2" : "ffa";
+            const tCls = st.team >= 1 && st.team <= 4 ? `t${st.team}` : "ffa";
             return `<tr>
               <td><span class="stats-cmdr"><span class="cdot" style="background:${color}"></span><span style="color:${color}">${esc(st.name)}</span></span></td>
               <td><span class="tbadge ${tCls}">${tLabel}</span></td>
@@ -2295,7 +2393,7 @@ export class Hud {
         b.disabled = true;
         bt.textContent = "NO WATER";
         const detail =
-          "Naval Shipyard requires navigable water — pick a naval map (Bridgehead Crossing, Pacific Atoll, Storm Coast, Sunken Atlantis, Titan Graveyard, Caldera Forge, Offshore Megarig).";
+          "Naval Shipyard requires navigable water — pick a naval map marked with ⚓ (Bridgehead Crossing, Pacific Atoll, Storm Coast, Sunken Atlantis, Titan Graveyard, Caldera Forge, Offshore Megarig, Coral Sea Theatre, Polar Sea Front, Eurasia Supertheater).";
         b.title = `${this.buildTooltip(kind)} · ${detail}`;
         applyReason(b, "No water", detail, "lock", "blocked");
         continue;
@@ -2590,6 +2688,8 @@ export class Hud {
       hpMax = 0,
       maxVet = 0,
       anyHold = false;
+    let minFuel: number | null = null;
+    let minAmmo: number | null = null;
     let singleId: number | null = null;
     let singleKind: EntKind | null = null;
     for (const id of sel) {
@@ -2600,6 +2700,14 @@ export class Hud {
       hpMax += t.last.mhp;
       if ((t.last.vet ?? 0) > maxVet) maxVet = t.last.vet ?? 0;
       if (t.last.hold) anyHold = true;
+      if (t.last.fl !== undefined && t.last.fl < 100) {
+        const v = Math.max(0, Math.round(t.last.fl));
+        if (minFuel === null || v < minFuel) minFuel = v;
+      }
+      if (t.last.am !== undefined && t.last.am < 100) {
+        const v = Math.max(0, Math.round(t.last.am));
+        if (minAmmo === null || v < minAmmo) minAmmo = v;
+      }
       if (sel.size === 1 && t.last.o === mySlot) {
         singleId = id;
         singleKind = t.last.k;
@@ -2641,7 +2749,7 @@ export class Hud {
       const holdBadge = anyHold
         ? `<span class="si-hold" title="Holding position — fires in range without chasing">[HOLD]</span>`
         : "";
-      box.innerHTML = `<div class="si-row">${parts}${vetBadge}${holdBadge}</div><div class="si-hp"><i></i><span></span></div>`;
+      box.innerHTML = `<div class="si-row">${parts}${vetBadge}${holdBadge}</div><div class="si-hp"><i></i><span></span></div><div class="si-logi hidden"></div>`;
       if (multiTypes) {
         for (const chip of box.querySelectorAll<HTMLElement>(".si-filter[data-filter-kind]")) {
           chip.addEventListener("click", () => {
@@ -2700,11 +2808,34 @@ export class Hud {
       }
     }
 
-    // Always update HP bar smoothly in place
+    // Always update HP bar & logistics Fuel/Ammo indicators smoothly in place
     const bar = box.querySelector<HTMLElement>(".si-hp i");
     const txt = box.querySelector<HTMLElement>(".si-hp span");
     if (bar) bar.style.width = `${Math.round((hpSum / hpMax) * 100)}%`;
     if (txt) txt.textContent = `HP ${Math.round(hpSum)} / ${hpMax}`;
+    const logi = box.querySelector<HTMLElement>(".si-logi");
+    if (logi) {
+      const chips: string[] = [];
+      if (minFuel !== null) {
+        const cls = minFuel < 15 ? " crit" : minFuel < 35 ? " warn" : "";
+        chips.push(
+          `<span class="si-logi-chip${cls}" title="Fuel level — resupply near Forward Supply Hub, Supply Convoy, or base">FUEL ${minFuel}%</span>`,
+        );
+      }
+      if (minAmmo !== null) {
+        const cls = minAmmo < 15 ? " crit" : minAmmo < 35 ? " warn" : "";
+        chips.push(
+          `<span class="si-logi-chip${cls}" title="Ammo level — resupply near Forward Supply Hub, Supply Convoy, or base">AMMO ${minAmmo}%</span>`,
+        );
+      }
+      if (chips.length) {
+        logi.innerHTML = chips.join("");
+        logi.classList.remove("hidden");
+      } else {
+        logi.innerHTML = "";
+        logi.classList.add("hidden");
+      }
+    }
   }
 
   showHoverTip(ent: EntSnap | null, crate: CrateSnap | null, x: number, y: number) {
@@ -2725,7 +2856,17 @@ export class Hud {
         const vet = (ent.vet ?? 0) > 0 ? `<span class="ht-vet">${"★".repeat(Math.min(3, ent.vet!))}</span>` : "";
         const hold = ent.hold ? `<span class="ht-hold">[HOLD]</span>` : "";
         const sub = ent.sub ? `<span class="ht-hold">[SUB]</span>` : "";
-        tip.innerHTML = `<span class="ht-dot" style="background:${col}"></span><span>${name}</span>${vet}${hold}${sub}<span class="ht-meta">· HP ${Math.round(ent.hp)}/${ent.mhp}</span>`;
+        const fuelVal = ent.fl !== undefined && ent.fl < 100 ? Math.max(0, Math.round(ent.fl)) : null;
+        const ammoVal = ent.am !== undefined && ent.am < 100 ? Math.max(0, Math.round(ent.am)) : null;
+        const fuelSpan =
+          fuelVal !== null
+            ? `<span class="ht-logi${fuelVal < 15 ? " crit" : fuelVal < 35 ? " warn" : ""}">⛽ ${fuelVal}%</span>`
+            : "";
+        const ammoSpan =
+          ammoVal !== null
+            ? `<span class="ht-logi${ammoVal < 15 ? " crit" : ammoVal < 35 ? " warn" : ""}">AMMO ${ammoVal}%</span>`
+            : "";
+        tip.innerHTML = `<span class="ht-dot" style="background:${col}"></span><span>${name}</span>${vet}${hold}${sub}<span class="ht-meta">· HP ${Math.round(ent.hp)}/${ent.mhp}</span>${fuelSpan}${ammoSpan}`;
       }
     } else if (crate) {
       tip.innerHTML = `<span class="ht-dot" style="background:#ffc43d"></span><span>Supply Crate — Walk unit over to collect</span>`;
@@ -2758,9 +2899,16 @@ export class Hud {
     if (now - this.mmLast < 160) return;
     this.mmLast = now;
     const ctx = this.mmCtx;
-    const s = this.minimap.width / MAP_W;
+    const layout = getMapLayout(mapId);
+    const mw = layout.w || MAP_W;
+    const mh = layout.h || MAP_H;
+    this.mmW = mw;
+    this.mmH = mh;
+    const sx = this.minimap.width / mw;
+    const sy = this.minimap.height / mh;
+    const s = Math.min(sx, sy);
     ctx.fillStyle = "#080e14";
-    ctx.fillRect(0, 0, 160, 160);
+    ctx.fillRect(0, 0, this.minimap.width, this.minimap.height);
     if (mySlot >= 0 && !hasRadar) {
       ctx.fillStyle = "#6e8699";
       ctx.font = '700 11px "Rajdhani", monospace';
@@ -2789,25 +2937,25 @@ export class Hud {
       return;
     }
     const pal = MAP_PREVIEW_PALETTES[mapId] ?? MAP_PREVIEW_PALETTES.crossroads;
-    const layout = getMapLayout(mapId);
-    const cs = Math.ceil(s);
+    const cw = Math.max(1, Math.ceil(sx));
+    const ch = Math.max(1, Math.ceil(sy));
     // Navigable ocean / river water channels
     if (layout.water.length) {
       ctx.fillStyle = pal.water ?? "#19587a";
       for (let i = 0; i < layout.water.length; i++) {
-        ctx.fillRect(layout.water[i][0] * s, layout.water[i][1] * s, cs, cs);
+        ctx.fillRect(layout.water[i][0] * sx, layout.water[i][1] * sy, cw, ch);
       }
     }
     // Impassable rocky cliff plateaus
     const cliffs = layout.cliffs;
     ctx.fillStyle = mapId === "volcano" ? "#6b2b18" : mapId === "cybergrid" ? "#1d354a" : "#2a343d";
     for (let i = 0; i < cliffs.length; i++) {
-      ctx.fillRect(cliffs[i][0] * s, cliffs[i][1] * s, cs, cs);
+      ctx.fillRect(cliffs[i][0] * sx, cliffs[i][1] * sy, cw, ch);
     }
     // Ore veins
     ctx.fillStyle = "#b58b2e";
     for (const key of oreCells.keys()) {
-      ctx.fillRect((key % MAP_W) * s, ((key / MAP_W) | 0) * s, Math.max(1.6, s), Math.max(1.6, s));
+      ctx.fillRect((key % mw) * sx, ((key / mw) | 0) * sy, Math.max(1.4, sx), Math.max(1.4, sy));
     }
     // Supply crates (pulsing bright white/gold dots)
     if (r.crates && r.crates.size) {
@@ -2815,7 +2963,7 @@ export class Hud {
       for (const c of r.crates.values()) {
         ctx.fillStyle = pulse > 0.5 ? "#fff7cc" : "#ffc43d";
         ctx.beginPath();
-        ctx.arc(c.x * s, c.y * s, 2.2 + pulse * 1.1, 0, Math.PI * 2);
+        ctx.arc(c.x * sx, c.y * sy, 2.2 + pulse * 1.1, 0, Math.PI * 2);
         ctx.fill();
       }
     }
@@ -2823,8 +2971,8 @@ export class Hud {
       const e: EntSnap = t.last;
       if (e.o !== mySlot && mySlot >= 0 && !r.isVisible(e.id)) continue;
       if (e.o === -1 && (e.k === "derrick" || e.k === "coalmine")) {
-        const mx = e.x * s;
-        const my = e.y * s;
+        const mx = e.x * sx;
+        const my = e.y * sy;
         const rr = 3.2;
         ctx.beginPath();
         ctx.moveTo(mx, my - rr);
@@ -2840,8 +2988,8 @@ export class Hud {
         continue;
       }
       ctx.fillStyle = e.o >= 0 ? PLAYER_COLORS[e.o] : "#5a6a77";
-      const sz = isBuildingKind(e.k) ? Math.max(3, BUILDINGS[e.k].w * s) : 2.5;
-      ctx.fillRect(e.x * s - sz / 2, e.y * s - sz / 2, sz, sz);
+      const sz = isBuildingKind(e.k) ? Math.max(2.6, BUILDINGS[e.k].w * s) : 2.4;
+      ctx.fillRect(e.x * sx - sz / 2, e.y * sy - sz / 2, sz, sz);
     }
     if (this.pinged) {
       const age = now - this.pinged.t;
@@ -2850,7 +2998,7 @@ export class Hud {
         ctx.strokeStyle = `rgba(255,70,60,${1 - age / 2400})`;
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(this.pinged.x * s, this.pinged.y * s, rr, 0, Math.PI * 2);
+        ctx.arc(this.pinged.x * sx, this.pinged.y * sy, rr, 0, Math.PI * 2);
         ctx.stroke();
       } else this.pinged = null;
     }
@@ -2858,7 +3006,7 @@ export class Hud {
       vh = camH * 1.1;
     ctx.strokeStyle = "rgba(140,220,255,0.65)";
     ctx.lineWidth = 1;
-    ctx.strokeRect((camX - vw / 2) * s, (camY - vh / 2) * s, vw * s, vh * s);
+    ctx.strokeRect((camX - vw / 2) * sx, (camY - vh / 2) * sy, vw * sx, vh * sy);
   }
 }
 

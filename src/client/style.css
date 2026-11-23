@@ -339,6 +339,21 @@ button.on { background: #1d4459; border-color: var(--acc); color: #eef8ff; }
   color: var(--acc); background: rgba(16, 36, 48, 0.92);
   border: 1px solid var(--acc-dim); border-radius: 3px; padding: 0 5px;
 }
+.si-logi {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  margin-top: 5px;
+}
+.si-logi-chip {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.6px;
+  padding: 1px 6px; border-radius: 3px;
+  background: rgba(16, 30, 42, 0.92); border: 1px solid var(--line); color: var(--text);
+}
+.si-logi-chip.warn {
+  border-color: #9e6b24; background: rgba(46, 29, 12, 0.94); color: var(--amber);
+}
+.si-logi-chip.crit {
+  border-color: #9e2d2d; background: rgba(48, 14, 16, 0.94); color: var(--danger);
+}
 
 /* Left tactical stack below minimap: Recon + Superweapon pills + Control groups — zero HUD collisions */
 #left-stack {
@@ -450,6 +465,9 @@ button.on { background: #1d4459; border-color: var(--acc); color: #eef8ff; }
 .ht-vet { color: var(--amber); letter-spacing: 0.5px; }
 .ht-hold { color: var(--acc); font-size: 11px; font-weight: 700; }
 .ht-meta { color: var(--muted); font-weight: 600; }
+.ht-logi { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.3px; }
+.ht-logi.warn { color: var(--amber); }
+.ht-logi.crit { color: var(--danger); }
 #toasts {
   position: fixed; top: 124px; left: 50%; transform: translateX(-50%); z-index: 30;
   pointer-events: none;
@@ -574,9 +592,15 @@ button.on { background: #1d4459; border-color: var(--acc); color: #eef8ff; }
   font-size: 12px; color: var(--muted); margin: 0; min-height: 32px;
   letter-spacing: 0.2px; line-height: 1.3;
 }
-#player-list { list-style: none; margin: 8px 0 18px; text-align: left; }
+#player-list {
+  list-style: none; margin: 8px 0 14px; text-align: left;
+  max-height: 220px; overflow-y: auto; padding-right: 2px;
+  scrollbar-width: thin; scrollbar-color: #2b4254 transparent;
+}
+#player-list::-webkit-scrollbar { width: 6px; }
+#player-list::-webkit-scrollbar-thumb { background: #2b4254; border-radius: 3px; }
 #player-list li {
-  padding: 7px 10px; border: 1px solid var(--line); border-radius: 5px; margin-bottom: 4px;
+  padding: 5px 10px; border: 1px solid var(--line); border-radius: 5px; margin-bottom: 4px;
   font-size: 14px; display: flex; align-items: center; gap: 8px;
   background: rgba(16, 24, 32, 0.72);
 }
@@ -592,6 +616,8 @@ button.on { background: #1d4459; border-color: var(--acc); color: #eef8ff; }
 }
 .tbadge.t1 { border-color: #2f7fa0; color: var(--acc); background: #102430; }
 .tbadge.t2 { border-color: #a17a26; color: var(--amber); background: #261e0f; }
+.tbadge.t3 { border-color: #2d8a55; color: var(--ok); background: #0f261a; }
+.tbadge.t4 { border-color: #8f4cc7; color: #d69bff; background: #22132e; }
 button.tbadge.own { cursor: pointer; }
 button.tbadge.own:hover { border-color: var(--text); color: #fff; }
 .kick-btn {
@@ -732,10 +758,12 @@ button.tbadge.own:hover { border-color: var(--text); color: #fff; }
 #fpv-hp-fill.warn { background: linear-gradient(90deg, #9a6d16, #ffc43d); }
 #fpv-hp-fill.crit { background: linear-gradient(90deg, #8e2424, #ff5454); }
 .fpv-metrics {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px;
   font-size: 12px; font-weight: 700; letter-spacing: 0.6px; color: var(--muted);
 }
 .fpv-metrics span { white-space: nowrap; }
+.fpv-metrics span.warn { color: var(--amber); }
+.fpv-metrics span.crit { color: var(--danger); }
 
 #fpv-weapon {
   position: fixed; right: 16px; bottom: 16px; width: 256px;

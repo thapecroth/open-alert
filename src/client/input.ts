@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { BUILDINGS, BuildingKind, buildCategoryOf, MAP_W, MAP_H, SPAWNS } from "../shared/gamedefs";
+import { BUILDINGS, BuildingKind, buildCategoryOf, getSpawns } from "../shared/gamedefs";
 import type { OrderKind } from "../shared/protocol";
 import { GameScene } from "./scene";
 import { Renderer } from "./render";
@@ -545,7 +545,7 @@ export class Input {
         return;
       }
     }
-    const s = SPAWNS[slot];
+    const s = getSpawns(this.gs.mapW, this.gs.mapH)[slot];
     if (s) this.centerOn(s.x + 1.5, s.y + 1.5);
   }
 
@@ -573,8 +573,8 @@ export class Input {
   }
 
   private centerOn(x: number, y: number) {
-    this.gs.camTarget.x = Math.max(-2, Math.min(MAP_W + 2, x));
-    this.gs.camTarget.z = Math.max(-2, Math.min(MAP_H + 2, y));
+    this.gs.camTarget.x = Math.max(-2, Math.min(this.gs.mapW + 2, x));
+    this.gs.camTarget.z = Math.max(-2, Math.min(this.gs.mapH + 2, y));
     this.gs.updateCamera();
   }
 
@@ -603,8 +603,8 @@ export class Input {
         dy = Math.sin(ang);
       }
       const len = Math.hypot(dx, dy) || 1;
-      const tx = Math.max(1, Math.min(MAP_W - 1, t.last.x + (dx / len) * 2.6));
-      const ty = Math.max(1, Math.min(MAP_H - 1, t.last.y + (dy / len) * 2.6));
+      const tx = Math.max(1, Math.min(this.gs.mapW - 1, t.last.x + (dx / len) * 2.6));
+      const ty = Math.max(1, Math.min(this.gs.mapH - 1, t.last.y + (dy / len) * 2.6));
       this.net.send({ t: "order", ids: [id], kind: "move", x: tx, y: ty });
     }
     this.flashLabel("SCATTER", 700);
@@ -1092,7 +1092,9 @@ export class Input {
       hint.textContent = ok
         ? d.waterOnly
           ? "Left-click on water to deploy Naval Shipyard · Right-click or Esc to stow (stays Ready)"
-          : "Left-click to place · Right-click or Esc to stow (stays Ready in sidebar)"
+          : d.forwardRange
+            ? `Left-click to deploy Forward Supply Hub (up to ${d.forwardRange} tiles out) · Right-click or Esc to stow`
+            : "Left-click to place · Right-click or Esc to stow (stays Ready in sidebar)"
         : `Cannot place: ${reason} · Right-click or Esc to stow`;
     }
   }

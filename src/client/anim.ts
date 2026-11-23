@@ -296,8 +296,23 @@ export function stepEntityAnim(
   }
 
   // ---------- 3. Tracked / Wheeled Vehicles (Suspension, Hull Rock-Back & Dust Plumes) ----------
-  else if (k === "tank" || k === "heavy" || k === "arty" || k === "harvester" || k === "himars" || k === "railtank") {
-    const heavyScale = k === "heavy" || k === "railtank" ? 1.15 : k === "arty" || k === "himars" ? 1.08 : 1.0;
+  else if (
+    k === "tank" ||
+    k === "heavy" ||
+    k === "arty" ||
+    k === "harvester" ||
+    k === "himars" ||
+    k === "railtank" ||
+    k === "supplytruck"
+  ) {
+    const heavyScale =
+      k === "heavy" || k === "railtank"
+        ? 1.15
+        : k === "arty" || k === "himars"
+          ? 1.08
+          : k === "supplytruck"
+            ? 0.92
+            : 1.0;
 
     // Suspension roll into turns & acceleration/braking pitch driven by jitter-free moveBlend
     const targetRoll = Math.max(-0.13, Math.min(0.13, yawRate * 0.055 * m));
@@ -310,7 +325,7 @@ export function stepEntityAnim(
     // Cannon-fire damped hull suspension rock-back (oriented along turret firing vector!)
     let firePitch = 0;
     let fireRoll = 0;
-    if (st.hullKick > 0 && k !== "harvester") {
+    if (st.hullKick > 0 && k !== "harvester" && k !== "supplytruck") {
       // Damped oscillation: sharp kick back then quick spring settle
       const osc = Math.sin((1 - st.hullKick) * Math.PI * 1.45 + 0.35) * st.hullKick;
       const mag = (k === "heavy" || k === "railtank" ? 0.12 : k === "arty" || k === "himars" ? 0.135 : 0.095) * osc;
@@ -359,8 +374,13 @@ export function stepEntityAnim(
       st.dustCd -= safeDt;
       if (st.dustCd <= 0) {
         st.dustCd = Math.max(0.09, 0.21 - st.speed * 0.025);
-        const rearDist = k === "heavy" || k === "harvester" || k === "railtank" || k === "himars" ? 0.94 : 0.78;
-        const treadHalf = k === "heavy" || k === "railtank" ? 0.62 : 0.48;
+        const rearDist =
+          k === "heavy" || k === "harvester" || k === "railtank" || k === "himars"
+            ? 0.94
+            : k === "supplytruck"
+              ? 0.86
+              : 0.78;
+        const treadHalf = k === "heavy" || k === "railtank" ? 0.62 : k === "supplytruck" ? 0.44 : 0.48;
         const cosH = Math.cos(headingRad);
         const sinH = Math.sin(headingRad);
         const side = Math.random() > 0.5 ? treadHalf : -treadHalf;
@@ -660,9 +680,11 @@ export function stepEntityAnim(
           ? 1.6 + 0.55 * Math.sin(nowSec * 0.9)
           : k === "techlab" || k === "airfield" || k === "airfield2" || k === "irondome"
             ? 1.5
-            : k === "shipyard" || k === "shipyard2" || k === "sam"
-              ? 1.3
-              : 0.95) * powerSpeed;
+            : k === "supplyhub"
+              ? 1.45
+              : k === "shipyard" || k === "shipyard2" || k === "sam"
+                ? 1.3
+                : 0.95) * powerSpeed;
       rig.spin.rotation.y += safeDt * rate;
     }
     if (rig.spin2) {
@@ -687,7 +709,15 @@ export function stepEntityAnim(
     if (rig.powerGlow && st.matMode === "normal") {
       const dimmed =
         offlineDef ||
-        (lowPower && (k === "radar" || k === "superweapon" || k === "techlab" || k === "sam" || k === "irondome" || k === "lasertower" || k === "satlink"));
+        (lowPower &&
+          (k === "radar" ||
+            k === "supplyhub" ||
+            k === "superweapon" ||
+            k === "techlab" ||
+            k === "sam" ||
+            k === "irondome" ||
+            k === "lasertower" ||
+            k === "satlink"));
       const dimFactor = dimmed ? 0.18 + 0.08 * Math.sin(nowSec * 2.4 + last.id) : 1.0;
       for (const gm of rig.powerGlow) {
         const mat = gm.material;
@@ -706,7 +736,15 @@ export function stepEntityAnim(
   // ---------- 7. Pulsing Energy Cores, Afterburners & Navigation Beacons ----------
   if (rig.pulse) {
     const offlinePulse =
-      lowPower && (k === "turret" || k === "arc" || k === "radar" || k === "sam" || k === "irondome" || k === "lasertower" || k === "satlink");
+      lowPower &&
+      (k === "turret" ||
+        k === "arc" ||
+        k === "radar" ||
+        k === "supplyhub" ||
+        k === "sam" ||
+        k === "irondome" ||
+        k === "lasertower" ||
+        k === "satlink");
     const isJetBurner =
       k === "interceptor" || k === "bomber" || k === "uav" || k === "stealthbomber" || k === "hypersonic";
     const freq = isJetBurner ? 18.0 : k === "superweapon" || k === "satlink" ? 5.2 : 3.6;

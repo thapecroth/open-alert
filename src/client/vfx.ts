@@ -916,6 +916,44 @@ export class VfxSystem {
     });
   }
 
+  /** Subtle emerald-green logistics resupply shimmer ring around refueled / rearmed units */
+  spawnResupplyPulse(x: number, y: number, radius = 0.85) {
+    const riseMat = new THREE.MeshBasicMaterial({
+      color: 0x3ef58c,
+      transparent: true,
+      opacity: 0.72,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const riseRing = new THREE.Mesh(sharedRing, riseMat);
+    riseRing.rotation.x = -Math.PI / 2;
+    riseRing.position.set(x, 0.12, y);
+    riseRing.scale.setScalar(radius * 0.62);
+    this.add(riseRing, 580, (o, t) => {
+      const ease = 1 - Math.pow(1 - t, 2);
+      o.position.y = 0.12 + ease * 0.78;
+      const sc = radius * (0.62 + ease * 0.45);
+      o.scale.setScalar(sc);
+      riseMat.opacity = 0.72 * (1 - t) * (1 - t);
+    });
+
+    const groundMat = new THREE.MeshBasicMaterial({
+      color: 0x26df74,
+      transparent: true,
+      opacity: 0.48,
+      depthWrite: false,
+    });
+    const groundRing = new THREE.Mesh(sharedRing, groundMat);
+    groundRing.rotation.x = -Math.PI / 2;
+    groundRing.position.set(x, 0.08, y);
+    groundRing.scale.setScalar(radius * 0.45);
+    this.add(groundRing, 520, (o, t) => {
+      const sc = radius * (0.45 + t * 0.95);
+      o.scale.setScalar(sc);
+      groundMat.opacity = 0.48 * (1 - t);
+    });
+  }
+
   // ---------- Persistent Battlefield Scorch Craters ----------
 
   spawnCrater(x: number, y: number, r: number) {

@@ -14,7 +14,7 @@ import {
   BUILDINGS,
   BUILDING_NAMES,
   PLAYER_COLORS,
-  SPAWNS,
+  getSpawns,
   BUILD_ORDER,
   DEFENSE_ORDER,
   TRAIN_ORDER,
@@ -137,12 +137,12 @@ function focusCommander(slot: number) {
     tx = bsx / bn;
     tz = bsz / bn;
   } else {
-    const sp = SPAWNS[slot] ?? { x: MAP_W / 2, y: MAP_H / 2 };
+    const sp = getSpawns(gs.mapW, gs.mapH)[slot] ?? { x: gs.mapW / 2, y: gs.mapH / 2 };
     tx = sp.x + 1.5;
     tz = sp.y + 1.5;
   }
-  gs.camTarget.x = Math.max(4, Math.min(MAP_W - 4, tx));
-  gs.camTarget.z = Math.max(4, Math.min(MAP_H - 4, tz));
+  gs.camTarget.x = Math.max(4, Math.min(gs.mapW - 4, tx));
+  gs.camTarget.z = Math.max(4, Math.min(gs.mapH - 4, tz));
   gs.updateCamera();
   lastCamX = gs.camTarget.x;
   lastCamZ = gs.camTarget.z;
@@ -160,8 +160,8 @@ function pickAutoCamTarget(now: number): { x: number; z: number } | null {
   }
 
   let bestScore = 0;
-  let bestX = MAP_W / 2;
-  let bestZ = MAP_H / 2;
+  let bestX = gs.mapW / 2;
+  let bestZ = gs.mapH / 2;
 
   // 1. Score recent combat event clusters (shots, explosions, ion strikes, captures)
   for (let i = 0; i < combatEvents.length; i++) {
@@ -231,8 +231,8 @@ function pickAutoCamTarget(now: number): { x: number; z: number } | null {
 
   if (bestScore > 0) {
     return {
-      x: Math.max(6, Math.min(MAP_W - 6, bestX)),
-      z: Math.max(6, Math.min(MAP_H - 6, bestZ)),
+      x: Math.max(6, Math.min(gs.mapW - 6, bestX)),
+      z: Math.max(6, Math.min(gs.mapH - 6, bestZ)),
     };
   }
 
@@ -252,8 +252,8 @@ function pickAutoCamTarget(now: number): { x: number; z: number } | null {
       }
       if (cnt > 0) {
         return {
-          x: Math.max(6, Math.min(MAP_W - 6, sx / cnt)),
-          z: Math.max(6, Math.min(MAP_H - 6, sz / cnt)),
+          x: Math.max(6, Math.min(gs.mapW - 6, sx / cnt)),
+          z: Math.max(6, Math.min(gs.mapH - 6, sz / cnt)),
         };
       }
     }
@@ -272,8 +272,9 @@ if (gfx) hud.bindGraphics(gfx);
 // ---------- placement validity (exact client parity with server canPlace) ----------
 
 function placeReason(tx: number, ty: number, w: number, h: number, kind?: BuildingKind): string | null {
-  if (tx < 0 || ty < 0 || tx + w > MAP_W || ty + h > MAP_H) return "off map";
-  const waterOnly = !!(kind && BUILDINGS[kind].waterOnly);
+  if (tx < 0 || ty < 0 || tx + w > gs.mapW || ty + h > gs.mapH) return "off map";
+  const bdef = kind ? BUILDINGS[kind] : undefined;
+  const waterOnly = !!bdef?.waterOnly;
   for (let y = ty; y < ty + h; y++)
     for (let x = tx; x < tx + w; x++) {
       if (gs.isCliff(x, y)) return "blocked by terrain";
@@ -282,9 +283,9 @@ function placeReason(tx: number, ty: number, w: number, h: number, kind?: Buildi
       } else {
         if (gs.isWater(x, y)) return "can't build on water";
       }
-      if (oreCells.has(y * MAP_W + x)) return "can't build on ore";
+      if (oreCells.has(y * gs.mapW + x)) return "can't build on ore";
     }
-  const maxGap = waterOnly ? SHIPYARD_BUILD_DIST : 2;
+  const maxGap = bdef?.forwardRange ?? (waterOnly ? SHIPYARD_BUILD_DIST : 2);
   let adj = false;
   for (const t of renderer.tracked.values()) {
     if (!isBuildingKind(t.last.k)) {
@@ -306,7 +307,7 @@ function placeReason(tx: number, ty: number, w: number, h: number, kind?: Buildi
   return adj ? null : "too far from your base";
 }
 
-const oreAt = (x: number, y: number) => oreCells.has(y * MAP_W + x);
+const oreAt = (x: number, y: number) => oreCells.has(y * gs.mapW + x);
 const isAlly = (slot: number) => allies.has(slot);
 
 function weaponFxOf(k: EntKind): WeaponFx {
@@ -483,8 +484,8 @@ hud.onMinimapOrder = (x, y, shift) => (fpv.active ? false : input.issueMinimapOr
 hud.onMinimapNav = (x, y) => {
   if (fpv.active) return;
   if (autoCam) setAutoCam(false);
-  gs.camTarget.x = Math.max(-2, Math.min(MAP_W + 2, x));
-  gs.camTarget.z = Math.max(-2, Math.min(MAP_H + 2, y));
+  gs.camTarget.x = Math.max(-2, Math.min(gs.mapW + 2, x));
+  gs.camTarget.z = Math.max(-2, Math.min(gs.mapH + 2, y));
   gs.updateCamera();
   lastCamX = gs.camTarget.x;
   lastCamZ = gs.camTarget.z;
@@ -618,6 +619,7 @@ net.onMsg = (m: S2C) => {
       gs.resetFog();
       gs.clearOre();
       hud.resetMatch();
+      hud.setMapSize(gs.mapW, gs.mapH);
       hud.clearChat();
       hud.hideLobby(mySlot < 0);
       hud.hideEnd();
@@ -628,13 +630,14 @@ net.onMsg = (m: S2C) => {
       for (const p of m.players) renderer.slotColors.set(p.slot, PLAYER_COLORS[p.slot]);
       oreCells.clear();
       gs.setOreCells(m.ore);
-      for (const [x, y, a] of m.ore) if (a > 0) oreCells.add(y * MAP_W + x);
+      for (const [x, y, a] of m.ore) if (a > 0) oreCells.add(y * gs.mapW + x);
       if (mySlot >= 0) {
-        const s = SPAWNS[mySlot];
+        const spawns = getSpawns(gs.mapW, gs.mapH);
+        const s = spawns[mySlot] ?? spawns[0];
         gs.camTarget.set(s.x + 2, 0, s.y + 3);
         gs.updateCamera();
       } else {
-        gs.camTarget.set(MAP_W / 2, 0, MAP_H / 2);
+        gs.camTarget.set(gs.mapW / 2, 0, gs.mapH / 2);
         gs.updateCamera();
       }
       lastCamX = gs.camTarget.x;
@@ -682,8 +685,8 @@ net.onMsg = (m: S2C) => {
       for (const ev of m.events) {
         if (ev.e === "ore") {
           for (const [x, y, a] of ev.cells) {
-            if (a <= 0) oreCells.delete(y * MAP_W + x);
-            else oreCells.add(y * MAP_W + x);
+            if (a <= 0) oreCells.delete(y * gs.mapW + x);
+            else oreCells.add(y * gs.mapW + x);
           }
         } else if (ev.e === "shot") {
           const isFpvShot = fpv.active && ev.src != null && ev.src === fpv.entId;

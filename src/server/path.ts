@@ -23,17 +23,19 @@ export function findPath(
   gy: number,
   passable: (x: number, y: number) => boolean,
   maxExpand = 6000,
+  W = MAP_W,
+  H = MAP_H,
 ): { x: number; y: number }[] | null {
   sx |= 0;
   sy |= 0;
   gx |= 0;
   gy |= 0;
   if (sx === gx && sy === gy) return [];
+  if (sx < 0 || sy < 0 || sx >= W || sy >= H || gx < 0 || gy < 0 || gx >= W || gy >= H) return null;
 
-  const W = MAP_W;
-  const g = new Float32Array(W * MAP_H).fill(Infinity);
-  const parent = new Int32Array(W * MAP_H).fill(-1);
-  const closed = new Uint8Array(W * MAP_H);
+  const g = new Float32Array(W * H).fill(Infinity);
+  const parent = new Int32Array(W * H).fill(-1);
+  const closed = new Uint8Array(W * H);
 
   // Simple binary heap of [f, idx]
   const heapF: number[] = [];
@@ -103,7 +105,7 @@ export function findPath(
     for (const [dx, dy, cost] of DIRS) {
       const nx = cx + dx,
         ny = cy + dy;
-      if (nx < 0 || ny < 0 || nx >= W || ny >= MAP_H) continue;
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
       if (!passable(nx, ny)) continue;
       // prevent diagonal corner cutting through blocked tiles
       if (dx !== 0 && dy !== 0 && (!passable(cx + dx, cy) || !passable(cx, cy + dy))) continue;
@@ -126,17 +128,19 @@ export function nearestPassable(
   y: number,
   passable: (x: number, y: number) => boolean,
   r = 8,
+  W = MAP_W,
+  H = MAP_H,
 ): { x: number; y: number } | null {
   x |= 0;
   y |= 0;
-  if (passable(x, y)) return { x, y };
+  if (x >= 0 && y >= 0 && x < W && y < H && passable(x, y)) return { x, y };
   for (let d = 1; d <= r; d++) {
     for (let dy = -d; dy <= d; dy++) {
       for (let dx = -d; dx <= d; dx++) {
         if (Math.max(Math.abs(dx), Math.abs(dy)) !== d) continue;
         const nx = x + dx,
           ny = y + dy;
-        if (nx < 0 || ny < 0 || nx >= MAP_W || ny >= MAP_H) continue;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
         if (passable(nx, ny)) return { x: nx, y: ny };
       }
     }

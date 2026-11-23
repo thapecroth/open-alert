@@ -3024,6 +3024,268 @@ export function buildLandModel(kind: EntKind, colorHex: string, body: THREE.Grou
       break;
     }
 
+    // =========================================================================
+    // LOGISTICS INFRASTRUCTURE & CONVOY (2): supplyhub, supplytruck
+    // =========================================================================
+    case "supplyhub": {
+      // Forward Supply Hub (2x2) — Armored Forward Logistics Base, Twin Fuel Tanks, Ammo Pallets, Canopy, Comms Dish & Resupply Beacon
+      body.add(foundationPad(2, 2, colorHex, 0.2));
+
+      const matOlive = getChassisMat("#4c5c42", 0.5, 0.44);
+      const matOliveDk = getChassisMat("#384531", 0.54, 0.42);
+      const matCrate = getChassisMat("#566048", 0.56, 0.34);
+      const matSupplyGlow = getGlowMat(HEAL_GLOW, 0.96);
+
+      // Reinforced concrete loading bay apron & glowing emerald resupply pad strips
+      add(rbox(1.64, 0.045, 0.58, matGun, true), 0, 0.225, 0.54);
+      for (const sx of [-0.52, 0.52]) {
+        const padStrip = rbox(0.46, 0.028, 0.055, matSupplyGlow, true);
+        add(padStrip, sx, 0.255, 0.78);
+        pulse.push(padStrip);
+      }
+
+      // Twin cylindrical olive/steel pressurized fuel storage tanks (left side, horizontal on saddle cradles)
+      for (const tz of [-0.46, 0.04]) {
+        // Twin gunmetal structural cradles
+        for (const cx of [-0.66, -0.22]) {
+          add(rbox(0.11, 0.22, 0.42, matGun, true), cx, 0.32, tz);
+        }
+        // Horizontal cylindrical olive-steel fuel tank body + domed end caps
+        const tankCyl = cyl(0.42, 0.78, matOlive);
+        tankCyl.rotation.z = Math.PI / 2;
+        add(tankCyl, -0.44, 0.54, tz);
+        for (const ex of [-0.82, -0.06]) {
+          const capEnd = sph(0.415, matOliveDk);
+          capEnd.scale.set(0.24, 0.415, 0.415);
+          add(capEnd, ex, 0.54, tz);
+        }
+        // Bright industrial yellow hazard bands & steel reinforcement rings
+        for (const hx of [-0.64, -0.24]) {
+          const hazBand = cyl(0.435, 0.085, matHaz);
+          hazBand.rotation.z = Math.PI / 2;
+          add(hazBand, hx, 0.54, tz);
+        }
+        const centerCollar = cyl(0.43, 0.06, matDk);
+        centerCollar.rotation.z = Math.PI / 2;
+        add(centerCollar, -0.44, 0.54, tz);
+        // Top pressure valve & gauge cap
+        add(cyl(0.08, 0.1, matLt), -0.44, 0.78, tz);
+        add(cyl(0.12, 0.03, matHaz), -0.44, 0.83, tz);
+      }
+
+      // Steel fuel transfer manifold pipe linking twin tanks to pump kiosk
+      const manifold = cyl(0.075, 0.54, matLt);
+      manifold.rotation.x = Math.PI / 2;
+      add(manifold, -0.02, 0.52, -0.21);
+      // Armored fuel pump dispenser kiosk at front-left
+      add(rbox(0.32, 0.48, 0.28, matCer, true), -0.58, 0.44, 0.52);
+      add(rbox(0.22, 0.14, 0.04, matGlass, true), -0.58, 0.54, 0.67);
+      const pumpGauge = rbox(0.18, 0.04, 0.04, matSupplyGlow, true);
+      add(pumpGauge, -0.58, 0.42, 0.67);
+      pulse.push(pumpGauge);
+
+      // Rugged tactical canopy awning (right side) shielding stacked armored ammo crate pallets
+      const canopyCorners: [number, number][] = [
+        [0.12, -0.68],
+        [0.82, -0.68],
+        [0.12, 0.24],
+        [0.82, 0.24],
+      ];
+      for (const [px, pz] of canopyCorners) {
+        add(rbox(0.09, 0.84, 0.09, matDk, true), px, 0.62, pz);
+      }
+      // Slightly pitched ribbed armored canopy roof + faction trim valance
+      const canopyRoof = rbox(0.88, 0.1, 1.12, matCer, true);
+      canopyRoof.rotation.z = -0.06;
+      add(canopyRoof, 0.47, 1.06, -0.22);
+      for (const rz of [-0.62, -0.35, -0.08, 0.19]) {
+        const rib = rbox(0.86, 0.055, 0.065, matDk, true);
+        rib.rotation.z = -0.06;
+        add(rib, 0.47, 1.12, rz);
+      }
+      add(rbox(0.86, 0.08, 0.06, matAcc, true), 0.47, 1.0, 0.34);
+      add(rbox(0.06, 0.08, 1.08, matAcc, true), 0.9, 1.0, -0.22);
+
+      // Stacked armored ammo crate pallets beneath canopy & on forward apron
+      const addAmmoPallet = (px: number, pz: number, stacked: boolean) => {
+        // Reinforced steel/timber pallet base
+        add(rbox(0.46, 0.06, 0.38, matGun, true), px, 0.24, pz);
+        // Bottom pair of armored olive ammo crates with yellow hazard clasps
+        for (const cx of [-0.11, 0.11]) {
+          add(rbox(0.2, 0.18, 0.32, matCrate, true), px + cx, 0.36, pz);
+          add(rbox(0.21, 0.035, 0.06, matHaz, true), px + cx, 0.41, pz + 0.11);
+        }
+        if (stacked) {
+          const topCrate = rbox(0.32, 0.16, 0.26, matOlive, true);
+          topCrate.rotation.y = 0.12;
+          add(topCrate, px, 0.53, pz - 0.01);
+          add(rbox(0.26, 0.035, 0.055, matHaz, true), px, 0.57, pz + 0.11);
+        }
+      };
+      addAmmoPallet(0.46, -0.42, true);
+      addAmmoPallet(0.48, 0.02, true);
+      addAmmoPallet(0.46, 0.5, false);
+
+      // Armored rear telemetry tower + rotating logistics comms dish (`spin`)
+      add(rbox(0.38, 0.32, 0.38, matDk, true), 0.62, 1.22, -0.52);
+      add(cyl(0.14, 0.22, matGun, "oct"), 0.62, 1.44, -0.52);
+      spin = new THREE.Group();
+      spin.position.set(0.62, 1.56, -0.52);
+      body.add(spin);
+      const dish = meshOf(geoParabolicDish, matLt);
+      dish.scale.set(0.62, 0.62, 0.62);
+      dish.rotation.x = 0.96;
+      dish.position.set(0, 0.08, -0.05);
+      spin.add(dish);
+      const dishRim = torus(0.61, matAcc, true);
+      dishRim.rotation.x = Math.PI / 2 + 0.96;
+      dishRim.position.set(0, 0.16, 0.09);
+      spin.add(dishRim);
+      const feed = cyl(0.04, 0.28, matGun);
+      feed.rotation.x = 0.96;
+      add(feed, 0, 0.18, 0.1, spin);
+      const feedTip = sph(0.075, matSupplyGlow, true);
+      add(feedTip, 0, 0.26, 0.21, spin);
+      pulse.push(feedTip);
+
+      // Prominent glowing emerald-green resupply beacon mast (`pulse`) at front-left corner
+      add(rbox(0.24, 0.28, 0.24, matDk, true), -0.68, 0.34, 0.68);
+      add(cyl(0.068, 0.96, matLt), -0.68, 0.96, 0.68);
+      add(cyl(0.16, 0.08, matAcc, "oct"), -0.68, 1.44, 0.68);
+      const beaconRing = torus(0.22, matSupplyGlow, true);
+      beaconRing.rotation.x = Math.PI / 2;
+      add(beaconRing, -0.68, 1.54, 0.68);
+      pulse.push(beaconRing);
+      const beaconOrb = sph(0.17, matSupplyGlow, true);
+      add(beaconOrb, -0.68, 1.56, 0.68);
+      pulse.push(beaconOrb);
+
+      smokePos = new THREE.Vector3(-0.78, 0.85, -0.68);
+      topY = 1.88;
+      break;
+    }
+
+    case "supplytruck": {
+      // Supply Convoy Truck — Heavy 6x6 Military Logistics Truck with Sloped Cab, Fuel Drums, Ammo Crates, Tarp Frame & Green Beacon
+      addContactShadow(body, 0.96, 1.24);
+
+      const matOlive = getChassisMat("#4c5c42", 0.5, 0.44);
+      const matOliveDk = getChassisMat("#384531", 0.54, 0.42);
+      const matTarp = getChassisMat("#505c45", 0.72, 0.16);
+      const matSupplyGlow = getGlowMat(HEAL_GLOW, 0.96);
+
+      // 6 rugged off-road military 6x6 tires with machined alloy hubs
+      for (const [wx, wz] of [
+        [-0.55, 0.66],
+        [0.55, 0.66],
+        [-0.55, -0.04],
+        [0.55, -0.04],
+        [-0.55, -0.68],
+        [0.55, -0.68],
+      ]) {
+        const tire = cyl(0.4, 0.23, matGraph);
+        tire.rotation.z = Math.PI / 2;
+        add(tire, wx, 0.2, wz);
+        const hub = cyl(0.21, 0.25, matLt, "oct");
+        hub.rotation.z = Math.PI / 2;
+        add(hub, wx, 0.2, wz);
+      }
+
+      // Heavy 6x6 armored truck chassis, flatbed deck & side storage lockers
+      add(rbox(0.94, 0.18, 1.94, matGun, true), 0, 0.35, 0);
+      add(rbox(1.12, 0.09, 1.26, matDk, true), 0, 0.48, -0.34);
+      // Flatbed low side-walls with faction ID trim stripe
+      for (const sx of [-0.54, 0.54]) {
+        add(rbox(0.06, 0.16, 1.22, matCer, true), sx, 0.57, -0.34);
+        add(rbox(0.07, 0.055, 1.06, matAcc, true), sx + (sx > 0 ? 0.008 : -0.008), 0.59, -0.34);
+        // Under-bed auxiliary fuel cell / tool box
+        add(rbox(0.14, 0.14, 0.36, matDk, true), sx * 0.92, 0.36, 0.28);
+      }
+      // Rear tailgate bar
+      add(rbox(1.06, 0.16, 0.06, matCer, true), 0, 0.57, -0.94);
+
+      // Heavy front bull-bar bumper & glowing LED headlights
+      add(rbox(1.06, 0.14, 0.14, matDk, true), 0, 0.35, 0.96);
+      for (const hx of [-0.36, 0.36]) {
+        add(rbox(0.13, 0.055, 0.03, getGlowMat(WHITE_GLOW, 0.92), true), hx, 0.52, 0.96);
+      }
+
+      // Sloped armored forward cab with tinted panoramic glass windshield
+      add(meshOf(geoHimarsCab, matCer), 0, 0.72, 0.6);
+      add(rbox(0.78, 0.055, 0.48, matAcc, true), 0, 0.96, 0.52);
+      const wind = rbox(0.74, 0.18, 0.06, matGlass, true);
+      wind.rotation.x = -0.36;
+      add(wind, 0, 0.8, 0.9);
+      // Side armored mirror brackets, vertical exhaust stack & comms whip
+      for (const mx of [-0.46, 0.46]) {
+        add(rbox(0.05, 0.12, 0.06, matGun, true), mx, 0.78, 0.76);
+      }
+      add(cyl(0.065, 0.58, matGun), 0.46, 0.84, 0.34);
+      add(cyl(0.02, 0.48, matLt), -0.34, 1.18, 0.38);
+
+      // Rear flatbed cargo: Twin pressurized fuel drums (forward half of flatbed) with yellow hazard bands
+      for (const dx of [-0.23, 0.23]) {
+        const drum = cyl(0.32, 0.54, matOlive);
+        drum.rotation.x = Math.PI / 2;
+        add(drum, dx, 0.69, -0.02);
+        const hazBand = cyl(0.334, 0.08, matHaz);
+        hazBand.rotation.x = Math.PI / 2;
+        add(hazBand, dx, 0.69, -0.02);
+        // Drum end caps
+        for (const dz of [-0.29, 0.25]) {
+          const capD = cyl(0.3, 0.03, matOliveDk);
+          capD.rotation.x = Math.PI / 2;
+          add(capD, dx, 0.69, dz);
+        }
+      }
+
+      // Rear flatbed cargo: Stacked armored ammunition crates (rear half of flatbed)
+      for (const cx of [-0.24, 0.24]) {
+        add(rbox(0.36, 0.22, 0.42, matOliveDk, true), cx, 0.63, -0.64);
+        add(rbox(0.28, 0.04, 0.05, matHaz, true), cx, 0.68, -0.84);
+      }
+      const topAmmo = rbox(0.56, 0.18, 0.34, matOlive, true);
+      add(topAmmo, 0, 0.82, -0.62);
+      add(rbox(0.4, 0.035, 0.045, matHaz, true), 0, 0.86, -0.79);
+
+      // Arched tactical tarp frame (3 bowed steel roll-bars + partial ribbed canvas roof canopy)
+      for (const tz of [0.22, -0.34, -0.9]) {
+        for (const sx of [-0.5, 0.5]) {
+          add(rbox(0.05, 0.48, 0.05, matLt, true), sx, 0.86, tz);
+        }
+        // Angled shoulder bows & arched crown crossbar
+        const bowL = rbox(0.24, 0.045, 0.05, matLt, true);
+        bowL.rotation.z = 0.42;
+        add(bowL, -0.4, 1.13, tz);
+        const bowR = rbox(0.24, 0.045, 0.05, matLt, true);
+        bowR.rotation.z = -0.42;
+        add(bowR, 0.4, 1.13, tz);
+        add(rbox(0.62, 0.048, 0.05, matLt, true), 0, 1.18, tz);
+      }
+      // Partial olive-drab tactical canvas tarp draped across mid-top bow (leaves cargo visibly showcased!)
+      add(rbox(0.66, 0.05, 0.68, matTarp, true), 0, 1.21, -0.32);
+      for (const sx of [-0.4, 0.4]) {
+        const flap = rbox(0.24, 0.045, 0.66, matTarp, true);
+        flap.rotation.z = sx > 0 ? -0.42 : 0.42;
+        add(flap, sx, 1.15, -0.32);
+      }
+
+      // Prominent glowing emerald-green rear supply indicator beacon (`pulse`) + tailgate marker strips
+      add(cyl(0.13, 0.07, matGun, "oct"), 0, 1.24, -0.9);
+      const rearBeacon = sph(0.15, matSupplyGlow, true);
+      add(rearBeacon, 0, 1.33, -0.9);
+      pulse.push(rearBeacon);
+      for (const lx of [-0.36, 0.36]) {
+        const tailGlow = rbox(0.16, 0.055, 0.035, matSupplyGlow, true);
+        add(tailGlow, lx, 0.57, -0.98);
+        pulse.push(tailGlow);
+      }
+
+      smokePos = new THREE.Vector3(0.46, 1.16, 0.34);
+      topY = 1.42;
+      break;
+    }
+
     default:
       return null;
   }

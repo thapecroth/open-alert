@@ -11,7 +11,7 @@
 //   const pixels = env.rgbFrame(3);                           // 192x192x3 RGB image
 
 import { World } from "./world";
-import { MAP_W, MAP_H, BUILDINGS, UNITS, ORE_CELL_MAX, PLAYER_COLORS, SHIPYARD_BUILD_DIST } from "../shared/gamedefs";
+import { BUILDINGS, UNITS, ORE_CELL_MAX, PLAYER_COLORS, SHIPYARD_BUILD_DIST } from "../shared/gamedefs";
 import type { BuildingKind, BuildCategory, UnitKind, EntKind, ProdCat } from "../shared/gamedefs";
 import type { OrderKind, PlayerState, ProdQueue } from "../shared/protocol";
 
@@ -220,14 +220,16 @@ export function extractGymObs(w: World, slot: number): GymObs {
 }
 
 /**
- * pysc2-style feature planes, 6 channels of MAP_W*MAP_H each:
+ * pysc2-style feature planes, 6 channels of w.w*w.h each:
  *   [0] ore density 0..1   [1] own units (hp frac)   [2] own buildings (1)
  *   [3] foe units (hp frac)[4] foe buildings (1)     [5] all-ent hp frac
  */
 export function extractGymFeatureMaps(w: World, slot: number): { w: number; h: number; c: number; data: Float32Array } {
-  const S = MAP_W * MAP_H;
+  const mw = w.w,
+    mh = w.h;
+  const S = mw * mh;
   const out = new Float32Array(6 * S);
-  for (const [x, y, amt] of w.oreSnapshot()) out[y * MAP_W + x] = Math.min(1, amt / ORE_CELL_MAX);
+  for (const [x, y, amt] of w.oreSnapshot()) out[y * mw + x] = Math.min(1, amt / ORE_CELL_MAX);
   for (const e of w.ents.values()) {
     const mine = e.o === slot;
     const foe = e.o >= 0 && !mine;
@@ -240,38 +242,40 @@ export function extractGymFeatureMaps(w: World, slot: number): { w: number; h: n
         for (let dy = 0; dy < d.h; dy++)
           for (let dx = 0; dx < d.w; dx++) {
             const x = x0 + dx, y = y0 + dy;
-            if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H) out[ch * S + y * MAP_W + x] = 1;
+            if (x >= 0 && x < mw && y >= 0 && y < mh) out[ch * S + y * mw + x] = 1;
           }
       }
     } else if (mine || foe) {
       const ch = mine ? 1 : 3;
       const x = Math.round(e.x), y = Math.round(e.y);
-      if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H)
-        out[ch * S + y * MAP_W + x] = Math.max(out[ch * S + y * MAP_W + x], frac);
+      if (x >= 0 && x < mw && y >= 0 && y < mh)
+        out[ch * S + y * mw + x] = Math.max(out[ch * S + y * mw + x], frac);
     }
     const x = Math.round(e.x), y = Math.round(e.y);
-    if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H)
-      out[5 * S + y * MAP_W + x] = Math.max(out[5 * S + y * MAP_W + x], frac);
+    if (x >= 0 && x < mw && y >= 0 && y < mh)
+      out[5 * S + y * mw + x] = Math.max(out[5 * S + y * mw + x], frac);
   }
-  return { w: MAP_W, h: MAP_H, c: 6, data: out };
+  return { w: mw, h: mh, c: 6, data: out };
 }
 
 /**
  * Minimap-style RGB rasterization of the world — Uint8Array of w*h*3 bytes,
- * `scale` pixels per tile (default 3 => 192x192). Terrain is dark noise,
+ * `scale` pixels per tile (default 3 => 192x192 on 64x64). Terrain is dark noise,
  * ore is amber by density, ents are slot-colored (dim = low hp).
  */
 export function extractGymRgbFrame(w: World, slot: number, scale = 3): { w: number; h: number; data: Uint8Array } {
   void slot;
-  const W = MAP_W * scale, H = MAP_H * scale;
+  const mw = w.w,
+    mh = w.h;
+  const W = mw * scale, H = mh * scale;
   const img = new Uint8Array(W * H * 3);
   const put = (px: number, py: number, r: number, g: number, b: number) => {
     const i = (py * W + px) * 3;
     img[i] = r; img[i + 1] = g; img[i + 2] = b;
   };
   // terrain: dark slate (or ocean blue for water tiles) with a deterministic per-tile hash for texture
-  for (let y = 0; y < MAP_H; y++)
-    for (let x = 0; x < MAP_W; x++) {
+  for (let y = 0; y < mh; y++)
+    for (let x = 0; x < mw; x++) {
       const v = 12 + (((x * 73856093) ^ (y * 19349663)) >>> 0) % 10;
       const isW = w.isWater(x, y);
       const r = isW ? 8 : v,
@@ -300,7 +304,7 @@ export function extractGymRgbFrame(w: World, slot: number, scale = 3): { w: numb
     for (let dy = 0; dy < d.h; dy++)
       for (let dx = 0; dx < d.w; dx++) {
         const x = x0 + dx, y = y0 + dy;
-        if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) continue;
+        if (x < 0 || x >= mw || y < 0 || y >= mh) continue;
         for (let py = 0; py < scale; py++)
           for (let px = 0; px < scale; px++) put(x * scale + px, y * scale + py, Math.round(r * f), Math.round(g * f), Math.round(b * f));
       }
@@ -309,7 +313,7 @@ export function extractGymRgbFrame(w: World, slot: number, scale = 3): { w: numb
   for (const e of w.ents.values()) {
     if (isB(e.k)) continue;
     const x = Math.round(e.x), y = Math.round(e.y);
-    if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) continue;
+    if (x < 0 || x >= mw || y < 0 || y >= mh) continue;
     const [r, g, b] = slotRgb(e.o);
     const f = 0.55 + 0.45 * Math.max(0, Math.min(1, e.hp / e.mhp));
     const inset = scale >= 3 ? 1 : 0;
@@ -668,10 +672,10 @@ export class GymEnv {
       const ids = [...w.ents.values()]
         .filter((e) => e.o === s && !isB(e.k) && (harvest ? e.k === "harvester" : e.k !== "harvester"))
         .map((e) => e.id);
-      if (ids.length) w.cmdOrder(s, ids, a.order.kind as OrderKind, MAP_W - a.order.x, MAP_H - a.order.y);
+      if (ids.length) w.cmdOrder(s, ids, a.order.kind as OrderKind, w.w - a.order.x, w.h - a.order.y);
     }
     if (a.stop != null) w.cmdStop(s, this.ownUnitIds(a.stop, s));
-    if (a.superweapon != null) w.cmdSuperweapon(s, MAP_W - a.superweapon.x, MAP_H - a.superweapon.y);
+    if (a.superweapon != null) w.cmdSuperweapon(s, w.w - a.superweapon.x, w.h - a.superweapon.y);
   }
 
   /** Mirror housekeeping each tick: never leave a finished building or defense unplaced. */

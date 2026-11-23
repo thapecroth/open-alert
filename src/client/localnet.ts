@@ -3,9 +3,7 @@
 
 import {
   DEFAULT_CONFIG,
-  MAP_H,
   MAP_LIST,
-  MAP_W,
   MAX_PLAYERS,
   PLAYER_COLORS,
   SNAP_EVERY,
@@ -57,9 +55,11 @@ export class LocalRoom {
     return this.spectateOnly;
   }
 
-  startAiSpectate(map: MapId = "archipelago", botCount = 3) {
+  startAiSpectate(map: MapId = "archipelago", botCount?: number) {
     const chosenMap: MapId = VALID_MAPS.has(map) ? map : "archipelago";
-    const count = Math.max(2, Math.min(MAX_PLAYERS, Math.floor(botCount || 3)));
+    const meta = MAP_LIST.find((m) => m.id === chosenMap);
+    const defaultBots = (meta?.w ?? 64) >= 96 ? 6 : 4;
+    const count = Math.max(2, Math.min(MAX_PLAYERS, Math.floor(botCount ?? defaultBots)));
     this.stopTimer();
     this.players.clear();
     this.bots.clear();
@@ -70,7 +70,16 @@ export class LocalRoom {
 
     const profiles: BotProfile[] = ["rusher", "balanced", "tech", "turtle"];
     const diffs: BotDiff[] = ["brutal", "normal", "brutal", "normal"];
-    const callsigns = ["CABAL-ALPHA", "CABAL-OMEGA", "CABAL-PRIME", "CABAL-APEX"];
+    const callsigns = [
+      "CABAL-ALPHA",
+      "CABAL-OMEGA",
+      "CABAL-PRIME",
+      "CABAL-APEX",
+      "CABAL-VORTEX",
+      "CABAL-TITAN",
+      "CABAL-NEXUS",
+      "CABAL-ZERO",
+    ];
 
     for (let s = 0; s < count; s++) {
       const id = `bot-${s}`;
@@ -107,8 +116,8 @@ export class LocalRoom {
       t: "init",
       you: "local-spectator",
       slot: -1,
-      w: MAP_W,
-      h: MAP_H,
+      w: w.w,
+      h: w.h,
       map: this.map,
       config: this.config,
       players: actives.map((p) => ({
@@ -225,12 +234,13 @@ export class LocalRoom {
           if (typeof c.crates === "boolean") this.config.crates = c.crates;
           if (typeof c.derricks === "boolean") this.config.derricks = c.derricks;
           if (typeof c.fog === "boolean") this.config.fog = c.fog;
+          if (typeof c.logistics === "boolean") this.config.logistics = c.logistics;
           this.broadcastLobby();
           return;
         }
         case "addbot": {
           const slot = this.freeSlot();
-          if (slot < 0) return this.emit({ t: "deny", msg: "room is full (4 players)" });
+          if (slot < 0) return this.emit({ t: "deny", msg: `room is full (${MAX_PLAYERS} players)` });
           const diff: BotDiff = m.diff && VALID_DIFFS.has(m.diff) ? m.diff : "normal";
           const profile: BotProfile = m.profile && VALID_PROFILES.has(m.profile) ? m.profile : "balanced";
           const id = `bot-${slot}-${Date.now().toString(36)}`;
@@ -384,8 +394,8 @@ export class LocalRoom {
       t: "init",
       you: this.myId,
       slot: 0,
-      w: MAP_W,
-      h: MAP_H,
+      w: w.w,
+      h: w.h,
       map: this.map,
       config: this.config,
       players: actives.map((p) => ({

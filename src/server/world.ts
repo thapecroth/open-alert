@@ -1,6 +1,4 @@
 import {
-  MAP_W,
-  MAP_H,
   BUILDINGS,
   UNITS,
   BuildingKind,
@@ -15,7 +13,6 @@ import {
   CrateKind,
   GameConfig,
   DEFAULT_CONFIG,
-  START_CREDITS,
   ORE_VALUE,
   HARVEST_TICKS_PER_UNIT,
   ORE_REGEN_TICKS,
@@ -28,6 +25,9 @@ import {
   SHIPYARD_BUILD_DIST,
   IRONDOME_RADIUS,
   IRONDOME_COOLDOWN,
+  SUPPLY_HUB_RADIUS,
+  SUPPLY_TRUCK_RADIUS,
+  BASE_SUPPLY_RADIUS,
   VET_XP,
   VET_DMG,
   VET_HP,
@@ -45,7 +45,7 @@ import {
   CRATE_MAX,
   CRATE_CASH,
   SPLASH_RADIUS,
-  SPAWNS,
+  getSpawns,
   getMapLayout,
 } from "../shared/gamedefs";
 import type {
@@ -88,6 +88,8 @@ export interface Ent {
   path: { x: number; y: number }[] | null;
   cd: number;
   cargo: number;
+  fuel: number; // 0..100 military logistics fuel reserve
+  ammo: number; // 0..100 military logistics ammunition reserve
   hstate: "toOre" | "mining" | "toRef" | null;
   oreIdx: number;
   repath: number;
@@ -163,8 +165,16 @@ const STEALTH_AIR_DETECTORS = new Set<EntKind>([
   "interceptor",
   "uav",
 ]);
-const idx = (x: number, y: number) => y * MAP_W + x;
-const inBounds = (x: number, y: number) => x >= 0 && y >= 0 && x < MAP_W && y < MAP_H;
+const BASE_SUPPLY_PROVIDERS = new Set<EntKind>([
+  "conyard",
+  "refinery",
+  "depot",
+  "airfield",
+  "airfield2",
+  "shipyard",
+  "shipyard2",
+  "carrier",
+]);
 const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);
 const isBuilding = (k: EntKind): k is BuildingKind => k in BUILDINGS;
 const domainOf = (k: EntKind): UnitDomain =>
@@ -175,12 +185,41 @@ const canHitGroundOf = (k: EntKind): boolean =>
     ? (BUILDINGS[k].dmg ?? 0) > 0 && BUILDINGS[k].canHitGround !== false
     : UNITS[k].canHitGround !== false && UNITS[k].dmg > 0;
 const isInfantry = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer";
+const usesFuel = (k: EntKind): boolean =>
+  !isBuilding(k) && !isInfantry(k) && k !== "supplytruck" && k !== "harvester";
+const ammoCostOf = (k: EntKind): number => {
+  if (
+    k === "himars" ||
+    k === "arty" ||
+    k === "dreadnought" ||
+    k === "bomber" ||
+    k === "stealthbomber" ||
+    k === "hypersonic" ||
+    k === "zeppelin"
+  ) {
+    return 12;
+  }
+  if (
+    k === "tank" ||
+    k === "heavy" ||
+    k === "railtank" ||
+    k === "destroyer" ||
+    k === "sub" ||
+    k === "carrier" ||
+    k === "chopper" ||
+    k === "interceptor"
+  ) {
+    return 7;
+  }
+  return 4;
+};
 const isHeavyArmor = (k: EntKind) => k === "tank" || k === "heavy" || k === "harvester" || k === "railtank";
 const isVehicle = (k: EntKind) =>
   k === "tank" ||
   k === "heavy" ||
   k === "arty" ||
   k === "harvester" ||
+  k === "supplytruck" ||
   k === "spider" ||
   k === "himars" ||
   k === "railtank";
@@ -254,6 +293,8 @@ const weaponOf = (e: Ent) =>
     : { range: UNITS[e.k as UnitKind].range, dmg: UNITS[e.k as UnitKind].dmg, rof: UNITS[e.k as UnitKind].rof };
 
 export class World {
+  readonly w: number;
+  readonly h: number;
   tick = 0;
   map: MapId;
   config: GameConfig;
@@ -264,32 +305,54 @@ export class World {
   crates = new Map<number, CrateSnap>();
   events: GameEvent[] = [];
 
-  private block = new Uint8Array(MAP_W * MAP_H); // 1 = building footprint
-  private cliff = new Uint8Array(MAP_W * MAP_H); // 1 = impassable rocky cliff
-  private water = new Uint8Array(MAP_W * MAP_H); // 1 = navigable water
+  private block: Uint8Array; // 1 = building footprint
+  private cliff: Uint8Array; // 1 = impassable rocky cliff
+  private water: Uint8Array; // 1 = navigable water
   private waterCount = 0;
-  private bld = new Int32Array(MAP_W * MAP_H).fill(-1); // ent id per tile
-  private ore = new Int16Array(MAP_W * MAP_H); // remaining per tile
+  private bld: Int32Array; // ent id per tile
+  private ore: Int16Array; // remaining per tile
   private nextId = 1;
   private nextCrateId = 1;
   private astarBudget = 12; // per-tick A* path budget to prevent Durable Object CPU exhaustion
   private lastAlert = new Map<number, number>(); // slot -> tick of last under-attack alert
-  private grid: Ent[][] = Array.from({ length: 64 }, () => []); // 8x8 spatial buckets (8x8 tiles each)
+  private gridCols: number;
+  private gridRows: number;
+  private grid: Ent[][]; // dynamic 8x8 tile spatial buckets
   private subDetMask = new Map<number, number>(); // sub ent id -> bitmask of slots that detect it this tick
   private gridTick = -1;
   private names: Record<number, string>;
+
+  private idx(x: number, y: number): number {
+    return y * this.w + x;
+  }
+
+  private inBounds(x: number, y: number): boolean {
+    return x >= 0 && y >= 0 && x < this.w && y < this.h;
+  }
 
   constructor(slots: number[], opts?: WorldOpts) {
     this.map = opts?.map ?? "crossroads";
     this.config = { ...DEFAULT_CONFIG, ...(opts?.config ?? {}) };
     this.names = opts?.names ? { ...opts.names } : {};
     const layout = getMapLayout(this.map);
+    this.w = layout.w;
+    this.h = layout.h;
+    const area = this.w * this.h;
+    this.block = new Uint8Array(area);
+    this.cliff = new Uint8Array(area);
+    this.water = new Uint8Array(area);
+    this.bld = new Int32Array(area).fill(-1);
+    this.ore = new Int16Array(area);
+    this.gridCols = Math.ceil(this.w / 8);
+    this.gridRows = Math.ceil(this.h / 8);
+    this.grid = Array.from({ length: this.gridCols * this.gridRows }, () => []);
+
     for (const [cx, cy] of layout.cliffs) {
-      if (inBounds(cx, cy)) this.cliff[idx(cx, cy)] = 1;
+      if (this.inBounds(cx, cy)) this.cliff[this.idx(cx, cy)] = 1;
     }
     for (const [wx, wy] of layout.water) {
-      if (inBounds(wx, wy)) {
-        const i = idx(wx, wy);
+      if (this.inBounds(wx, wy)) {
+        const i = this.idx(wx, wy);
         if (!this.cliff[i] && !this.water[i]) {
           this.water[i] = 1;
           this.waterCount++;
@@ -299,8 +362,10 @@ export class World {
 
     this.genOre(slots);
 
+    const spawns = getSpawns(this.w, this.h);
     for (const slot of slots) {
-      const s = SPAWNS[slot];
+      const s = spawns[slot];
+      if (!s) continue;
       const rawTeam = opts?.teams?.[slot] ?? 0;
       const team = Number.isInteger(rawTeam) && rawTeam >= 1 && rawTeam <= 4 ? rawTeam : 0;
       this.players.set(slot, {
@@ -326,7 +391,10 @@ export class World {
       this.placeBuilding(slot, "conyard", s.x, s.y);
       // starting squad
       const spot = (dx: number, dy: number) =>
-        nearestPassable(s.x + 1 + dx, s.y + 3 + dy, (x, y) => this.passable(x, y), 10) ?? { x: s.x, y: s.y + 4 };
+        nearestPassable(s.x + 1 + dx, s.y + 3 + dy, (x, y) => this.passable(x, y), 10, this.w, this.h) ?? {
+          x: Math.max(0, Math.min(this.w - 1, s.x)),
+          y: Math.max(0, Math.min(this.h - 1, s.y + 4)),
+        };
       const t1 = spot(0, 0);
       const t2 = spot(2, 0);
       this.spawnUnit(slot, "tank", t1.x, t1.y);
@@ -343,13 +411,13 @@ export class World {
       for (const [dx, dy] of layout.derricks) {
         const dd = BUILDINGS.derrick;
         for (let y = dy; y < dy + dd.h; y++)
-          for (let x = dx; x < dx + dd.w; x++) if (inBounds(x, y)) this.ore[idx(x, y)] = 0;
+          for (let x = dx; x < dx + dd.w; x++) if (this.inBounds(x, y)) this.ore[this.idx(x, y)] = 0;
         this.placeBuilding(-1, "derrick", dx, dy);
       }
       for (const [cx, cy] of layout.coalmines ?? []) {
         const cd = BUILDINGS.coalmine;
         for (let y = cy; y < cy + cd.h; y++)
-          for (let x = cx; x < cx + cd.w; x++) if (inBounds(x, y)) this.ore[idx(x, y)] = 0;
+          for (let x = cx; x < cx + cd.w; x++) if (this.inBounds(x, y)) this.ore[this.idx(x, y)] = 0;
         this.placeBuilding(-1, "coalmine", cx, cy);
       }
     }
@@ -381,10 +449,11 @@ export class World {
   }
 
   private genOre(slots: number[]) {
+    const spawns = getSpawns(this.w, this.h);
     const blob = (cx: number, cy: number, r: number) => {
-      for (let y = Math.max(0, cy - r); y <= Math.min(MAP_H - 1, cy + r); y++)
-        for (let x = Math.max(0, cx - r); x <= Math.min(MAP_W - 1, cx + r); x++) {
-          const i = idx(x, y);
+      for (let y = Math.max(0, cy - r); y <= Math.min(this.h - 1, cy + r); y++)
+        for (let x = Math.max(0, cx - r); x <= Math.min(this.w - 1, cx + r); x++) {
+          const i = this.idx(x, y);
           if (this.cliff[i] || this.block[i] || this.water[i]) continue;
           const d = dist(x, y, cx, cy);
           if (d <= r && Math.random() > d / (r + 1)) {
@@ -393,12 +462,13 @@ export class World {
         }
     };
     for (const slot of slots) {
-      const s = SPAWNS[slot];
-      const cx = s.x < MAP_W / 2 ? s.x + 8 : s.x - 6;
-      const cy = s.y < MAP_H / 2 ? s.y + 9 : s.y - 7;
+      const s = spawns[slot];
+      if (!s) continue;
+      const cx = s.x < this.w / 2 ? s.x + 8 : s.x - 6;
+      const cy = s.y < this.h / 2 ? s.y + 9 : s.y - 7;
       blob(cx, cy, 3);
     }
-    blob(MAP_W / 2, MAP_H / 2, 4); // contested center field
+    blob(Math.floor(this.w / 2), Math.floor(this.h / 2), 4); // contested center field
     for (const [cx, cy, r] of getMapLayout(this.map).extraOre ?? []) {
       blob(cx, cy, r);
     }
@@ -406,8 +476,8 @@ export class World {
 
   oreSnapshot(): [number, number, number][] {
     const out: [number, number, number][] = [];
-    for (let y = 0; y < MAP_H; y++)
-      for (let x = 0; x < MAP_W; x++) if (this.ore[idx(x, y)] > 0) out.push([x, y, this.ore[idx(x, y)]]);
+    for (let y = 0; y < this.h; y++)
+      for (let x = 0; x < this.w; x++) if (this.ore[this.idx(x, y)] > 0) out.push([x, y, this.ore[this.idx(x, y)]]);
     return out;
   }
 
@@ -418,7 +488,7 @@ export class World {
   isWater(x: number, y: number): boolean {
     const ix = Math.floor(x),
       iy = Math.floor(y);
-    return inBounds(ix, iy) && this.water[idx(ix, iy)] === 1;
+    return this.inBounds(ix, iy) && this.water[this.idx(ix, iy)] === 1;
   }
 
   isStealthed(e: Ent): boolean {
@@ -442,12 +512,12 @@ export class World {
   }
 
   private rebuildSpatialGrid() {
-    for (let i = 0; i < 64; i++) this.grid[i].length = 0;
+    for (let i = 0; i < this.grid.length; i++) this.grid[i].length = 0;
     const stealthed: Ent[] = [];
     for (const e of this.ents.values()) {
-      const gx = Math.max(0, Math.min(7, (e.x | 0) >> 3));
-      const gy = Math.max(0, Math.min(7, (e.y | 0) >> 3));
-      this.grid[(gy << 3) | gx].push(e);
+      const gx = Math.max(0, Math.min(this.gridCols - 1, (e.x | 0) >> 3));
+      const gy = Math.max(0, Math.min(this.gridRows - 1, (e.y | 0) >> 3));
+      this.grid[gy * this.gridCols + gx].push(e);
       if (this.isStealthed(e)) stealthed.push(e);
     }
     this.subDetMask.clear();
@@ -456,12 +526,12 @@ export class World {
       let mask = 0;
       const scanR = st.k === "stealthbomber" ? 11.5 : 9.5;
       const x0 = Math.max(0, ((st.x - scanR) | 0) >> 3);
-      const x1 = Math.min(7, ((st.x + scanR) | 0) >> 3);
+      const x1 = Math.min(this.gridCols - 1, ((st.x + scanR) | 0) >> 3);
       const y0 = Math.max(0, ((st.y - scanR) | 0) >> 3);
-      const y1 = Math.min(7, ((st.y + scanR) | 0) >> 3);
+      const y1 = Math.min(this.gridRows - 1, ((st.y + scanR) | 0) >> 3);
       for (let gy = y0; gy <= y1; gy++) {
         for (let gx = x0; gx <= x1; gx++) {
-          const cell = this.grid[(gy << 3) | gx];
+          const cell = this.grid[gy * this.gridCols + gx];
           for (let i = 0; i < cell.length; i++) {
             const u = cell[i];
             if (u.o < 0 || u.id === st.id) continue;
@@ -520,10 +590,16 @@ export class World {
   }
 
   passable = (x: number, y: number) =>
-    inBounds(x, y) && this.block[idx(x, y)] === 0 && this.cliff[idx(x, y)] === 0 && this.water[idx(x, y)] === 0;
+    this.inBounds(x, y) &&
+    this.block[this.idx(x, y)] === 0 &&
+    this.cliff[this.idx(x, y)] === 0 &&
+    this.water[this.idx(x, y)] === 0;
 
   passableSea = (x: number, y: number) =>
-    inBounds(x, y) && this.block[idx(x, y)] === 0 && this.cliff[idx(x, y)] === 0 && this.water[idx(x, y)] === 1;
+    this.inBounds(x, y) &&
+    this.block[this.idx(x, y)] === 0 &&
+    this.cliff[this.idx(x, y)] === 0 &&
+    this.water[this.idx(x, y)] === 1;
 
   footprint(kind: BuildingKind, tx: number, ty: number) {
     const d = BUILDINGS[kind];
@@ -551,6 +627,8 @@ export class World {
       path: null,
       cd: 0,
       cargo: 0,
+      fuel: 100,
+      ammo: 100,
       hstate: null,
       oreIdx: -1,
       repath: 0,
@@ -565,8 +643,8 @@ export class World {
     this.ents.set(e.id, e);
     for (let y = ty; y < ty + d.h; y++)
       for (let x = tx; x < tx + d.w; x++) {
-        this.block[idx(x, y)] = 1;
-        this.bld[idx(x, y)] = e.id;
+        this.block[this.idx(x, y)] = 1;
+        this.bld[this.idx(x, y)] = e.id;
       }
     return e;
   }
@@ -586,7 +664,9 @@ export class World {
       orderQueue: [],
       path: null,
       cd: 0,
-      cargo: 0,
+      cargo: kind === "supplytruck" ? (d.capacity ?? 500) : 0,
+      fuel: 100,
+      ammo: 100,
       hstate: null,
       oreIdx: -1,
       repath: 0,
@@ -623,10 +703,10 @@ export class World {
             if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
             const x = cx + dx,
               y = cy + dy;
-            if (inBounds(x, y) && !occupied(x, y)) return this.spawnUnit(slot, kind, x, y);
+            if (this.inBounds(x, y) && !occupied(x, y)) return this.spawnUnit(slot, kind, x, y);
           }
       }
-      return this.spawnUnit(slot, kind, Math.max(0, Math.min(MAP_W - 1, cx)), Math.max(0, Math.min(MAP_H - 1, cy)));
+      return this.spawnUnit(slot, kind, Math.max(0, Math.min(this.w - 1, cx)), Math.max(0, Math.min(this.h - 1, cy)));
     }
     if (uDomain === "sea") {
       // Sea units spawn on the nearest navigable water tile around the shipyard
@@ -641,7 +721,7 @@ export class World {
             if (this.passableSea(x, y) && !occupied(x, y)) return this.spawnUnit(slot, kind, x, y);
           }
       }
-      const spot = nearestPassable(cx, cy, (x, y) => this.passableSea(x, y) && !occupied(x, y), 14);
+      const spot = nearestPassable(cx, cy, (x, y) => this.passableSea(x, y) && !occupied(x, y), 14, this.w, this.h);
       if (spot) return this.spawnUnit(slot, kind, spot.x, spot.y);
       return null;
     }
@@ -654,7 +734,14 @@ export class World {
           if (this.passable(x, y) && !occupied(x, y)) return this.spawnUnit(slot, kind, x, y);
         }
     }
-    const spot = nearestPassable(bx + (def.w >> 1), by + def.h + 1, (x, y) => this.passable(x, y) && !occupied(x, y), 12);
+    const spot = nearestPassable(
+      bx + (def.w >> 1),
+      by + def.h + 1,
+      (x, y) => this.passable(x, y) && !occupied(x, y),
+      12,
+      this.w,
+      this.h,
+    );
     if (spot) return this.spawnUnit(slot, kind, spot.x, spot.y);
     return null;
   }
@@ -663,10 +750,10 @@ export class World {
 
   canPlace(slot: number, kind: BuildingKind, tx: number, ty: number): string | null {
     const d = BUILDINGS[kind];
-    if (tx < 0 || ty < 0 || tx + d.w > MAP_W || ty + d.h > MAP_H) return "off map";
+    if (tx < 0 || ty < 0 || tx + d.w > this.w || ty + d.h > this.h) return "off map";
     for (let y = ty; y < ty + d.h; y++)
       for (let x = tx; x < tx + d.w; x++) {
-        const i = idx(x, y);
+        const i = this.idx(x, y);
         if (this.cliff[i]) return "blocked by terrain";
         if (this.block[i]) return "blocked";
         if (d.waterOnly) {
@@ -685,8 +772,8 @@ export class World {
         uy = Math.floor(u.y);
       if (ux >= tx && ux < tx + d.w && uy >= ty && uy < ty + d.h) return "units in the way";
     }
-    // adjacency: own building within gap <= 2 (or SHIPYARD_BUILD_DIST for waterOnly)
-    const maxGap = d.waterOnly ? SHIPYARD_BUILD_DIST : 2;
+    // adjacency: own building within gap <= 2 (or SHIPYARD_BUILD_DIST for waterOnly, or forwardRange for Forward Supply Hubs)
+    const maxGap = d.waterOnly ? SHIPYARD_BUILD_DIST : (d.forwardRange ?? 2);
     for (const b of this.ents.values()) {
       if (b.o !== slot || !isBuilding(b.k)) continue;
       const bd = BUILDINGS[b.k];
@@ -696,13 +783,13 @@ export class World {
       const gapY = Math.max(by - (ty + d.h), ty - (by + bd.h));
       if (Math.max(gapX, gapY) <= maxGap) return null;
     }
-    return d.waterOnly ? "too far from base" : "must build next to your base";
+    return d.waterOnly || d.forwardRange ? "too far from base" : "must build next to your base";
   }
 
   cmdOrder(slot: number, ids: number[], kind: OrderKind, x: number, y: number, target?: number, queue = false): string | null {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return "bad order";
     if (kind !== "move" && kind !== "amove" && kind !== "attack" && kind !== "harvest" && kind !== "patrol") return "bad order";
-    if (!inBounds(Math.floor(x), Math.floor(y))) return "off map";
+    if (!this.inBounds(Math.floor(x), Math.floor(y))) return "off map";
     const cols = Math.max(1, Math.ceil(Math.sqrt(ids.length)));
     const rows = Math.max(1, Math.ceil(ids.length / cols));
     let n = 0;
@@ -714,8 +801,8 @@ export class World {
       // spread group destinations on a dynamic grid so large groups don't stack on one tile
       const ox = kind === "attack" || kind === "harvest" ? 0 : ((i % cols) - (cols - 1) / 2) * 1.15;
       const oy = kind === "attack" || kind === "harvest" ? 0 : (Math.floor(i / cols) - (rows - 1) / 2) * 1.15;
-      const gx = Math.max(0.5, Math.min(MAP_W - 0.5, x + ox));
-      const gy = Math.max(0.5, Math.min(MAP_H - 0.5, y + oy));
+      const gx = Math.max(0.5, Math.min(this.w - 0.5, x + ox));
+      const gy = Math.max(0.5, Math.min(this.h - 0.5, y + oy));
 
       let ord: Order | null = null;
       let hstate: Ent["hstate"] = null;
@@ -729,14 +816,14 @@ export class World {
         if (!tgt || !this.canAttack(e, tgt)) continue;
         ord = { kind, x: tgt.x, y: tgt.y, target };
       } else if (kind === "harvest") {
-        const t = Math.floor(x) + Math.floor(y) * MAP_W;
+        const t = this.idx(Math.floor(x), Math.floor(y));
         if (this.ore[t] > 0) {
           ord = { kind, x, y };
           hstate = "toOre";
           oreIdx = t;
         } else {
           // right-clicked own refinery with cargo
-          const bid = this.bld[idx(Math.floor(x), Math.floor(y))];
+          const bid = this.bld[t];
           const b = bid >= 0 ? this.ents.get(bid) : null;
           if (!b || b.o !== slot || b.k !== "refinery") continue;
           ord = { kind, x, y };
@@ -787,12 +874,12 @@ export class World {
         if (!tgt || !this.canAttack(e, tgt)) continue;
       }
       if (next.kind === "harvest" && e.k === "harvester") {
-        const t = Math.floor(next.x) + Math.floor(next.y) * MAP_W;
+        const t = this.idx(Math.floor(next.x), Math.floor(next.y));
         if (this.ore[t] > 0) {
           e.hstate = "toOre";
           e.oreIdx = t;
         } else {
-          const bid = this.bld[idx(Math.floor(next.x), Math.floor(next.y))];
+          const bid = this.bld[t];
           const b = bid >= 0 ? this.ents.get(bid) : null;
           if (!b || b.o !== e.o || b.k !== "refinery") continue;
           e.hstate = "toRef";
@@ -1010,7 +1097,7 @@ export class World {
     const p = this.players.get(slot);
     if (!p || p.eliminated) return "dead";
     if (!Number.isFinite(x) || !Number.isFinite(y)) return "bad coords";
-    if (!inBounds(Math.floor(x), Math.floor(y))) return "off map";
+    if (!this.inBounds(Math.floor(x), Math.floor(y))) return "off map";
     const e = this.ents.get(id);
     if (
       !e ||
@@ -1034,7 +1121,7 @@ export class World {
     const p = this.players.get(slot);
     if (!p || p.eliminated) return "dead";
     if (!Number.isFinite(x) || !Number.isFinite(y)) return "bad coords";
-    if (!inBounds(Math.floor(x), Math.floor(y))) return "off map";
+    if (!this.inBounds(Math.floor(x), Math.floor(y))) return "off map";
     if (!this.hasBuilding(slot, "superweapon")) return "need a superweapon";
     if (p.lowPower) return "low power";
     if (p.swLeft > 0 || p.swLeft < 0) return "superweapon charging";
@@ -1060,7 +1147,7 @@ export class World {
     const p = this.players.get(slot);
     if (!p || p.eliminated) return "dead";
     if (!Number.isFinite(x) || !Number.isFinite(y)) return "bad coords";
-    if (!inBounds(Math.floor(x), Math.floor(y))) return "off map";
+    if (!this.inBounds(Math.floor(x), Math.floor(y))) return "off map";
     if (!this.hasBuilding(slot, "radar")) return "need a radar";
     if (p.lowPower) return "low power";
     if (p.reconLeft > 0 || p.reconLeft < 0) return "recon charging";
@@ -1216,9 +1303,91 @@ export class World {
       this.tickDepots();
       this.tickDerricks();
       this.tickVetRegen();
+      this.tickLogistics();
     }
     if (this.tick % ORE_REGEN_TICKS === 0) this.regenOre();
     this.checkEnd();
+  }
+
+  private tickLogistics() {
+    if (this.config.logistics === false) return;
+    const hubsAndBases: Ent[] = [];
+    const trucks: Ent[] = [];
+    for (const e of this.ents.values()) {
+      if (e.o < 0) continue;
+      if (e.k === "supplyhub" || BASE_SUPPLY_PROVIDERS.has(e.k)) hubsAndBases.push(e);
+      else if (e.k === "supplytruck" && e.cargo > 0) trucks.push(e);
+    }
+
+    const truckCap = UNITS.supplytruck.capacity ?? 500;
+    // Pass 1: Forward Supply Hubs & Base Structures/Carriers refill fuel, ammo, truck cargo (+ hub repair aura)
+    for (const src of hubsAndBases) {
+      const isHub = src.k === "supplyhub";
+      const r = isHub ? SUPPLY_HUB_RADIUS : BASE_SUPPLY_RADIUS;
+      const r2 = r * r;
+      const pad = r + 1;
+      const x0 = Math.max(0, Math.floor(src.x - pad) >> 3);
+      const x1 = Math.min(this.gridCols - 1, Math.floor(src.x + pad) >> 3);
+      const y0 = Math.max(0, Math.floor(src.y - pad) >> 3);
+      const y1 = Math.min(this.gridRows - 1, Math.floor(src.y + pad) >> 3);
+      for (let gy = y0; gy <= y1; gy++) {
+        for (let gx = x0; gx <= x1; gx++) {
+          const cell = this.grid[gy * this.gridCols + gx];
+          for (let i = 0; i < cell.length; i++) {
+            const u = cell[i];
+            if (isBuilding(u.k) || !this.isAlly(src.o, u.o)) continue;
+            const dx = src.x - u.x,
+              dy = src.y - u.y;
+            if (dx * dx + dy * dy > r2) continue;
+            if (u.fuel < 100) u.fuel = Math.min(100, u.fuel + 22);
+            if (u.ammo < 100) u.ammo = Math.min(100, u.ammo + 26);
+            if (u.k === "supplytruck" && u.cargo < truckCap) {
+              u.cargo = Math.min(truckCap, u.cargo + 120);
+            }
+            if (isHub && u.hp < u.mhp) {
+              u.hp = Math.min(u.mhp, u.hp + 2);
+            }
+          }
+        }
+      }
+    }
+
+    // Pass 2: Mobile Logistics Supply Convoys refill nearby friendly units from onboard cargo
+    const trR2 = SUPPLY_TRUCK_RADIUS * SUPPLY_TRUCK_RADIUS;
+    const trPad = SUPPLY_TRUCK_RADIUS + 1;
+    for (const tr of trucks) {
+      if (tr.cargo <= 0) continue;
+      const x0 = Math.max(0, Math.floor(tr.x - trPad) >> 3);
+      const x1 = Math.min(this.gridCols - 1, Math.floor(tr.x + trPad) >> 3);
+      const y0 = Math.max(0, Math.floor(tr.y - trPad) >> 3);
+      const y1 = Math.min(this.gridRows - 1, Math.floor(tr.y + trPad) >> 3);
+      for (let gy = y0; gy <= y1 && tr.cargo > 0; gy++) {
+        for (let gx = x0; gx <= x1 && tr.cargo > 0; gx++) {
+          const cell = this.grid[gy * this.gridCols + gx];
+          for (let i = 0; i < cell.length && tr.cargo > 0; i++) {
+            const u = cell[i];
+            if (u.id === tr.id || isBuilding(u.k) || u.k === "supplytruck" || !this.isAlly(tr.o, u.o)) continue;
+            const dx = tr.x - u.x,
+              dy = tr.y - u.y;
+            if (dx * dx + dy * dy > trR2) continue;
+            if (u.fuel < 100 && tr.cargo > 0) {
+              const give = Math.min(18, 100 - u.fuel, tr.cargo);
+              if (give > 0) {
+                u.fuel += give;
+                tr.cargo -= give;
+              }
+            }
+            if (u.ammo < 100 && tr.cargo > 0) {
+              const give = Math.min(22, 100 - u.ammo, tr.cargo);
+              if (give > 0) {
+                u.ammo += give;
+                tr.cargo -= give;
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   private tickDepots() {
@@ -1263,9 +1432,9 @@ export class World {
       this.crates.size < CRATE_MAX
     ) {
       for (let tries = 0; tries < 30; tries++) {
-        const tx = 14 + Math.floor(Math.random() * 37);
-        const ty = 14 + Math.floor(Math.random() * 37);
-        if (!this.passable(tx, ty) || this.ore[idx(tx, ty)] > 0) continue;
+        const tx = 14 + Math.floor(Math.random() * Math.max(1, this.w - 27));
+        const ty = 14 + Math.floor(Math.random() * Math.max(1, this.h - 27));
+        if (!this.passable(tx, ty) || this.ore[this.idx(tx, ty)] > 0) continue;
         const cx = tx + 0.5,
           cy = ty + 0.5;
         let tooClose = false;
@@ -1330,7 +1499,7 @@ export class World {
           : this.hasBuilding(collector.o, "factory2")
             ? "heavy"
             : "tank";
-        const spot = nearestPassable(Math.floor(collector.x), Math.floor(collector.y), this.passable, 6);
+        const spot = nearestPassable(Math.floor(collector.x), Math.floor(collector.y), this.passable, 6, this.w, this.h);
         if (spot) {
           this.spawnUnit(collector.o, bonusKind, spot.x, spot.y);
           if (p) p.unitsBuilt++;
@@ -1373,9 +1542,9 @@ export class World {
   // ore fields slowly regrow and creep outward, like the real game
   private regenOre() {
     const changed: [number, number, number][] = [];
-    for (let y = 0; y < MAP_H; y++) {
-      for (let x = 0; x < MAP_W; x++) {
-        const t = idx(x, y);
+    for (let y = 0; y < this.h; y++) {
+      for (let x = 0; x < this.w; x++) {
+        const t = this.idx(x, y);
         const amt = this.ore[t];
         if (amt > 0) {
           if (amt < ORE_CELL_MAX) {
@@ -1387,10 +1556,10 @@ export class World {
         }
         if (this.bld[t] >= 0 || !this.passable(x, y)) continue;
         let adj = 0;
-        if (x + 1 < MAP_W && this.ore[t + 1] > 0) adj++;
+        if (x + 1 < this.w && this.ore[t + 1] > 0) adj++;
         if (x > 0 && this.ore[t - 1] > 0) adj++;
-        if (y + 1 < MAP_H && this.ore[t + MAP_W] > 0) adj++;
-        if (y > 0 && this.ore[t - MAP_W] > 0) adj++;
+        if (y + 1 < this.h && this.ore[t + this.w] > 0) adj++;
+        if (y > 0 && this.ore[t - this.w] > 0) adj++;
         if (adj >= 2 && Math.random() < ORE_SPREAD_CHANCE) {
           this.ore[t] = 2;
           changed.push([x, y, 2]);
@@ -1590,19 +1759,23 @@ export class World {
       vy /= len;
     }
     if (len > 0.001) {
-      const speed = UNITS[e.k as UnitKind].speed * 1.15;
+      const logisticsOn = this.config.logistics !== false;
+      const fuelMult = logisticsOn && usesFuel(e.k) && e.fuel <= 0 ? 0.38 : 1;
+      const speed = UNITS[e.k as UnitKind].speed * 1.15 * fuelMult;
       const dx = vx * speed;
       const dy = vy * speed;
       const dom = domainOf(e.k);
       const canEnter = (nx: number, ny: number): boolean => {
-        if (!inBounds(nx, ny)) return false;
+        if (!this.inBounds(nx, ny)) return false;
         if (dom === "air") return true;
         const ix = Math.floor(nx),
           iy = Math.floor(ny);
         return dom === "sea" ? this.passableSea(ix, iy) : this.passable(ix, iy);
       };
-      const tx = Math.max(0.5, Math.min(MAP_W - 0.5, e.x + dx));
-      const ty = Math.max(0.5, Math.min(MAP_H - 0.5, e.y + dy));
+      const prevX = e.x,
+        prevY = e.y;
+      const tx = Math.max(0.5, Math.min(this.w - 0.5, e.x + dx));
+      const ty = Math.max(0.5, Math.min(this.h - 0.5, e.y + dy));
       if (canEnter(tx, ty)) {
         e.x = tx;
         e.y = ty;
@@ -1611,8 +1784,14 @@ export class World {
       } else if (Math.abs(dy) > 1e-6 && canEnter(e.x, ty)) {
         e.y = ty;
       }
-      e.x = Math.max(0.5, Math.min(MAP_W - 0.5, e.x));
-      e.y = Math.max(0.5, Math.min(MAP_H - 0.5, e.y));
+      e.x = Math.max(0.5, Math.min(this.w - 0.5, e.x));
+      e.y = Math.max(0.5, Math.min(this.h - 0.5, e.y));
+      if (logisticsOn && usesFuel(e.k)) {
+        const moved = Math.hypot(e.x - prevX, e.y - prevY);
+        if (moved > 0) {
+          e.fuel = Math.max(0, e.fuel - moved * (dom === "air" ? 0.55 : dom === "sea" ? 0.25 : 0.35));
+        }
+      }
     }
 
     // Sapper (engineer) FPV Capture
@@ -1631,8 +1810,8 @@ export class World {
       const cap = UNITS.harvester.capacity ?? 40;
       const ox = Math.floor(e.x),
         oy = Math.floor(e.y);
-      if (inBounds(ox, oy)) {
-        const t = idx(ox, oy);
+      if (this.inBounds(ox, oy)) {
+        const t = this.idx(ox, oy);
         if (this.ore[t] > 0 && e.cargo < cap && this.tick % HARVEST_TICKS_PER_UNIT === 0) {
           this.ore[t]--;
           e.cargo++;
@@ -1712,10 +1891,15 @@ export class World {
       tx = e.x + Math.cos(dir.yaw) * Math.min(w.range, 1);
       ty = e.y + Math.sin(dir.yaw) * Math.min(w.range, 1);
     }
-    tx = Math.max(0.1, Math.min(MAP_W - 0.1, tx));
-    ty = Math.max(0.1, Math.min(MAP_H - 0.1, ty));
+    tx = Math.max(0.1, Math.min(this.w - 0.1, tx));
+    ty = Math.max(0.1, Math.min(this.h - 0.1, ty));
 
-    e.cd = w.rof;
+    if (this.config.logistics !== false && !isBuilding(e.k)) {
+      e.ammo = Math.max(0, e.ammo - ammoCostOf(e.k));
+      e.cd = e.ammo <= 0 ? Math.round(w.rof * 3.0) : w.rof;
+    } else {
+      e.cd = w.rof;
+    }
     if (e.k === "sub" || e.k === "stealthbomber") e.subSurfaceUntil = this.tick + 45;
     this.events.push({
       e: "shot",
@@ -1799,16 +1983,26 @@ export class World {
           e.order = null;
           // resume at last ore tile
           if (e.oreIdx >= 0 && this.ore[e.oreIdx] > 0) {
-            e.path = findPath(e.x | 0, e.y | 0, e.oreIdx % MAP_W, (e.oreIdx / MAP_W) | 0, this.passable);
-            e.order = { kind: "harvest", x: e.oreIdx % MAP_W, y: (e.oreIdx / MAP_W) | 0 };
+            const maxExpand = this.w >= 96 ? 4500 : 2400;
+            e.path = findPath(
+              e.x | 0,
+              e.y | 0,
+              e.oreIdx % this.w,
+              (e.oreIdx / this.w) | 0,
+              this.passable,
+              maxExpand,
+              this.w,
+              this.h,
+            );
+            e.order = { kind: "harvest", x: e.oreIdx % this.w, y: (e.oreIdx / this.w) | 0 };
           }
         }
       }
     }
 
     if (e.hstate === "mining") {
-      const ox = e.oreIdx % MAP_W,
-        oy = (e.oreIdx / MAP_W) | 0;
+      const ox = e.oreIdx % this.w,
+        oy = (e.oreIdx / this.w) | 0;
       const cap = UNITS.harvester.capacity!;
       if (Math.floor(e.x) !== ox || Math.floor(e.y) !== oy) {
         // drifted off the ore tile — drive back onto it
@@ -1828,7 +2022,7 @@ export class World {
             if (next >= 0) {
               e.oreIdx = next;
               e.hstate = "toOre";
-              e.order = { kind: "harvest", x: next % MAP_W, y: (next / MAP_W) | 0 };
+              e.order = { kind: "harvest", x: next % this.w, y: (next / this.w) | 0 };
               e.path = null;
             } else e.hstate = e.cargo > 0 ? "toRef" : null;
           }
@@ -1844,7 +2038,7 @@ export class World {
         if (next >= 0) {
           e.oreIdx = next;
           e.hstate = "toOre";
-          e.order = { kind: "harvest", x: next % MAP_W, y: (next / MAP_W) | 0 };
+          e.order = { kind: "harvest", x: next % this.w, y: (next / this.w) | 0 };
           e.path = null;
         } else e.hstate = e.cargo > 0 ? "toRef" : null;
       }
@@ -1853,7 +2047,7 @@ export class World {
 
     // toOre without a path yet
     if (e.hstate === "toOre" && !e.path?.length) {
-      const goal = this.ore[e.oreIdx] > 0 ? { x: e.oreIdx % MAP_W, y: (e.oreIdx / MAP_W) | 0 } : null;
+      const goal = this.ore[e.oreIdx] > 0 ? { x: e.oreIdx % this.w, y: (e.oreIdx / this.w) | 0 } : null;
       if (!goal) {
         const n = this.nearestOre(e.x | 0, e.y | 0);
         if (n < 0) {
@@ -1862,12 +2056,13 @@ export class World {
           return;
         }
         e.oreIdx = n;
-        e.order = { kind: "harvest", x: n % MAP_W, y: (n / MAP_W) | 0 };
+        e.order = { kind: "harvest", x: n % this.w, y: (n / this.w) | 0 };
       }
-      const g = goal ?? { x: e.oreIdx % MAP_W, y: (e.oreIdx / MAP_W) | 0 };
+      const g = goal ?? { x: e.oreIdx % this.w, y: (e.oreIdx / this.w) | 0 };
       if (this.astarBudget <= 0) return;
       this.astarBudget--;
-      e.path = findPath(e.x | 0, e.y | 0, g.x, g.y, this.passable, 2400);
+      const maxExpand = this.w >= 96 ? 4500 : 2400;
+      e.path = findPath(e.x | 0, e.y | 0, g.x, g.y, this.passable, maxExpand, this.w, this.h);
       e.order = { kind: "harvest", x: g.x, y: g.y };
       if (!e.path) {
         // Back off for 5s so an unreachable island ore tile never spins A* every tick
@@ -1907,7 +2102,7 @@ export class World {
         if (n >= 0) {
           e.oreIdx = n;
           e.hstate = "toOre";
-          e.order = { kind: "harvest", x: n % MAP_W, y: (n / MAP_W) | 0 };
+          e.order = { kind: "harvest", x: n % this.w, y: (n / this.w) | 0 };
         }
       }
     }
@@ -1930,16 +2125,16 @@ export class World {
   private nearestOre(x: number, y: number, maxR = 999) {
     let best = -1,
       bd = Infinity;
-    // scan outward rings — cheaper than full scan, plenty for 64x64
-    for (let r = 0; r < Math.min(maxR, Math.max(MAP_W, MAP_H)); r++) {
+    // scan outward rings — cheaper than full scan
+    for (let r = 0; r < Math.min(maxR, Math.max(this.w, this.h)); r++) {
       let found = false;
       for (let dy = -r; dy <= r; dy++)
         for (let dx = -r; dx <= r; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
           const nx = x + dx,
             ny = y + dy;
-          if (!inBounds(nx, ny)) continue;
-          const i = idx(nx, ny);
+          if (!this.inBounds(nx, ny)) continue;
+          const i = this.idx(nx, ny);
           if (this.ore[i] > 0) {
             const d = dx * dx + dy * dy;
             if (d < bd) {
@@ -1959,13 +2154,13 @@ export class World {
       bd = range;
     const pad = range + 2.5;
     const x0 = Math.max(0, Math.floor(e.x - pad) >> 3);
-    const x1 = Math.min(7, Math.floor(e.x + pad) >> 3);
+    const x1 = Math.min(this.gridCols - 1, Math.floor(e.x + pad) >> 3);
     const y0 = Math.max(0, Math.floor(e.y - pad) >> 3);
-    const y1 = Math.min(7, Math.floor(e.y + pad) >> 3);
+    const y1 = Math.min(this.gridRows - 1, Math.floor(e.y + pad) >> 3);
     if (this.gridTick === this.tick) {
       for (let gy = y0; gy <= y1; gy++) {
         for (let gx = x0; gx <= x1; gx++) {
-          const cell = this.grid[(gy << 3) | gx];
+          const cell = this.grid[gy * this.gridCols + gx];
           for (let i = 0; i < cell.length; i++) {
             const t = cell[i];
             if (t.o < 0 || this.isAlly(e.o, t.o) || !this.ents.has(t.id)) continue;
@@ -2035,7 +2230,12 @@ export class World {
     if (w.range <= 0) return;
     if (isBuilding(e.k) && this.players.get(e.o)?.lowPower) return; // powered defenses offline
     if (!this.canAttack(e, tgt)) return;
-    e.cd = w.rof;
+    if (this.config.logistics !== false && !isBuilding(e.k)) {
+      e.ammo = Math.max(0, e.ammo - ammoCostOf(e.k));
+      e.cd = e.ammo <= 0 ? Math.round(w.rof * 3.0) : w.rof;
+    } else {
+      e.cd = w.rof;
+    }
     if (e.k === "sub" || e.k === "stealthbomber") e.subSurfaceUntil = this.tick + 45; // reveals for 4.5s while firing
     const baseDmg = w.dmg * VET_DMG[e.vet];
     const directDmg = baseDmg * armorMult(e.k, tgt.k);
@@ -2100,8 +2300,8 @@ export class World {
         by = Math.round(e.y - d.h / 2);
       for (let y = by; y < by + d.h; y++)
         for (let x = bx; x < bx + d.w; x++) {
-          this.block[idx(x, y)] = 0;
-          this.bld[idx(x, y)] = -1;
+          this.block[this.idx(x, y)] = 0;
+          this.bld[this.idx(x, y)] = -1;
         }
     }
     this.ents.delete(e.id);
@@ -2126,7 +2326,7 @@ export class World {
     const gx = tgt.x | 0,
       gy = tgt.y | 0;
     const searchR = dom === "sea" ? 24 : 10;
-    const spot = nearestPassable(gx, gy, pass, searchR);
+    const spot = nearestPassable(gx, gy, pass, searchR, this.w, this.h);
     if (!spot) {
       e.path = [];
       return;
@@ -2136,7 +2336,8 @@ export class World {
       return;
     }
     this.astarBudget--;
-    e.path = findPath(e.x | 0, e.y | 0, spot.x, spot.y, pass, 2400);
+    const maxExpand = this.w >= 96 ? 4500 : 2400;
+    e.path = findPath(e.x | 0, e.y | 0, spot.x, spot.y, pass, maxExpand, this.w, this.h);
     if (!e.path?.length && r > 0) e.path = [];
   }
 
@@ -2144,6 +2345,8 @@ export class World {
   // null path = "needs compute"; empty path = "gave up" (avoids re-running A* every tick)
   private stepAlong(e: Ent, arriveR = 0.35): boolean {
     const dom = domainOf(e.k);
+    const logisticsOn = this.config.logistics !== false;
+    const fuelMult = logisticsOn && usesFuel(e.k) && e.fuel <= 0 ? 0.38 : 1;
     if (dom === "air") {
       // Air units fly in a smooth straight line ignoring cliffs, buildings, and water
       const o = e.order;
@@ -2163,19 +2366,23 @@ export class World {
           gy = tgt.y;
         }
       }
-      gx = Math.max(0.5, Math.min(MAP_W - 0.5, gx));
-      gy = Math.max(0.5, Math.min(MAP_H - 0.5, gy));
+      gx = Math.max(0.5, Math.min(this.w - 0.5, gx));
+      gy = Math.max(0.5, Math.min(this.h - 0.5, gy));
       const d = dist(e.x, e.y, gx, gy);
       if (d <= arriveR) return true;
-      const speed = UNITS[e.k as UnitKind].speed;
+      const speed = UNITS[e.k as UnitKind].speed * fuelMult;
       const step = Math.min(speed, d);
       e.x += ((gx - e.x) / d) * step;
       e.y += ((gy - e.y) / d) * step;
+      if (logisticsOn && usesFuel(e.k)) {
+        e.fuel = Math.max(0, e.fuel - step * 0.55);
+      }
       e.d = Math.atan2(gy - e.y, gx - e.x);
       return false;
     }
     const pass = dom === "sea" ? this.passableSea : this.passable;
     const searchR = dom === "sea" ? 24 : 12;
+    const maxExpand = this.w >= 96 ? 4500 : 2400;
     if (e.path === null) {
       const o = e.order;
       if (!o) {
@@ -2184,14 +2391,14 @@ export class World {
       }
       if (this.astarBudget <= 0) return false;
       this.astarBudget--;
-      const goal = nearestPassable(Math.floor(o.x), Math.floor(o.y), pass, searchR);
-      e.path = goal ? (findPath(e.x | 0, e.y | 0, goal.x, goal.y, pass, 2400) ?? []) : [];
+      const goal = nearestPassable(Math.floor(o.x), Math.floor(o.y), pass, searchR, this.w, this.h);
+      e.path = goal ? (findPath(e.x | 0, e.y | 0, goal.x, goal.y, pass, maxExpand, this.w, this.h) ?? []) : [];
     }
     if (!e.path.length) return true;
     const wp = e.path[0];
     const wx = wp.x + 0.5,
       wy = wp.y + 0.5;
-    const speed = UNITS[e.k as UnitKind].speed;
+    const speed = UNITS[e.k as UnitKind].speed * fuelMult;
     const d = dist(e.x, e.y, wx, wy);
     const last = e.path.length === 1;
     if (d <= (last ? arriveR : 0.25)) {
@@ -2202,13 +2409,16 @@ export class World {
       // path invalidated by new construction — repath once
       const o = e.order;
       if (!o) return true;
-      const goal = nearestPassable(Math.floor(o.x), Math.floor(o.y), pass, searchR);
-      e.path = goal ? (findPath(e.x | 0, e.y | 0, goal.x, goal.y, pass) ?? []) : [];
+      const goal = nearestPassable(Math.floor(o.x), Math.floor(o.y), pass, searchR, this.w, this.h);
+      e.path = goal ? (findPath(e.x | 0, e.y | 0, goal.x, goal.y, pass, maxExpand, this.w, this.h) ?? []) : [];
       return e.path.length === 0;
     }
     const step = Math.min(speed, d);
     e.x += ((wx - e.x) / d) * step;
     e.y += ((wy - e.y) / d) * step;
+    if (logisticsOn && usesFuel(e.k)) {
+      e.fuel = Math.max(0, e.fuel - step * (dom === "sea" ? 0.25 : 0.35));
+    }
     e.d = Math.atan2(wy - e.y, wx - e.x);
     return false;
   }
@@ -2216,24 +2426,30 @@ export class World {
   private separate() {
     // soft separation between units in the SAME domain (spatial 3x3 cell neighborhood); tanks crush enemy infantry
     const isVeh = (k: EntKind) =>
-      k === "tank" || k === "heavy" || k === "arty" || k === "harvester" || k === "himars" || k === "railtank";
+      k === "tank" ||
+      k === "heavy" ||
+      k === "arty" ||
+      k === "harvester" ||
+      k === "supplytruck" ||
+      k === "himars" ||
+      k === "railtank";
     const isCrusher = (k: EntKind) => k === "tank" || k === "heavy" || k === "railtank";
     const crushable = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer";
-    for (let cy = 0; cy < 8; cy++) {
-      for (let cx = 0; cx < 8; cx++) {
-        const cellA = this.grid[(cy << 3) | cx];
+    for (let cy = 0; cy < this.gridRows; cy++) {
+      for (let cx = 0; cx < this.gridCols; cx++) {
+        const cellA = this.grid[cy * this.gridCols + cx];
         for (let i = 0; i < cellA.length; i++) {
           const a = cellA[i];
           if (isBuilding(a.k) || !this.ents.has(a.id)) continue;
           const aDom = domainOf(a.k);
           const ny0 = Math.max(0, cy - 1),
-            ny1 = Math.min(7, cy + 1);
+            ny1 = Math.min(this.gridRows - 1, cy + 1);
           const nx0 = Math.max(0, cx - 1),
-            nx1 = Math.min(7, cx + 1);
+            nx1 = Math.min(this.gridCols - 1, cx + 1);
           let aDead = false;
           for (let ny = ny0; ny <= ny1 && !aDead; ny++) {
             for (let nx = nx0; nx <= nx1 && !aDead; nx++) {
-              const cellB = this.grid[(ny << 3) | nx];
+              const cellB = this.grid[ny * this.gridCols + nx];
               for (let j = 0; j < cellB.length; j++) {
                 const b = cellB[j];
                 if (b.id <= a.id || isBuilding(b.k) || !this.ents.has(b.id)) continue;
@@ -2280,10 +2496,10 @@ export class World {
                 const aMult = a.hold ? 0.15 : 1;
                 const bMult = b.hold ? 0.15 : 1;
                 if (aDom === "air") {
-                  a.x = Math.max(0.5, Math.min(MAP_W - 0.5, a.x - px * aMult));
-                  a.y = Math.max(0.5, Math.min(MAP_H - 0.5, a.y - py * aMult));
-                  b.x = Math.max(0.5, Math.min(MAP_W - 0.5, b.x + px * bMult));
-                  b.y = Math.max(0.5, Math.min(MAP_H - 0.5, b.y + py * bMult));
+                  a.x = Math.max(0.5, Math.min(this.w - 0.5, a.x - px * aMult));
+                  a.y = Math.max(0.5, Math.min(this.h - 0.5, a.y - py * aMult));
+                  b.x = Math.max(0.5, Math.min(this.w - 0.5, b.x + px * bMult));
+                  b.y = Math.max(0.5, Math.min(this.h - 0.5, b.y + py * bMult));
                 } else {
                   const pass = aDom === "sea" ? this.passableSea : this.passable;
                   if (pass((a.x - px * aMult) | 0, (a.y - py * aMult) | 0)) {
@@ -2346,7 +2562,13 @@ export class World {
         mhp: e.mhp,
         d: Math.round(e.d * 10),
       };
-      if (e.k === "harvester") s.cargo = e.cargo;
+      if (e.k === "harvester" || e.k === "supplytruck") s.cargo = Math.round(e.cargo);
+      if (this.config.logistics !== false && !isBuilding(e.k)) {
+        const fl = Math.round(e.fuel);
+        const am = Math.round(e.ammo);
+        if (fl < 100) s.fl = fl;
+        if (am < 100) s.am = am;
+      }
       if (e.vet > 0) s.vet = e.vet;
       if (e.hold) s.hold = true;
       if (this.isStealthed(e)) s.sub = true;

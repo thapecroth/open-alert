@@ -368,6 +368,94 @@ const BIOME_ATMOSPHERE: Record<MapId, BiomeAtmosphere> = {
     groundRoughness: 0.42,
     groundEnv: 0.95,
   },
+  europa: {
+    // Continental European steppe & highlands: rich golden-hour sun & clear azure-amber sky
+    zenith: 0x20548e,
+    midSky: 0x5894ca,
+    horizon: 0xebca96,
+    groundBounce: 0x424d34,
+    sunColor: 0xffefd0,
+    sunIntensity: 2.48,
+    sunOffset: [-46, 54, 30],
+    hemiSky: 0xaad4f6,
+    hemiGround: 0x485436,
+    hemiIntensity: 1.02,
+    rimColor: 0x6cb8ec,
+    rimIntensity: 0.56,
+    skirt: 0x35442e,
+    fogColor: 0xa4b8c6,
+    fogDensity: 0.0021,
+    cloudTint: 0xfff3de,
+    cloudOpacity: 0.25,
+    groundRoughness: 0.89,
+    groundEnv: 0.46,
+  },
+  pacific_theatre: {
+    // Coral Sea Theatre: vivid sunlit tropical Pacific sky & turquoise ocean horizon
+    zenith: 0x1066ba,
+    midSky: 0x44b8ee,
+    horizon: 0xd0f4fc,
+    groundBounce: 0x226e74,
+    sunColor: 0xfff7e6,
+    sunIntensity: 2.52,
+    sunOffset: [-36, 66, 24],
+    hemiSky: 0xa2e6ff,
+    hemiGround: 0x2a706c,
+    hemiIntensity: 1.1,
+    rimColor: 0x6ce0f6,
+    rimIntensity: 0.58,
+    skirt: 0x126e88,
+    fogColor: 0x8cd2e6,
+    fogDensity: 0.0019,
+    cloudTint: 0xffffff,
+    cloudOpacity: 0.24,
+    groundRoughness: 0.86,
+    groundEnv: 0.52,
+  },
+  arctic_front: {
+    // Polar Sea Front: crisp arctic blue-white zenith & icy steel-blue polar horizon
+    zenith: 0x20589c,
+    midSky: 0x6caae2,
+    horizon: 0xdaf0ff,
+    groundBounce: 0x567492,
+    sunColor: 0xf4faff,
+    sunIntensity: 2.36,
+    sunOffset: [-38, 52, 34],
+    hemiSky: 0xc6e4ff,
+    hemiGround: 0x5c7c9a,
+    hemiIntensity: 1.05,
+    rimColor: 0x82d0ff,
+    rimIntensity: 0.58,
+    skirt: 0x2a4e6c,
+    fogColor: 0xb0cce4,
+    fogDensity: 0.0021,
+    cloudTint: 0xf2faff,
+    cloudOpacity: 0.25,
+    groundRoughness: 0.72,
+    groundEnv: 0.66,
+  },
+  megacontinent: {
+    // Eurasia Grand Theater: sweeping golden-hour steppe & alpine peaks over a deep azure sea strait
+    zenith: 0x1e528c,
+    midSky: 0x5696cc,
+    horizon: 0xecc996,
+    groundBounce: 0x4c4838,
+    sunColor: 0xfff0d4,
+    sunIntensity: 2.5,
+    sunOffset: [-48, 56, 30],
+    hemiSky: 0xacd6f8,
+    hemiGround: 0x524b3a,
+    hemiIntensity: 1.04,
+    rimColor: 0x6ebcee,
+    rimIntensity: 0.58,
+    skirt: 0x244254,
+    fogColor: 0x9eb8ca,
+    fogDensity: 0.0015,
+    cloudTint: 0xfff4e0,
+    cloudOpacity: 0.24,
+    groundRoughness: 0.88,
+    groundEnv: 0.48,
+  },
 };
 
 const SKY_VERT = /* glsl */ `
@@ -483,6 +571,8 @@ export class GameScene {
   camHeight = 26;
   camYaw = 0; // radians around Y axis (0 = North-Up)
   fpvActive = false;
+  public mapW = MAP_W;
+  public mapH = MAP_H;
   ground!: THREE.Mesh;
   raycaster = new THREE.Raycaster();
   pickables: THREE.Object3D[] = []; // entity roots — raycast for pickEntity
@@ -499,12 +589,20 @@ export class GameScene {
 
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private groundMat!: THREE.MeshStandardMaterial;
+  private microRepeatUniform = { value: MAP_W * 0.5 };
+  private gridHelper!: THREE.GridHelper;
+  private skirtMesh!: THREE.Mesh;
   private skirtMat!: THREE.MeshStandardMaterial;
+  private borderLine!: THREE.Line;
+  private skyMesh!: THREE.Mesh;
+  private skyRadius = 420;
   private ore!: THREE.InstancedMesh;
+  private oreGeo!: THREE.BufferGeometry;
+  private oreMat!: THREE.MeshStandardMaterial;
   private oreSlots = new Map<number, number>(); // cellKey -> instance index
   private oreFree: number[] = [];
   private orePeak = 0;
-  private static ORE_MAX = 4096;
+  private oreMax = MAP_W * MAP_H;
   private dummy = new THREE.Object3D();
 
   // Cinematic 3-point biome lighting, procedural sky & PMREM environment
@@ -531,9 +629,11 @@ export class GameScene {
   private artifactAnims: ((t: number, dt: number) => void)[] = [];
   private artifactMats: THREE.Material[] = [];
 
-  // Live 64x64 Fog of War shroud plane
+  // Live dynamic mapW x mapH Fog of War shroud plane
   private fogMesh!: THREE.Mesh;
   private fogTex!: THREE.DataTexture;
+  private fogW = MAP_W;
+  private fogH = MAP_H;
   private fogData = new Uint8Array(MAP_W * MAP_H * 4);
   private fogExplored = new Uint8Array(MAP_W * MAP_H);
   private fogVisBuf = new Float32Array(MAP_W * MAP_H);
@@ -724,11 +824,13 @@ export class GameScene {
   }
 
   private buildSky() {
-    const geo = new THREE.SphereGeometry(420, 32, 20);
+    this.skyRadius = Math.max(420, this.mapW * 5);
+    const geo = new THREE.SphereGeometry(this.skyRadius, 32, 20);
     this.skyMat = this.makeSkyMaterial(1.1);
     const sky = new THREE.Mesh(geo, this.skyMat);
-    sky.position.set(MAP_W / 2, 0, MAP_H / 2);
+    sky.position.set(this.mapW / 2, 0, this.mapH / 2);
     sky.renderOrder = -10;
+    this.skyMesh = sky;
     this.scene.add(sky);
 
     // Lightweight offscreen sky dome with heightened HDR sun specular for PMREM reflections
@@ -738,6 +840,22 @@ export class GameScene {
     this.envScene.add(envDome);
   }
 
+  private getSunScale(): number {
+    return this.mapW > 64 ? 1 + (this.mapW - 64) / 96 : 1;
+  }
+
+  private updateSunShadowFrustum(): void {
+    if (this.shadowFpvTight) return;
+    const half = Math.max(45, Math.round(this.mapW * 0.62));
+    const sc = this.sunLight.shadow.camera;
+    sc.left = -half;
+    sc.right = half;
+    sc.top = half;
+    sc.bottom = -half;
+    sc.far = Math.max(165, Math.round(this.mapW * 2.2));
+    sc.updateProjectionMatrix();
+  }
+
   private applyBiomeAtmosphere(atm: BiomeAtmosphere) {
     // Update 3-point sunlit lighting
     this.hemiLight.color.setHex(atm.hemiSky);
@@ -745,16 +863,28 @@ export class GameScene {
     this.hemiLight.intensity = atm.hemiIntensity;
 
     const [sx, sy, sz] = atm.sunOffset;
+    const sunScale = this.getSunScale();
     this.curSunOffset = [sx, sy, sz];
     this.sunLight.color.setHex(atm.sunColor);
     this.sunLight.intensity = atm.sunIntensity;
-    const sunCenterX = this.fpvActive ? this.sunLight.target.position.x : MAP_W / 2;
-    const sunCenterZ = this.fpvActive ? this.sunLight.target.position.z : MAP_H / 2;
-    this.sunLight.position.set(sunCenterX + sx, sy, sunCenterZ + sz);
+    const sunCenterX = this.fpvActive ? this.sunLight.target.position.x : this.mapW / 2;
+    const sunCenterZ = this.fpvActive ? this.sunLight.target.position.z : this.mapH / 2;
+    if (!this.fpvActive) {
+      this.sunLight.target.position.set(this.mapW / 2, 0, this.mapH / 2);
+      this.sunLight.target.updateMatrixWorld();
+      this.sunLight.position.set(sunCenterX + sx * sunScale, sy * sunScale, sunCenterZ + sz * sunScale);
+    } else {
+      this.sunLight.position.set(sunCenterX + sx, sy, sunCenterZ + sz);
+    }
+    this.updateSunShadowFrustum();
 
     this.rimLight.color.setHex(atm.rimColor);
     this.rimLight.intensity = atm.rimIntensity;
-    this.rimLight.position.set(MAP_W / 2 - sx * 1.15, Math.max(22, sy * 0.48), MAP_H / 2 - sz * 1.25);
+    this.rimLight.position.set(
+      this.mapW / 2 - sx * 1.15 * sunScale,
+      Math.max(22, sy * 0.48 * sunScale),
+      this.mapH / 2 - sz * 1.25 * sunScale,
+    );
 
     // Update sky shader uniforms, RaytracePass sun direction & matching PMREM radiance map
     const sunDir = new THREE.Vector3(sx, sy, sz).normalize();
@@ -787,7 +917,7 @@ export class GameScene {
   }
 
   private buildGround() {
-    const geo = new THREE.PlaneGeometry(MAP_W, MAP_H);
+    const geo = new THREE.PlaneGeometry(this.mapW, this.mapH);
     geo.rotateX(-Math.PI / 2);
     const { map: microMap, normalMap: microNormalMap } = getGroundMicroDetail();
     this.groundMat = new THREE.MeshStandardMaterial({
@@ -796,13 +926,13 @@ export class GameScene {
       metalness: 0.03,
       envMapIntensity: 0.45,
     });
-    // Dual-UV close-up micro-detail shader: 32x repeats of 256px seamless grain (128 px/tile)
-    // fades smoothly with camera distance so 1P eye-level ground is razor-sharp while RTS stays clean.
+    // Dual-UV close-up micro-detail shader: mapW * 0.5 repeats of 256px seamless grain (128 px/tile)
+    // fades smoothly with camera distance so 1P eye-level ground stays identically crisp on 64/96/128 maps.
     this.groundMat.customProgramCacheKey = () => "ground-micro-detail-v1";
     this.groundMat.onBeforeCompile = (shader) => {
       shader.uniforms.uMicroMap = { value: microMap };
       shader.uniforms.uMicroNormalMap = { value: microNormalMap };
-      shader.uniforms.uMicroRepeat = { value: 32.0 };
+      shader.uniforms.uMicroRepeat = this.microRepeatUniform;
       shader.fragmentShader = shader.fragmentShader
         .replace(
           "#include <map_pars_fragment>",
@@ -837,22 +967,24 @@ export class GameScene {
         );
     };
     const g = new THREE.Mesh(geo, this.groundMat);
-    g.position.set(MAP_W / 2, 0, MAP_H / 2);
+    g.position.set(this.mapW / 2, 0, this.mapH / 2);
     g.receiveShadow = true;
     this.ground = g;
     this.scene.add(g);
 
     // Subtle tactical command grid overlay (uniform color so no fake center UV seam)
-    const grid = new THREE.GridHelper(MAP_W, MAP_W, 0x3b6e80, 0x3b6e80);
+    const gridSize = Math.max(this.mapW, this.mapH);
+    const grid = new THREE.GridHelper(gridSize, gridSize, 0x3b6e80, 0x3b6e80);
     (grid.material as THREE.Material).transparent = true;
     (grid.material as THREE.Material).opacity = 0.045;
-    grid.position.set(MAP_W / 2, 0.018, MAP_H / 2);
+    grid.position.set(this.mapW / 2, 0.018, this.mapH / 2);
+    this.gridHelper = grid;
     this.scene.add(grid);
   }
 
   private buildPerimeter() {
     // Grounded outer terrain skirt fading into atmospheric fog instead of floating over pitch black
-    const skirtGeo = new THREE.PlaneGeometry(MAP_W * 4, MAP_H * 4);
+    const skirtGeo = new THREE.PlaneGeometry(this.mapW * 4, this.mapH * 4);
     skirtGeo.rotateX(-Math.PI / 2);
     this.skirtMat = new THREE.MeshStandardMaterial({
       color: 0x3b4034,
@@ -861,29 +993,148 @@ export class GameScene {
       envMapIntensity: 0.35,
     });
     const skirt = new THREE.Mesh(skirtGeo, this.skirtMat);
-    skirt.position.set(MAP_W / 2, -0.18, MAP_H / 2);
+    skirt.position.set(this.mapW / 2, -0.18, this.mapH / 2);
     skirt.receiveShadow = true;
+    this.skirtMesh = skirt;
     this.scene.add(skirt);
 
-    // Subtle glowing tactical boundary line around the playable 64x64 theater
+    // Subtle glowing tactical boundary line around the playable theater
     const borderPts = [
       new THREE.Vector3(0, 0.05, 0),
-      new THREE.Vector3(MAP_W, 0.05, 0),
-      new THREE.Vector3(MAP_W, 0.05, MAP_H),
-      new THREE.Vector3(0, 0.05, MAP_H),
+      new THREE.Vector3(this.mapW, 0.05, 0),
+      new THREE.Vector3(this.mapW, 0.05, this.mapH),
+      new THREE.Vector3(0, 0.05, this.mapH),
       new THREE.Vector3(0, 0.05, 0),
     ];
     const border = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints(borderPts),
       new THREE.LineBasicMaterial({ color: 0x3c8ba6, transparent: true, opacity: 0.45 }),
     );
+    this.borderLine = border;
     this.scene.add(border);
+  }
+
+  private resizeWorldGeometry(): void {
+    const W = this.mapW;
+    const H = this.mapH;
+
+    // 1) Ground plane + proportional micro-detail repeat (keeps identical crispness on 64/96/128)
+    this.ground.geometry.dispose();
+    const groundGeo = new THREE.PlaneGeometry(W, H);
+    groundGeo.rotateX(-Math.PI / 2);
+    this.ground.geometry = groundGeo;
+    this.ground.position.set(W / 2, 0, H / 2);
+    this.microRepeatUniform.value = W * 0.5;
+
+    // 2) Tactical grid overlay
+    if (this.gridHelper) {
+      this.scene.remove(this.gridHelper);
+      this.gridHelper.geometry.dispose();
+      const gm = this.gridHelper.material as THREE.Material | THREE.Material[];
+      if (Array.isArray(gm)) gm.forEach((m) => m.dispose());
+      else gm.dispose();
+    }
+    const gridSize = Math.max(W, H);
+    const grid = new THREE.GridHelper(gridSize, gridSize, 0x3b6e80, 0x3b6e80);
+    (grid.material as THREE.Material).transparent = true;
+    (grid.material as THREE.Material).opacity = 0.045;
+    grid.position.set(W / 2, 0.018, H / 2);
+    this.gridHelper = grid;
+    this.scene.add(grid);
+
+    // 3) Outer terrain skirt & glowing playable theater border
+    this.skirtMesh.geometry.dispose();
+    const skirtGeo = new THREE.PlaneGeometry(W * 4, H * 4);
+    skirtGeo.rotateX(-Math.PI / 2);
+    this.skirtMesh.geometry = skirtGeo;
+    this.skirtMesh.position.set(W / 2, -0.18, H / 2);
+
+    this.borderLine.geometry.dispose();
+    this.borderLine.geometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0.05, 0),
+      new THREE.Vector3(W, 0.05, 0),
+      new THREE.Vector3(W, 0.05, H),
+      new THREE.Vector3(0, 0.05, H),
+      new THREE.Vector3(0, 0.05, 0),
+    ]);
+
+    // 4) Sky dome & camera far clip plane
+    const nextSkyR = Math.max(420, W * 5);
+    if (nextSkyR !== this.skyRadius) {
+      this.skyMesh.geometry.dispose();
+      this.skyMesh.geometry = new THREE.SphereGeometry(nextSkyR, 32, 20);
+      this.skyRadius = nextSkyR;
+    }
+    this.skyMesh.position.set(W / 2, 0, H / 2);
+    const targetFar = Math.max(700, Math.round(nextSkyR * 1.6));
+    if (this.camera.far !== targetFar) {
+      this.camera.far = targetFar;
+      this.camera.updateProjectionMatrix();
+    }
+
+    // 5) Fog of War plane, DataTexture & backing typed arrays
+    if (this.fogW !== W || this.fogH !== H) {
+      this.fogW = W;
+      this.fogH = H;
+      this.fogData = new Uint8Array(W * H * 4);
+      this.fogExplored = new Uint8Array(W * H);
+      this.fogVisBuf = new Float32Array(W * H);
+      this.fogTex.dispose();
+      this.fogTex = new THREE.DataTexture(this.fogData, W, H, THREE.RGBAFormat);
+      this.fogTex.magFilter = THREE.LinearFilter;
+      this.fogTex.minFilter = THREE.LinearFilter;
+      this.fogTex.generateMipmaps = false;
+      this.fogTex.wrapS = THREE.ClampToEdgeWrapping;
+      this.fogTex.wrapT = THREE.ClampToEdgeWrapping;
+      const fogMat = this.fogMesh.material as THREE.MeshBasicMaterial;
+      fogMat.map = this.fogTex;
+      fogMat.needsUpdate = true;
+      this.fogMesh.geometry.dispose();
+      const fogGeo = new THREE.PlaneGeometry(W, H);
+      fogGeo.rotateX(-Math.PI / 2);
+      this.fogMesh.geometry = fogGeo;
+      this.fogMesh.position.set(W / 2, 0.038, H / 2);
+    }
+
+    // 6) Ore InstancedMesh capacity for full mapW * mapH battlefield
+    const nextOreMax = W * H;
+    if (this.oreMax !== nextOreMax) {
+      this.scene.remove(this.ore);
+      this.ore.dispose();
+      this.oreMax = nextOreMax;
+      const ore = new THREE.InstancedMesh(this.oreGeo, this.oreMat, this.oreMax);
+      ore.count = 0;
+      ore.castShadow = false;
+      ore.frustumCulled = false;
+      this.ore = ore;
+      this.scene.add(ore);
+      this.oreSlots.clear();
+      this.oreFree = [];
+      this.orePeak = 0;
+    }
+
+    // 7) Keep camera within valid theater bounds and height cap
+    const maxH = this.getMaxCamHeight();
+    this.camTarget.x = Math.max(-2, Math.min(W + 2, this.camTarget.x));
+    this.camTarget.z = Math.max(-2, Math.min(H + 2, this.camTarget.z));
+    if (this.camHeight > maxH) this.camHeight = maxH;
+    this.updateCamera();
   }
 
   // ---------- Elevated 3D Cliff Mesas & Map Loading ----------
 
   loadMap(mapId: MapId): void {
     this.mapId = mapId;
+    const layout = getMapLayout(mapId);
+    const dimsChanged = this.mapW !== layout.w || this.mapH !== layout.h;
+    this.mapW = layout.w;
+    this.mapH = layout.h;
+    if (dimsChanged) {
+      this.resizeWorldGeometry();
+    } else {
+      this.microRepeatUniform.value = this.mapW * 0.5;
+    }
+
     const atm = BIOME_ATMOSPHERE[mapId] ?? BIOME_ATMOSPHERE.crossroads;
     const prevMap = this.groundMat.map;
     const prevNormal = this.groundMat.normalMap;
@@ -926,14 +1177,15 @@ export class GameScene {
       this.foamMat = null;
     }
 
-    const layout = getMapLayout(mapId);
+    const W = this.mapW;
+    const H = this.mapH;
     this.cliffSet.clear();
     for (const [cx, cy] of layout.cliffs) {
-      this.cliffSet.add(cy * MAP_W + cx);
+      this.cliffSet.add(cy * W + cx);
     }
     this.waterSet.clear();
     for (const [wx, wy] of layout.water) {
-      this.waterSet.add(wy * MAP_W + wx);
+      this.waterSet.add(wy * W + wx);
     }
 
     const group = new THREE.Group();
@@ -941,19 +1193,20 @@ export class GameScene {
     if (cliffs.length > 0) {
       const mats = getCliffRockMaterials(mapId);
       const hasCliff = (tx: number, ty: number) =>
-        tx >= 0 && ty >= 0 && tx < MAP_W && ty < MAP_H && this.cliffSet.has(ty * MAP_W + tx);
+        tx >= 0 && ty >= 0 && tx < W && ty < H && this.cliffSet.has(ty * W + tx);
 
       const isIslands = mapId === "islands";
       const isFortress = mapId === "fortress";
-      const isTundra = mapId === "tundra";
+      const isTundra = mapId === "tundra" || mapId === "arctic_front";
       const isJungle = mapId === "jungle";
       const isOasis = mapId === "oasis";
-      const isArchipelago = mapId === "archipelago";
+      const isArchipelago = mapId === "archipelago" || mapId === "pacific_theatre";
       const isCoastline = mapId === "coastline";
       const isAtlantis = mapId === "atlantis";
       const isShipwreck = mapId === "shipwreck";
       const isVolcano = mapId === "volcano";
       const isCyber = mapId === "cybergrid";
+      const isEuropa = mapId === "europa" || mapId === "megacontinent";
       const isArchitectural = isFortress || isAtlantis || isCyber;
 
       // 1) Tapered rocky/glacial/citadel/monolith base wall blocks
@@ -1021,6 +1274,7 @@ export class GameScene {
         // Biome-appropriate cliff elevation
         let baseH = 1.48 + h1 * 0.34 + (neighbors >= 3 ? 0.2 : 0);
         if (mapId === "canyon") baseH = 1.85 + h1 * 0.34 + (neighbors >= 3 ? 0.2 : 0);
+        else if (isEuropa) baseH = 1.72 + h1 * 0.44 + (neighbors >= 3 ? 0.26 : 0);
         else if (isTundra) baseH = 1.64 + h1 * 0.44 + (neighbors >= 3 ? 0.24 : 0);
         else if (isFortress) baseH = 1.56 + (neighbors >= 2 ? 0.1 : 0) + h1 * 0.09;
         else if (isAtlantis) baseH = 1.38 + (neighbors >= 2 ? 0.14 : 0) + h1 * 0.1;
@@ -1356,7 +1610,7 @@ export class GameScene {
       const yWater = 0.03;
 
       const hasWaterTile = (tx: number, ty: number) =>
-        tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H ? true : this.waterSet.has(ty * MAP_W + tx);
+        tx < 0 || ty < 0 || tx >= W || ty >= H ? true : this.waterSet.has(ty * W + tx);
 
       const foamEdges: { x: number; z: number; ry: number }[] = [];
 
@@ -1433,17 +1687,21 @@ export class GameScene {
         const foamColor =
           mapId === "atlantis"
             ? 0xe2ffff
-            : mapId === "archipelago"
+            : mapId === "archipelago" || mapId === "pacific_theatre"
               ? 0xd8fcff
-              : mapId === "shipwreck"
-                ? 0xa4c8d2
-                : mapId === "volcano"
-                  ? 0xc0d4dc
-                  : mapId === "oilrig"
-                    ? 0xc2e6f6
-                    : mapId === "coastline"
-                      ? 0xb4dce8
-                      : 0xc8f0f8;
+              : mapId === "arctic_front"
+                ? 0xdaf0fc
+                : mapId === "megacontinent"
+                  ? 0xc4ecfa
+                  : mapId === "shipwreck"
+                    ? 0xa4c8d2
+                    : mapId === "volcano"
+                      ? 0xc0d4dc
+                      : mapId === "oilrig"
+                        ? 0xc2e6f6
+                        : mapId === "coastline"
+                          ? 0xb4dce8
+                          : 0xc8f0f8;
         this.foamMat = new THREE.MeshBasicMaterial({
           color: foamColor,
           transparent: true,
@@ -1983,15 +2241,15 @@ export class GameScene {
   isCliff(x: number, y: number): boolean {
     const tx = Math.floor(x);
     const ty = Math.floor(y);
-    if (tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H) return false;
-    return this.cliffSet.has(ty * MAP_W + tx);
+    if (tx < 0 || ty < 0 || tx >= this.mapW || ty >= this.mapH) return false;
+    return this.cliffSet.has(ty * this.mapW + tx);
   }
 
   isWater(x: number, y: number): boolean {
     const tx = Math.floor(x);
     const ty = Math.floor(y);
-    if (tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H) return false;
-    return this.waterSet.has(ty * MAP_W + tx);
+    if (tx < 0 || ty < 0 || tx >= this.mapW || ty >= this.mapH) return false;
+    return this.waterSet.has(ty * this.mapW + tx);
   }
 
   hasWater(): boolean {
@@ -2001,14 +2259,16 @@ export class GameScene {
   // ---------- Live Fog of War Shroud ----------
 
   private buildFog() {
-    this.fogTex = new THREE.DataTexture(this.fogData, MAP_W, MAP_H, THREE.RGBAFormat);
+    this.fogW = this.mapW;
+    this.fogH = this.mapH;
+    this.fogTex = new THREE.DataTexture(this.fogData, this.fogW, this.fogH, THREE.RGBAFormat);
     this.fogTex.magFilter = THREE.LinearFilter;
     this.fogTex.minFilter = THREE.LinearFilter;
     this.fogTex.generateMipmaps = false;
     this.fogTex.wrapS = THREE.ClampToEdgeWrapping;
     this.fogTex.wrapT = THREE.ClampToEdgeWrapping;
 
-    const geo = new THREE.PlaneGeometry(MAP_W, MAP_H);
+    const geo = new THREE.PlaneGeometry(this.fogW, this.fogH);
     geo.rotateX(-Math.PI / 2);
     const mat = new THREE.MeshBasicMaterial({
       map: this.fogTex,
@@ -2017,7 +2277,7 @@ export class GameScene {
       fog: false,
     });
     this.fogMesh = new THREE.Mesh(geo, mat);
-    this.fogMesh.position.set(MAP_W / 2, 0.038, MAP_H / 2);
+    this.fogMesh.position.set(this.fogW / 2, 0.038, this.fogH / 2);
     this.fogMesh.renderOrder = 2;
     this.fogMesh.visible = false;
     this.scene.add(this.fogMesh);
@@ -2030,7 +2290,8 @@ export class GameScene {
     this.lastFogSources = [];
     this.fogExplored.fill(0);
     const d = this.fogData;
-    for (let i = 0; i < MAP_W * MAP_H; i++) {
+    const total = this.mapW * this.mapH;
+    for (let i = 0; i < total; i++) {
       const p = i * 4;
       d[p] = 7;
       d[p + 1] = 12;
@@ -2070,6 +2331,8 @@ export class GameScene {
     }
     this.fogMesh.visible = true;
 
+    const W = this.mapW;
+    const H = this.mapH;
     const vis = this.fogVisBuf;
     const exp = this.fogExplored;
     vis.fill(0);
@@ -2082,12 +2345,12 @@ export class GameScene {
       const rIn = Math.max(0.5, s.r - 1.5);
       const span = Math.max(0.1, rOut - rIn);
       const x0 = Math.max(0, Math.floor(s.x - rOut));
-      const x1 = Math.min(MAP_W - 1, Math.ceil(s.x + rOut));
+      const x1 = Math.min(W - 1, Math.ceil(s.x + rOut));
       const y0 = Math.max(0, Math.floor(s.y - rOut));
-      const y1 = Math.min(MAP_H - 1, Math.ceil(s.y + rOut));
+      const y1 = Math.min(H - 1, Math.ceil(s.y + rOut));
       for (let ty = y0; ty <= y1; ty++) {
         const dy = ty + 0.5 - s.y;
-        const rowOff = ty * MAP_W;
+        const rowOff = ty * W;
         for (let tx = x0; tx <= x1; tx++) {
           const dx = tx + 0.5 - s.x;
           const dist = Math.hypot(dx, dy);
@@ -2103,11 +2366,11 @@ export class GameScene {
     }
 
     const d = this.fogData;
-    for (let ty = 0; ty < MAP_H; ty++) {
-      const rowOff = ty * MAP_W;
-      // DataTexture flipY=false maps row 0 to v=0 (+Z = MAP_H) and row MAP_H-1 to v=1 (z = 0)
-      const texRowOff = (MAP_H - 1 - ty) * MAP_W;
-      for (let tx = 0; tx < MAP_W; tx++) {
+    for (let ty = 0; ty < H; ty++) {
+      const rowOff = ty * W;
+      // DataTexture flipY=false maps row 0 to v=0 (+Z = H) and row H-1 to v=1 (z = 0)
+      const texRowOff = (H - 1 - ty) * W;
+      for (let tx = 0; tx < W; tx++) {
         const idx = rowOff + tx;
         const explored = exp[idx];
         const v = vis[idx];
@@ -2169,9 +2432,9 @@ export class GameScene {
     for (const z of zones) {
       // Zones pass building top-left tile (x, y) and footprint (w, h); expand by +2 tiles each side
       const x0 = Math.max(0, z.x - 2);
-      const x1 = Math.min(MAP_W, z.x + z.w + 2);
+      const x1 = Math.min(this.mapW, z.x + z.w + 2);
       const z0 = Math.max(0, z.y - 2);
-      const z1 = Math.min(MAP_H, z.y + z.h + 2);
+      const z1 = Math.min(this.mapH, z.y + z.h + 2);
       const bw = x1 - x0;
       const bh = z1 - z0;
       if (bw <= 0 || bh <= 0) continue;
@@ -2251,7 +2514,10 @@ export class GameScene {
       roughness: 0.26,
       metalness: 0.35,
     });
-    const ore = new THREE.InstancedMesh(geo, mat, GameScene.ORE_MAX);
+    this.oreGeo = geo;
+    this.oreMat = mat;
+    this.oreMax = this.mapW * this.mapH;
+    const ore = new THREE.InstancedMesh(geo, mat, this.oreMax);
     ore.count = 0;
     ore.castShadow = false;
     ore.frustumCulled = false;
@@ -2268,8 +2534,9 @@ export class GameScene {
   }
 
   setOreCells(cells: [number, number, number][]) {
+    const W = this.mapW;
     for (const [x, y, amt] of cells) {
-      const key = y * MAP_W + x;
+      const key = y * W + x;
       let slot = this.oreSlots.get(key);
       if (amt <= 0) {
         if (slot !== undefined) {
@@ -2284,7 +2551,7 @@ export class GameScene {
       }
       if (slot === undefined) {
         slot = this.oreFree.length ? this.oreFree.pop()! : this.orePeak++;
-        if (slot >= GameScene.ORE_MAX) continue;
+        if (slot >= this.oreMax) continue;
         this.oreSlots.set(key, slot);
       }
       const s = 0.45 + Math.min(1, amt / 60) * 0.55;
@@ -2416,28 +2683,28 @@ export class GameScene {
     this.camera.rotation.order = "XYZ";
     this.camera.updateProjectionMatrix();
     if (targetX !== undefined && targetZ !== undefined) {
-      this.camTarget.x = Math.max(-2, Math.min(MAP_W + 2, targetX));
-      this.camTarget.z = Math.max(-2, Math.min(MAP_H + 2, targetZ));
+      this.camTarget.x = Math.max(-2, Math.min(this.mapW + 2, targetX));
+      this.camTarget.z = Math.max(-2, Math.min(this.mapH + 2, targetZ));
     }
 
     // Restore map-wide RTS shadow frustum & center sun light target back to map center
     const [sx, sy, sz] = this.curSunOffset;
-    this.sunLight.target.position.set(MAP_W / 2, 0, MAP_H / 2);
-    this.sunLight.position.set(MAP_W / 2 + sx, sy, MAP_H / 2 + sz);
+    const sunScale = this.getSunScale();
+    this.sunLight.target.position.set(this.mapW / 2, 0, this.mapH / 2);
+    this.sunLight.position.set(this.mapW / 2 + sx * sunScale, sy * sunScale, this.mapH / 2 + sz * sunScale);
     this.sunLight.target.updateMatrixWorld();
     if (this.shadowFpvTight) {
       this.shadowFpvTight = false;
-      const sc = this.sunLight.shadow.camera;
-      sc.left = -45;
-      sc.right = 45;
-      sc.top = 45;
-      sc.bottom = -45;
-      sc.updateProjectionMatrix();
+      this.updateSunShadowFrustum();
       this.sunLight.shadow.normalBias = 0.024;
     }
     this.renderer.shadowMap.needsUpdate = true;
 
     this.updateCamera();
+  }
+
+  private getMaxCamHeight(): number {
+    return this.mapW >= 120 ? 74 : this.mapW >= 90 ? 60 : 48;
   }
 
   rotateYaw(deltaRad: number): void {
@@ -2464,13 +2731,14 @@ export class GameScene {
       wx = dx * cosY + dz * sinY;
       wz = -dx * sinY + dz * cosY;
     }
-    this.camTarget.x = Math.max(-2, Math.min(MAP_W + 2, this.camTarget.x + wx * s));
-    this.camTarget.z = Math.max(-2, Math.min(MAP_H + 2, this.camTarget.z + wz * s));
+    this.camTarget.x = Math.max(-2, Math.min(this.mapW + 2, this.camTarget.x + wx * s));
+    this.camTarget.z = Math.max(-2, Math.min(this.mapH + 2, this.camTarget.z + wz * s));
     this.updateCamera();
   }
 
   zoom(delta: number) {
-    this.camHeight = Math.max(11, Math.min(48, this.camHeight + delta));
+    const maxH = this.getMaxCamHeight();
+    this.camHeight = Math.max(11, Math.min(maxH, this.camHeight + delta));
     this.updateCamera();
   }
 

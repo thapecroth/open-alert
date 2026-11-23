@@ -18,7 +18,7 @@
 //   every 36-95 tks: economy/production/rally/assault decisions + ore rescan
 
 import type { Ent, P, World } from "./world";
-import { BUILDINGS, MAP_H, MAP_W, SHIPYARD_BUILD_DIST, SPAWNS, UNITS, UPGRADE_PATHS } from "../shared/gamedefs";
+import { BUILDINGS, getSpawns, SHIPYARD_BUILD_DIST, UNITS, UPGRADE_PATHS } from "../shared/gamedefs";
 import type { BotDiff, BotProfile, BuildCategory, BuildingKind, EntKind, UnitKind } from "../shared/gamedefs";
 
 const isB = (k: EntKind): k is BuildingKind => k in BUILDINGS;
@@ -210,7 +210,7 @@ export class RtsBot {
       }
     }
     if (!n) {
-      const s = SPAWNS[this.slot];
+      const s = getSpawns(this.world.w, this.world.h)[this.slot];
       return s ? { x: s.x + 1.5, y: s.y + 1.5 } : null;
     }
     return { x: sx / n, y: sy / n };
@@ -278,16 +278,29 @@ export class RtsBot {
 
   // ---------- construction ----------
 
-  // Where a building "wants" to be: refinery hugs the ore field, defenses sit
-  // on the enemy-facing edge (Iron Dome closer to base core), everything else stays compact.
+  // Where a building "wants" to be: refinery hugs the ore field, forward supply hub
+  // projects toward center/enemy, defenses sit on the enemy-facing edge (Iron Dome closer to base core).
   private placeGoal(kind: BuildingKind, base: { x: number; y: number }): { x: number; y: number } {
+    const w = this.world;
     if (kind === "refinery") {
       const o = this.oreNear(base);
       if (o) return o;
     }
+    if (kind === "supplyhub") {
+      const foe = this.enemyBasePt(base);
+      const dir = foe ?? { x: w.w / 2, y: w.h / 2 };
+      const dx = dir.x - base.x,
+        dy = dir.y - base.y,
+        l = Math.hypot(dx, dy) || 1;
+      const offset = Math.min(20, l * 0.45);
+      return {
+        x: clamp(base.x + (dx / l) * offset, 3, w.w - 4),
+        y: clamp(base.y + (dy / l) * offset, 3, w.h - 4),
+      };
+    }
     if (kind === "turret" || kind === "arc" || kind === "sam" || kind === "lasertower" || kind === "irondome") {
       const foe = this.enemyBasePt(base);
-      const dir = foe ?? { x: MAP_W / 2, y: MAP_H / 2 };
+      const dir = foe ?? { x: w.w / 2, y: w.h / 2 };
       const dx = dir.x - base.x,
         dy = dir.y - base.y,
         l = Math.hypot(dx, dy) || 1;
@@ -297,14 +310,31 @@ export class RtsBot {
     return base;
   }
 
-  // Scan candidate top-left tiles in the adjacency band (gap <= 2, or SHIPYARD_BUILD_DIST
-  // for waterOnly buildings) around each owned building; validate with world.canPlace.
+  // Scan candidate top-left tiles in the adjacency band (gap <= 2, SHIPYARD_BUILD_DIST
+  // for waterOnly, or expanding ring around goal for forwardRange); validate with world.canPlace.
   private findSpot(kind: BuildingKind): { tx: number; ty: number } | null {
     const w = this.world,
       d = BUILDINGS[kind];
     const base = this.baseCenter();
     if (!base) return null;
     const goal = this.placeGoal(kind, base);
+    if (d.forwardRange) {
+      const gx = Math.round(goal.x - d.w / 2);
+      const gy = Math.round(goal.y - d.h / 2);
+      for (let r = 0; r <= 18; r++) {
+        for (let dy = -r; dy <= r; dy++) {
+          for (let dx = -r; dx <= r; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+            const tx = gx + dx,
+              ty = gy + dy;
+            if (tx < 0 || ty < 0 || tx + d.w > w.w || ty + d.h > w.h) continue;
+            if (this.deniedTiles.has(`${kind}:${tx},${ty}`)) continue;
+            if (w.canPlace(this.slot, kind, tx, ty) === null) return { tx, ty };
+          }
+        }
+      }
+      return null;
+    }
     const maxGap = d.waterOnly ? SHIPYARD_BUILD_DIST : 2;
     const seen = new Set<number>();
     let best: { tx: number; ty: number } | null = null,
@@ -315,12 +345,12 @@ export class RtsBot {
       const bx = Math.round(b.x - bd.w / 2),
         by = Math.round(b.y - bd.h / 2);
       const y0 = Math.max(0, by - d.h - maxGap);
-      const y1 = Math.min(MAP_H - d.h, by + bd.h + maxGap);
+      const y1 = Math.min(w.h - d.h, by + bd.h + maxGap);
       const x0 = Math.max(0, bx - d.w - maxGap);
-      const x1 = Math.min(MAP_W - d.w, bx + bd.w + maxGap);
+      const x1 = Math.min(w.w - d.w, bx + bd.w + maxGap);
       for (let ty = y0; ty <= y1; ty++) {
         for (let tx = x0; tx <= x1; tx++) {
-          const k = ty * MAP_W + tx;
+          const k = ty * w.w + tx;
           if (seen.has(k)) continue;
           seen.add(k);
           if (d.waterOnly && !w.isWater(tx, ty)) continue;
@@ -376,6 +406,18 @@ export class RtsBot {
     // brownout always wins — production halves at low power
     if (me.lowPower) return this.pickPower(me, bc);
     if (me.pwrHave - me.pwrUse < 25 && pwrCount < 8) return this.pickPower(me, bc);
+    // Huge maps: establish a Forward Supply Hub toward center to sustain long supply lines
+    if (
+      this.world.w >= 96 &&
+      this.world.config.logistics !== false &&
+      !has("supplyhub") &&
+      has("refinery") &&
+      me.credits >= BUILDINGS.supplyhub.cost + 150 &&
+      this.findSpot("supplyhub")
+    ) {
+      if (me.pwrHave - me.pwrUse < 15 && pwrCount < 8) return this.pickPower(me, bc);
+      return "supplyhub";
+    }
     // tech climb: radar -> shipyard (water) / airfield -> techlab -> satlink -> superweapon
     if (!has("radar")) {
       if (me.pwrHave - me.pwrUse < 45 && pwrCount < 8) return this.pickPower(me, bc);
@@ -477,6 +519,7 @@ export class RtsBot {
     const a2 = this.hasBuilding(bc, "airfield2");
     const s2 = this.hasBuilding(bc, "shipyard2");
     let harv = 0,
+      supplytrucks = 0,
       army = 0,
       engi = 0,
       artys = 0,
@@ -504,6 +547,7 @@ export class RtsBot {
       }
       if (e.o !== this.slot) continue;
       if (e.k === "harvester") harv++;
+      else if (e.k === "supplytruck") supplytrucks++;
       else if (!isB(e.k)) {
         army++;
         if (e.k === "engineer") engi++;
@@ -556,6 +600,17 @@ export class RtsBot {
       const harvGoal = this.diff === "easy" ? 2 : this.phase === "early" ? 2 : me.credits > 3000 ? 4 : 3;
       if (!q && harv < harvGoal && me.credits >= UNITS.harvester.cost + reserve) {
         this.trycmd(() => w.cmdTrain(this.slot, "harvester"));
+      }
+      // Huge maps: train 1-2 Supply Convoys to sustain forward forces with fuel & ammo
+      const truckGoal = w.w >= 96 && w.config.logistics !== false ? (this.diff === "easy" ? 1 : 2) : 0;
+      if (
+        truckGoal > 0 &&
+        !me.queues.factory &&
+        supplytrucks < truckGoal &&
+        this.hasBuilding(bc, "refinery") &&
+        me.credits >= UNITS.supplytruck.cost + reserve
+      ) {
+        this.trycmd(() => w.cmdTrain(this.slot, "supplytruck"));
       }
     }
 
@@ -799,7 +854,7 @@ export class RtsBot {
     if (!scout) return;
     // attack-move toward the enemy's spawn, via map middle — sees plenty en route
     const foe = this.enemyBasePt(base);
-    const tgt = foe ?? { x: MAP_W - base.x, y: MAP_H - base.y };
+    const tgt = foe ?? { x: w.w - base.x, y: w.h - base.y };
     const mid = { x: (base.x + tgt.x) / 2, y: (base.y + tgt.y) / 2 };
     this.trycmd(() => w.cmdOrder(this.slot, [scout!.id], "amove", mid.x, mid.y));
     this.lastScout = t;
@@ -829,7 +884,7 @@ export class RtsBot {
     const w = this.world;
     const base = this.baseCenter();
     if (!base) return;
-    const maxDist = this.diff === "brutal" ? 999 : 42;
+    const maxDist = this.diff === "brutal" ? 999 : Math.max(42, Math.floor(w.w * 0.65));
     const targets: Ent[] = [];
     for (const e of w.ents.values()) {
       if (e.k !== "derrick" && e.k !== "coalmine") continue;
@@ -861,7 +916,7 @@ export class RtsBot {
       let best: Ent | null = null,
         bd = maxRange;
       for (const u of w.ents.values()) {
-        if (u.o !== this.slot || isB(u.k) || u.k === "harvester" || u.k === "engineer" || isSea(u.k)) continue;
+        if (u.o !== this.slot || isB(u.k) || u.k === "harvester" || u.k === "supplytruck" || u.k === "engineer" || isSea(u.k)) continue;
         if (u.order || assigned.has(u.id)) continue;
         const d = dist(u.x, u.y, crate.x, crate.y);
         if (d < bd) {
@@ -925,22 +980,70 @@ export class RtsBot {
     const w = this.world;
     const base = this.baseCenter();
     if (!base) return;
-    const foe = this.enemyBasePt(base) ?? { x: MAP_W / 2, y: MAP_H / 2 };
+    const foe = this.enemyBasePt(base) ?? { x: w.w / 2, y: w.h / 2 };
     const dx = foe.x - base.x,
       dy = foe.y - base.y,
       l = Math.hypot(dx, dy) || 1;
     // early holds a tight ring; later phases stage further out toward the enemy
     const musterD = this.phase === "early" ? 5 : this.phase === "mid" ? 8 : 11;
-    const mx = clamp(base.x + (dx / l) * musterD, 1, MAP_W - 2),
-      my = clamp(base.y + (dy / l) * musterD, 1, MAP_H - 2);
+    const mx = clamp(base.x + (dx / l) * musterD, 1, w.w - 2),
+      my = clamp(base.y + (dy / l) * musterD, 1, w.h - 2);
     const ids: number[] = [];
     for (const e of w.ents.values()) {
-      if (e.o !== this.slot || isB(e.k) || e.k === "harvester" || isSea(e.k) || e.order) continue;
+      if (e.o !== this.slot || isB(e.k) || e.k === "harvester" || e.k === "supplytruck" || isSea(e.k) || e.order) continue;
       if (dist(e.x, e.y, base.x, base.y) > HOME_RADIUS) continue;
       if (dist(e.x, e.y, mx, my) <= 4.5) continue;
       ids.push(e.id);
     }
     if (ids.length) this.trycmd(() => w.cmdOrder(this.slot, ids, "move", mx, my));
+  }
+
+  // Keep mobile Supply Convoys escorting the active army and returning to hubs/base to refill when low.
+  private manageSupplyTrucks() {
+    const w = this.world;
+    const base = this.baseCenter();
+    if (!base) return;
+    const trucks: Ent[] = [];
+    const landArmy: Ent[] = [];
+    const refillPts: Ent[] = [];
+    for (const e of w.ents.values()) {
+      if (e.o !== this.slot) continue;
+      if (e.k === "supplytruck") trucks.push(e);
+      else if (e.k === "supplyhub" || e.k === "refinery" || e.k === "conyard") refillPts.push(e);
+      else if (!isB(e.k) && e.k !== "harvester" && e.k !== "engineer" && UNITS[e.k].domain === "land") {
+        landArmy.push(e);
+      }
+    }
+    if (!trucks.length) return;
+
+    // Pick army escort point: centroid of forward-most land units (or all land units)
+    let escortPt: { x: number; y: number } | null = null;
+    if (landArmy.length) {
+      let sx = 0,
+        sy = 0;
+      for (const u of landArmy) {
+        sx += u.x;
+        sy += u.y;
+      }
+      escortPt = { x: clamp(sx / landArmy.length, 1, w.w - 2), y: clamp(sy / landArmy.length, 1, w.h - 2) };
+    }
+
+    for (const tr of trucks) {
+      if (tr.cargo < 80 && refillPts.length) {
+        let best = refillPts[0],
+          bd = dist(tr.x, tr.y, best.x, best.y);
+        for (let i = 1; i < refillPts.length; i++) {
+          const d = dist(tr.x, tr.y, refillPts[i].x, refillPts[i].y);
+          if (d < bd) {
+            bd = d;
+            best = refillPts[i];
+          }
+        }
+        if (bd > 4) this.trycmd(() => w.cmdOrder(this.slot, [tr.id], "move", best.x, best.y));
+      } else if (escortPt && dist(tr.x, tr.y, escortPt.x, escortPt.y) > 4.5) {
+        this.trycmd(() => w.cmdOrder(this.slot, [tr.id], "move", escortPt!.x, escortPt!.y));
+      }
+    }
   }
 
   // cheap loop (~8 ticks): enemies near our buildings/harvesters get a
@@ -1012,7 +1115,7 @@ export class RtsBot {
       awayLandAir: Ent[] = [],
       awaySea: Ent[] = [];
     for (const e of w.ents.values()) {
-      if (e.o !== this.slot || isB(e.k) || e.k === "harvester") continue;
+      if (e.o !== this.slot || isB(e.k) || e.k === "harvester" || e.k === "supplytruck") continue;
       army.push(e);
       if (!e.order && dist(e.x, e.y, base.x, base.y) > HOME_RADIUS) {
         if (isSea(e.k)) awaySea.push(e);
@@ -1105,6 +1208,16 @@ export class RtsBot {
         } else sent = true;
       }
       if (!sent) return;
+      // Escort the assault wave with any loaded Supply Convoys
+      const convoyIds: number[] = [];
+      for (const e of w.ents.values()) {
+        if (e.o === this.slot && e.k === "supplytruck" && e.cargo >= 100) convoyIds.push(e.id);
+      }
+      if (convoyIds.length && landAirIds.length) {
+        const cx = clamp(base.x + (goal.x - base.x) * 0.78, 1, w.w - 2);
+        const cy = clamp(base.y + (goal.y - base.y) * 0.78, 1, w.h - 2);
+        this.trycmd(() => w.cmdOrder(this.slot, convoyIds, "move", cx, cy));
+      }
       this.lastAssault = t;
       this.waves++;
     }
@@ -1131,7 +1244,7 @@ export class RtsBot {
     const bc = this.buildingCounts();
     let army = 0;
     for (const e of w.ents.values()) {
-      if (e.o === this.slot && !isB(e.k) && e.k !== "harvester") army++;
+      if (e.o === this.slot && !isB(e.k) && e.k !== "harvester" && e.k !== "supplytruck") army++;
     }
     this.phase = this.phaseOf(me, bc, army, t);
     const want = this.wantBuilding(me, bc);
@@ -1152,6 +1265,7 @@ export class RtsBot {
     if (w.config.crates) this.grabCrates();
     this.scout(t);
     this.rally();
+    this.manageSupplyTrucks();
     this.assault(t);
   }
 }

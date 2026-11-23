@@ -21,7 +21,7 @@ import {
   MAP_LIST,
   BUILDINGS,
   UNITS,
-  SPAWNS,
+  getSpawns,
   SHIPYARD_BUILD_DIST,
   UPGRADE_PATHS,
 } from "./shared/gamedefs";
@@ -92,8 +92,8 @@ const MCP_TOOLS = [
         name: { type: "string", description: "Commander callsign (max 16 chars)." },
         map: { type: "string", enum: MAP_LIST.map((m) => m.id), description: "Map id (lobby only)." },
         add_bot: {
-          oneOf: [{ type: "boolean" }, { type: "integer", minimum: 1, maximum: 3 }],
-          description: "Add 1 (true) or up to 3 AI bot opponents in lobby.",
+          oneOf: [{ type: "boolean" }, { type: "integer", minimum: 1, maximum: MAX_PLAYERS - 1 }],
+          description: `Add 1 (true) or up to ${MAX_PLAYERS - 1} AI bot opponents in lobby.`,
         },
         diff: { type: "string", enum: ["easy", "normal", "brutal"], description: "Bot difficulty." },
         profile: { type: "string", enum: ["balanced", "rusher", "turtle", "tech"], description: "Bot strategy profile." },
@@ -149,8 +149,8 @@ const MCP_TOOLS = [
       properties: {
         room: { type: "string" },
         token: { type: "string" },
-        tx: { type: "integer", minimum: 0, maximum: MAP_W - 1 },
-        ty: { type: "integer", minimum: 0, maximum: MAP_H - 1 },
+        tx: { type: "integer", minimum: 0, maximum: 127 },
+        ty: { type: "integer", minimum: 0, maximum: 127 },
         cat: { type: "string", enum: ["structure", "defense"] },
       },
       required: ["room", "token"],
@@ -180,8 +180,8 @@ const MCP_TOOLS = [
         room: { type: "string" },
         token: { type: "string" },
         kind: { type: "string", enum: ["move", "amove", "attack", "patrol", "harvest", "stop", "hold"] },
-        x: { type: "number", minimum: 0, maximum: MAP_W },
-        y: { type: "number", minimum: 0, maximum: MAP_H },
+        x: { type: "number", minimum: 0, maximum: 128 },
+        y: { type: "number", minimum: 0, maximum: 128 },
         target: { type: "integer", description: "Optional target entity ID for attack orders." },
         ids: { type: "array", items: { type: "integer" }, description: "Specific unit entity IDs." },
         group: {
@@ -253,7 +253,7 @@ function buildGymSchemaResponse() {
       fields: {
         tick: "integer — authoritative simulation tick (10 ticks = 1s at 1x speed)",
         you: {
-          slot: "integer — your player slot index (0..3)",
+          slot: "integer — your player slot index (0..7)",
           credits: "integer — current floored credits",
           pwrHave: "integer — total power generated",
           pwrUse: "integer — total power consumed",
@@ -388,7 +388,9 @@ export class GameRoom extends Server<Env> {
           const diff: BotDiff = typeof m.diff === "string" && VALID_DIFFS.has(m.diff) ? m.diff : "normal";
           const profile: BotProfile =
             typeof m.profile === "string" && VALID_PROFILES.has(m.profile) ? m.profile : "balanced";
-          this.addBot(diff, profile);
+          if (!this.addBot(diff, profile)) {
+            send(conn, { t: "deny", msg: `room is full (${MAX_PLAYERS} players)` });
+          }
         }
         return;
       case "setBotConfig":
@@ -428,6 +430,7 @@ export class GameRoom extends Server<Env> {
           if (typeof c.crates === "boolean") this.config.crates = c.crates;
           if (typeof c.derricks === "boolean") this.config.derricks = c.derricks;
           if (typeof c.fog === "boolean") this.config.fog = c.fog;
+          if (typeof c.logistics === "boolean") this.config.logistics = c.logistics;
           this.broadcastLobby();
         }
         return;
@@ -463,11 +466,14 @@ export class GameRoom extends Server<Env> {
           this.broadcast(JSON.stringify({ t: "chat", name: me.name, color, text } satisfies S2C));
         }
         return;
-      case "ping":
-        if (me && Number.isFinite(m.x) && Number.isFinite(m.y) && m.x >= 0 && m.y >= 0 && m.x < MAP_W && m.y < MAP_H) {
+      case "ping": {
+        const mw = this.world?.w ?? MAP_W;
+        const mh = this.world?.h ?? MAP_H;
+        if (me && Number.isFinite(m.x) && Number.isFinite(m.y) && m.x >= 0 && m.y >= 0 && m.x < mw && m.y < mh) {
           this.broadcast(JSON.stringify({ t: "ping", x: m.x, y: m.y, slot: me.slot } satisfies S2C));
         }
         return;
+      }
       case "rematch":
         if (me && this.phase === "ended") {
           this.phase = "lobby";
@@ -682,7 +688,7 @@ export class GameRoom extends Server<Env> {
         break;
       }
     if (slot < 0) {
-      send(conn, { t: "deny", msg: "room is full" });
+      send(conn, { t: "deny", msg: `room is full (${MAX_PLAYERS} players)` });
       conn.close(4000, "room full");
       return;
     }
@@ -791,8 +797,8 @@ export class GameRoom extends Server<Env> {
       t: "init",
       you: p.id,
       slot: p.spectator ? -1 : p.slot,
-      w: MAP_W,
-      h: MAP_H,
+      w: this.world.w,
+      h: this.world.h,
       map: this.map,
       config: this.config,
       ore: this.world.oreSnapshot(),
@@ -802,7 +808,7 @@ export class GameRoom extends Server<Env> {
     });
   }
 
-  private addBot(diff: BotDiff = "normal", profile: BotProfile = "balanced") {
+  private addBot(diff: BotDiff = "normal", profile: BotProfile = "balanced"): boolean {
     const used = new Set([...this.players.values()].filter((p) => p.slot >= 0).map((p) => p.slot));
     let slot = -1;
     for (let s = 0; s < MAX_PLAYERS; s++)
@@ -810,7 +816,7 @@ export class GameRoom extends Server<Env> {
         slot = s;
         break;
       }
-    if (slot < 0) return;
+    if (slot < 0) return false;
     const id = `bot-${crypto.randomUUID().slice(0, 8)}`;
     const p: PlayerRec = {
       id,
@@ -828,6 +834,7 @@ export class GameRoom extends Server<Env> {
     this.players.set(id, p);
     this.bots.set(id, new AIBot(id, { diff, profile }));
     this.broadcastLobby();
+    return true;
   }
 
   private startGame() {
@@ -972,9 +979,10 @@ export class GameRoom extends Server<Env> {
     const w = this.world;
     if (!w) return null;
     const d = BUILDINGS[kind];
+    const spawns = getSpawns(w.w, w.h);
     const ownBuildings: { x: number; y: number }[] = [];
-    let anchorX = SPAWNS[slot]?.x ?? 8;
-    let anchorY = SPAWNS[slot]?.y ?? 8;
+    let anchorX = spawns[slot]?.x ?? 8;
+    let anchorY = spawns[slot]?.y ?? 8;
     for (const e of w.ents.values()) {
       if (e.o === slot && hasOwn(BUILDINGS, e.k)) {
         ownBuildings.push({ x: Math.floor(e.x), y: Math.floor(e.y) });
@@ -984,7 +992,7 @@ export class GameRoom extends Server<Env> {
         }
       }
     }
-    const maxRadius = d.waterOnly ? SHIPYARD_BUILD_DIST + 6 : 16;
+    const maxRadius = d.waterOnly ? SHIPYARD_BUILD_DIST + 6 : d.forwardRange ? d.forwardRange + 2 : 16;
     for (let r = 1; r <= maxRadius; r++) {
       for (let dy = -r; dy <= r; dy++) {
         for (let dx = -r; dx <= r; dx++) {
@@ -1130,7 +1138,7 @@ export class GameRoom extends Server<Env> {
             break;
           }
         }
-        if (slot < 0) return { ok: false, error: "room is full" };
+        if (slot < 0) return { ok: false, error: `room is full (${MAX_PLAYERS} players)` };
         const token = reqTok || `mcp-${crypto.randomUUID().slice(0, 12)}`;
         p = {
           id: token,
@@ -1244,8 +1252,9 @@ export class GameRoom extends Server<Env> {
       const neutralDerricks: Record<string, unknown>[] = [];
       const neutralCoalmines: Record<string, unknown>[] = [];
       const visionSources: { x: number; y: number; r: number }[] = [];
-      let baseX = SPAWNS[p.slot]?.x ?? 8;
-      let baseY = SPAWNS[p.slot]?.y ?? 8;
+      const spawns = getSpawns(w.w, w.h);
+      let baseX = spawns[p.slot]?.x ?? 8;
+      let baseY = spawns[p.slot]?.y ?? 8;
 
       for (const e of w.ents.values()) {
         if (w.isAlly(p.slot, e.o)) {
@@ -1340,7 +1349,7 @@ export class GameRoom extends Server<Env> {
 
       const enemySpawns = [...w.players.values()]
         .filter((other) => other.slot !== p.slot && !w.isAlly(p.slot, other.slot) && !other.eliminated)
-        .map((other) => ({ slot: other.slot, x: SPAWNS[other.slot]?.x ?? 0, y: SPAWNS[other.slot]?.y ?? 0 }));
+        .map((other) => ({ slot: other.slot, x: spawns[other.slot]?.x ?? 0, y: spawns[other.slot]?.y ?? 0 }));
 
       const gymObs = extractGymObs(w, p.slot);
       const summary =

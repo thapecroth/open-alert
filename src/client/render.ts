@@ -1,6 +1,12 @@
 import * as THREE from "three";
 import type { CrateSnap, EntSnap, GameEvent, OrderKind, PlayerState } from "../shared/protocol";
-import { UNITS, type CrateKind, type UnitKind } from "../shared/gamedefs";
+import {
+  UNITS,
+  SUPPLY_HUB_RADIUS,
+  SUPPLY_TRUCK_RADIUS,
+  type CrateKind,
+  type UnitKind,
+} from "../shared/gamedefs";
 import { makeEntVis, makeCrateVis, setVetBadge, tagEntity, applyFacing, EntVis, CrateVis } from "./models";
 import { createAnimState, stepEntityAnim, triggerFireAnim, triggerHitFlash, AnimState } from "./anim";
 import { VfxSystem, WaypointOverlay } from "./vfx";
@@ -25,6 +31,15 @@ interface Snap {
   ents: Map<number, EntSnap>;
 }
 
+interface LogBars {
+  group: THREE.Group;
+  barW: number;
+  fuelBg: THREE.Sprite;
+  fuelFg: THREE.Sprite;
+  ammoBg: THREE.Sprite;
+  ammoFg: THREE.Sprite;
+}
+
 interface Tracked {
   vis: EntVis;
   last: EntSnap;
@@ -33,6 +48,9 @@ interface Tracked {
   visY: number;
   visYaw: number;
   holdInd?: THREE.Group;
+  supplyAura?: THREE.Group;
+  logBars?: LogBars;
+  lastResupplyFxMs: number;
   isBuilding: boolean;
   isStaticBld: boolean;
   staticFrozen: boolean;
@@ -128,6 +146,83 @@ function makeHoldIndicator(topY: number): THREE.Group {
   g.add(badge);
 
   return g;
+}
+
+// Shared Supply Aura assets for Forward Supply Hub & Mobile Supply Truck (zero per-entity GPU leaks)
+const supplyHubAuraRingGeo = new THREE.RingGeometry(SUPPLY_HUB_RADIUS - 0.16, SUPPLY_HUB_RADIUS, 72);
+supplyHubAuraRingGeo.rotateX(-Math.PI / 2);
+const supplyHubAuraFillGeo = new THREE.CircleGeometry(SUPPLY_HUB_RADIUS - 0.16, 72);
+supplyHubAuraFillGeo.rotateX(-Math.PI / 2);
+
+const supplyTruckAuraRingGeo = new THREE.RingGeometry(SUPPLY_TRUCK_RADIUS - 0.14, SUPPLY_TRUCK_RADIUS, 56);
+supplyTruckAuraRingGeo.rotateX(-Math.PI / 2);
+const supplyTruckAuraFillGeo = new THREE.CircleGeometry(SUPPLY_TRUCK_RADIUS - 0.14, 56);
+supplyTruckAuraFillGeo.rotateX(-Math.PI / 2);
+
+const supplyAuraRingMat = new THREE.MeshBasicMaterial({
+  color: 0x3ef088,
+  transparent: true,
+  opacity: 0.42,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
+const supplyAuraFillMat = new THREE.MeshBasicMaterial({
+  color: 0x22d46c,
+  transparent: true,
+  opacity: 0.075,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
+
+function makeSupplyAura(kind: "supplyhub" | "supplytruck"): THREE.Group {
+  const g = new THREE.Group();
+  g.visible = false;
+  g.userData.isBar = true;
+
+  const isHub = kind === "supplyhub";
+  const ring = new THREE.Mesh(isHub ? supplyHubAuraRingGeo : supplyTruckAuraRingGeo, supplyAuraRingMat);
+  ring.position.y = 0.056;
+  ring.renderOrder = 5;
+  ring.userData.isBar = true;
+  g.add(ring);
+
+  const fill = new THREE.Mesh(isHub ? supplyHubAuraFillGeo : supplyTruckAuraFillGeo, supplyAuraFillMat);
+  fill.position.y = 0.052;
+  fill.renderOrder = 4;
+  fill.userData.isBar = true;
+  g.add(fill);
+
+  return g;
+}
+
+// Shared Fuel / Ammo / Supply-Reserve micro-bar materials (zero per-entity GPU leaks)
+const logBarBgMat = new THREE.SpriteMaterial({ color: 0x0b1016, transparent: true, opacity: 0.78, depthTest: false });
+const logFuelOkMat = new THREE.SpriteMaterial({ color: 0xf4b63d, transparent: true, opacity: 0.94, depthTest: false });
+const logFuelLowMat = new THREE.SpriteMaterial({ color: 0xff4938, transparent: true, opacity: 0.98, depthTest: false });
+const logAmmoOkMat = new THREE.SpriteMaterial({ color: 0x45d8ff, transparent: true, opacity: 0.94, depthTest: false });
+const logAmmoLowMat = new THREE.SpriteMaterial({ color: 0xff5a36, transparent: true, opacity: 0.98, depthTest: false });
+const logCargoMat = new THREE.SpriteMaterial({ color: 0x38e882, transparent: true, opacity: 0.95, depthTest: false });
+
+function makeLogBars(topY: number, barW: number): LogBars {
+  const group = new THREE.Group();
+  group.userData.isBar = true;
+
+  const mk = (mat: THREE.SpriteMaterial, y: number, order: number) => {
+    const s = new THREE.Sprite(mat);
+    s.position.set(0, y, 0);
+    s.scale.set(barW, 0.055, 1);
+    s.renderOrder = order;
+    s.visible = false;
+    s.userData.isBar = true;
+    group.add(s);
+    return s;
+  };
+
+  const fuelBg = mk(logBarBgMat, topY + 0.27, 20);
+  const fuelFg = mk(logFuelOkMat, topY + 0.27, 21);
+  const ammoBg = mk(logBarBgMat, topY + 0.2, 20);
+  const ammoFg = mk(logAmmoOkMat, topY + 0.2, 21);
+  return { group, barW, fuelBg, fuelFg, ammoBg, ammoFg };
 }
 
 export class Renderer {
@@ -260,6 +355,11 @@ export class Renderer {
       this.gs.pickables.push(vis.root);
       const anim = createAnimState(e, this.hasInitialSnap);
       const isStaticBld = isBuilding && isStaticBuildingRig(vis);
+      let supplyAura: THREE.Group | undefined;
+      if (e.k === "supplyhub" || e.k === "supplytruck") {
+        supplyAura = makeSupplyAura(e.k);
+        vis.root.add(supplyAura);
+      }
       this.tracked.set(e.id, {
         vis,
         last: e,
@@ -267,6 +367,8 @@ export class Renderer {
         visX: e.x,
         visY: e.y,
         visYaw: e.d / 10,
+        supplyAura,
+        lastResupplyFxMs: 0,
         isBuilding,
         isStaticBld,
         staticFrozen: false,
@@ -307,12 +409,75 @@ export class Renderer {
     this.updateBars(map);
   }
 
+  private updateLogBars(t: Tracked, e: EntSnap, selected: boolean) {
+    if (t.isBuilding) return;
+    const isSupplyTruck = e.k === "supplytruck";
+    const hasFuel = e.fl !== undefined;
+    const hasAmmo = e.am !== undefined;
+    if (!isSupplyTruck && !hasFuel && !hasAmmo) {
+      if (t.logBars) t.logBars.group.visible = false;
+      return;
+    }
+
+    if (!t.logBars) {
+      const w = (t.vis.barFg.userData.w as number | undefined) ?? 0.96;
+      t.logBars = makeLogBars(t.vis.topY, w);
+      t.vis.root.add(t.logBars.group);
+    }
+
+    const lb = t.logBars;
+    const w = lb.barW;
+
+    if (isSupplyTruck) {
+      const cap = UNITS.supplytruck.capacity ?? 500;
+      const frac = Math.max(0, Math.min(1, (e.cargo ?? 0) / Math.max(1, cap)));
+      const showCargo = selected || frac < 0.99;
+      lb.group.visible = showCargo;
+      lb.fuelBg.visible = showCargo;
+      lb.fuelFg.visible = showCargo;
+      lb.ammoBg.visible = false;
+      lb.ammoFg.visible = false;
+      if (showCargo) {
+        lb.fuelFg.material = frac <= 0.15 ? logFuelLowMat : logCargoMat;
+        lb.fuelFg.scale.x = Math.max(0.02, frac * w);
+      }
+      return;
+    }
+
+    const fuel = e.fl ?? 100;
+    const ammo = e.am ?? 100;
+    const showFuel = hasFuel && (selected || fuel <= 25);
+    const showAmmo = hasAmmo && (selected || ammo <= 20);
+    lb.group.visible = showFuel || showAmmo;
+
+    lb.fuelBg.visible = showFuel;
+    lb.fuelFg.visible = showFuel;
+    if (showFuel) {
+      const frac = Math.max(0, Math.min(1, fuel / 100));
+      lb.fuelFg.material = fuel <= 25 ? logFuelLowMat : logFuelOkMat;
+      lb.fuelFg.scale.x = Math.max(0.02, frac * w);
+    }
+
+    lb.ammoBg.visible = showAmmo;
+    lb.ammoFg.visible = showAmmo;
+    if (showAmmo) {
+      const frac = Math.max(0, Math.min(1, ammo / 100));
+      const yPos = showFuel ? t.vis.topY + 0.2 : t.vis.topY + 0.27;
+      lb.ammoBg.position.y = yPos;
+      lb.ammoFg.position.y = yPos;
+      lb.ammoFg.material = ammo <= 20 ? logAmmoLowMat : logAmmoOkMat;
+      lb.ammoFg.scale.x = Math.max(0.02, frac * w);
+    }
+  }
+
   private updateBars(map: Map<number, EntSnap>) {
+    const nowMs = performance.now();
     for (const [id, t] of this.tracked) {
       const e = map.get(id);
       if (!e) continue;
       const ownerChanged = t.last.o !== e.o;
       const kindChanged = t.last.k !== e.k;
+      const prevLast = t.last;
       if (ownerChanged || kindChanged) {
         // Ownership changed (capture) OR kind changed (factory -> factory2 upgrade) — rebuild visual!
         const scene = this.gs.scene;
@@ -331,6 +496,12 @@ export class Renderer {
         this.gs.pickables.push(vis.root);
         t.vis = vis;
         t.holdInd = undefined;
+        t.logBars = undefined;
+        t.supplyAura = undefined;
+        if (e.k === "supplyhub" || e.k === "supplytruck") {
+          t.supplyAura = makeSupplyAura(e.k);
+          vis.root.add(t.supplyAura);
+        }
         t.anim.flashing = false;
         t.anim.hitFlash = 0;
         t.anim.matMode = "normal";
@@ -342,20 +513,39 @@ export class Renderer {
           this.selection.delete(id);
           this.onOwnerLost?.(id);
         } else {
-          // Keep selection ring active across upgrade
-          t.vis.ring.visible = this.selection.has(id);
+          // Keep selection ring & supply aura active across upgrade
+          const sel = this.selection.has(id);
+          t.vis.ring.visible = sel;
+          if (t.supplyAura) t.supplyAura.visible = sel;
+        }
+      } else if (t.vis.root.visible && nowMs - t.lastResupplyFxMs >= 1350) {
+        // Trigger subtle emerald resupply shimmer when fuel, ammo, or convoy cargo refills
+        const fuelGain = (e.fl ?? 100) - (prevLast.fl ?? 100);
+        const ammoGain = (e.am ?? 100) - (prevLast.am ?? 100);
+        const truckGain = e.k === "supplytruck" ? (e.cargo ?? 0) - (prevLast.cargo ?? 0) : 0;
+        if (fuelGain >= 6 || ammoGain >= 10 || truckGain >= 25) {
+          this.vfx.spawnResupplyPulse(t.visX, t.visY, t.isBuilding ? 1.4 : 0.88);
+          t.lastResupplyFxMs = nowMs;
         }
       }
       t.last = e;
+      const selected = this.selection.has(id);
       const frac = Math.max(0, e.hp / e.mhp);
       t.vis.barFg.scale.x = Math.max(0.02, frac * t.vis.barFg.userData.w);
       const c = frac > 0.6 ? 0x26e050 : frac > 0.3 ? 0xf0cc26 : 0xe52626;
       (t.vis.barFg.material as THREE.SpriteMaterial).color.setHex(c);
-      const show = frac < 1 || this.selection.has(id);
+      const show = frac < 1 || selected;
       t.vis.barBg.visible = show;
       t.vis.barFg.visible = show;
       setVetBadge(t.vis, e.vet ?? 0);
-      if (t.vis.bin) t.vis.bin.scale.y = Math.max(0.05, (e.cargo ?? 0) / 40);
+      if (t.vis.bin) {
+        const cap = !t.isBuilding ? (UNITS[e.k as UnitKind]?.capacity ?? 45) : 45;
+        t.vis.bin.scale.y = Math.max(0.05, Math.min(1, (e.cargo ?? 0) / Math.max(1, cap)));
+      }
+      if (t.supplyAura) {
+        t.supplyAura.visible = selected;
+      }
+      this.updateLogBars(t, e, selected);
 
       // Hold Position stance indicator (ground amber anchor ring + centered shield badge)
       const holding = Boolean(e.hold) && !t.isBuilding;
@@ -373,7 +563,12 @@ export class Renderer {
 
   setSelected(ids: Set<number>) {
     this.selection = ids;
-    for (const [id, t] of this.tracked) t.vis.ring.visible = ids.has(id);
+    for (const [id, t] of this.tracked) {
+      const sel = ids.has(id);
+      t.vis.ring.visible = sel;
+      if (t.supplyAura) t.supplyAura.visible = sel;
+      this.updateLogBars(t, t.last, sel);
+    }
   }
 
   setHiddenEntity(id: number | null): void {
@@ -671,6 +866,9 @@ export class Renderer {
       (cv.beacon.material as THREE.MeshBasicMaterial).opacity = 0.14 + 0.08 * Math.sin(phase * 1.35);
     }
 
+    // Subtle breathing pulse on selected supply hub / supply truck coverage aura rings
+    supplyAuraRingMat.opacity = 0.36 + 0.08 * Math.sin(nowSec * 2.6);
+
     this.waypoints.update(this.wpEntries, nowSec, this.rallyEntries);
     this.vfx.update();
   }
@@ -795,7 +993,9 @@ export class Renderer {
         const baseR = t.isBuilding
           ? k === "radar" || k === "superweapon" || k === "satlink"
             ? 17
-            : 14
+            : k === "supplyhub"
+              ? 15
+              : 14
           : (UNITS[k as UnitKind]?.vision ?? 9);
         const r = baseR * visionMult;
         const subDetectR = k === "gunboat" || k === "destroyer" || k === "sub" || k === "carrier" ? 9 : 5.5;
