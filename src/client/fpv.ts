@@ -2451,7 +2451,9 @@ export class FirstPersonController {
     const supplyFrac =
       this.kind === "supplytruck"
         ? clamp((t.last.cargo ?? (UNITS.supplytruck.capacity ?? 500)) / Math.max(1, UNITS.supplytruck.capacity ?? 500), 0.04, 1)
-        : 1;
+        : this.kind === "harvester"
+          ? clamp((t.last.cargo ?? 0) / Math.max(1, UNITS.harvester.capacity ?? 40), 0.04, 1)
+          : 1;
     this.updateViewmodel(clampedDt, moveRatio, supplyFrac);
 
     // 7. Center-Screen 3D Crosshair Raycast for aiming & telemetry

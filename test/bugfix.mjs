@@ -6,8 +6,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
 const ok = (c, l) => { c ? (pass++, console.log("ok:", l)) : (fail++, console.log("FAIL:", l)); };
 
-function conn(name, token) {
-  const ws = new WebSocket(URL);
+function conn(name, token, room = ROOM) {
+  const ws = new WebSocket(`ws://localhost:8787/parties/game-room/${room}`);
   const st = { ws, msgs: [], slot: null, snaps: [], lobby: null };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
@@ -31,17 +31,18 @@ await sleep(400);
 send(a, { t: "start" });
 await sleep(1500);
 
-// --- #4/#5: disconnect all humans → room must reset despite bots ---
+// --- #4/#5: disconnect all humans → playing room holds 30s reconnect grace (PR #31) ---
 const roomUrl = `http://localhost:8787/parties/game-room/${ROOM}`;
 a.ws.close();
 await sleep(800);
 const st1 = await (await fetch(roomUrl)).json();
-ok(st1.phase === "lobby" && st1.players === 0, `bot room resets when humans leave (${JSON.stringify(st1)})`);
+ok(st1.phase === "playing", `bot room holds reconnect grace when humans leave (${JSON.stringify(st1)})`);
 
-// fresh room for sim checks (no bot — Carl's idle units are the amove enemy,
-// and a raiding bot would make unit counts nondeterministic)
-const b = conn("Bob", "bf-B");
-const c = conn("Carl", "bf-C");
+// fresh room for sim checks — under the 30s reconnect grace Alice's room stays
+// "playing", so Bob/Carl must use a different room or they'd join as spectators
+const ROOM2 = ROOM + "x";
+const b = conn("Bob", "bf-B", ROOM2);
+const c = conn("Carl", "bf-C", ROOM2);
 await sleep(700);
 send(c, { t: "ready", ready: true });
 await sleep(300);

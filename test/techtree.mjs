@@ -21,6 +21,10 @@ const BLD = {
   purifier: [2, 2], depot: [3, 2],
 };
 const UNITK = new Set(["infantry", "engineer", "rocket", "tank", "arty", "heavy", "spider", "harvester"]);
+// defense-category builds run on the parallel queue: progress in p.dq, pending placement in p.awaitingDef
+const DEFK = new Set(["turret", "sam", "arc", "irondome", "lasertower", "thaad"]);
+const awaitingOf = (p, kind) => (DEFK.has(kind) ? p?.awaitingDef : p?.awaiting);
+const queueBusy = (p, kind) => (DEFK.has(kind) ? p?.dq || p?.awaitingDef : p?.bq || p?.awaiting);
 
 function conn(name, token) {
   const ws = new WebSocket(URL);
@@ -119,7 +123,7 @@ function legalSpots(s, kind, anchor) {
 
 async function placeKind(s, kind, anchor, before) {
   for (const [tx, ty] of legalSpots(s, kind, anchor).slice(0, 30)) {
-    if (me(s)?.awaiting !== kind) return null;
+    if (awaitingOf(me(s), kind) !== kind) return null;
     send(s, { t: "place", tx, ty });
     await sleep(180);
     const found = mine(s, kind).find((e) => !before.has(e.id));
@@ -136,12 +140,12 @@ async function buildAndPlace(s, kind, anchor, ms = 120000) {
     const novo = mine(s, kind).find((e) => !before.has(e.id));
     if (novo) return { ent: novo };
     const p = me(s);
-    if (p?.awaiting === kind) {
+    if (awaitingOf(p, kind) === kind) {
       const placed = await placeKind(s, kind, anchor, before);
       if (placed) return { ent: placed };
       continue;
     }
-    if (p && !p.bq && !p.awaiting) {
+    if (p && !queueBusy(p, kind)) {
       const n0 = denies(s).length;
       send(s, { t: "build", kind });
       await sleep(600);
