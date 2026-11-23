@@ -435,12 +435,196 @@ function makeNavalTurretGeo(w: number, h: number, l: number): THREE.BufferGeomet
   return g;
 }
 
+// 16. MQ-9 Reaper Drone: Slender Streamlined Aerodynamic Fuselage (LatheGeometry along +Z)
+function makeReaperFuselageGeo(): THREE.BufferGeometry {
+  const pts: THREE.Vector2[] = [];
+  const steps = 20;
+  const sternZ = -0.96;
+  const noseZ = 0.88;
+  const span = noseZ - sternZ;
+  for (let i = 0; i <= steps; i++) {
+    const u = i / steps; // 0 = stern, 1 = nose
+    const y = sternZ + u * span;
+    let r: number;
+    if (u > 0.72) {
+      // Smooth rounded forward avionics/satcom nose
+      const v = (u - 0.72) / 0.28;
+      r = 0.115 * Math.sqrt(Math.max(0, 1 - v * v));
+    } else if (u > 0.35) {
+      // Slender tubular mid-fuselage
+      r = 0.1 + 0.016 * Math.sin(((u - 0.35) / 0.37) * Math.PI);
+    } else {
+      // Tapered tail cone into pusher propeller shaft
+      const v = u / 0.35;
+      r = 0.024 + 0.076 * Math.pow(v, 0.72);
+    }
+    pts.push(new THREE.Vector2(Math.max(0.002, r), y));
+  }
+  const g = new THREE.LatheGeometry(pts, 18);
+  g.rotateX(Math.PI / 2); // +Y -> +Z
+  return g;
+}
+
+// 17. B-21 Phantom Stealth Bomber: Razor-Sharp Sawtooth Flying-Wing Planform (+y -> +Z)
+function makeStealthBomberWingGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(0, 0.94); // razor stealth apex nose
+  s.lineTo(1.52, -0.18); // ultra-clean swept leading edge
+  s.lineTo(1.44, -0.44); // clipped razor wingtip
+  // Iconic B-21 clean W-sawtooth trailing edge
+  s.lineTo(0.84, -0.22);
+  s.lineTo(0.46, -0.52);
+  s.lineTo(0, -0.26);
+  s.lineTo(-0.46, -0.52);
+  s.lineTo(-0.84, -0.22);
+  s.lineTo(-1.44, -0.44);
+  s.lineTo(-1.52, -0.18);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.075,
+    bevelEnabled: true,
+    bevelThickness: 0.032,
+    bevelSize: 0.028,
+    bevelSegments: 2,
+  });
+  g.center();
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
+// 18. Mach-9 Hypersonic Strike Vehicle: Needle-Nosed Waverider Wedge Glider (+y -> +Z)
+function makeHypersonicWedgeGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(0, 1.38); // razor needle hypersonic nose
+  s.lineTo(0.16, 0.72);
+  s.lineTo(0.36, 0.08);
+  s.lineTo(0.58, -0.68); // swept waverider chine edge
+  s.lineTo(0.48, -0.92); // clipped trailing corner
+  s.lineTo(0.24, -0.86);
+  s.lineTo(0.18, -0.98); // scramjet exhaust transom
+  s.lineTo(-0.18, -0.98);
+  s.lineTo(-0.24, -0.86);
+  s.lineTo(-0.48, -0.92);
+  s.lineTo(-0.58, -0.68);
+  s.lineTo(-0.36, 0.08);
+  s.lineTo(-0.16, 0.72);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.085,
+    bevelEnabled: true,
+    bevelThickness: 0.038,
+    bevelSize: 0.022,
+    bevelSegments: 2,
+  });
+  g.center();
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
+// 19. Mach-9 Hypersonic Canted Stub Stabilizer Fin
+function makeHypersonicFinGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(-0.28, 0);
+  s.lineTo(0.18, 0);
+  s.lineTo(-0.08, 0.34);
+  s.lineTo(-0.3, 0.3);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.024,
+    bevelEnabled: true,
+    bevelThickness: 0.008,
+    bevelSize: 0.006,
+    bevelSegments: 1,
+  });
+  g.center();
+  g.rotateY(-Math.PI / 2);
+  return g;
+}
+
+// 20. Nimitz Drone Carrier: Flared Supercarrier Lower Hull (+y -> +Z)
+function makeCarrierHullGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(0, 2.12); // sharp bulbous carrier bow
+  s.lineTo(0.42, 1.48);
+  s.lineTo(0.64, 0.68);
+  s.lineTo(0.64, -1.24);
+  s.lineTo(0.5, -1.78); // wide armored transom stern
+  s.lineTo(-0.5, -1.78);
+  s.lineTo(-0.64, -1.24);
+  s.lineTo(-0.64, 0.68);
+  s.lineTo(-0.42, 1.48);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.44,
+    bevelEnabled: true,
+    bevelThickness: 0.055,
+    bevelSize: 0.04,
+    bevelSegments: 2,
+  });
+  g.center();
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
+// 21. Nimitz Drone Carrier: Iconic Angled-Deck Supercarrier Flight Deck (+y -> +Z)
+function makeCarrierDeckGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  // Starboard side (+x) relatively straight with island sponson; port side (-x) flares out for angled landing strip!
+  s.moveTo(0.42, 2.08); // bow starboard corner
+  s.lineTo(0.76, 0.92);
+  s.lineTo(0.84, -0.96);
+  s.lineTo(0.64, -1.86); // stern starboard corner
+  s.lineTo(-0.68, -1.86); // stern port corner
+  s.lineTo(-1.04, -0.74); // wide port angled-deck waist sponson!
+  s.lineTo(-0.88, 0.62); // angled runway forward corner
+  s.lineTo(-0.46, 2.08); // bow port corner
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.09,
+    bevelEnabled: true,
+    bevelThickness: 0.025,
+    bevelSize: 0.025,
+    bevelSegments: 2,
+  });
+  g.center();
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
+// 22. Micro Carrier UCAV Wing Planform (for parked drones on Nimitz Carrier deck)
+function makeMicroDroneGeo(): THREE.BufferGeometry {
+  const s = new THREE.Shape();
+  s.moveTo(0, 0.22);
+  s.lineTo(0.24, -0.06);
+  s.lineTo(0.2, -0.14);
+  s.lineTo(0.06, -0.08);
+  s.lineTo(0, -0.16);
+  s.lineTo(-0.06, -0.08);
+  s.lineTo(-0.2, -0.14);
+  s.lineTo(-0.24, -0.06);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.025,
+    bevelEnabled: true,
+    bevelThickness: 0.008,
+    bevelSize: 0.006,
+    bevelSegments: 1,
+  });
+  g.center();
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
 const geoHangarArch = makeHangarArchGeo();
 const geoInterceptorPlanform = makeInterceptorPlanformGeo();
 const geoJetTailFin = makeJetTailFinGeo();
 const geoChopperHull = makeChopperHullGeo();
 const geoFenestronFin = makeFenestronFinGeo();
 const geoBomberWing = makeBomberWingGeo();
+const geoStealthBomberWing = makeStealthBomberWingGeo();
+const geoHypersonicWedge = makeHypersonicWedgeGeo();
+const geoHypersonicFin = makeHypersonicFinGeo();
+const geoReaperFuselage = makeReaperFuselageGeo();
 const geoZeppelinHull = makeZeppelinHullGeo();
 const geoNacelle = makeNacelleGeo();
 const geoZeppelinFin = makeZeppelinFinGeo();
@@ -449,6 +633,9 @@ const geoDestroyerHull = makeDestroyerHullGeo();
 const geoSubHull = makeSubHullGeo();
 const geoSubSail = makeSubSailGeo();
 const geoDreadnoughtHull = makeDreadnoughtHullGeo();
+const geoCarrierHull = makeCarrierHullGeo();
+const geoCarrierDeck = makeCarrierDeckGeo();
+const geoMicroDrone = makeMicroDroneGeo();
 const geoGunboatTurret = makeNavalTurretGeo(0.36, 0.16, 0.44);
 const geoDestroyerTurret = makeNavalTurretGeo(0.5, 0.22, 0.6);
 const geoSubShroud = new THREE.TorusGeometry(0.17, 0.024, 8, 20);
@@ -1360,8 +1547,545 @@ export function buildAirSeaModel(
       break;
     }
 
+    // =========================================================================
+    // 11. AIR COMMAND II STEALTH WING (3x2) — Stealth Tarmac, Twin Hangars & Dual-Radar ATC
+    // =========================================================================
+    case "airfield2": {
+      const goldMat = getChassisMat(BRASS, 0.3, 0.78);
+      const stealthTarmac = getChassisMat("#192028", 0.84, 0.14);
+      const cyanGlow = getGlowMat(CORE_GLOW, 1.45);
+      const stripeMat = getChassisMat("#dce8f2", 0.52, 0.12);
+
+      // Reinforced concrete & armored dark-steel foundation slab + gold corner bollards
+      add(rbox(2.96, 0.22, 1.96, getConcreteMat(), 0.045), 0, 0.11, 0);
+      add(box(3.0, 0.06, 2.0, gunm), 0, 0.03, 0);
+      for (const [bx, bz] of [
+        [-1.38, -0.88],
+        [1.38, -0.88],
+        [-1.38, 0.88],
+        [1.38, 0.88],
+      ]) {
+        add(rbox(0.16, 0.28, 0.16, hullDk, 0.025), bx, 0.16, bz);
+        add(rbox(0.18, 0.06, 0.18, goldMat, 0.015), bx, 0.3, bz);
+      }
+
+      // Upgraded armored stealth tarmac across front (+Z) with glowing cyan landing lights
+      add(rbox(2.76, 0.055, 1.04, stealthTarmac, 0.015), 0, 0.23, 0.36);
+
+      // Gold & faction wing insignia bars painted onto runway apron
+      for (const sx of [-1, 1]) {
+        const wingGold = box(0.36, 0.015, 0.065, goldMat, false);
+        wingGold.rotation.y = sx * -0.45;
+        add(wingGold, sx * 0.24, 0.264, 0.38);
+        const wingAcc = box(0.28, 0.015, 0.05, accentBright, false);
+        wingAcc.rotation.y = sx * -0.45;
+        add(wingAcc, sx * 0.2, 0.265, 0.5);
+      }
+
+      // Illuminated cyan landing chevrons along centerline
+      for (const cx of [-0.94, 0.94]) {
+        const chA = box(0.24, 0.016, 0.055, cyanGlow, false);
+        chA.rotation.y = 0.55;
+        add(chA, cx, 0.264, 0.3);
+        const chB = box(0.24, 0.016, 0.055, cyanGlow, false);
+        chB.rotation.y = -0.55;
+        add(chB, cx, 0.264, 0.42);
+        pulse.push(chA, chB);
+      }
+      // Crisp white threshold keys at both runway ends
+      for (const tx of [-1.24, 1.24]) {
+        for (const tz of [0.06, 0.24, 0.42, 0.6]) {
+          add(box(0.15, 0.014, 0.08, stripeMat, false), tx, 0.262, tz);
+        }
+      }
+
+      // Glowing cyan stealth runway perimeter lights
+      for (const [lx, lz] of [
+        [-1.32, 0.84],
+        [-0.66, 0.84],
+        [0, 0.84],
+        [0.66, 0.84],
+        [1.32, 0.84],
+        [-1.32, -0.12],
+        [1.32, -0.12],
+      ]) {
+        add(cyl(0.075, 0.08, gunm), lx, 0.26, lz);
+        const lt = sph(0.085, cyanGlow, false);
+        add(lt, lx, 0.315, lz);
+        pulse.push(lt);
+      }
+
+      // Twin Reinforced Stealth Hangars side-by-side (rear-left & rear-center)
+      for (const hx of [-0.92, 0.04]) {
+        const hArch = mesh(geoHangarArch, stealth);
+        hArch.scale.set(0.58, 1.06, 1.04);
+        add(hArch, hx, 0.55, -0.52);
+        for (const rx of [-0.36, 0, 0.36]) {
+          const rib = mesh(geoHangarArch, hullLt);
+          rib.scale.set(0.055, 1.1, 1.08);
+          add(rib, hx + rx, 0.55, -0.52);
+        }
+        // Gold + faction stealth hangar fascia header + recessed aircraft bay + cyan ceiling glow
+        add(rbox(0.86, 0.095, 0.12, accent, 0.02), hx, 0.72, -0.09);
+        add(rbox(0.88, 0.05, 0.13, goldMat, 0.015), hx, 0.79, -0.09);
+        add(box(0.68, 0.46, 0.06, gunm), hx, 0.44, -0.11);
+        add(box(0.62, 0.045, 0.04, cyanGlow, false), hx, 0.63, -0.08);
+      }
+      // Overhead steel security bridge linking the twin stealth hangars
+      add(rbox(1.12, 0.1, 0.28, hullDk, 0.02), -0.44, 0.89, -0.52);
+      add(rbox(0.46, 0.06, 0.08, goldMat, 0.015), -0.44, 0.94, -0.37);
+
+      // Tall Dual-Radar Stealth ATC Spire (rear-right: +X, -Z)
+      add(rbox(0.62, 1.12, 0.58, hullDk, 0.05), 1.02, 0.78, -0.5);
+      add(rbox(0.68, 0.12, 0.64, accent, 0.025), 1.02, 1.32, -0.5);
+      add(rbox(0.7, 0.06, 0.66, goldMat, 0.015), 1.02, 1.4, -0.5);
+      // Panoramic stealth cyan glass ATC observation cab
+      add(rbox(0.84, 0.34, 0.74, getGlassMat("#6ee4ff"), 0.05), 1.02, 1.62, -0.5);
+      add(rbox(0.96, 0.1, 0.86, stealth, 0.03), 1.02, 1.84, -0.5);
+      add(rbox(0.84, 0.06, 0.74, goldMat, 0.02), 1.02, 1.91, -0.5);
+
+      // Dual-Radar ATC Spire: Primary lower surveillance radar (`spin`) + Upper secondary scanner (`spin2`)
+      add(cyl(0.09, 0.66, steel), 1.02, 2.24, -0.5);
+      spin = new THREE.Group();
+      spin.position.set(1.02, 2.2, -0.5);
+      body.add(spin);
+      spin.add(rbox(0.96, 0.12, 0.14, hullLt, 0.03));
+      spin.add(box(0.86, 0.045, 0.16, accentBright));
+      const dish1 = cyl(0.42, 0.06, steel, true);
+      dish1.rotation.x = 0.78;
+      dish1.position.set(0, 0.09, 0.1);
+      spin.add(dish1);
+
+      spin2 = new THREE.Group();
+      spin2.position.set(1.02, 2.58, -0.5);
+      body.add(spin2);
+      spin2.add(rbox(0.58, 0.075, 0.1, goldMat, 0.02));
+      const tip2 = sph(0.085, cyanGlow, false);
+      tip2.position.set(0, 0.1, 0);
+      spin2.add(tip2);
+      pulse.push(tip2);
+
+      // Aviation obstruction strobe
+      const ob2 = sph(0.09, getGlowMat(CRIMSON, 1.45), false);
+      add(ob2, 1.4, 1.95, -0.84);
+      pulse.push(ob2);
+
+      smokePos = new THREE.Vector3(-0.44, 1.24, -0.52);
+      topY = 2.78;
+      break;
+    }
+
+    // =========================================================================
+    // 12. NAVAL SHIPYARD II FLEET DOCK (3x3) — Heavy Drydock, Twin Cranes & Fleet Radar Bridge
+    // =========================================================================
+    case "shipyard2": {
+      const yellowMat = getChassisMat(CRANE_YEL, 0.4, 0.46);
+      const yellowDk = getChassisMat(CRANE_DK, 0.46, 0.42);
+      const goldMat = getChassisMat(BRASS, 0.3, 0.78);
+      const cyanGlow = getGlowMat(CORE_GLOW, 1.45);
+
+      // Heavy armored fleet drydock floating pontoons (wider & taller than MK1)
+      for (const sx of [-1.1, 1.1]) {
+        add(rbox(0.76, 0.42, 2.86, hullDk, 0.05), sx, 0.27, 0);
+        add(rbox(0.68, 0.08, 2.74, hullLt, 0.025), sx, 0.5, 0);
+        // Gold fleet command trim along outer pontoon parapet
+        add(rbox(0.1, 0.075, 2.66, goldMat, 0.015), sx + (sx > 0 ? 0.31 : -0.31), 0.56, 0);
+        // Satin faction inner slipway edge trim + waterline bumper
+        add(box(0.08, 0.16, 2.72, gunm), sx + (sx > 0 ? -0.38 : 0.38), 0.2, 0);
+        add(rbox(0.16, 0.065, 2.62, accent, 0.015), sx + (sx > 0 ? -0.24 : 0.24), 0.55, 0);
+        // Heavy crane rail tracks along pontoon tops
+        add(box(0.14, 0.08, 2.58, yellowDk), sx, 0.57, 0.04);
+        // Glowing fleet dock slipway edge guide beacons
+        for (const bz of [-0.62, 0.14, 0.9]) {
+          add(cyl(0.11, 0.16, hullDk), sx + (sx > 0 ? -0.28 : 0.28), 0.6, bz);
+          const dkLight = sph(0.08, cyanGlow, false);
+          add(dkLight, sx + (sx > 0 ? -0.28 : 0.28), 0.72, bz);
+          pulse.push(dkLight);
+        }
+      }
+
+      // Expanded Multi-Tier Naval Fleet Radar Bridge across rear bulkhead (-Z)
+      add(rbox(2.94, 0.46, 0.76, hull, 0.05), 0, 0.29, -1.08);
+      add(rbox(1.68, 0.62, 0.62, hullDk, 0.05), -0.14, 0.78, -1.1);
+      add(rbox(1.74, 0.1, 0.66, accent, 0.025), -0.14, 1.09, -1.1);
+      add(rbox(1.76, 0.06, 0.68, goldMat, 0.015), -0.14, 1.16, -1.1);
+      // Upper fleet command deckhouse & panoramic bridge glass
+      add(rbox(1.18, 0.36, 0.48, hull, 0.045), -0.14, 1.36, -1.1);
+      add(rbox(1.06, 0.18, 0.1, getGlassMat("#72dcff"), 0.02), -0.14, 1.38, -0.84);
+      add(rbox(1.32, 0.2, 0.1, getGlassMat("#72dcff"), 0.02), -0.14, 0.84, -0.78);
+      // Side armored exhaust funnels
+      for (const fx of [-1.14, 0.92]) {
+        add(cyl(0.18, 0.56, gunm, true), fx, 0.88, -1.14);
+        add(cyl(0.2, 0.07, goldMat), fx, 1.12, -1.14);
+      }
+
+      // Expanded Fleet Radar Spire (`spin`)
+      add(cyl(0.095, 0.84, steel, true), -0.14, 1.94, -1.1);
+      spin = new THREE.Group();
+      spin.position.set(-0.14, 2.36, -1.1);
+      body.add(spin);
+      spin.add(rbox(1.06, 0.11, 0.15, hullLt, 0.025));
+      spin.add(box(0.94, 0.045, 0.17, accentBright));
+      const mastOrb = sph(0.09, cyanGlow, false);
+      mastOrb.position.set(0, 0.13, 0);
+      spin.add(mastOrb);
+      pulse.push(mastOrb);
+
+      // Twin Yellow Heavy Gantry Cranes (`crane` slides smoothly along the slipway Z!)
+      crane = new THREE.Group();
+      crane.position.set(0, 0.58, 0.1);
+      body.add(crane);
+      for (const cz of [-0.46, 0.48]) {
+        for (const sx of [-1.1, 1.1]) {
+          const legA = rbox(0.13, 1.5, 0.13, yellowMat, 0.02);
+          legA.position.set(sx, 0.74, cz - 0.2);
+          legA.rotation.x = 0.15;
+          crane.add(legA);
+          const legB = rbox(0.13, 1.5, 0.13, yellowMat, 0.02);
+          legB.position.set(sx, 0.74, cz + 0.2);
+          legB.rotation.x = -0.15;
+          crane.add(legB);
+          const brace = box(0.11, 0.08, 0.38, yellowDk);
+          brace.position.set(sx, 0.7, cz);
+          crane.add(brace);
+          const bogie = rbox(0.24, 0.13, 0.54, gunm, 0.025);
+          bogie.position.set(sx, 0.05, cz);
+          crane.add(bogie);
+        }
+        // Heavy double box-girders spanning the fleet slipway
+        for (const gz of [-0.11, 0.11]) {
+          const girder = rbox(2.6, 0.17, 0.11, yellowMat, 0.025);
+          girder.position.set(0, 1.48, cz + gz);
+          crane.add(girder);
+        }
+        // Armored fleet winch trolley + gold cap + cables + heavy spreader hook
+        const trolley = rbox(0.54, 0.24, 0.4, accent, 0.04);
+        trolley.position.set(cz > 0 ? 0.28 : -0.28, 1.36, cz);
+        crane.add(trolley);
+        const capG = rbox(0.56, 0.06, 0.42, goldMat, 0.015);
+        capG.position.set(cz > 0 ? 0.28 : -0.28, 1.5, cz);
+        crane.add(capG);
+        for (const cx of [-0.12, 0.12]) {
+          const cable = cyl(0.028, 0.72, steel);
+          cable.position.set((cz > 0 ? 0.28 : -0.28) + cx, 0.92, cz);
+          crane.add(cable);
+        }
+        const hook = rbox(0.36, 0.11, 0.16, gunm, 0.025);
+        hook.position.set(cz > 0 ? 0.28 : -0.28, 0.54, cz);
+        crane.add(hook);
+      }
+
+      // Pulsing fleet harbor entrance navigation beacons at slipway mouth (+Z)
+      const gGlow = getGlowMat(EMERALD, 1.45);
+      for (const [bx, bz, isCyan] of [
+        [-1.16, 1.42, false],
+        [1.16, 1.42, false],
+        [-0.76, 1.34, true],
+        [0.76, 1.34, true],
+      ] as [number, number, boolean][]) {
+        add(cyl(0.18, 0.26, hullDk, true), bx, 0.2, bz);
+        const buoy = sph(0.115, isCyan ? cyanGlow : gGlow, false);
+        add(buoy, bx, 0.4, bz);
+        pulse.push(buoy);
+      }
+
+      smokePos = new THREE.Vector3(-0.7, 1.38, -1.1);
+      topY = 2.58;
+      break;
+    }
+
+    // =========================================================================
+    // 13. REAPER RECON DRONE (UAV, Air) — MQ-9 Long Wings, Bulbous Nose, V-Tail & Pusher Prop
+    // =========================================================================
+    case "uav": {
+      altitude = 3.12;
+      body.position.y = altitude;
+
+      const droneBodyMat = getChassisMat("#8593a0", 0.34, 0.52);
+      const droneWingMat = getChassisMat("#9aa7b4", 0.32, 0.48);
+
+      // Slender smooth LatheGeometry MQ-9 Reaper fuselage
+      add(mesh(geoReaperFuselage, droneBodyMat), 0, 0, 0);
+
+      // Iconic bulbous satellite-dome forehead nose hump!
+      const satNose = sph(0.24, droneWingMat);
+      satNose.scale.multiply(new THREE.Vector3(0.86, 0.72, 2.05));
+      add(satNose, 0, 0.065, 0.44);
+      // Satin faction dorsal stripe along spine
+      add(rbox(0.08, 0.04, 0.88, accent, 0.015), 0, 0.11, -0.14);
+
+      // Ventral EO/IR targeting sensor ball turret under the chin + glowing cyan optic lens
+      add(sph(0.14, gunm), 0, -0.13, 0.52);
+      const eoLens = sph(0.062, getGlowMat(CORE_GLOW, 1.45), false);
+      add(eoLens, 0, -0.14, 0.59);
+      pulse.push(eoLens);
+
+      // Long slender high-aspect straight MQ-9 wings!
+      add(rbox(2.38, 0.036, 0.22, droneWingMat, 0.012), 0, 0.01, -0.02);
+      for (const sx of [-1, 1]) {
+        // Subtle faction wing markings & wingtip nav strobes
+        add(box(0.32, 0.042, 0.14, accent), sx * 0.72, 0.012, -0.02);
+        const nav = sph(0.048, getGlowMat(sx < 0 ? CRIMSON : EMERALD, 1.4), false);
+        add(nav, sx * 1.2, 0.01, -0.02);
+        pulse.push(nav);
+
+        // Underwing hardpoint pylon + twin Hellfire micro-missiles!
+        add(box(0.04, 0.09, 0.16, hullDk), sx * 0.42, -0.05, 0.0);
+        for (const ox of [-0.042, 0.042]) {
+          const hf = cyl(0.034, 0.34, gunm);
+          hf.rotation.x = Math.PI / 2;
+          add(hf, sx * 0.42 + ox, -0.1, 0.04);
+          const tip = cone(0.034, 0.075, getGlowMat(ORE_GLOW, 1.25), false);
+          tip.rotation.x = Math.PI / 2;
+          add(tip, sx * 0.42 + ox, -0.1, 0.24);
+        }
+
+        // Inverted V-tail stabilizers angled cleanly from rear fuselage
+        const vTail = rbox(0.46, 0.028, 0.18, droneWingMat, 0.008);
+        vTail.rotation.z = sx * -0.58;
+        vTail.rotation.y = sx * -0.18;
+        add(vTail, sx * 0.19, -0.1, -0.82);
+        const vTip = box(0.14, 0.032, 0.14, accent);
+        vTip.rotation.z = sx * -0.58;
+        vTip.rotation.y = sx * -0.18;
+        add(vTip, sx * 0.32, -0.18, -0.85);
+      }
+      // Small dorsal intake scoop ahead of rear pusher engine
+      add(rbox(0.09, 0.065, 0.22, hullDk, 0.018), 0, 0.11, -0.52);
+
+      // Spinning rear pusher propeller (`spin` rotates around Z)
+      spin = new THREE.Group();
+      spin.position.set(0, 0, -0.99);
+      body.add(spin);
+      spin.add(sph(0.075, gunm));
+      for (let i = 0; i < 4; i++) {
+        const blade = box(0.038, 0.44, 0.016, gunm);
+        blade.rotation.z = (i * Math.PI) / 2;
+        spin.add(blade);
+      }
+
+      smokePos = new THREE.Vector3(0, altitude, -0.98);
+      topY = altitude + 0.42;
+      break;
+    }
+
+    // =========================================================================
+    // 14. B-21 PHANTOM STEALTH BOMBER (Air) — Matte-Obsidian Flying Wing + Cloned subMats
+    // =========================================================================
+    case "stealthbomber": {
+      altitude = 3.52;
+      body.position.y = altitude;
+
+      const obsidian = getChassisMat("#151920", 0.52, 0.46);
+      const obsidianTrim = getChassisMat("#222832", 0.44, 0.56);
+
+      // Razor-sharp matte-obsidian B-21 sawtooth flying-wing silhouette (ExtrudeGeometry)
+      add(mesh(geoStealthBomberWing, obsidian), 0, 0, 0);
+
+      // Sleek ultra-low-observable blended dorsal fuselage ridge
+      add(rbox(0.48, 0.12, 1.12, obsidianTrim, 0.055), 0, 0.06, 0.08);
+      // Understated thin dorsal spine faction line
+      add(box(0.07, 0.03, 0.84, accent), 0, 0.125, 0.02);
+
+      // Dark tinted flush stealth cockpit glazing (recessed cleanly into nose contour)
+      const cockpit = rbox(0.36, 0.075, 0.26, getGlassMat("#183654"), 0.025, false);
+      cockpit.rotation.x = 0.24;
+      add(cockpit, 0, 0.095, 0.54);
+
+      // Recessed ventral stealth weapons bay fairing
+      add(rbox(0.42, 0.09, 0.78, gunm, 0.025), 0, -0.075, 0.04);
+
+      for (const sx of [-1, 1]) {
+        // Subtle crisp faction wingtip trim chevrons
+        const tipTrim = box(0.36, 0.095, 0.09, accent);
+        tipTrim.rotation.y = sx * -0.62;
+        add(tipTrim, sx * 1.24, 0.005, -0.22);
+
+        // Flush low-observable dorsal conformal engine intakes
+        add(rbox(0.2, 0.09, 0.56, obsidianTrim, 0.03), sx * 0.34, 0.055, 0.04);
+        add(box(0.15, 0.05, 0.05, gunm), sx * 0.34, 0.065, 0.32);
+
+        // Shielded stealth exhaust troughs with subtle cool cyan thermal-masked glow (`pulse`)
+        add(rbox(0.2, 0.06, 0.22, gunm, 0.015), sx * 0.34, 0.035, -0.34);
+        const sGlow = rbox(0.16, 0.038, 0.18, getGlowMat("#3cb8ff", 1.25), 0.01, false);
+        add(sGlow, sx * 0.34, 0.035, -0.44);
+        pulse.push(sGlow);
+      }
+
+      // Per-instance cloned subMats so B-21 Phantom smoothly turns semi-translucent when stealth-cloaked!
+      const mats: THREE.Material[] = [];
+      body.traverse((o) => {
+        if (o instanceof THREE.Mesh && !Array.isArray(o.material)) {
+          const cloned = (o.material as THREE.Material).clone();
+          o.material = cloned;
+          mats.push(cloned);
+        }
+      });
+      subMats = mats;
+
+      smokePos = new THREE.Vector3(0, altitude, -0.58);
+      topY = altitude + 0.56;
+      break;
+    }
+
+    // =========================================================================
+    // 15. MACH-9 STRIKE VEHICLE (Hypersonic, Air) — Needle Waverider Wedge + Scramjet Plasma Cone
+    // =========================================================================
+    case "hypersonic": {
+      altitude = 3.68;
+      body.position.y = altitude;
+
+      const thermalWhite = getChassisMat("#8c9aa8", 0.3, 0.62);
+
+      // Sleek needle-nosed Mach-9 hypersonic waverider wedge glider (ExtrudeGeometry)
+      add(mesh(geoHypersonicWedge, thermalWhite), 0, 0, 0);
+
+      // Dark carbon-carbon thermal-shielded dorsal ridge & leading strakes
+      add(rbox(0.24, 0.12, 1.52, stealth, 0.045), 0, 0.065, -0.06);
+      add(rbox(0.11, 0.05, 1.24, accent, 0.02), 0, 0.13, -0.14);
+
+      // Glowing superheated hypersonic needle nose tip + flush optical slit
+      const heatNose = cone(0.13, 0.34, getGlowMat("#ffbc6e", 1.25), false);
+      heatNose.rotation.x = Math.PI / 2;
+      add(heatNose, 0, 0.01, 1.46);
+      const sensorSlit = rbox(0.18, 0.048, 0.24, getGlassMat("#6ce4ff"), 0.015, false);
+      sensorSlit.rotation.x = 0.22;
+      add(sensorSlit, 0, 0.11, 0.52);
+
+      // Underslung hypersonic scramjet air intake ramp & diffuser duct
+      add(rbox(0.32, 0.11, 0.96, gunm, 0.025), 0, -0.08, -0.26);
+
+      // Outward-canted stub stabilizer fins (ExtrudeGeometry)
+      for (const sx of [-1, 1]) {
+        const fin = mesh(geoHypersonicFin, stealth);
+        fin.rotation.z = sx * -0.54;
+        add(fin, sx * 0.44, 0.15, -0.74);
+        const finEdge = box(0.028, 0.08, 0.24, accent);
+        finEdge.rotation.z = sx * -0.54;
+        add(finEdge, sx * 0.52, 0.26, -0.78);
+      }
+
+      // Scramjet rectangular exhaust shroud + blazing white-cyan plasma afterburner cone (`pulse`)
+      add(rbox(0.34, 0.14, 0.22, gunm, 0.025), 0, -0.01, -0.96);
+
+      const plasmaOuter = cone(0.25, 1.04, getGlowMat(CORE_GLOW, 1.85), false);
+      plasmaOuter.rotation.x = -Math.PI / 2;
+      add(plasmaOuter, 0, -0.01, -1.56);
+      pulse.push(plasmaOuter);
+
+      const plasmaInner = cone(0.14, 0.74, getGlowMat("#e6fbff", 2.1), false);
+      plasmaInner.rotation.x = -Math.PI / 2;
+      add(plasmaInner, 0, -0.01, -1.42);
+      pulse.push(plasmaInner);
+
+      smokePos = new THREE.Vector3(0, altitude, -1.16);
+      topY = altitude + 0.52;
+      break;
+    }
+
+    // =========================================================================
+    // 16. NIMITZ DRONE CARRIER (Sea) — Angled-Deck Supercarrier, Island Radar & 3 Parked Micro-Drones
+    // =========================================================================
+    case "carrier": {
+      body.position.y = 0.08;
+
+      const deckMat = getChassisMat("#262e36", 0.86, 0.12);
+      const stripeWhite = getChassisMat("#e4edf5", 0.55, 0.1);
+      const foulYellow = getChassisMat(CRANE_YEL, 0.5, 0.2);
+      const cyanGlow = getGlowMat(CORE_GLOW, 1.45);
+
+      // Colossal flared supercarrier lower armored hull (ExtrudeGeometry)
+      add(mesh(geoCarrierHull, hullDk), 0, 0.2, 0);
+      // Bold satin faction waterline hull belt
+      add(rbox(1.32, 0.1, 2.74, accent, 0.025), 0, 0.22, -0.14);
+
+      // Wide flat beveled angled flight deck overhanging the hull! (ExtrudeGeometry)
+      add(mesh(geoCarrierDeck, deckMat), 0, 0.48, 0);
+      // Under-deck structural sponson brackets
+      for (const sz of [-1.04, -0.18, 0.68]) {
+        add(rbox(1.66, 0.09, 0.14, hull, 0.02), -0.06, 0.39, sz);
+      }
+
+      // Painted white axial runway centerline & angled landing runway stripes
+      for (const rz of [-1.25, -0.62, 0.02, 0.66, 1.3]) {
+        add(box(0.055, 0.012, 0.38, stripeWhite, false), 0.04, 0.555, rz);
+      }
+      // Iconic port-side angled landing runway white border & centerline markings
+      const angleRunway = new THREE.Group();
+      angleRunway.position.set(-0.32, 0.556, -0.28);
+      angleRunway.rotation.y = 0.21;
+      body.add(angleRunway);
+      add(box(0.04, 0.01, 2.38, stripeWhite, false), -0.34, 0, 0, angleRunway);
+      add(box(0.04, 0.01, 2.38, stripeWhite, false), 0.34, 0, 0, angleRunway);
+      add(box(0.045, 0.01, 2.28, foulYellow, false), 0, 0, 0, angleRunway);
+
+      // Glowing electromagnetic launch catapult (EMALS) strips on bow & waist!
+      const catBow = box(0.055, 0.014, 1.24, cyanGlow, false);
+      add(catBow, 0.18, 0.558, 1.28);
+      pulse.push(catBow);
+      const catWaist = box(0.055, 0.014, 1.08, cyanGlow, false);
+      catWaist.rotation.y = 0.21;
+      add(catWaist, -0.44, 0.558, 0.34);
+      pulse.push(catWaist);
+
+      // Offset Starboard Island Superstructure (+X side!)
+      const ix = 0.58;
+      const iz = -0.24;
+      add(rbox(0.38, 0.48, 0.92, hull, 0.04), ix, 0.78, iz);
+      add(rbox(0.32, 0.36, 0.66, hullDk, 0.035), ix, 1.14, iz + 0.04);
+      add(rbox(0.4, 0.08, 0.94, accent, 0.02), ix, 0.98, iz);
+      // Dual-level glossy panoramic island bridge windows (Pri-Fly & navigation bridge)
+      add(rbox(0.34, 0.1, 0.52, getGlassMat("#72dcff"), 0.02, false), ix - 0.02, 1.22, iz + 0.08);
+      add(rbox(0.3, 0.08, 0.12, getGlassMat("#72dcff"), 0.015, false), ix, 1.22, iz + 0.35);
+      // Side SPY phased-array radar panel on island
+      add(box(0.03, 0.18, 0.26, getChassisMat("#6a7378", 0.42, 0.55)), ix - 0.17, 1.12, iz + 0.14);
+
+      // Integrated Naval Communications Mast & Spinning Dual Radar (`spin`)
+      add(cyl(0.065, 0.54, steel, true), ix, 1.56, iz + 0.04);
+      spin = new THREE.Group();
+      spin.position.set(ix, 1.76, iz + 0.04);
+      body.add(spin);
+      // Lower primary air-search radar bar
+      spin.add(rbox(0.68, 0.085, 0.12, hullLt, 0.02));
+      spin.add(box(0.58, 0.038, 0.14, accentBright));
+      // Upper secondary navigation scanner bar mounted perpendicular above
+      const upperBar = rbox(0.1, 0.06, 0.42, steel, 0.015);
+      upperBar.position.set(0, 0.16, 0);
+      spin.add(upperBar);
+      const mastLight = sph(0.075, getGlowMat(CRIMSON, 1.5), false);
+      mastLight.position.set(0, 0.26, 0);
+      spin.add(mastLight);
+      pulse.push(mastLight);
+
+      // Compact CIWS defense dome on bow starboard sponson
+      add(cyl(0.14, 0.18, hullLt), 0.52, 0.58, 1.62);
+      add(sph(0.14, stripeWhite), 0.52, 0.68, 1.62);
+
+      // 3 Parked Stealth Micro-Drones arranged cleanly on the carrier flight deck!
+      for (const [dx, dz, drot] of [
+        [0.44, 0.88, -0.35],
+        [0.46, -1.14, -0.45],
+        [0.06, -1.46, -0.22],
+      ]) {
+        const dGrp = new THREE.Group();
+        dGrp.position.set(dx, 0.575, dz);
+        dGrp.rotation.y = drot;
+        body.add(dGrp);
+        dGrp.add(mesh(geoMicroDrone, hullLt));
+        add(box(0.06, 0.03, 0.16, accent), 0, 0.015, 0.02, dGrp);
+      }
+
+      smokePos = new THREE.Vector3(ix, 1.38, iz - 0.18);
+      topY = 2.02;
+      break;
+    }
+
     default:
       return null;
+  }
+
+  for (const p of pulse) {
+    p.userData.baseScale = p.scale.clone();
   }
 
   return {

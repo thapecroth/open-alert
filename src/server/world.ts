@@ -4,6 +4,9 @@ import {
   BUILDINGS,
   UNITS,
   BuildingKind,
+  BuildCategory,
+  buildCategoryOf,
+  UPGRADE_PATHS,
   UnitKind,
   EntKind,
   UnitDomain,
@@ -18,12 +21,13 @@ import {
   ORE_REGEN_TICKS,
   ORE_CELL_MAX,
   ORE_SPREAD_CHANCE,
-  UPGRADE_COST,
   PURIFIER_BONUS,
   DEPOT_RANGE,
   DEPOT_HEAL,
   CAPTURE_RANGE,
   SHIPYARD_BUILD_DIST,
+  IRONDOME_RADIUS,
+  IRONDOME_COOLDOWN,
   VET_XP,
   VET_DMG,
   VET_HP,
@@ -35,6 +39,8 @@ import {
   RECON_RADIUS,
   DERRICK_CAPTURE_BONUS,
   DERRICK_INCOME,
+  COALMINE_CAPTURE_BONUS,
+  COALMINE_INCOME,
   CRATE_INTERVAL_TICKS,
   CRATE_MAX,
   CRATE_CASH,
@@ -90,7 +96,8 @@ export interface Ent {
   holdUntil: number; // suppress harvester auto-resume until this tick (stop/explicit orders)
   xp: number;
   vet: number; // 0..3 veterancy rank
-  subSurfaceUntil: number; // submarine stealth: surfaced until this tick (submerged when tick >= subSurfaceUntil)
+  subSurfaceUntil: number; // stealth reveal timer (cloaked when tick >= subSurfaceUntil)
+  interceptCd: number; // Iron Dome active projectile interception cooldown
   rally?: [number, number]; // rally point on production buildings
   direct?: {
     until: number;
@@ -110,6 +117,8 @@ export interface P {
   credits: number;
   awaiting: BuildingKind | null;
   bq: { kind: BuildingKind; left: number; total: number } | null;
+  awaitingDef: BuildingKind | null;
+  dq: { kind: BuildingKind; left: number; total: number } | null;
   queues: Partial<Record<ProdCat, ProdQueue>>;
   eliminated: boolean;
   pwrHave: number;
@@ -131,19 +140,52 @@ export interface WorldOpts {
 }
 
 const PROD_CATS: readonly ProdCat[] = ["barracks", "factory", "airfield", "shipyard"];
+const UPGRADED_OF: Partial<Record<BuildingKind, BuildingKind>> = {
+  barracks: "barracks2",
+  factory: "factory2",
+  airfield: "airfield2",
+  shipyard: "shipyard2",
+};
+const INTERCEPTABLE = new Set<EntKind>([
+  "arty",
+  "himars",
+  "dreadnought",
+  "bomber",
+  "stealthbomber",
+  "hypersonic",
+  "zeppelin",
+]);
+const STEALTH_AIR_DETECTORS = new Set<EntKind>([
+  "radar",
+  "sam",
+  "irondome",
+  "satlink",
+  "interceptor",
+  "uav",
+]);
 const idx = (x: number, y: number) => y * MAP_W + x;
 const inBounds = (x: number, y: number) => x >= 0 && y >= 0 && x < MAP_W && y < MAP_H;
 const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);
 const isBuilding = (k: EntKind): k is BuildingKind => k in BUILDINGS;
 const domainOf = (k: EntKind): UnitDomain =>
-  isBuilding(k) ? (k === "shipyard" ? "sea" : "land") : UNITS[k].domain;
+  isBuilding(k) ? (BUILDINGS[k].waterOnly ? "sea" : "land") : UNITS[k].domain;
 const canHitAirOf = (k: EntKind): boolean => (isBuilding(k) ? !!BUILDINGS[k].canHitAir : !!UNITS[k].canHitAir);
 const canHitGroundOf = (k: EntKind): boolean =>
-  isBuilding(k) ? (BUILDINGS[k].dmg ?? 0) > 0 : UNITS[k].canHitGround !== false && UNITS[k].dmg > 0;
+  isBuilding(k)
+    ? (BUILDINGS[k].dmg ?? 0) > 0 && BUILDINGS[k].canHitGround !== false
+    : UNITS[k].canHitGround !== false && UNITS[k].dmg > 0;
 const isInfantry = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer";
-const isHeavyArmor = (k: EntKind) => k === "tank" || k === "heavy" || k === "harvester";
+const isHeavyArmor = (k: EntKind) => k === "tank" || k === "heavy" || k === "harvester" || k === "railtank";
 const isVehicle = (k: EntKind) =>
-  k === "tank" || k === "heavy" || k === "arty" || k === "harvester" || k === "spider";
+  k === "tank" ||
+  k === "heavy" ||
+  k === "arty" ||
+  k === "harvester" ||
+  k === "spider" ||
+  k === "himars" ||
+  k === "railtank";
+const isLightUnit = (k: EntKind) =>
+  isInfantry(k) || k === "spider" || k === "uav" || k === "gunboat";
 const isSeaShip = (k: EntKind) => !isBuilding(k) && UNITS[k].domain === "sea";
 
 const armorMult = (attacker: EntKind, target: EntKind): number => {
@@ -158,11 +200,26 @@ const armorMult = (attacker: EntKind, target: EntKind): number => {
     if (isInfantry(target)) return 0.75;
   } else if (attacker === "arty") {
     if (isBuilding(target)) return 1.35;
+  } else if (attacker === "railtank") {
+    if (isVehicle(target) || isBuilding(target)) return 1.35;
+  } else if (attacker === "lasertower") {
+    if (isVehicle(target) || isSeaShip(target)) return 1.4;
+  } else if (attacker === "sam") {
+    if (tDom === "air") return 1.5;
+  } else if (attacker === "uav") {
+    if (isLightUnit(target)) return 1.25;
   } else if (attacker === "sub") {
     if (isSeaShip(target)) return 1.45;
   } else if (attacker === "interceptor") {
     if (tDom === "air") return 1.4;
-  } else if (attacker === "bomber" || attacker === "zeppelin" || attacker === "dreadnought") {
+  } else if (
+    attacker === "bomber" ||
+    attacker === "stealthbomber" ||
+    attacker === "hypersonic" ||
+    attacker === "himars" ||
+    attacker === "zeppelin" ||
+    attacker === "dreadnought"
+  ) {
     if (isBuilding(target)) return 1.3;
   } else if (attacker === "gunboat" || attacker === "destroyer") {
     if (tDom === "air") return 1.35;
@@ -179,14 +236,16 @@ const entityDist = (a: Ent, b: Ent) => {
   );
 };
 const weaponFxOf = (k: EntKind): WeaponFx => {
+  if (k === "lasertower" || k === "satlink") return "laser";
+  if (k === "railtank") return "railgun";
   if (k === "tank" || k === "heavy" || k === "destroyer") return "cannon";
-  if (k === "rocket" || k === "interceptor") return "rocket";
+  if (k === "rocket" || k === "interceptor" || k === "sam" || k === "irondome" || k === "uav") return "rocket";
   if (k === "arty") return "arty";
   if (k === "arc") return "arc";
   if (k === "spider") return "melee";
-  if (k === "dreadnought") return "missile";
+  if (k === "dreadnought" || k === "himars" || k === "hypersonic" || k === "carrier") return "missile";
   if (k === "sub") return "torpedo";
-  if (k === "bomber" || k === "zeppelin") return "bomb";
+  if (k === "bomber" || k === "stealthbomber" || k === "zeppelin") return "bomb";
   return "bullet";
 };
 const weaponOf = (e: Ent) =>
@@ -250,6 +309,8 @@ export class World {
         credits: this.config.startCredits,
         awaiting: null,
         bq: null,
+        awaitingDef: null,
+        dq: null,
         queues: {},
         eliminated: false,
         pwrHave: 0,
@@ -277,13 +338,19 @@ export class World {
       this.recomputePower(slot);
     }
 
-    // Spawn neutral Oil Derricks from map layout if enabled (clear any ore underneath)
+    // Spawn neutral Oil Derricks & Coal Mines from map layout if enabled (clear any ore underneath)
     if (this.config.derricks) {
       for (const [dx, dy] of layout.derricks) {
         const dd = BUILDINGS.derrick;
         for (let y = dy; y < dy + dd.h; y++)
           for (let x = dx; x < dx + dd.w; x++) if (inBounds(x, y)) this.ore[idx(x, y)] = 0;
         this.placeBuilding(-1, "derrick", dx, dy);
+      }
+      for (const [cx, cy] of layout.coalmines ?? []) {
+        const cd = BUILDINGS.coalmine;
+        for (let y = cy; y < cy + cd.h; y++)
+          for (let x = cx; x < cx + cd.w; x++) if (inBounds(x, y)) this.ore[idx(x, y)] = 0;
+        this.placeBuilding(-1, "coalmine", cx, cy);
       }
     }
   }
@@ -320,7 +387,9 @@ export class World {
           const i = idx(x, y);
           if (this.cliff[i] || this.block[i] || this.water[i]) continue;
           const d = dist(x, y, cx, cy);
-          if (d <= r && Math.random() > d / (r + 1)) this.ore[i] = 25 + ((Math.random() * 35) | 0);
+          if (d <= r && Math.random() > d / (r + 1)) {
+            this.ore[i] = Math.min(ORE_CELL_MAX, 85 + ((Math.random() * 75) | 0));
+          }
         }
     };
     for (const slot of slots) {
@@ -352,38 +421,55 @@ export class World {
     return inBounds(ix, iy) && this.water[idx(ix, iy)] === 1;
   }
 
+  isStealthed(e: Ent): boolean {
+    return (e.k === "sub" || e.k === "stealthbomber") && this.tick >= e.subSurfaceUntil;
+  }
+
   isSubmerged(e: Ent): boolean {
-    return e.k === "sub" && this.tick >= e.subSurfaceUntil;
+    return this.isStealthed(e);
+  }
+
+  private stealthDetectRadius(targetKind: EntKind, detectorKind: EntKind): number {
+    if (targetKind === "stealthbomber") {
+      return STEALTH_AIR_DETECTORS.has(detectorKind) ? 11 : 6.5;
+    }
+    return detectorKind === "gunboat" ||
+      detectorKind === "destroyer" ||
+      detectorKind === "sub" ||
+      detectorKind === "carrier"
+      ? 9
+      : 5.5;
   }
 
   private rebuildSpatialGrid() {
     for (let i = 0; i < 64; i++) this.grid[i].length = 0;
-    const subs: Ent[] = [];
+    const stealthed: Ent[] = [];
     for (const e of this.ents.values()) {
       const gx = Math.max(0, Math.min(7, (e.x | 0) >> 3));
       const gy = Math.max(0, Math.min(7, (e.y | 0) >> 3));
       this.grid[(gy << 3) | gx].push(e);
-      if (e.k === "sub" && this.isSubmerged(e)) subs.push(e);
+      if (this.isStealthed(e)) stealthed.push(e);
     }
     this.subDetMask.clear();
-    // Precompute submarine detection bitmasks once per tick using spatial grid (eliminates O(N^3) rescans)
-    for (const sub of subs) {
+    // Precompute stealth detection bitmasks once per tick using spatial grid (eliminates O(N^3) rescans)
+    for (const st of stealthed) {
       let mask = 0;
-      const x0 = Math.max(0, ((sub.x - 9.5) | 0) >> 3);
-      const x1 = Math.min(7, ((sub.x + 9.5) | 0) >> 3);
-      const y0 = Math.max(0, ((sub.y - 9.5) | 0) >> 3);
-      const y1 = Math.min(7, ((sub.y + 9.5) | 0) >> 3);
+      const scanR = st.k === "stealthbomber" ? 11.5 : 9.5;
+      const x0 = Math.max(0, ((st.x - scanR) | 0) >> 3);
+      const x1 = Math.min(7, ((st.x + scanR) | 0) >> 3);
+      const y0 = Math.max(0, ((st.y - scanR) | 0) >> 3);
+      const y1 = Math.min(7, ((st.y + scanR) | 0) >> 3);
       for (let gy = y0; gy <= y1; gy++) {
         for (let gx = x0; gx <= x1; gx++) {
           const cell = this.grid[(gy << 3) | gx];
           for (let i = 0; i < cell.length; i++) {
             const u = cell[i];
-            if (u.o < 0 || u.id === sub.id) continue;
-            const detectR = u.k === "gunboat" || u.k === "destroyer" || u.k === "sub" ? 9 : 5.5;
-            const dx = sub.x - u.x,
-              dy = sub.y - u.y;
+            if (u.o < 0 || u.id === st.id) continue;
+            const detectR = this.stealthDetectRadius(st.k, u.k);
+            const dx = st.x - u.x,
+              dy = st.y - u.y;
             if (dx * dx + dy * dy <= detectR * detectR) {
-              // Mark u.o and all of u.o's allies as detecting this sub
+              // Mark u.o and all of u.o's allies as detecting this stealthed unit
               for (const p of this.players.values()) {
                 if (this.isAlly(p.slot, u.o)) mask |= 1 << p.slot;
               }
@@ -391,23 +477,27 @@ export class World {
           }
         }
       }
-      this.subDetMask.set(sub.id, mask);
+      this.subDetMask.set(st.id, mask);
     }
     this.gridTick = this.tick;
   }
 
-  isSubDetected(sub: Ent, viewerSlot: number): boolean {
-    if (!this.isSubmerged(sub)) return true;
+  isStealthDetected(target: Ent, viewerSlot: number): boolean {
+    if (!this.isStealthed(target)) return true;
     if (this.gridTick === this.tick) {
-      const mask = this.subDetMask.get(sub.id);
+      const mask = this.subDetMask.get(target.id);
       if (mask !== undefined) return (mask & (1 << viewerSlot)) !== 0;
     }
     for (const u of this.ents.values()) {
       if (u.o < 0 || !this.isAlly(viewerSlot, u.o)) continue;
-      const detectR = u.k === "gunboat" || u.k === "destroyer" || u.k === "sub" ? 9 : 5.5;
-      if (dist(sub.x, sub.y, u.x, u.y) <= detectR) return true;
+      const detectR = this.stealthDetectRadius(target.k, u.k);
+      if (dist(target.x, target.y, u.x, u.y) <= detectR) return true;
     }
     return false;
+  }
+
+  isSubDetected(sub: Ent, viewerSlot: number): boolean {
+    return this.isStealthDetected(sub, viewerSlot);
   }
 
   canAttack(attacker: Ent, target: Ent): boolean {
@@ -423,8 +513,8 @@ export class World {
     } else {
       if (!canHitGroundOf(attacker.k)) return false;
     }
-    if (target.k === "sub" && this.isSubmerged(target)) {
-      if (!this.isSubDetected(target, attacker.o)) return false;
+    if (this.isStealthed(target)) {
+      if (!this.isStealthDetected(target, attacker.o)) return false;
     }
     return true;
   }
@@ -470,6 +560,7 @@ export class World {
       xp: 0,
       vet: 0,
       subSurfaceUntil: 0,
+      interceptCd: 0,
     };
     this.ents.set(e.id, e);
     for (let y = ty; y < ty + d.h; y++)
@@ -505,6 +596,7 @@ export class World {
       xp: 0,
       vet: 0,
       subSurfaceUntil: 0,
+      interceptCd: 0,
     };
     this.ents.set(e.id, e);
     this.events.push({ e: "spawn", id: e.id });
@@ -794,13 +886,25 @@ export class World {
     if (e && e.o === slot) delete e.direct;
   }
 
+  private buildingCostBasis(k: BuildingKind): number {
+    for (const path of Object.values(UPGRADE_PATHS)) {
+      if (path.to === k) return BUILDINGS[path.from].cost + path.cost;
+    }
+    return BUILDINGS[k].cost;
+  }
+
   cmdBuild(slot: number, kind: BuildingKind): string | null {
     const p = this.players.get(slot);
     if (!p || p.eliminated) return "dead";
-    if (p.bq || p.awaiting) return "construction in progress";
     if (!hasOwn(BUILDINGS, kind)) return "unknown building";
     const d = BUILDINGS[kind];
     if (d.noBuild) return "can't build that";
+    const cat = buildCategoryOf(kind);
+    if (cat === "defense") {
+      if (p.dq || p.awaitingDef) return "construction in progress";
+    } else {
+      if (p.bq || p.awaiting) return "construction in progress";
+    }
     if (kind === "superweapon" && !this.config.superweapons) return "superweapons disabled";
     if (d.waterOnly && !this.hasWater()) return "no water on this map";
     if (d.requires) for (const r of d.requires) if (!this.hasBuilding(slot, r)) return `need a ${r}`;
@@ -812,19 +916,49 @@ export class World {
     if (p.credits < d.cost) return "insufficient funds";
     if (!this.hasBuilding(slot, "conyard")) return "need a construction yard";
     p.credits -= d.cost;
-    p.bq = { kind, left: d.buildTicks, total: d.buildTicks };
+    if (cat === "defense") {
+      p.dq = { kind, left: d.buildTicks, total: d.buildTicks };
+    } else {
+      p.bq = { kind, left: d.buildTicks, total: d.buildTicks };
+    }
     return null;
   }
 
-  cmdBuildCancel(slot: number) {
+  cmdBuildCancel(slot: number, cat?: BuildCategory) {
     const p = this.players.get(slot);
     if (!p) return;
+    if (cat === "defense") {
+      if (p.dq) {
+        p.credits += BUILDINGS[p.dq.kind].cost;
+        p.dq = null;
+      } else if (p.awaitingDef) {
+        p.credits += BUILDINGS[p.awaitingDef].cost;
+        p.awaitingDef = null;
+      }
+      return;
+    }
+    if (cat === "structure") {
+      if (p.bq) {
+        p.credits += BUILDINGS[p.bq.kind].cost;
+        p.bq = null;
+      } else if (p.awaiting) {
+        p.credits += BUILDINGS[p.awaiting].cost;
+        p.awaiting = null;
+      }
+      return;
+    }
     if (p.bq) {
       p.credits += BUILDINGS[p.bq.kind].cost;
       p.bq = null;
     } else if (p.awaiting) {
       p.credits += BUILDINGS[p.awaiting].cost;
       p.awaiting = null;
+    } else if (p.dq) {
+      p.credits += BUILDINGS[p.dq.kind].cost;
+      p.dq = null;
+    } else if (p.awaitingDef) {
+      p.credits += BUILDINGS[p.awaitingDef].cost;
+      p.awaitingDef = null;
     }
   }
 
@@ -833,8 +967,7 @@ export class World {
     if (!p || p.eliminated) return "dead";
     const e = this.ents.get(id);
     if (!e || e.o !== slot || !isBuilding(e.k)) return "can't sell that";
-    // factory2's cost is 0 (it arrives via upgrade) — value it at factory+upgrade
-    const basis = e.k === "factory2" ? BUILDINGS.factory.cost + UPGRADE_COST : BUILDINGS[e.k].cost;
+    const basis = this.buildingCostBasis(e.k);
     p.credits += Math.floor(basis * 0.5);
     this.destroy(e);
     return null;
@@ -846,7 +979,7 @@ export class World {
     const e = this.ents.get(id);
     if (!e || e.o !== slot || !isBuilding(e.k)) return "can't repair that";
     if (e.hp >= e.mhp) return "already at full health";
-    const basis = e.k === "factory2" ? BUILDINGS.factory.cost + UPGRADE_COST : BUILDINGS[e.k].cost;
+    const basis = this.buildingCostBasis(e.k);
     const cost = Math.ceil(basis * 0.25);
     if (p.credits < cost) return "insufficient funds";
     p.credits -= cost;
@@ -859,13 +992,16 @@ export class World {
     const p = this.players.get(slot);
     if (!p || p.eliminated) return "dead";
     const e = this.ents.get(id);
-    if (!e || e.o !== slot || e.k !== "factory") return "can't upgrade that";
-    if (p.credits < UPGRADE_COST) return "insufficient funds";
-    if (!this.hasBuilding(slot, "techlab")) return "need a techlab";
-    p.credits -= UPGRADE_COST;
-    e.k = "factory2";
-    e.mhp = BUILDINGS.factory2.hp;
-    e.hp = Math.min(e.mhp, e.hp + 400);
+    if (!e || e.o !== slot || !isBuilding(e.k)) return "can't upgrade that";
+    const path = hasOwn(UPGRADE_PATHS, e.k) ? UPGRADE_PATHS[e.k] : null;
+    if (!path) return "can't upgrade that";
+    if (p.credits < path.cost) return "insufficient funds";
+    if (!this.hasBuilding(slot, path.requires)) return `need a ${path.requires}`;
+    p.credits -= path.cost;
+    const oldMhp = e.mhp;
+    e.k = path.to;
+    e.mhp = BUILDINGS[path.to].hp;
+    e.hp = Math.min(e.mhp, e.hp + Math.max(250, e.mhp - oldMhp));
     this.recomputePower(slot);
     return null;
   }
@@ -879,7 +1015,14 @@ export class World {
     if (
       !e ||
       e.o !== slot ||
-      (e.k !== "barracks" && e.k !== "factory" && e.k !== "factory2" && e.k !== "airfield" && e.k !== "shipyard")
+      (e.k !== "barracks" &&
+        e.k !== "barracks2" &&
+        e.k !== "factory" &&
+        e.k !== "factory2" &&
+        e.k !== "airfield" &&
+        e.k !== "airfield2" &&
+        e.k !== "shipyard" &&
+        e.k !== "shipyard2")
     ) {
       return "can't set rally";
     }
@@ -933,13 +1076,16 @@ export class World {
     // checkEnd picks up the elimination next tick
   }
 
-  cmdPlace(slot: number, tx: number, ty: number): string | null {
+  cmdPlace(slot: number, tx: number, ty: number, cat?: BuildCategory): string | null {
     const p = this.players.get(slot);
-    if (!p || !p.awaiting) return "nothing to place";
-    const kind = p.awaiting;
+    if (!p) return "nothing to place";
+    const useDef = cat === "defense" ? true : cat === "structure" ? false : !p.awaiting && !!p.awaitingDef;
+    const kind = useDef ? p.awaitingDef : p.awaiting;
+    if (!kind) return "nothing to place";
     const err = this.canPlace(slot, kind, tx, ty);
     if (err) return err;
-    p.awaiting = null;
+    if (useDef) p.awaitingDef = null;
+    else p.awaiting = null;
     const b = this.placeBuilding(slot, kind, tx, ty);
     this.recomputePower(slot);
     if (kind === "refinery") {
@@ -1001,6 +1147,13 @@ export class World {
         p.creditsEarned += DERRICK_CAPTURE_BONUS;
       }
       this.events.push({ e: "income", x: tgt.x, y: tgt.y, amt: DERRICK_CAPTURE_BONUS, slot: e.o });
+    } else if (tgt.k === "coalmine") {
+      const p = this.players.get(e.o);
+      if (p) {
+        p.credits += COALMINE_CAPTURE_BONUS;
+        p.creditsEarned += COALMINE_CAPTURE_BONUS;
+      }
+      this.events.push({ e: "income", x: tgt.x, y: tgt.y, amt: COALMINE_CAPTURE_BONUS, slot: e.o });
     }
     this.events.push({ e: "cap", x: tgt.x, y: tgt.y, slot: e.o });
     this.destroy(e);
@@ -1008,15 +1161,17 @@ export class World {
   }
 
   private hasBuilding(slot: number, kind: BuildingKind) {
+    const upg = UPGRADED_OF[kind];
     for (const e of this.ents.values())
-      if (e.o === slot && (e.k === kind || (kind === "factory" && e.k === "factory2"))) return true;
+      if (e.o === slot && (e.k === kind || (upg !== undefined && e.k === upg))) return true;
     return false;
   }
 
   private buildingsOf(slot: number, kind: BuildingKind) {
+    const upg = UPGRADED_OF[kind];
     const out: Ent[] = [];
     for (const e of this.ents.values())
-      if (e.o === slot && (e.k === kind || (kind === "factory" && e.k === "factory2"))) out.push(e);
+      if (e.o === slot && (e.k === kind || (upg !== undefined && e.k === upg))) out.push(e);
     return out;
   }
 
@@ -1079,13 +1234,14 @@ export class World {
   private tickDerricks() {
     const emitPopup = this.tick % 40 === 0;
     for (const d of this.ents.values()) {
-      if (d.k !== "derrick" || d.o < 0) continue;
+      if ((d.k !== "derrick" && d.k !== "coalmine") || d.o < 0) continue;
       const p = this.players.get(d.o);
       if (!p || p.eliminated) continue;
-      p.credits += DERRICK_INCOME;
-      p.creditsEarned += DERRICK_INCOME;
+      const inc = d.k === "coalmine" ? COALMINE_INCOME : DERRICK_INCOME;
+      p.credits += inc;
+      p.creditsEarned += inc;
       if (emitPopup) {
-        this.events.push({ e: "income", x: d.x, y: d.y, amt: DERRICK_INCOME * 4, slot: d.o });
+        this.events.push({ e: "income", x: d.x, y: d.y, amt: inc * 4, slot: d.o });
       }
     }
   }
@@ -1169,7 +1325,11 @@ export class World {
         }
         text = "SQUAD REPAIRED!";
       } else if (crate.kind === "unit") {
-        const bonusKind: UnitKind = this.hasBuilding(collector.o, "factory2") ? "heavy" : "tank";
+        const bonusKind: UnitKind = this.hasBuilding(collector.o, "satlink")
+          ? "railtank"
+          : this.hasBuilding(collector.o, "factory2")
+            ? "heavy"
+            : "tank";
         const spot = nearestPassable(Math.floor(collector.x), Math.floor(collector.y), this.passable, 6);
         if (spot) {
           this.spawnUnit(collector.o, bonusKind, spot.x, spot.y);
@@ -1219,8 +1379,9 @@ export class World {
         const amt = this.ore[t];
         if (amt > 0) {
           if (amt < ORE_CELL_MAX) {
-            this.ore[t] = amt + 1;
-            changed.push([x, y, amt + 1]);
+            const nextAmt = Math.min(ORE_CELL_MAX, amt + 2);
+            this.ore[t] = nextAmt;
+            changed.push([x, y, nextAmt]);
           }
           continue;
         }
@@ -1231,8 +1392,8 @@ export class World {
         if (y + 1 < MAP_H && this.ore[t + MAP_W] > 0) adj++;
         if (y > 0 && this.ore[t - MAP_W] > 0) adj++;
         if (adj >= 2 && Math.random() < ORE_SPREAD_CHANCE) {
-          this.ore[t] = 1;
-          changed.push([x, y, 1]);
+          this.ore[t] = 2;
+          changed.push([x, y, 2]);
         }
       }
     }
@@ -1247,6 +1408,13 @@ export class World {
         if (p.bq.left <= 0) {
           p.awaiting = p.bq.kind;
           p.bq = null;
+        }
+      }
+      if (p.dq) {
+        p.dq.left -= rate;
+        if (p.dq.left <= 0) {
+          p.awaitingDef = p.dq.kind;
+          p.dq = null;
         }
       }
       if (this.hasBuilding(p.slot, "superweapon")) {
@@ -1275,13 +1443,18 @@ export class World {
             delete p.queues[cat];
             continue;
           }
-          const b = blds[0];
+          const upgKind = UPGRADED_OF[cat];
+          const b = (upgKind ? blds.find((x) => x.k === upgKind) : undefined) ?? blds[0];
           const spawned = b ? this.spawnNearBuilding(p.slot, q.unit, b) : null;
           if (!spawned) {
             // nowhere to deploy — refund instead of eating the unit
             p.credits += UNITS[q.unit].cost;
           } else {
             p.unitsBuilt++;
+            // Veteran ★ graduation from upgraded production facilities
+            if (b && (b.k === "barracks2" || b.k === "airfield2" || b.k === "shipyard2")) {
+              this.promoteUnit(spawned, 1);
+            }
             if (b && b.rally) {
               const rk: OrderKind = spawned.k === "engineer" || spawned.k === "harvester" ? "move" : "amove";
               this.cmdOrder(p.slot, [spawned.id], rk, b.rally[0], b.rally[1]);
@@ -1296,6 +1469,7 @@ export class World {
 
   private tickEnt(e: Ent) {
     if (e.cd > 0) e.cd--;
+    if (e.interceptCd > 0) e.interceptCd--;
     if (e.direct) {
       if (this.tick > e.direct.until) {
         delete e.direct;
@@ -1542,7 +1716,7 @@ export class World {
     ty = Math.max(0.1, Math.min(MAP_H - 0.1, ty));
 
     e.cd = w.rof;
-    if (e.k === "sub") e.subSurfaceUntil = this.tick + 45;
+    if (e.k === "sub" || e.k === "stealthbomber") e.subSurfaceUntil = this.tick + 45;
     this.events.push({
       e: "shot",
       fx: e.x,
@@ -1553,6 +1727,8 @@ export class World {
       src: e.id,
       ...(e.vet > 0 ? { vet: e.vet } : {}),
     });
+
+    if (this.tryIntercept(e, tx, ty)) return;
 
     const splashR = SPLASH_RADIUS[e.k];
     if (splashR) {
@@ -1828,6 +2004,31 @@ export class World {
     e.d = Math.atan2(y - e.y, x - e.x);
   }
 
+  private tryIntercept(attacker: Ent, tx: number, ty: number, defenderSlot?: number): boolean {
+    if (!INTERCEPTABLE.has(attacker.k)) return false;
+    let bestDome: Ent | null = null;
+    let bestD = IRONDOME_RADIUS;
+    for (const dome of this.ents.values()) {
+      if (dome.k !== "irondome" || dome.o < 0 || dome.interceptCd > 0) continue;
+      if (this.players.get(dome.o)?.lowPower) continue;
+      if (defenderSlot !== undefined && defenderSlot >= 0) {
+        if (!this.isAlly(defenderSlot, dome.o)) continue;
+      } else {
+        if (this.isAlly(attacker.o, dome.o)) continue;
+      }
+      const d = dist(dome.x, dome.y, tx, ty);
+      if (d <= bestD) {
+        bestD = d;
+        bestDome = dome;
+      }
+    }
+    if (!bestDome) return false;
+    bestDome.interceptCd = IRONDOME_COOLDOWN;
+    this.face(bestDome, tx, ty);
+    this.events.push({ e: "intercept", fx: bestDome.x, fy: bestDome.y, tx, ty, slot: bestDome.o });
+    return true;
+  }
+
   private tryFire(e: Ent, tgt: Ent) {
     if (e.cd > 0) return;
     const w = weaponOf(e);
@@ -1835,12 +2036,11 @@ export class World {
     if (isBuilding(e.k) && this.players.get(e.o)?.lowPower) return; // powered defenses offline
     if (!this.canAttack(e, tgt)) return;
     e.cd = w.rof;
-    if (e.k === "sub") e.subSurfaceUntil = this.tick + 45; // surfaces for 4.5s while firing
+    if (e.k === "sub" || e.k === "stealthbomber") e.subSurfaceUntil = this.tick + 45; // reveals for 4.5s while firing
     const baseDmg = w.dmg * VET_DMG[e.vet];
     const directDmg = baseDmg * armorMult(e.k, tgt.k);
     const tx = tgt.x,
       ty = tgt.y;
-    tgt.hp -= directDmg;
     this.events.push({
       e: "shot",
       fx: e.x,
@@ -1851,6 +2051,8 @@ export class World {
       src: e.id,
       ...(e.vet > 0 ? { vet: e.vet } : {}),
     });
+    if (this.tryIntercept(e, tx, ty, tgt.o)) return;
+    tgt.hp -= directDmg;
     this.events.push({ e: "hit", id: tgt.id });
     this.grantXp(e, directDmg * 0.5);
     this.alertVictim(tgt.o, tx, ty);
@@ -2013,7 +2215,9 @@ export class World {
 
   private separate() {
     // soft separation between units in the SAME domain (spatial 3x3 cell neighborhood); tanks crush enemy infantry
-    const isVeh = (k: EntKind) => k === "tank" || k === "heavy" || k === "arty" || k === "harvester";
+    const isVeh = (k: EntKind) =>
+      k === "tank" || k === "heavy" || k === "arty" || k === "harvester" || k === "himars" || k === "railtank";
+    const isCrusher = (k: EntKind) => k === "tank" || k === "heavy" || k === "railtank";
     const crushable = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer";
     for (let cy = 0; cy < 8; cy++) {
       for (let cx = 0; cx < 8; cx++) {
@@ -2046,7 +2250,10 @@ export class World {
                 }
                 let minSep: number;
                 if (aDom === "sea") {
-                  minSep = a.k === "dreadnought" || b.k === "dreadnought" ? 1.35 : 1.1;
+                  minSep =
+                    a.k === "dreadnought" || b.k === "dreadnought" || a.k === "carrier" || b.k === "carrier"
+                      ? 1.35
+                      : 1.1;
                 } else if (aDom === "air") {
                   minSep = a.k === "zeppelin" || b.k === "zeppelin" ? 1.25 : 0.9;
                 } else {
@@ -2054,12 +2261,12 @@ export class World {
                 }
                 if (d2 > minSep * minSep) continue;
                 if (aDom === "land") {
-                  if ((a.k === "tank" || a.k === "heavy") && crushable(b.k) && !this.isAlly(a.o, b.o)) {
+                  if (isCrusher(a.k) && crushable(b.k) && !this.isAlly(a.o, b.o)) {
                     this.grantXp(a, b.mhp * 0.8);
                     this.destroy(b, a.o);
                     continue;
                   }
-                  if ((b.k === "tank" || b.k === "heavy") && crushable(a.k) && !this.isAlly(a.o, b.o)) {
+                  if (isCrusher(b.k) && crushable(a.k) && !this.isAlly(a.o, b.o)) {
                     this.grantXp(b, a.mhp * 0.8);
                     this.destroy(a, b.o);
                     aDead = true;
@@ -2142,7 +2349,7 @@ export class World {
       if (e.k === "harvester") s.cargo = e.cargo;
       if (e.vet > 0) s.vet = e.vet;
       if (e.hold) s.hold = true;
-      if (this.isSubmerged(e)) s.sub = true;
+      if (this.isStealthed(e)) s.sub = true;
       if (e.rally) s.rally = [e.rally[0], e.rally[1]];
       if (!isBuilding(e.k) && (e.order || e.orderQueue.length)) {
         const wp: [number, number, OrderKind][] = [];
@@ -2177,6 +2384,8 @@ export class World {
         eliminated: p.eliminated,
         awaiting: p.awaiting,
         bq: p.bq ? { ...p.bq } : null,
+        awaitingDef: p.awaitingDef,
+        dq: p.dq ? { ...p.dq } : null,
         queues: qCopy,
         team: p.team,
       };

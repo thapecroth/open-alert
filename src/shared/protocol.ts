@@ -1,4 +1,4 @@
-import type { BuildingKind, UnitKind, EntKind, MapId, BotDiff, BotProfile, CrateKind, GameConfig, ProdCat } from "./gamedefs";
+import type { BuildingKind, BuildCategory, UnitKind, EntKind, MapId, BotDiff, BotProfile, CrateKind, GameConfig, ProdCat } from "./gamedefs";
 
 // ---------- client -> server ----------
 export type C2S =
@@ -21,9 +21,9 @@ export type C2S =
     } // direct first-person WASD + aim/fire control
   | { t: "driveExit"; id: number } // exit first-person control
   | { t: "recon"; x: number; y: number } // fire Radar Uplink Recon Scan (reveals fog)
-  | { t: "build"; kind: BuildingKind } // start building production
-  | { t: "buildCancel" }
-  | { t: "place"; tx: number; ty: number } // place the finished (awaiting) building
+  | { t: "build"; kind: BuildingKind } // start building or defense production (parallel queues!)
+  | { t: "buildCancel"; cat?: BuildCategory }
+  | { t: "place"; tx: number; ty: number; cat?: BuildCategory } // place finished structure or defense
   | { t: "train"; unit: UnitKind } // queue one unit
   | { t: "trainCancel"; unit: UnitKind } // dequeue one
   | { t: "sell"; id: number } // sell own building for 50% refund
@@ -45,7 +45,19 @@ export type C2S =
   | { t: "hb" }; // lightweight keepalive heartbeat
 
 export type OrderKind = "move" | "amove" | "attack" | "harvest" | "patrol";
-export type WeaponFx = "bullet" | "cannon" | "rocket" | "arty" | "arc" | "melee" | "missile" | "torpedo" | "bomb";
+export type WeaponFx =
+  | "bullet"
+  | "cannon"
+  | "rocket"
+  | "arty"
+  | "arc"
+  | "melee"
+  | "missile"
+  | "torpedo"
+  | "bomb"
+  | "laser"
+  | "railgun"
+  | "intercept";
 
 // ---------- server -> client ----------
 export interface RoomSummary {
@@ -115,8 +127,10 @@ export interface PlayerState {
   pwrUse: number;
   lowPower: boolean;
   eliminated: boolean;
-  awaiting: BuildingKind | null; // building finished, waiting for placement
+  awaiting: BuildingKind | null; // structure finished, waiting for placement
   bq: { kind: BuildingKind; left: number; total: number } | null;
+  awaitingDef?: BuildingKind | null; // defense finished (parallel queue!), waiting for placement
+  dq?: { kind: BuildingKind; left: number; total: number } | null;
   queues: Partial<Record<ProdCat, ProdQueue>>;
   team?: number;
   swReady?: boolean;
@@ -148,6 +162,7 @@ export type GameEvent =
   | { e: "elim"; slot: number }
   | { e: "superweapon"; x: number; y: number; slot: number }
   | { e: "recon"; x: number; y: number; slot: number; r: number }
+  | { e: "intercept"; fx: number; fy: number; tx: number; ty: number; slot: number }
   | { e: "promote"; id: number; vet: number; x: number; y: number; slot: number }
   | { e: "crate"; x: number; y: number; kind: CrateKind; slot: number; text: string }
   | { e: "income"; x: number; y: number; amt: number; slot: number }

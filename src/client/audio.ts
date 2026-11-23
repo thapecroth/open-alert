@@ -361,11 +361,15 @@ export class AudioEngine {
             ? 0.075
             : weapon === "arty" || weapon === "bomb"
               ? 0.09
-              : weapon === "missile" || weapon === "torpedo"
+              : weapon === "missile" || weapon === "torpedo" || weapon === "railgun"
                 ? 0.085
-                : weapon === "arc"
-                  ? 0.07
-                  : 0.065;
+                : weapon === "laser"
+                  ? 0.08
+                  : weapon === "intercept"
+                    ? 0.06
+                    : weapon === "arc"
+                      ? 0.07
+                      : 0.065;
 
     if (!this.allow(`shot:${weapon}`, minGap, ctx.currentTime)) return;
 
@@ -401,6 +405,15 @@ export class AudioEngine {
           break;
         case "bomb":
           this.synthBomb(ctx, this.sfxBus, now, jitter, heroic);
+          break;
+        case "laser":
+          this.synthLaser(ctx, this.sfxBus, now, jitter, heroic);
+          break;
+        case "railgun":
+          this.synthRailgun(ctx, this.sfxBus, now, jitter, heroic);
+          break;
+        case "intercept":
+          this.synthIntercept(ctx, this.sfxBus, now, jitter, heroic);
           break;
       }
       if (heroic) {
@@ -1224,6 +1237,175 @@ export class AudioEngine {
     }
   }
 
+  private synthLaser(
+    ctx: AudioContext,
+    bus: AudioNode,
+    now: number,
+    jitter: number,
+    heroic: boolean,
+  ): void {
+    // High-energy searing plasma/laser hum (Helios Laser & Defense Satellite)
+    const dur = heroic ? 0.28 : 0.24;
+
+    // Sharp focused emitter ignition zap
+    this.playTone(ctx, bus, "sine", 2480 * jitter, 880 * jitter, now, 0.055, heroic ? 0.24 : 0.19, 0.002);
+
+    // Continuous resonant dual-harmonic thermal beam hum through soft overdrive
+    const shaper = ctx.createWaveShaper();
+    if (this.softDrive) shaper.curve = this.softDrive;
+
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.Q.value = 3.0;
+    bp.frequency.setValueAtTime(1950 * jitter, now);
+    bp.frequency.exponentialRampToValueAtTime(1080 * jitter, now + dur);
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(heroic ? 0.34 : 0.28, now + 0.01);
+    g.gain.setValueAtTime(heroic ? 0.3 : 0.24, now + dur * 0.65);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    shaper.connect(bp);
+    bp.connect(g);
+    g.connect(bus);
+
+    for (const [f0, f1, type] of [
+      [520 * jitter, 410 * jitter, "sawtooth"],
+      [785 * jitter, 620 * jitter, "triangle"],
+      [1560 * jitter, 1180 * jitter, "sine"],
+    ] as [number, number, OscillatorType][]) {
+      const osc = ctx.createOscillator();
+      osc.type = type;
+      osc.frequency.setValueAtTime(f0, now);
+      osc.frequency.exponentialRampToValueAtTime(f1, now + dur);
+      osc.connect(shaper);
+      osc.start(now);
+      osc.stop(now + dur + 0.02);
+    }
+
+    // Searing high-frequency thermal plasma sizzle
+    if (this.whiteNoise) {
+      const sizzle = this.makeNoiseSource(ctx, this.whiteNoise);
+      const hp = ctx.createBiquadFilter();
+      hp.type = "highpass";
+      hp.frequency.setValueAtTime(3200, now);
+
+      const sg = ctx.createGain();
+      sg.gain.setValueAtTime(0.0001, now);
+      sg.gain.linearRampToValueAtTime(heroic ? 0.2 : 0.15, now + 0.012);
+      sg.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+      sizzle.connect(hp);
+      hp.connect(sg);
+      sg.connect(bus);
+      sizzle.start(now, Math.random() * 1.2);
+      sizzle.stop(now + dur + 0.02);
+    }
+  }
+
+  private synthRailgun(
+    ctx: AudioContext,
+    bus: AudioNode,
+    now: number,
+    jitter: number,
+    heroic: boolean,
+  ): void {
+    // Sharp electromagnetic crack + deep magnetic rail sub-thump (Aegis Railgun MBT)
+    // 1. Deep sub-bass electromagnetic recoil thump
+    this.playTone(ctx, bus, "sine", 168 * jitter, 32, now, heroic ? 0.28 : 0.24, heroic ? 0.6 : 0.5, 0.003);
+    // 2. Metallic rail ring body
+    this.playTone(ctx, bus, "triangle", 460 * jitter, 118 * jitter, now, 0.14, 0.26, 0.002);
+    // 3. Blistering high-voltage discharge transient
+    this.playTone(ctx, bus, "sawtooth", 3150 * jitter, 420 * jitter, now, 0.06, heroic ? 0.24 : 0.19, 0.0015);
+
+    // 4. Supersonic electromagnetic crack burst (hard-driven white noise)
+    if (this.whiteNoise) {
+      const crack = this.makeNoiseSource(ctx, this.whiteNoise);
+      const shaper = ctx.createWaveShaper();
+      if (this.hardDrive) shaper.curve = this.hardDrive;
+
+      const bp = ctx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.Q.value = 1.4;
+      bp.frequency.setValueAtTime(3600 * jitter, now);
+      bp.frequency.exponentialRampToValueAtTime(840, now + 0.11);
+
+      const cg = ctx.createGain();
+      cg.gain.setValueAtTime(0.0001, now);
+      cg.gain.linearRampToValueAtTime(heroic ? 0.44 : 0.36, now + 0.002);
+      cg.gain.exponentialRampToValueAtTime(0.0001, now + 0.125);
+
+      crack.connect(shaper);
+      shaper.connect(bp);
+      bp.connect(cg);
+      cg.connect(bus);
+      crack.start(now, Math.random() * 1.2);
+      crack.stop(now + 0.14);
+    }
+
+    // 5. Subtle rising capacitor recharge whine tail
+    this.playTone(ctx, bus, "sine", 1380 * jitter, 2120 * jitter, now + 0.045, 0.16, 0.065, 0.015);
+  }
+
+  private synthIntercept(
+    ctx: AudioContext,
+    bus: AudioNode,
+    now: number,
+    jitter: number,
+    heroic: boolean,
+  ): void {
+    // Iron Dome: crisp whistling interceptor launch + tight midair airburst pop!
+    const popAt = now + 0.17;
+
+    // Phase 1: Snappy launch tube pop + rising whistling interceptor streak
+    this.playTone(ctx, bus, "triangle", 250 * jitter, 92, now, 0.042, 0.22, 0.002);
+    this.playTone(ctx, bus, "sine", 940 * jitter, 2520 * jitter, now + 0.008, 0.16, heroic ? 0.19 : 0.15, 0.012);
+
+    if (this.whiteNoise) {
+      const whoosh = this.makeNoiseSource(ctx, this.whiteNoise);
+      const bp = ctx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.Q.value = 2.6;
+      bp.frequency.setValueAtTime(1150 * jitter, now);
+      bp.frequency.exponentialRampToValueAtTime(3300 * jitter, popAt);
+
+      const wg = ctx.createGain();
+      wg.gain.setValueAtTime(0.0001, now);
+      wg.gain.linearRampToValueAtTime(0.22, now + 0.025);
+      wg.gain.exponentialRampToValueAtTime(0.0001, popAt + 0.01);
+
+      whoosh.connect(bp);
+      bp.connect(wg);
+      wg.connect(bus);
+      whoosh.start(now, Math.random() * 1.2);
+      whoosh.stop(popAt + 0.02);
+
+      // Phase 2: Tight crisp midair airburst pop!
+      const popNoise = this.makeNoiseSource(ctx, this.whiteNoise);
+      const pbp = ctx.createBiquadFilter();
+      pbp.type = "bandpass";
+      pbp.Q.value = 1.5;
+      pbp.frequency.setValueAtTime(2400 * jitter, popAt);
+      pbp.frequency.exponentialRampToValueAtTime(760, popAt + 0.085);
+
+      const pg = ctx.createGain();
+      pg.gain.setValueAtTime(0.0001, popAt);
+      pg.gain.linearRampToValueAtTime(heroic ? 0.4 : 0.34, popAt + 0.003);
+      pg.gain.exponentialRampToValueAtTime(0.0001, popAt + 0.095);
+
+      popNoise.connect(pbp);
+      pbp.connect(pg);
+      pg.connect(bus);
+      popNoise.start(popAt, Math.random() * 1.2);
+      popNoise.stop(popAt + 0.11);
+    }
+
+    // Tight midair detonation snap + clean cyan intercept confirmation ping
+    this.playTone(ctx, bus, "sine", 215 * jitter, 58, popAt, 0.085, 0.32, 0.002);
+    this.playTone(ctx, bus, "sine", 1760 * jitter, 1720 * jitter, popAt + 0.006, 0.075, 0.09, 0.002);
+  }
+
   private synthHeroicOvertone(
     ctx: AudioContext,
     bus: AudioNode,
@@ -1232,7 +1414,10 @@ export class AudioEngine {
     jitter: number,
   ): void {
     // Subtle heroic rank-3 punch & metallic harmonic shimmer
-    const base = weapon === "cannon" || weapon === "arty" || weapon === "missile" || weapon === "bomb" ? 82 : 164;
+    const base =
+      weapon === "cannon" || weapon === "arty" || weapon === "missile" || weapon === "bomb" || weapon === "railgun"
+        ? 82
+        : 164;
     this.playTone(ctx, bus, "sine", base * jitter, base * 0.55, now, 0.14, 0.14, 0.003);
     this.playTone(ctx, bus, "triangle", 880 * jitter, 1320 * jitter, now, 0.075, 0.065, 0.004);
   }

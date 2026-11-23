@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { BUILDINGS, BuildingKind, MAP_W, MAP_H, SPAWNS } from "../shared/gamedefs";
+import { BUILDINGS, BuildingKind, buildCategoryOf, MAP_W, MAP_H, SPAWNS } from "../shared/gamedefs";
 import type { OrderKind } from "../shared/protocol";
 import { GameScene } from "./scene";
 import { Renderer } from "./render";
@@ -522,10 +522,13 @@ export class Input {
         t.last.o === slot &&
         (t.last.k === "conyard" ||
           t.last.k === "barracks" ||
+          t.last.k === "barracks2" ||
           t.last.k === "factory" ||
           t.last.k === "factory2" ||
           t.last.k === "airfield" ||
-          t.last.k === "shipyard"),
+          t.last.k === "airfield2" ||
+          t.last.k === "shipyard" ||
+          t.last.k === "shipyard2"),
     );
     if (!prods.length) return;
     const pick = prods[this.prodCycle++ % prods.length];
@@ -886,10 +889,13 @@ export class Input {
           b &&
           b.last.o === slot &&
           (b.last.k === "barracks" ||
+            b.last.k === "barracks2" ||
             b.last.k === "factory" ||
             b.last.k === "factory2" ||
             b.last.k === "airfield" ||
-            b.last.k === "shipyard")
+            b.last.k === "airfield2" ||
+            b.last.k === "shipyard" ||
+            b.last.k === "shipyard2")
         ) {
           const ground = this.gs.pickGround();
           if (ground) {
@@ -921,7 +927,7 @@ export class Input {
     } else if (
       t &&
       t.last.o === -1 &&
-      t.last.k === "derrick" &&
+      (t.last.k === "derrick" || t.last.k === "coalmine") &&
       ids.some((id) => this.r.tracked.get(id)?.last.k === "engineer")
     ) {
       kind = "attack";
@@ -1058,10 +1064,11 @@ export class Input {
   }
 
   cancelPlacing() {
+    const cat = this.placing ? buildCategoryOf(this.placing) : undefined;
     this.placingCancelled = true;
     this.clearPlacePending();
     this.exitPlacing();
-    this.net.send({ t: "buildCancel" });
+    this.net.send(cat ? { t: "buildCancel", cat } : { t: "buildCancel" });
   }
 
   private moveGhost() {
@@ -1105,7 +1112,7 @@ export class Input {
       this.placePending = false;
       this.placePendingTimer = null;
     }, 1500);
-    this.net.send({ t: "place", tx, ty });
+    this.net.send({ t: "place", tx, ty, cat: buildCategoryOf(this.placing) });
     this.onUiSound("place");
   }
 

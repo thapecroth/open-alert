@@ -16,9 +16,11 @@ import {
   PLAYER_COLORS,
   SPAWNS,
   BUILD_ORDER,
+  DEFENSE_ORDER,
   TRAIN_ORDER,
   DEFAULT_CONFIG,
   SHIPYARD_BUILD_DIST,
+  buildCategoryOf,
   BuildingKind,
   EntKind,
   MapId,
@@ -75,7 +77,8 @@ let currentConfig: GameConfig = { ...DEFAULT_CONFIG };
 let latestState: PlayerState | null = null;
 const oreCells = new Set<number>();
 const allies = new Set<number>();
-let prevAwaiting: string | null = null;
+let prevAwaiting: BuildingKind | null = null;
+let prevAwaitingDef: BuildingKind | null = null;
 let prevLowPower = false;
 let iconColor = "";
 let lastTrainSfx = 0;
@@ -308,13 +311,16 @@ const isAlly = (slot: number) => allies.has(slot);
 
 function weaponFxOf(k: EntKind): WeaponFx {
   if (k === "tank" || k === "heavy" || k === "destroyer") return "cannon";
-  if (k === "rocket" || k === "interceptor") return "rocket";
+  if (k === "rocket" || k === "interceptor" || k === "sam") return "rocket";
   if (k === "arty") return "arty";
   if (k === "arc") return "arc";
   if (k === "spider") return "melee";
-  if (k === "dreadnought") return "missile";
+  if (k === "dreadnought" || k === "himars" || k === "hypersonic" || k === "carrier") return "missile";
   if (k === "sub") return "torpedo";
-  if (k === "bomber" || k === "zeppelin") return "bomb";
+  if (k === "bomber" || k === "stealthbomber" || k === "zeppelin") return "bomb";
+  if (k === "lasertower" || k === "satlink") return "laser";
+  if (k === "railtank") return "railgun";
+  if (k === "irondome") return "intercept";
   return "bullet";
 }
 
@@ -349,9 +355,17 @@ fpv.onFireSfx = (kind, vet) => {
   audio.playShot(weaponFxOf(kind), vet);
 };
 
+const UPGRADED_ALIAS: Partial<Record<string, string>> = {
+  barracks: "barracks2",
+  factory: "factory2",
+  airfield: "airfield2",
+  shipyard: "shipyard2",
+};
+
 function has(kind: string) {
+  const mk2 = UPGRADED_ALIAS[kind];
   for (const t of renderer.tracked.values())
-    if (t.last.o === mySlot && (t.last.k === kind || (kind === "factory" && t.last.k === "factory2"))) return true;
+    if (t.last.o === mySlot && (t.last.k === kind || (mk2 !== undefined && t.last.k === mk2))) return true;
   return false;
 }
 
@@ -390,11 +404,13 @@ hud.onBuild = (kind) => {
   net.send({ t: "build", kind });
   audio.playUi("buildStart");
 };
-hud.onBuildCancel = () => {
-  if (input.placing) input.exitPlacing();
-  net.send({ t: "buildCancel" });
+hud.onBuildCancel = (cat) => {
+  if (input.placing && (!cat || buildCategoryOf(input.placing) === cat)) {
+    input.exitPlacing();
+  }
+  net.send(cat ? { t: "buildCancel", cat } : { t: "buildCancel" });
   audio.playUi("select");
-  hud.toast("Construction cancelled & refunded", true);
+  hud.toast(cat === "defense" ? "Defense cancelled & refunded" : "Construction cancelled & refunded", true);
 };
 hud.onPlaceMode = (kind) => {
   if (input.placing === kind) {
@@ -429,11 +445,21 @@ hud.onFilterSelection = (kind) => {
   }
 };
 input.onPlaceReadyHotkey = () => {
-  const aw = latestState?.awaiting;
-  if (!aw) return;
-  if (input.placing === aw) input.exitPlacing();
+  const aw = latestState?.awaiting ?? null;
+  const awDef = latestState?.awaitingDef ?? null;
+  if (!aw && !awDef) return;
+  if (aw && awDef) {
+    const next = input.placing === aw ? awDef : aw;
+    input.placingCancelled = false;
+    input.enterPlacing(next);
+    audio.playUi("select");
+    return;
+  }
+  const only = (aw ?? awDef)!;
+  if (input.placing === only) input.exitPlacing();
   else {
-    input.enterPlacing(aw);
+    input.placingCancelled = false;
+    input.enterPlacing(only);
     audio.playUi("select");
   }
 };
@@ -574,6 +600,7 @@ net.onMsg = (m: S2C) => {
       currentConfig = m.config ? { ...DEFAULT_CONFIG, ...m.config } : { ...DEFAULT_CONFIG };
       phase = "playing";
       prevAwaiting = null;
+      prevAwaitingDef = null;
       prevLowPower = false;
       latestState = null;
       myTeam = m.players.find((p) => p.slot === mySlot)?.team ?? 0;
@@ -614,13 +641,26 @@ net.onMsg = (m: S2C) => {
       lastCamZ = gs.camTarget.z;
       autoCamGoal = { x: gs.camTarget.x, z: gs.camTarget.z };
       setAutoCam(startAutoCam);
-      // Render real 3D model thumbnails for sidebar + selection panel (incl. conyard, factory2 & derrick)
+      // Render real 3D model thumbnails for sidebar + selection panel (incl. all upgrades, defenses & coalmine)
       const color = mySlot >= 0 ? PLAYER_COLORS[mySlot] : "#45d6ff";
       if (iconColor !== color) {
         iconColor = color;
-        generateIcons(gs, ["conyard", "factory2", "derrick", ...BUILD_ORDER, ...TRAIN_ORDER.map((t) => t.unit)], color).then(
-          (icons) => hud.setIcons(icons),
-        );
+        generateIcons(
+          gs,
+          [
+            "conyard",
+            "barracks2",
+            "factory2",
+            "airfield2",
+            "shipyard2",
+            "derrick",
+            "coalmine",
+            ...BUILD_ORDER,
+            ...DEFENSE_ORDER,
+            ...TRAIN_ORDER.map((t) => t.unit),
+          ],
+          color,
+        ).then((icons) => hud.setIcons(icons));
       }
       hud.toast(mySlot >= 0 ? "battle control online — good luck, commander" : "spectating", true);
       break;
@@ -665,6 +705,10 @@ net.onMsg = (m: S2C) => {
           hud.toast("⚡ ORBITAL ION CANNON FIRED!", ev.slot === mySlot);
           hud.ping(ev.x, ev.y);
           input.setLastAlert(ev.x, ev.y);
+        } else if (ev.e === "intercept") {
+          noteCombatPos(ev.tx, ev.ty, 1.5);
+          audio.playShot("intercept");
+          audio.noteCombat(0.3);
         } else if (ev.e === "recon") {
           if (mySlot < 0 || ev.slot === mySlot || allies.has(ev.slot)) {
             audio.playUi("recon");
@@ -731,17 +775,31 @@ net.onMsg = (m: S2C) => {
       hud.updateGroups(input.groups, renderer.tracked, mySlot);
       if (mySlot >= 0) {
         const awaiting = latestState?.awaiting ?? null;
+        const awaitingDef = latestState?.awaitingDef ?? null;
         if (awaiting !== prevAwaiting) {
           input.placingCancelled = false;
-          input.clearPlacePending();
+          if (!input.placing || buildCategoryOf(input.placing) === "structure") input.clearPlacePending();
           if (awaiting) {
             audio.playUi("buildDone");
             hud.toast(`${BUILDING_NAMES[awaiting]} READY — click in sidebar or press B to place`, true);
           }
         }
+        if (awaitingDef !== prevAwaitingDef) {
+          input.placingCancelled = false;
+          if (!input.placing || buildCategoryOf(input.placing) === "defense") input.clearPlacePending();
+          if (awaitingDef) {
+            audio.playUi("buildDone");
+            hud.toast(`${BUILDING_NAMES[awaitingDef]} READY — click in sidebar or press B to place`, true);
+          }
+        }
         prevAwaiting = awaiting;
-        // Classic RA2 flow: NEVER auto-hijack cursor when a structure finishes; player clicks READY or presses B!
-        if (!awaiting && input.placing) input.exitPlacing();
+        prevAwaitingDef = awaitingDef;
+        // Classic RA2 flow: NEVER auto-hijack cursor when a structure/defense finishes; player clicks READY or presses B!
+        if (input.placing) {
+          const cat = buildCategoryOf(input.placing);
+          const expected = cat === "defense" ? awaitingDef : awaiting;
+          if (expected !== input.placing) input.exitPlacing();
+        }
       }
       break;
     }

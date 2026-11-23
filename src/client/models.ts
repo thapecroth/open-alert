@@ -78,10 +78,35 @@ function getAirShadowMat(): THREE.MeshBasicMaterial {
   return airShadowMat;
 }
 
+export function isAir(kind: EntKind): boolean {
+  return (
+    kind === "uav" ||
+    kind === "interceptor" ||
+    kind === "chopper" ||
+    kind === "bomber" ||
+    kind === "stealthbomber" ||
+    kind === "hypersonic" ||
+    kind === "zeppelin"
+  );
+}
+
+export function isSea(kind: EntKind): boolean {
+  return (
+    kind === "gunboat" ||
+    kind === "destroyer" ||
+    kind === "sub" ||
+    kind === "dreadnought" ||
+    kind === "carrier"
+  );
+}
+
 const AIR_SHADOW_SIZE: Partial<Record<EntKind, [number, number]>> = {
+  uav: [1.18, 0.72],
   interceptor: [0.95, 1.1],
   chopper: [0.98, 1.15],
   bomber: [1.45, 1.18],
+  stealthbomber: [1.56, 1.12],
+  hypersonic: [0.76, 1.38],
   zeppelin: [1.22, 1.85],
 };
 
@@ -187,9 +212,12 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
   const partialRig = built.rig;
   const powerGlow = built.powerGlow ?? partialRig.powerGlow;
 
+  const airUnit = isAir(kind) || partialRig.altitude !== undefined;
+  const seaUnit = isSea(kind);
+
   // Clickable soft air-shadow disc on ground directly beneath hovering aircraft
   let shadow = partialRig.shadow;
-  if (partialRig.altitude !== undefined && !shadow) {
+  if (airUnit && !shadow) {
     const [rx, rz] = AIR_SHADOW_SIZE[kind] ?? [0.95, 1.05];
     const sh = new THREE.Mesh(geoAirShadow, getAirShadowMat());
     sh.scale.set(rx, 1, rz);
@@ -205,11 +233,15 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
   // Health bar sprites (tagged isBar so icon renderer & raycaster ignore them)
   const barW = isBuildingKind(kind)
     ? Math.max(BUILDINGS[kind].w, 1.4)
-    : kind === "dreadnought" || kind === "zeppelin"
-      ? 1.55
-      : kind === "destroyer" || kind === "bomber"
-        ? 1.22
-        : 0.96;
+    : kind === "carrier"
+      ? 1.68
+      : kind === "dreadnought" || kind === "zeppelin"
+        ? 1.55
+        : kind === "destroyer" || kind === "bomber" || kind === "stealthbomber"
+          ? 1.24
+          : kind === "railtank" || kind === "heavy" || kind === "himars"
+            ? 1.12
+            : 0.96;
   const { bg, fg } = makeBar(barW);
   bg.position.y = topY + 0.38;
   fg.position.y = topY + 0.38;
@@ -229,19 +261,23 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
   // Selection ring on ground/water directly beneath unit
   const ringSize = isBuildingKind(kind)
     ? Math.max(BUILDINGS[kind].w, BUILDINGS[kind].h) * 0.78
-    : kind === "dreadnought"
-      ? 1.42
-      : kind === "zeppelin"
-        ? 1.28
-        : kind === "destroyer"
-          ? 1.12
-          : kind === "bomber"
-            ? 0.98
-            : kind === "sub"
-              ? 0.9
-              : kind === "gunboat" || kind === "interceptor" || kind === "chopper"
-                ? 0.8
-                : 0.68;
+    : kind === "carrier"
+      ? 1.58
+      : kind === "dreadnought"
+        ? 1.42
+        : kind === "zeppelin"
+          ? 1.28
+          : kind === "destroyer"
+            ? 1.12
+            : kind === "stealthbomber"
+              ? 1.06
+              : kind === "bomber"
+                ? 0.98
+                : kind === "sub" || kind === "railtank" || kind === "heavy"
+                  ? 0.9
+                  : seaUnit || airUnit || kind === "himars"
+                    ? 0.82
+                    : 0.68;
   const ring = new THREE.Mesh(
     geoRing,
     new THREE.MeshBasicMaterial({
@@ -254,7 +290,7 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
   );
   ring.rotation.x = -Math.PI / 2;
   ring.scale.setScalar(ringSize);
-  ring.position.y = partialRig.altitude !== undefined ? 0.06 : 0.05;
+  ring.position.y = airUnit ? 0.06 : 0.05;
   ring.visible = false;
   ring.userData.isBar = true;
   root.add(ring);

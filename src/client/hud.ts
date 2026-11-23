@@ -3,9 +3,11 @@ import {
   BUILDINGS,
   UNITS,
   BUILD_ORDER,
+  DEFENSE_ORDER,
   TRAIN_ORDER,
   BUILDING_NAMES,
-  UPGRADE_COST,
+  UPGRADE_PATHS,
+  buildCategoryOf,
   CAPTURE_RANGE,
   PLAYER_COLORS,
   SPAWNS,
@@ -16,6 +18,7 @@ import {
   DEFAULT_CONFIG,
   getMapLayout,
   BuildingKind,
+  BuildCategory,
   UnitKind,
   EntKind,
   MapId,
@@ -31,36 +34,53 @@ import type { FpvTelemetry } from "./fpv";
 
 const TOOLTIPS: Record<string, string> = {
   conyard: "Construction Yard — the heart of your base.",
-  power: "Reactor Plant — powers your base; keeps defenses, radar & superweapon online.",
+  power: "Reactor Plant — powers your base (+100⚡); keeps defenses, radar & superweapon online.",
+  coalplant: "Thermal Coal Plant — heavy coal-fired generator (+165⚡). Needs Ore Refinery.",
+  fusion: "Fusion Reactor — massive late-game clean power (+380⚡). Needs Tech Lab.",
   refinery: "Ore Refinery — unlocks harvesters; deploys one free.",
-  barracks: "Barracks — trains infantry: Riflemen, Sappers, Rocket Troopers.",
-  radar: "Radar Uplink — reveals the minimap; unlocks rockets, siege, air command & arc coils.",
-  factory: "War Factory — builds vehicles. Upgrade it to unlock heavies.",
-  airfield: "Air Command — deploys Air Force aircraft that fly over cliffs & water. Needs Radar.",
-  shipyard: "Naval Shipyard — builds warships; must be placed on navigable water near your base.",
-  techlab: "Tech Lab — unlocks heavy air/sea units, Ore Purifier, Ion Uplink & War Factory II.",
-  turret: "Sentry Turret — automated ground & anti-air (AA) base defense. Needs power.",
-  arc: "Arc Coil — heavy ground & anti-air (AA) zap defense in every direction. Needs power + radar.",
+  barracks: "Barracks — trains infantry: Riflemen, Sappers, Rocket Troopers. Upgrade to MKII for Veteran ★ troops.",
+  barracks2: "Barracks II — elite infantry command; trains Veteran ★ troops faster.",
+  radar: "Radar Uplink — reveals the minimap; unlocks rockets, siege, air command, Patriot SAM & Arc Spire.",
+  factory: "War Factory — builds vehicles. Upgrade to MKII to unlock heavy armor.",
+  factory2: "War Factory II — heavy armor works; unlocks Mastodon Tank & Spider Drone.",
+  airfield: "Air Command — deploys Air Force aircraft that fly over cliffs & water. Upgrade to MKII for Stealth Wing.",
+  airfield2: "Air Command II — Stealth Wing; unlocks B-21 Phantom, Mach-9 Strike & Veteran ★ aircraft.",
+  shipyard: "Naval Shipyard — builds warships on navigable water. Upgrade to MKII for Fleet Dock.",
+  shipyard2: "Naval Shipyard II — Fleet Dock; unlocks Poseidon Dreadnought, Nimitz Carrier & Veteran ★ ships.",
+  techlab: "Tech Lab — unlocks heavy air/sea tech, Fusion Reactor, Ore Purifier, Defense Satellite & MKII upgrades.",
+  satlink: "Defense Satellite — orbital laser uplink & telemetry hub; unlocks HIMARS, Aegis Railgun & Ion Uplink. Limit 1.",
+  turret: "Vulcan Turret — rapid-fire ground & anti-air (AA) base defense. Needs power.",
+  sam: "Patriot SAM — long-range dedicated anti-air (AA) missile battery. Needs power + Radar.",
+  arc: "Arc Spire — heavy ground & anti-air (AA) lightning defense in every direction. Needs power + Radar.",
+  irondome: "Iron Dome — active point-defense system; intercepts enemy artillery & missiles mid-air + AA. Limit 3.",
+  lasertower: "Helios Laser — high-energy beam tower that melts heavy armor & aircraft. Needs power + Tech Lab.",
   purifier: "Ore Purifier — +25% on every harvester deposit.",
   depot: "Service Depot — repairs nearby vehicles automatically.",
-  superweapon: "Ion Uplink — charges an Orbital Ion Cannon strike (90s). Needs power. Limit 1.",
+  superweapon: "Ion Uplink — charges an Orbital Ion Cannon strike (90s). Needs power & Defense Satellite. Limit 1.",
   derrick: "Oil Derrick — capture with a Sapper for +$500 bonus & +$25/s income.",
+  coalmine: "Coal Mine — capture with a Sapper for +$400 bonus, +$20/s income & +60⚡ power.",
   infantry: "Rifleman — cheap, fast, anti-infantry & light AA.",
-  engineer: "Sapper — captures enemy buildings & Oil Derricks on contact. Unarmed.",
-  rocket: "Rocket Trooper — long-range anti-armor & anti-air (AA) infantry. Needs radar.",
+  engineer: "Sapper — captures enemy buildings, Oil Derricks & Coal Mines on contact. Unarmed.",
+  rocket: "Rocket Trooper — long-range anti-armor & anti-air (AA) infantry. Needs Radar.",
   tank: "Battle Tank — armored punch. Crushes infantry.",
-  arty: "Siege Launcher — long-range splash artillery. Fragile. Needs radar.",
+  arty: "Siege Launcher — long-range splash artillery. Fragile. Needs Radar.",
   heavy: "Mastodon Tank — twin-cannon monster. Needs War Factory II.",
   spider: "Spider Drone — fast melee scout. Needs War Factory II.",
-  harvester: "Ore Harvester — collects ore; a full load is worth $1000.",
+  himars: "HIMARS Launcher — ultra-long-range precision rocket artillery with heavy splash. Needs Defense Satellite.",
+  railtank: "Aegis Railgun — hyper-velocity electromagnetic MBT (Ground + AA). Needs Defense Satellite.",
+  harvester: "Ore Harvester — collects ore; a full load is worth $1,125.",
+  uav: "Reaper Drone — fast wide-vision reconnaissance & strike UAV (Air + Ground, AA).",
   interceptor: "Valkyrie Jet — supersonic Air Force fighter (Air + Ground, AA).",
   chopper: "Hornet Gunship — agile Air Force gunship (Air + Ground, AA).",
   bomber: "Tempest Bomber — heavy Air Force splash strike bomber vs ground & ships. Needs Tech Lab.",
+  stealthbomber: "B-21 Phantom — cloaked stealth bomber with devastating splash payloads. Needs Air Command II.",
+  hypersonic: "Mach-9 Strike — blisteringly fast long-range hypersonic striker (Air + Ground). Needs Air Command II.",
   zeppelin: "Leviathan Airship — armored Air Force flying dreadnought with massive splash bombs. Needs Tech Lab.",
   gunboat: "Viper Hydrofoil — fast Navy patrol & anti-air (AA) picket craft.",
   destroyer: "Aegis Destroyer — versatile Navy warship with heavy cannons & anti-air (AA) defense.",
   sub: "Kraken Sub — stealth Navy submarine; submerges unseen to launch torpedoes. Needs Radar.",
-  dreadnought: "Poseidon Dreadnought — long-range Navy bombardment cruiser with splash cruise missiles. Needs Tech Lab.",
+  dreadnought: "Poseidon Dreadnought — long-range Navy bombardment cruiser with splash cruise missiles. Needs Naval Shipyard II.",
+  carrier: "Nimitz Carrier — fleet flagship launching long-range drone strikes (Air + Ground, wide vision). Needs Naval Shipyard II.",
 };
 
 const MAP_PREVIEW_PALETTES: Record<
@@ -204,43 +224,69 @@ function fmtBoost(mult: number): string {
 const SHORT_BUILDING_NAMES: Record<BuildingKind, string> = {
   conyard: "ConYard",
   power: "Reactor",
+  coalplant: "Coal Plant",
+  fusion: "Fusion",
   refinery: "Refinery",
   barracks: "Barracks",
+  barracks2: "Barracks II",
   radar: "Radar",
   factory: "War Factory",
   factory2: "Factory II",
   airfield: "Air Command",
+  airfield2: "Air Cmd II",
   shipyard: "Shipyard",
+  shipyard2: "Shipyard II",
   techlab: "Tech Lab",
-  turret: "Turret",
-  arc: "Arc Coil",
+  satlink: "Def Satellite",
+  turret: "Vulcan",
+  sam: "Patriot SAM",
+  arc: "Arc Spire",
+  irondome: "Iron Dome",
+  lasertower: "Helios Laser",
   purifier: "Purifier",
   depot: "Depot",
   superweapon: "Ion Uplink",
   derrick: "Oil Derrick",
+  coalmine: "Coal Mine",
 };
 
 const COMPACT_BUILDING_NAMES: Record<BuildingKind, string> = {
   conyard: "ConYard",
   power: "Reactor",
+  coalplant: "Coal",
+  fusion: "Fusion",
   refinery: "Refinery",
   barracks: "Barracks",
+  barracks2: "Bks II",
   radar: "Radar",
   factory: "Factory",
   factory2: "Factory II",
   airfield: "Air Cmd",
+  airfield2: "Air II",
   shipyard: "Shipyard",
+  shipyard2: "Ship II",
   techlab: "Tech Lab",
-  turret: "Turret",
-  arc: "Arc Coil",
+  satlink: "Def Sat",
+  turret: "Vulcan",
+  sam: "SAM",
+  arc: "Arc Spire",
+  irondome: "Iron Dome",
+  lasertower: "Laser",
   purifier: "Purifier",
   depot: "Depot",
   superweapon: "Ion Uplink",
   derrick: "Derrick",
+  coalmine: "Coal Mine",
 };
 
+const UPGRADE_TARGET_TO_PATH = new Map(Object.values(UPGRADE_PATHS).map((p) => [p.to, p]));
+
 function prereqsOf(k: BuildingKind): BuildingKind[] {
+  if (k === "barracks2") return ["barracks", "radar"];
   if (k === "factory2") return ["techlab", "factory"];
+  if (k === "airfield2") return ["airfield", "techlab"];
+  if (k === "shipyard2") return ["shipyard", "techlab"];
+  if (k === "satlink") return ["techlab"];
   return BUILDINGS[k]?.requires ?? [];
 }
 
@@ -267,7 +313,11 @@ function formatShortNeed(missing: BuildingKind[]): string {
 }
 
 function formatChainSteps(chain: BuildingKind[]): string[] {
-  return chain.map((k) => (k === "factory2" ? "Upgrade War Factory → MKII" : BUILDING_NAMES[k]));
+  return chain.map((k) => {
+    const up = UPGRADE_TARGET_TO_PATH.get(k);
+    if (up) return `Upgrade ${BUILDING_NAMES[up.from]} → MKII`;
+    return BUILDING_NAMES[k];
+  });
 }
 
 const MCP_CONNECT_CMD = "claude mcp add --transport http open-alert https://open-alert.thapecroth.workers.dev/mcp";
@@ -297,7 +347,7 @@ export class Hud {
   onResign: () => void = () => {};
   onChat: (text: string) => void = () => {};
   onBuild: (k: BuildingKind) => void = () => {};
-  onBuildCancel: () => void = () => {};
+  onBuildCancel: (cat?: BuildCategory) => void = () => {};
   onPlaceMode: (k: BuildingKind) => void = () => {};
   onTrain: (u: UnitKind) => void = () => {};
   onTrainCancel: (u: UnitKind) => void = () => {};
@@ -352,6 +402,7 @@ export class Hud {
   private fpvMode = false;
   private fpvLastKind = "";
   private readyAwaiting: BuildingKind | null = null;
+  private readyAwaitingDef: BuildingKind | null = null;
   private resignConfirmTimer: ReturnType<typeof setTimeout> | null = null;
   private gfx: GraphicsBridge | null = null;
   private gfxLastMs = 0;
@@ -432,7 +483,14 @@ export class Hud {
     });
     document.getElementById("ready-pill")?.addEventListener("contextmenu", (e) => {
       e.preventDefault();
-      if (this.readyAwaiting) this.onBuildCancel();
+      if (this.readyAwaiting) this.onBuildCancel("structure");
+    });
+    document.getElementById("ready-def-pill")?.addEventListener("click", () => {
+      if (this.readyAwaitingDef) this.onPlaceMode(this.readyAwaitingDef);
+    });
+    document.getElementById("ready-def-pill")?.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      if (this.readyAwaitingDef) this.onBuildCancel("defense");
     });
     el("help-btn")?.addEventListener("click", () => el("help").classList.toggle("hidden"));
     el("help-close")?.addEventListener("click", () => el("help").classList.add("hidden"));
@@ -615,24 +673,31 @@ export class Hud {
     });
     el("chat-box").addEventListener("click", () => chatInput.focus());
 
-    // Build sidebar buttons once
-    const bl = el("build-list");
-    for (const kind of BUILD_ORDER) {
+    // Build sidebar buttons once (parallel Structures + Defenses lists)
+    const addBuildBtn = (container: HTMLElement, kind: BuildingKind) => {
       const d = BUILDINGS[kind];
+      const cat = buildCategoryOf(kind);
       const b = document.createElement("button");
       b.className = "sbtn";
       b.dataset.kind = kind;
+      b.dataset.cat = cat;
       b.title = this.buildTooltip(kind);
       b.innerHTML = `<span class="icon" data-kind="${kind}"></span><span class="slabel"><span class="sname">${BUILDING_NAMES[kind]}</span><span class="req-tag"></span></span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span>`;
       b.addEventListener("click", () => this.clickBuild(kind));
       b.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         if (b.dataset.busy === "1" || b.classList.contains("ready")) {
-          this.onBuildCancel();
+          this.onBuildCancel(cat);
         }
       });
-      bl.appendChild(b);
+      container.appendChild(b);
       this.buildBtns.set(kind, b);
+    };
+    const bl = el("build-list");
+    for (const kind of BUILD_ORDER) addBuildBtn(bl, kind);
+    const dl = document.getElementById("defense-list");
+    if (dl) {
+      for (const kind of DEFENSE_ORDER) addBuildBtn(dl, kind);
     }
 
     const tl = el("train-list");
@@ -971,6 +1036,26 @@ export class Hud {
       ctx.stroke();
     }
 
+    // Neutral Coal Mines (slate-gold diamond markers)
+    if (layout.coalmines?.length) {
+      for (const [cx, cy] of layout.coalmines) {
+        const mx = (cx + 1) * s;
+        const my = (cy + 1) * s;
+        const r = 4;
+        ctx.beginPath();
+        ctx.moveTo(mx, my - r);
+        ctx.lineTo(mx + r, my);
+        ctx.lineTo(mx, my + r);
+        ctx.lineTo(mx - r, my);
+        ctx.closePath();
+        ctx.fillStyle = "#525e68";
+        ctx.fill();
+        ctx.strokeStyle = "#e6b84c";
+        ctx.lineWidth = 1.4;
+        ctx.stroke();
+      }
+    }
+
     // 4 corner player spawn dots
     for (let i = 0; i < SPAWNS.length; i++) {
       const sp = SPAWNS[i];
@@ -1020,7 +1105,9 @@ export class Hud {
     this.groupSig = "";
     this.specCmdrSig = "";
     this.readyAwaiting = null;
+    this.readyAwaitingDef = null;
     document.getElementById("ready-pill")?.classList.add("hidden");
+    document.getElementById("ready-def-pill")?.classList.add("hidden");
     document.getElementById("spec-controls")?.classList.add("hidden");
     this.fpvLastKind = "";
     this.selSig = "";
@@ -2183,6 +2270,10 @@ export class Hud {
 
     for (const [kind, b] of this.buildBtns) {
       const d = BUILDINGS[kind];
+      const cat = buildCategoryOf(kind);
+      const isDef = cat === "defense";
+      const catAwaiting = isDef ? (state?.awaitingDef ?? null) : (state?.awaiting ?? null);
+      const catQueue = isDef ? (state?.dq ?? null) : (state?.bq ?? null);
       b.classList.remove("ready", "locked");
       delete b.dataset.busy;
       b.disabled = false;
@@ -2218,22 +2309,31 @@ export class Hud {
       if (!has("conyard")) {
         b.classList.add("locked");
         b.disabled = true;
-        const detail = "Lost Construction Yard — cannot build structures.";
+        const detail = isDef
+          ? "Lost Construction Yard — cannot build defenses."
+          : "Lost Construction Yard — cannot build structures.";
         b.title = `${this.buildTooltip(kind)} · ${detail}`;
         applyReason(b, "Need ConYard", detail, "busy", "blocked");
         continue;
       }
-      if (state.awaiting === kind) {
+      if (catAwaiting === kind) {
         b.classList.add("ready");
         bt.textContent = "READY";
         b.title = this.buildTooltip(kind);
-        applyReason(b, "Click to place", "Finished — click (or press B) to place · right-click here to cancel & refund.", "", "ready", "Finished — click (or press B) to place · right-click to cancel & refund.");
+        applyReason(
+          b,
+          "Click to place",
+          "Finished — click (or press B) to place · right-click here to cancel & refund.",
+          "",
+          "ready",
+          "Finished — click (or press B) to place · right-click to cancel & refund.",
+        );
         continue;
       }
-      if (state.bq?.kind === kind) {
+      if (catQueue?.kind === kind) {
         b.dataset.busy = "1";
-        prog.style.width = `${(1 - state.bq.left / state.bq.total) * 100}%`;
-        bt.textContent = `${(state.bq.left / 10).toFixed(1)}s`;
+        prog.style.width = `${(1 - catQueue.left / catQueue.total) * 100}%`;
+        bt.textContent = `${(catQueue.left / 10).toFixed(1)}s`;
         b.title = this.buildTooltip(kind);
         applyReason(b, "", "", "", "building", "Constructing — right-click to cancel & refund.");
         continue;
@@ -2256,30 +2356,32 @@ export class Hud {
         applyReason(b, formatShortNeed(missing), detail, "lock", "blocked");
         continue;
       }
-      if (state.awaiting) {
+      if (catAwaiting) {
         b.disabled = true;
-        const awaitingName = BUILDING_NAMES[state.awaiting];
+        const awaitingName = BUILDING_NAMES[catAwaiting];
         const detail = `Place your finished ${awaitingName} on the map first (or right-click to cancel).`;
-        applyReason(b, `Place ${SHORT_BUILDING_NAMES[state.awaiting]}`, detail, "lock", "blocked");
+        applyReason(b, `Place ${SHORT_BUILDING_NAMES[catAwaiting]}`, detail, "lock", "blocked");
         continue;
       }
-      if (state.bq) {
+      if (catQueue) {
         b.disabled = true;
-        const bqName = BUILDING_NAMES[state.bq.kind];
-        const detail = `Construction Yard is busy building ${bqName}.`;
+        const qName = BUILDING_NAMES[catQueue.kind];
+        const detail = isDef
+          ? `Defense bay is busy building ${qName}.`
+          : `Construction Yard is busy building ${qName}.`;
         applyReason(b, "Queue busy", detail, "busy", "blocked");
         continue;
       }
       if (state.credits < d.cost) {
         b.disabled = true;
-        const detail = `Insufficient funds — need ${fmtCost(d.cost)} (have ${fmtCost(Math.floor(state.credits))}). Build Refineries/Harvesters or capture Oil Derricks.`;
+        const detail = `Insufficient funds — need ${fmtCost(d.cost)} (have ${fmtCost(Math.floor(state.credits))}). Build Refineries/Harvesters or capture Oil Derricks & Coal Mines.`;
         applyReason(b, `Need ${fmtCost(d.cost)}`, detail, "funds", "blocked");
         continue;
       }
       applyReason(b, "", "", "", "avail", "Ready to build — click to start.");
     }
 
-    // Sticky ready-to-place banner at top of sidebar (visible even if scrolled down to ARMY/NAVY)
+    // Sticky ready-to-place banners at top of sidebar (both Structure & Defense can sit ready simultaneously!)
     this.readyAwaiting = state?.awaiting ?? null;
     const readyPill = document.getElementById("ready-pill");
     if (readyPill) {
@@ -2288,6 +2390,17 @@ export class Hud {
         readyPill.textContent = `▶ READY: ${BUILDING_NAMES[this.readyAwaiting].toUpperCase()} [B]`;
       } else {
         readyPill.classList.add("hidden");
+      }
+    }
+
+    this.readyAwaitingDef = state?.awaitingDef ?? null;
+    const readyDefPill = document.getElementById("ready-def-pill");
+    if (readyDefPill) {
+      if (this.readyAwaitingDef && !this.spectating && !this.fpvMode) {
+        readyDefPill.classList.remove("hidden");
+        readyDefPill.textContent = `▶ DEFENSE: ${BUILDING_NAMES[this.readyAwaitingDef].toUpperCase()} [B]`;
+      } else {
+        readyDefPill.classList.add("hidden");
       }
     }
 
@@ -2355,16 +2468,22 @@ export class Hud {
       }
       if (!has(cat) || (d.requires && !has(d.requires))) {
         b.classList.add("locked");
-        const directReqs: BuildingKind[] =
-          d.requires === "factory2" ? ["factory2"] : d.requires ? [cat, d.requires] : [cat];
+        const upPathForCat = d.requires && UPGRADE_PATHS[cat]?.to === d.requires ? UPGRADE_PATHS[cat] : undefined;
+        const directReqs: BuildingKind[] = upPathForCat
+          ? [upPathForCat.to]
+          : d.requires
+            ? [cat, d.requires]
+            : [cat];
         const directMissing = directReqs.filter((r) => !has(r));
         const chain = missingPrereqChain(directReqs, has);
         let detail: string;
-        if (chain.includes("factory2")) {
-          const beforeUpgrade = chain.filter((k) => k !== "factory2");
+        if (upPathForCat && chain.includes(upPathForCat.to)) {
+          const beforeUpgrade = chain.filter((k) => k !== upPathForCat.to);
+          const fromName = BUILDING_NAMES[upPathForCat.from];
+          const toName = BUILDING_NAMES[upPathForCat.to].toUpperCase();
           detail = beforeUpgrade.length
-            ? `Locked — Build first: ${beforeUpgrade.map((k) => BUILDING_NAMES[k]).join(" → ")} → then select War Factory and click UPGRADE → WAR FACTORY II (${fmtCost(UPGRADE_COST)}).`
-            : `Locked — Select your War Factory and click UPGRADE → WAR FACTORY II (${fmtCost(UPGRADE_COST)}).`;
+            ? `Locked — Build first: ${formatChainSteps(beforeUpgrade).join(" → ")} → then select ${fromName} and click UPGRADE → ${toName} (${fmtCost(upPathForCat.cost)}).`
+            : `Locked — Select your ${fromName} and click UPGRADE → ${toName} (${fmtCost(upPathForCat.cost)}).`;
         } else {
           detail = `Locked — Build first: ${formatChainSteps(chain).join(" → ")}.`;
         }
@@ -2494,11 +2613,13 @@ export class Hud {
       return;
     }
 
-    const hasTech = has ? has("techlab") : true;
-    const canAfford = state ? state.credits >= UPGRADE_COST : true;
+    const upPath = singleKind ? UPGRADE_PATHS[singleKind] : undefined;
+    const hasReq = upPath ? (has ? has(upPath.requires) : true) : true;
+    const canAfford = upPath && state ? state.credits >= upPath.cost : true;
+    const reqChain = upPath && !hasReq && has ? missingPrereqChain([upPath.requires], has) : [];
     const sig =
       [...counts].map(([k, n]) => `${k}:${n}`).join(",") +
-      `|${singleId ?? ""}|${singleKind ?? ""}|${hasTech ? 1 : 0}|${canAfford ? 1 : 0}|v${maxVet}|h${anyHold ? 1 : 0}`;
+      `|${singleId ?? ""}|${singleKind ?? ""}|${hasReq ? 1 : 0}|${canAfford ? 1 : 0}|${reqChain.join(">")}|v${maxVet}|h${anyHold ? 1 : 0}`;
 
     // Only rebuild DOM structure when selection or upgrade readiness actually changes
     // (prevents 5Hz innerHTML destruction from eating clicks on the UPGRADE button)
@@ -2530,24 +2651,30 @@ export class Hud {
         }
       }
 
-      if (singleId !== null && singleKind === "factory") {
+      const isMk2 =
+        singleKind === "barracks2" ||
+        singleKind === "factory2" ||
+        singleKind === "airfield2" ||
+        singleKind === "shipyard2";
+      if (singleId !== null && upPath) {
         const b = document.createElement("button");
         b.className = "sbtn si-upgrade";
-        b.disabled = !hasTech || !canAfford;
-        const techChain = !hasTech && has ? missingPrereqChain(["techlab"], has) : [];
-        b.textContent = !hasTech
-          ? `UPGRADE → MKII (NEEDS TECH LAB)`
-          : `UPGRADE → ${BUILDING_NAMES.factory2.toUpperCase()} (${fmtCost(UPGRADE_COST)})`;
-        b.title = !hasTech
-          ? techChain.length
-            ? `Locked — Build first: ${formatChainSteps(techChain).join(" → ")}.`
-            : "Locked — Build a Tech Lab first."
+        b.disabled = !hasReq || !canAfford;
+        const reqName = BUILDING_NAMES[upPath.requires];
+        const toName = BUILDING_NAMES[upPath.to].toUpperCase();
+        b.textContent = !hasReq
+          ? `UPGRADE → ${toName} (NEEDS ${reqName.toUpperCase()})`
+          : `UPGRADE → ${toName} (${fmtCost(upPath.cost)})`;
+        b.title = !hasReq
+          ? reqChain.length
+            ? `Locked — Build first: ${formatChainSteps(reqChain).join(" → ")}.`
+            : `Locked — Build a ${reqName} first.`
           : !canAfford
-            ? `Insufficient funds — need ${fmtCost(UPGRADE_COST)} (have ${fmtCost(Math.floor(state?.credits ?? 0))}).`
-            : "Upgrade War Factory to MKII — unlocks Mastodon Tank & Spider Drone.";
+            ? `Insufficient funds — need ${fmtCost(upPath.cost)} (have ${fmtCost(Math.floor(state?.credits ?? 0))}).`
+            : upPath.desc;
         b.addEventListener("click", () => this.onUpgrade?.(singleId!));
         box.appendChild(b);
-      } else if (singleId !== null && singleKind === "factory2") {
+      } else if (singleId !== null && isMk2) {
         const d = document.createElement("div");
         d.className = "si-mk2";
         d.textContent = "★ MKII";
@@ -2589,7 +2716,9 @@ export class Hud {
     }
     if (ent) {
       if (ent.o === -1 && ent.k === "derrick") {
-        tip.innerHTML = `<span class="ht-dot" style="background:#ffc43d"></span><span>Oil Derrick — Capture with Sapper</span>`;
+        tip.innerHTML = `<span class="ht-dot" style="background:#ffc43d"></span><span>Oil Derrick — Capture with Sapper (+$25/s)</span>`;
+      } else if (ent.o === -1 && ent.k === "coalmine") {
+        tip.innerHTML = `<span class="ht-dot" style="background:#e6b84c"></span><span>Coal Mine — Capture with Sapper (+$20/s &amp; +60⚡)</span>`;
       } else {
         const col = ent.o >= 0 ? PLAYER_COLORS[ent.o] ?? "#8a97a5" : "#8a97a5";
         const name = esc(label(ent.k));
@@ -2693,6 +2822,23 @@ export class Hud {
     for (const t of r.tracked.values()) {
       const e: EntSnap = t.last;
       if (e.o !== mySlot && mySlot >= 0 && !r.isVisible(e.id)) continue;
+      if (e.o === -1 && (e.k === "derrick" || e.k === "coalmine")) {
+        const mx = e.x * s;
+        const my = e.y * s;
+        const rr = 3.2;
+        ctx.beginPath();
+        ctx.moveTo(mx, my - rr);
+        ctx.lineTo(mx + rr, my);
+        ctx.lineTo(mx, my + rr);
+        ctx.lineTo(mx - rr, my);
+        ctx.closePath();
+        ctx.fillStyle = e.k === "derrick" ? "#ffc43d" : "#525e68";
+        ctx.fill();
+        ctx.strokeStyle = e.k === "derrick" ? "#0b1118" : "#e6b84c";
+        ctx.lineWidth = 1.1;
+        ctx.stroke();
+        continue;
+      }
       ctx.fillStyle = e.o >= 0 ? PLAYER_COLORS[e.o] : "#5a6a77";
       const sz = isBuildingKind(e.k) ? Math.max(3, BUILDINGS[e.k].w * s) : 2.5;
       ctx.fillRect(e.x * s - sz / 2, e.y * s - sz / 2, sz, sz);

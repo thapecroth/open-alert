@@ -11,40 +11,62 @@ export const ORE_VALUE = 25; // credits per unit of cargo
 export type BuildingKind =
   | "conyard"
   | "power"
+  | "coalplant"
+  | "fusion"
   | "refinery"
   | "barracks"
+  | "barracks2"
   | "radar"
   | "factory"
   | "factory2"
   | "airfield"
+  | "airfield2"
   | "shipyard"
+  | "shipyard2"
   | "techlab"
-  | "turret"
-  | "arc"
+  | "satlink"
   | "purifier"
   | "depot"
   | "superweapon"
-  | "derrick";
+  // Dedicated parallel Defense category
+  | "turret"
+  | "sam"
+  | "arc"
+  | "irondome"
+  | "lasertower"
+  // Neutral captureable resource structures
+  | "derrick"
+  | "coalmine";
+
+export type BuildCategory = "structure" | "defense";
 
 export type UnitKind =
+  // Land Infantry
   | "infantry"
   | "engineer"
   | "rocket"
+  // Land Vehicles
   | "tank"
   | "arty"
   | "heavy"
   | "spider"
+  | "himars"
+  | "railtank"
   | "harvester"
   // Air Force
+  | "uav"
   | "interceptor"
   | "chopper"
   | "bomber"
+  | "stealthbomber"
+  | "hypersonic"
   | "zeppelin"
   // Navy
   | "gunboat"
   | "destroyer"
   | "sub"
-  | "dreadnought";
+  | "dreadnought"
+  | "carrier";
 
 export type EntKind = BuildingKind | UnitKind;
 export type UnitDomain = "land" | "air" | "sea";
@@ -111,8 +133,8 @@ export const DEFAULT_CONFIG: GameConfig = {
 export const BOT_PROFILES: { id: BotProfile; label: string; desc: string }[] = [
   { id: "balanced", label: "Balanced", desc: "Adaptive economy, mixed army & steady pressure" },
   { id: "rusher", label: "Rusher", desc: "Early aggressive raids & fast infantry/tank waves" },
-  { id: "turtle", label: "Turtle", desc: "Heavy turret/arc defenses & massive late counter-push" },
-  { id: "tech", label: "Tech Boom", desc: "Greedy dual harvesters, fast Tech Lab, Mastodons & Ion Cannon" },
+  { id: "turtle", label: "Turtle", desc: "Heavy Iron Dome/SAM/laser defenses & massive late counter-push" },
+  { id: "tech", label: "Tech Boom", desc: "Greedy economy, fast Tech Lab, Orbital Sat, Railguns & Stealth Bombers" },
 ];
 
 export interface BuildingDef {
@@ -122,10 +144,12 @@ export interface BuildingDef {
   hp: number;
   power: number; // + provides, - consumes
   buildTicks: number;
+  category?: BuildCategory; // "defense" builds in parallel with "structure" (default "structure")
   range?: number;
   dmg?: number;
   rof?: number; // ticks between shots
   canHitAir?: boolean; // defense can engage flying aircraft
+  canHitGround?: boolean; // default true unless explicitly false (dedicated SAM)
   requires?: BuildingKind[]; // tech prerequisites — all must exist before cmdBuild
   noBuild?: true; // exists in the world but can't be queued (upgrade/neutral structures)
   limit?: number; // max count per player
@@ -133,39 +157,107 @@ export interface BuildingDef {
 }
 
 export const BUILDINGS: Record<BuildingKind, BuildingDef> = {
+  // Core & Economy Structures
   conyard: { w: 3, h: 3, cost: 0, hp: 1000, power: 40, buildTicks: 0 },
   power: { w: 2, h: 2, cost: 300, hp: 400, power: 100, buildTicks: 50 },
+  coalplant: { w: 2, h: 2, cost: 480, hp: 520, power: 165, buildTicks: 65, requires: ["refinery"] },
+  fusion: { w: 3, h: 2, cost: 1350, hp: 850, power: 380, buildTicks: 105, requires: ["techlab"] },
   refinery: { w: 3, h: 2, cost: 600, hp: 700, power: -35, buildTicks: 80 },
   barracks: { w: 2, h: 2, cost: 500, hp: 500, power: -20, buildTicks: 70 },
+  barracks2: { w: 2, h: 2, cost: 0, hp: 750, power: -30, buildTicks: 0, noBuild: true },
   radar: { w: 2, h: 2, cost: 700, hp: 500, power: -45, buildTicks: 80, requires: ["barracks"] },
   factory: { w: 3, h: 3, cost: 1000, hp: 900, power: -30, buildTicks: 110 },
   factory2: { w: 3, h: 3, cost: 0, hp: 1300, power: -40, buildTicks: 0, noBuild: true },
   airfield: { w: 3, h: 2, cost: 1000, hp: 750, power: -40, buildTicks: 95, requires: ["radar"] },
+  airfield2: { w: 3, h: 2, cost: 0, hp: 1100, power: -55, buildTicks: 0, noBuild: true },
   shipyard: { w: 3, h: 3, cost: 1000, hp: 950, power: -35, buildTicks: 100, requires: ["power"], waterOnly: true },
-  techlab: { w: 3, h: 3, cost: 1800, hp: 800, power: -60, buildTicks: 130, requires: ["radar", "factory"] },
-  turret: { w: 1, h: 1, cost: 500, hp: 400, power: -25, buildTicks: 60, range: 6.5, dmg: 15, rof: 14, canHitAir: true },
-  arc: { w: 1, h: 1, cost: 800, hp: 550, power: -40, buildTicks: 70, range: 7.5, dmg: 30, rof: 24, requires: ["radar"], canHitAir: true },
-  purifier: { w: 2, h: 2, cost: 900, hp: 500, power: -25, buildTicks: 90, requires: ["techlab"] },
+  shipyard2: { w: 3, h: 3, cost: 0, hp: 1350, power: -50, buildTicks: 0, noBuild: true, waterOnly: true },
   depot: { w: 3, h: 2, cost: 800, hp: 700, power: -30, buildTicks: 90, requires: ["factory"] },
-  superweapon: { w: 3, h: 3, cost: 2500, hp: 1100, power: -100, buildTicks: 150, requires: ["techlab"], limit: 1 },
+  techlab: { w: 3, h: 3, cost: 1800, hp: 800, power: -60, buildTicks: 130, requires: ["radar", "factory"] },
+  purifier: { w: 2, h: 2, cost: 900, hp: 500, power: -25, buildTicks: 90, requires: ["techlab"] },
+  satlink: { w: 3, h: 3, cost: 2000, hp: 950, power: -80, buildTicks: 135, requires: ["techlab"], limit: 1, range: 15, dmg: 38, rof: 28, canHitAir: true },
+  superweapon: { w: 3, h: 3, cost: 2500, hp: 1100, power: -100, buildTicks: 150, requires: ["satlink"], limit: 1 },
+
+  // Dedicated Parallel Defense Category (constructs simultaneously with Structures!)
+  turret: { w: 1, h: 1, cost: 500, hp: 420, power: -25, buildTicks: 55, category: "defense", range: 6.5, dmg: 15, rof: 14, canHitAir: true },
+  sam: { w: 2, h: 2, cost: 750, hp: 520, power: -35, buildTicks: 65, category: "defense", range: 11.5, dmg: 36, rof: 20, canHitAir: true, canHitGround: false, requires: ["radar"] },
+  arc: { w: 1, h: 1, cost: 800, hp: 550, power: -40, buildTicks: 70, category: "defense", range: 7.5, dmg: 32, rof: 24, canHitAir: true, requires: ["radar"] },
+  irondome: { w: 2, h: 2, cost: 1400, hp: 720, power: -55, buildTicks: 85, category: "defense", range: 10.5, dmg: 24, rof: 14, canHitAir: true, canHitGround: false, requires: ["radar", "techlab"], limit: 3 },
+  lasertower: { w: 2, h: 2, cost: 1600, hp: 820, power: -70, buildTicks: 95, category: "defense", range: 9.5, dmg: 68, rof: 28, canHitAir: true, requires: ["techlab"] },
+
+  // Neutral Captureable Resource Landmarks
   derrick: { w: 2, h: 2, cost: 0, hp: 850, power: 0, buildTicks: 0, noBuild: true },
+  coalmine: { w: 2, h: 2, cost: 0, hp: 900, power: 60, buildTicks: 0, noBuild: true },
 };
+
+export function buildCategoryOf(kind: BuildingKind): BuildCategory {
+  return BUILDINGS[kind].category === "defense" ? "defense" : "structure";
+}
 
 export const BUILD_ORDER: BuildingKind[] = [
   "power",
+  "coalplant",
   "refinery",
   "barracks",
   "radar",
   "factory",
   "airfield",
   "shipyard",
-  "turret",
-  "arc",
   "depot",
   "techlab",
+  "fusion",
   "purifier",
+  "satlink",
   "superweapon",
 ];
+
+export const DEFENSE_ORDER: BuildingKind[] = [
+  "turret",
+  "sam",
+  "arc",
+  "irondome",
+  "lasertower",
+];
+
+// Upgrade paths for production buildings (deep tech tree!)
+export interface UpgradePath {
+  from: BuildingKind;
+  to: BuildingKind;
+  cost: number;
+  requires: BuildingKind;
+  desc: string;
+}
+
+export const UPGRADE_PATHS: Record<string, UpgradePath> = {
+  barracks: {
+    from: "barracks",
+    to: "barracks2",
+    cost: 900,
+    requires: "radar",
+    desc: "Upgrade Barracks to Elite Command — trains Veteran ★ infantry + faster deployment.",
+  },
+  factory: {
+    from: "factory",
+    to: "factory2",
+    cost: 1500,
+    requires: "techlab",
+    desc: "Upgrade War Factory to MKII — unlocks Mastodon, Spider Drone, HIMARS & Railgun MBT.",
+  },
+  airfield: {
+    from: "airfield",
+    to: "airfield2",
+    cost: 1400,
+    requires: "techlab",
+    desc: "Upgrade Air Command to Stealth Wing — unlocks B-21 Stealth Bomber & Mach-9 Hypersonic + Veteran ★ air.",
+  },
+  shipyard: {
+    from: "shipyard",
+    to: "shipyard2",
+    cost: 1400,
+    requires: "techlab",
+    desc: "Upgrade Naval Shipyard to Fleet Dock — unlocks Nimitz Drone Carrier & Poseidon Dreadnought + Veteran ★ ships.",
+  },
+};
 
 export interface UnitDef {
   hp: number;
@@ -179,6 +271,8 @@ export interface UnitDef {
   domain: UnitDomain;
   canHitAir?: boolean;
   canHitGround?: boolean; // default true if omitted
+  stealth?: boolean; // cloaked until firing or detected (Kraken Sub / B-21 Stealth Bomber)
+  vision?: number; // optional custom vision radius (default 9)
   requires?: BuildingKind; // extra prerequisite building
   capacity?: number; // harvester cargo units
 }
@@ -193,17 +287,23 @@ export const UNITS: Record<UnitKind, UnitDef> = {
   arty: { hp: 140, speed: 0.1, range: 9, dmg: 42, rof: 42, cost: 1100, buildTicks: 90, trainsAt: "factory", domain: "land", requires: "radar" },
   heavy: { hp: 560, speed: 0.12, range: 5, dmg: 36, rof: 24, cost: 1100, buildTicks: 95, trainsAt: "factory", domain: "land", requires: "factory2" },
   spider: { hp: 90, speed: 0.26, range: 1.4, dmg: 9, rof: 9, cost: 500, buildTicks: 45, trainsAt: "factory", domain: "land", requires: "factory2" },
-  harvester: { hp: 620, speed: 0.11, range: 0, dmg: 0, rof: 0, cost: 1400, buildTicks: 100, trainsAt: "factory", domain: "land", requires: "refinery", capacity: 40 },
+  himars: { hp: 220, speed: 0.13, range: 12.5, dmg: 68, rof: 44, cost: 1650, buildTicks: 105, trainsAt: "factory", domain: "land", requires: "satlink" },
+  railtank: { hp: 720, speed: 0.13, range: 7.5, dmg: 62, rof: 26, cost: 1750, buildTicks: 110, trainsAt: "factory", domain: "land", requires: "satlink", canHitAir: true },
+  harvester: { hp: 620, speed: 0.11, range: 0, dmg: 0, rof: 0, cost: 1400, buildTicks: 100, trainsAt: "factory", domain: "land", requires: "refinery", capacity: 45 },
   // Air Force
+  uav: { hp: 130, speed: 0.30, range: 6.5, dmg: 16, rof: 16, cost: 450, buildTicks: 45, trainsAt: "airfield", domain: "air", canHitAir: true, vision: 13 },
   interceptor: { hp: 190, speed: 0.34, range: 6.5, dmg: 26, rof: 18, cost: 900, buildTicks: 65, trainsAt: "airfield", domain: "air", canHitAir: true },
   chopper: { hp: 310, speed: 0.22, range: 6, dmg: 22, rof: 14, cost: 1100, buildTicks: 75, trainsAt: "airfield", domain: "air", canHitAir: true },
   bomber: { hp: 420, speed: 0.18, range: 5.5, dmg: 80, rof: 46, cost: 1600, buildTicks: 95, trainsAt: "airfield", domain: "air", requires: "techlab" },
+  stealthbomber: { hp: 480, speed: 0.23, range: 6.5, dmg: 125, rof: 48, cost: 2100, buildTicks: 115, trainsAt: "airfield", domain: "air", stealth: true, requires: "airfield2" },
+  hypersonic: { hp: 280, speed: 0.44, range: 10.5, dmg: 78, rof: 34, cost: 1900, buildTicks: 105, trainsAt: "airfield", domain: "air", canHitAir: true, requires: "airfield2" },
   zeppelin: { hp: 1400, speed: 0.085, range: 3.6, dmg: 135, rof: 38, cost: 2200, buildTicks: 120, trainsAt: "airfield", domain: "air", requires: "techlab" },
   // Navy
   gunboat: { hp: 240, speed: 0.24, range: 6.5, dmg: 16, rof: 14, cost: 600, buildTicks: 55, trainsAt: "shipyard", domain: "sea", canHitAir: true },
   destroyer: { hp: 580, speed: 0.14, range: 7.5, dmg: 32, rof: 22, cost: 1100, buildTicks: 80, trainsAt: "shipyard", domain: "sea", canHitAir: true },
-  sub: { hp: 460, speed: 0.15, range: 7, dmg: 52, rof: 30, cost: 1200, buildTicks: 85, trainsAt: "shipyard", domain: "sea", requires: "radar" },
-  dreadnought: { hp: 1150, speed: 0.09, range: 13, dmg: 92, rof: 46, cost: 2200, buildTicks: 115, trainsAt: "shipyard", domain: "sea", requires: "techlab" },
+  sub: { hp: 460, speed: 0.15, range: 7, dmg: 52, rof: 30, cost: 1200, buildTicks: 85, trainsAt: "shipyard", domain: "sea", stealth: true, requires: "radar" },
+  dreadnought: { hp: 1150, speed: 0.09, range: 13, dmg: 92, rof: 46, cost: 2200, buildTicks: 115, trainsAt: "shipyard", domain: "sea", requires: "shipyard2" },
+  carrier: { hp: 1350, speed: 0.10, range: 12, dmg: 64, rof: 26, cost: 2400, buildTicks: 125, trainsAt: "shipyard", domain: "sea", canHitAir: true, vision: 13, requires: "shipyard2" },
 };
 
 export const TRAIN_ORDER: { unit: UnitKind; label: string; group: "land" | "air" | "sea" }[] = [
@@ -214,46 +314,66 @@ export const TRAIN_ORDER: { unit: UnitKind; label: string; group: "land" | "air"
   { unit: "arty", label: "Siege Launcher", group: "land" },
   { unit: "heavy", label: "Mastodon Tank", group: "land" },
   { unit: "spider", label: "Spider Drone", group: "land" },
+  { unit: "himars", label: "HIMARS Launcher", group: "land" },
+  { unit: "railtank", label: "Aegis Railgun", group: "land" },
   { unit: "harvester", label: "Ore Harvester", group: "land" },
   // Air Force
+  { unit: "uav", label: "Reaper Drone", group: "air" },
   { unit: "interceptor", label: "Valkyrie Jet", group: "air" },
   { unit: "chopper", label: "Hornet Gunship", group: "air" },
   { unit: "bomber", label: "Tempest Bomber", group: "air" },
+  { unit: "stealthbomber", label: "B-21 Phantom", group: "air" },
+  { unit: "hypersonic", label: "Mach-9 Strike", group: "air" },
   { unit: "zeppelin", label: "Leviathan Airship", group: "air" },
   // Navy
   { unit: "gunboat", label: "Viper Hydrofoil", group: "sea" },
   { unit: "destroyer", label: "Aegis Destroyer", group: "sea" },
   { unit: "sub", label: "Kraken Sub", group: "sea" },
   { unit: "dreadnought", label: "Poseidon Dreadnought", group: "sea" },
+  { unit: "carrier", label: "Nimitz Carrier", group: "sea" },
 ];
 
 // display names for buildings (sidebar/tooltips)
 export const BUILDING_NAMES: Record<BuildingKind, string> = {
   conyard: "Construction Yard",
   power: "Reactor Plant",
+  coalplant: "Thermal Coal Plant",
+  fusion: "Fusion Reactor",
   refinery: "Ore Refinery",
   barracks: "Barracks",
+  barracks2: "Barracks II",
   radar: "Radar Uplink",
   factory: "War Factory",
   factory2: "War Factory II",
   airfield: "Air Command",
+  airfield2: "Air Command II",
   shipyard: "Naval Shipyard",
-  techlab: "Tech Lab",
-  turret: "Sentry Turret",
-  arc: "Arc Coil",
-  purifier: "Ore Purifier",
+  shipyard2: "Naval Shipyard II",
   depot: "Service Depot",
+  techlab: "Tech Lab",
+  purifier: "Ore Purifier",
+  satlink: "Defense Satellite",
   superweapon: "Ion Uplink",
+  // Defenses
+  turret: "Vulcan Turret",
+  sam: "Patriot SAM",
+  arc: "Arc Spire",
+  irondome: "Iron Dome",
+  lasertower: "Helios Laser",
+  // Resource landmarks
   derrick: "Oil Derrick",
+  coalmine: "Coal Mine",
 };
 
 // ---------- tech & special mechanics ----------
-export const UPGRADE_COST = 1500; // factory -> factory2, requires a techlab
+export const UPGRADE_COST = 1500; // factory -> factory2 (kept for backward-compat imports)
 export const PURIFIER_BONUS = 0.25; // +25% credits per harvester deposit
 export const DEPOT_RANGE = 6; // service depot heal aura radius (tiles)
 export const DEPOT_HEAL = 4; // hp restored per vehicle per second
 export const CAPTURE_RANGE = 1.9; // engineer must be this close to capture
 export const SHIPYARD_BUILD_DIST = 13; // max gap from own base to place Naval Shipyard on water
+export const IRONDOME_RADIUS = 9.5; // active projectile interception radius
+export const IRONDOME_COOLDOWN = 22; // ticks between missile/shell intercepts per Iron Dome
 
 // Veterancy (0=Rookie, 1=Veteran ★, 2=Elite ★★, 3=Heroic ★★★)
 export const VET_XP = [0, 260, 750, 1600] as const;
@@ -269,9 +389,11 @@ export const RECON_CHARGE_TICKS = 450; // 45s cooldown on Radar Uplink
 export const RECON_DURATION_TICKS = 100; // 10s fog reveal
 export const RECON_RADIUS = 12;
 
-// Neutral Oil Derricks & Battlefield Supply Crates
+// Neutral Oil Derricks, Coal Mines & Battlefield Supply Crates
 export const DERRICK_CAPTURE_BONUS = 500;
 export const DERRICK_INCOME = 25; // credits per second (every 10 ticks)
+export const COALMINE_CAPTURE_BONUS = 400;
+export const COALMINE_INCOME = 20; // credits per second + 60⚡ bonus power!
 export const CRATE_INTERVAL_TICKS = 350; // drop every 35s
 export const CRATE_MAX = 3;
 export const CRATE_CASH = 1000;
@@ -280,15 +402,20 @@ export const CRATE_CASH = 1000;
 export const SPLASH_RADIUS: Partial<Record<EntKind, number>> = {
   arty: 2.3,
   heavy: 1.15,
+  himars: 2.8,
   bomber: 2.5,
+  stealthbomber: 3.1,
+  hypersonic: 2.2,
   zeppelin: 2.9,
   dreadnought: 2.8,
+  carrier: 1.8,
 };
 
-export const HARVEST_TICKS_PER_UNIT = 4; // 1 cargo per 4 ticks => ~16s to fill (RA2-like)
-export const ORE_REGEN_TICKS = 50; // ore field regrowth pulse every 5s
-export const ORE_CELL_MAX = 60; // max ore units per tile
-export const ORE_SPREAD_CHANCE = 0.05; // chance a depleted tile next to live ore regrows
+// Rich, long-lasting resource economy (3.5x longer ore lifetime!)
+export const HARVEST_TICKS_PER_UNIT = 4; // 1 cargo per 4 ticks
+export const ORE_REGEN_TICKS = 35; // ore regrowth pulse every 3.5s
+export const ORE_CELL_MAX = 180; // 3x deeper ore cells (survives epic late-game wars!)
+export const ORE_SPREAD_CHANCE = 0.08; // healthy regrowth around active fields
 export const AGGRO_RANGE = 5; // idle units fire at enemies within this radius (no pursuit)
 
 export const PLAYER_COLORS = ["#e03030", "#3390ff", "#f0c020", "#40c060"];
@@ -304,9 +431,9 @@ export const SPAWNS: { x: number; y: number }[] = [
 
 // ---------- Deterministic Handcrafted Maps (15 Biomes & Creative Ocean/Artifact Theaters) ----------
 export const MAP_LIST: { id: MapId; name: string; biome: string; naval?: boolean; desc: string }[] = [
-  { id: "crossroads", name: "Twin Crossroads", biome: "Steppe", desc: "Balanced flank mesas & twin contested Oil Derricks" },
+  { id: "crossroads", name: "Twin Crossroads", biome: "Steppe", desc: "Balanced flank mesas, twin Oil Derricks & Coal Mines" },
   { id: "canyon", name: "Iron Canyon", biome: "Canyon", desc: "Twin sandstone canyon walls channeling fights across 3 lanes" },
-  { id: "basin", name: "Shattered Basin", biome: "Alpine", desc: "Open volcanic ore basin ringed by 4 captureable Oil Derricks" },
+  { id: "basin", name: "Shattered Basin", biome: "Alpine", desc: "Open volcanic ore basin ringed by 4 captureable Oil Derricks & Coal" },
   { id: "tundra", name: "Frostbite Pass", biome: "Arctic", desc: "Frozen glacial divide with wide north/south bypasses & rich center ice field" },
   { id: "fortress", name: "Citadel Bastion", biome: "Desert", desc: "Walled central citadel with 4 gates guarding a mega ore cache" },
   { id: "jungle", name: "Emerald Valley", biome: "Jungle", desc: "Diagonal ridge corridors built for ambushes & flanking raids" },
@@ -324,7 +451,8 @@ export const MAP_LIST: { id: MapId; name: string; biome: string; naval?: boolean
 export interface MapLayout {
   cliffs: [number, number][]; // impassable elevated rocky/glacial/lava/monolith tiles (aircraft fly over!)
   water: [number, number][]; // navigable ocean/river tiles (ships sail on, aircraft fly over!)
-  derricks: [number, number][]; // top-left 2x2 tile of neutral Oil Derricks
+  derricks: [number, number][]; // top-left 2x2 tile of neutral Oil Derricks (+$25/s)
+  coalmines?: [number, number][]; // top-left 2x2 tile of neutral Coal Mines (+$20/s & +60⚡)
   extraOre?: [number, number, number][]; // optional [cx, cy, radius] bonus ore blobs
   artifacts?: MapArtifact[]; // 3D visual landmarks & ocean artifacts
 }
@@ -351,6 +479,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     }
   };
   let derricks: [number, number][] = [];
+  let coalmines: [number, number][] | undefined;
   let extraOre: [number, number, number][] | undefined;
   let artifacts: MapArtifact[] | undefined;
 
@@ -365,6 +494,10 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [31, 10],
       [31, 52],
     ];
+    coalmines = [
+      [10, 31],
+      [52, 31],
+    ];
   } else if (id === "canyon") {
     addRect(cliffSet, 29, 10, 4, 15);
     addRect(cliffSet, 29, 39, 4, 15);
@@ -374,6 +507,10 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [12, 31],
       [50, 31],
     ];
+    coalmines = [
+      [23, 12],
+      [39, 50],
+    ];
   } else if (id === "basin") {
     addRect(cliffSet, 21, 20, 3, 3);
     addRect(cliffSet, 40, 20, 3, 3);
@@ -382,6 +519,8 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     derricks = [
       [31, 8],
       [31, 54],
+    ];
+    coalmines = [
       [8, 31],
       [54, 31],
     ];
@@ -393,6 +532,10 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     derricks = [
       [11, 31],
       [51, 31],
+    ];
+    coalmines = [
+      [31, 8],
+      [31, 54],
     ];
     extraOre = [
       [32, 22, 3],
@@ -410,6 +553,8 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     derricks = [
       [31, 9],
       [31, 53],
+    ];
+    coalmines = [
       [9, 31],
       [53, 31],
     ];
@@ -426,6 +571,8 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     derricks = [
       [31, 12],
       [31, 50],
+    ];
+    coalmines = [
       [14, 31],
       [48, 31],
     ];
@@ -434,7 +581,6 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [44, 32, 3],
     ];
   } else if (id === "islands") {
-    // Navigable wide river channels forming a coastal cross + 4 outer bridges + 4 center bridges + corner coves
     addRect(waterSet, 26, 0, 12, 12);
     addRect(waterSet, 26, 17, 12, 9);
     addRect(waterSet, 26, 38, 12, 9);
@@ -443,12 +589,10 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     addRect(waterSet, 17, 26, 9, 12);
     addRect(waterSet, 38, 26, 9, 12);
     addRect(waterSet, 52, 26, 12, 12);
-    // 4 land causeways connecting the outer quadrants straight into the central ore island
     clearRect(waterSet, 30, 17, 4, 9);
     clearRect(waterSet, 30, 38, 4, 9);
     clearRect(waterSet, 17, 30, 9, 4);
     clearRect(waterSet, 38, 30, 9, 4);
-    // Coastal coves reaching within range of each spawn so Shipyards can be deployed easily
     addRect(waterSet, 13, 0, 13, 6);
     addRect(waterSet, 38, 0, 13, 6);
     addRect(waterSet, 13, 58, 13, 6);
@@ -456,6 +600,8 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     derricks = [
       [21, 21],
       [41, 41],
+    ];
+    coalmines = [
       [41, 21],
       [21, 41],
     ];
@@ -472,14 +618,12 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       { kind: "buoy", x: 58, y: 32 },
     ];
   } else if (id === "archipelago") {
-    // Pacific Atoll: Open ocean surrounding 4 generous corner islands + central volcanic ore atoll + narrow causeways
     addRect(waterSet, 0, 0, MAP_W, MAP_H);
     clearRect(waterSet, 0, 0, 18, 18);
     clearRect(waterSet, 46, 0, 18, 18);
     clearRect(waterSet, 0, 46, 18, 18);
     clearRect(waterSet, 46, 46, 18, 18);
     clearRect(waterSet, 25, 25, 14, 14);
-    // 4 shallow coastal sandbar bridges linking the 4 corner islands & central volcanic atoll
     clearRect(waterSet, 30, 14, 4, 12);
     clearRect(waterSet, 30, 38, 4, 12);
     clearRect(waterSet, 14, 30, 12, 4);
@@ -499,6 +643,8 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     derricks = [
       [31, 9],
       [31, 53],
+    ];
+    coalmines = [
       [9, 31],
       [53, 31],
     ];
@@ -514,7 +660,6 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       { kind: "buoy", x: 40, y: 44 },
     ];
   } else if (id === "coastline") {
-    // Storm Coast: Wide open ocean channels along the top, bottom & mid-strait with 2 wide coastal continents
     addRect(waterSet, 23, 0, 18, MAP_H);
     clearRect(waterSet, 23, 12, 18, 5);
     clearRect(waterSet, 23, 29, 18, 6);
@@ -531,6 +676,10 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [31, 13],
       [31, 48],
     ];
+    coalmines = [
+      [10, 31],
+      [52, 31],
+    ];
     extraOre = [
       [15, 32, 3],
       [48, 32, 3],
@@ -544,13 +693,11 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       { kind: "buoy", x: 36, y: 59 },
     ];
   } else if (id === "atlantis") {
-    // Sunken Atlantis: Turquoise ocean with sunken crystal obelisks, glowing sea-gates & golden causeways
     addRect(waterSet, 0, 0, MAP_W, MAP_H);
     clearRect(waterSet, 0, 0, 19, 19);
     clearRect(waterSet, 45, 0, 19, 19);
     clearRect(waterSet, 0, 45, 19, 19);
     clearRect(waterSet, 45, 45, 19, 19);
-    // Central sunken temple plaza + 4 diagonal/cardinal golden causeways
     clearRect(waterSet, 24, 24, 16, 16);
     clearRect(waterSet, 19, 29, 6, 6);
     clearRect(waterSet, 39, 29, 6, 6);
@@ -560,7 +707,6 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     clearRect(waterSet, 45, 33, 5, 12);
     clearRect(waterSet, 45, 19, 5, 12);
     clearRect(waterSet, 14, 33, 5, 12);
-    // Ancient temple pylons (impassable cliff blocks anchoring obelisks)
     addRect(cliffSet, 25, 25, 2, 2);
     addRect(cliffSet, 37, 25, 2, 2);
     addRect(cliffSet, 25, 37, 2, 2);
@@ -568,6 +714,8 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     derricks = [
       [28, 28],
       [34, 34],
+    ];
+    coalmines = [
       [21, 31],
       [41, 31],
     ];
@@ -589,13 +737,11 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       { kind: "obelisk", x: 42, y: 52, scale: 1.0 },
     ];
   } else if (id === "shipwreck") {
-    // Titan Graveyard: Stormy abyssal sea littered with colossal sunken dreadnought wrecks & salvage shoals
     addRect(waterSet, 0, 0, MAP_W, MAP_H);
     clearRect(waterSet, 0, 0, 18, 18);
     clearRect(waterSet, 46, 0, 18, 18);
     clearRect(waterSet, 0, 46, 18, 18);
     clearRect(waterSet, 46, 46, 18, 18);
-    // Salvage sandbar cross & central wreck shoal + corner connectors
     clearRect(waterSet, 25, 25, 14, 14);
     clearRect(waterSet, 15, 29, 34, 6);
     clearRect(waterSet, 29, 15, 6, 34);
@@ -603,7 +749,6 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     clearRect(waterSet, 46, 17, 4, 14);
     clearRect(waterSet, 14, 33, 4, 14);
     clearRect(waterSet, 46, 33, 4, 14);
-    // Reef rocks beside wrecks
     addRect(cliffSet, 22, 20, 3, 2);
     addRect(cliffSet, 39, 42, 3, 2);
     addRect(cliffSet, 39, 20, 3, 2);
@@ -611,6 +756,8 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     derricks = [
       [18, 31],
       [44, 31],
+    ];
+    coalmines = [
       [31, 18],
       [31, 44],
     ];
@@ -632,12 +779,10 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       { kind: "buoy", x: 32, y: 56 },
     ];
   } else if (id === "volcano") {
-    // Caldera Forge: Steaming sea border + glowing volcanic caldera crater ring with obsidian bridges
     addRect(waterSet, 0, 0, MAP_W, 5);
     addRect(waterSet, 0, 59, MAP_W, 5);
     addRect(waterSet, 0, 0, 5, MAP_H);
     addRect(waterSet, 59, 0, 5, MAP_H);
-    // Keep 4 corner spawn harbors clean while giving easy Shipyard access!
     clearRect(waterSet, 0, 0, 14, 14);
     clearRect(waterSet, 50, 0, 14, 14);
     clearRect(waterSet, 0, 50, 14, 14);
@@ -646,7 +791,6 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     addRect(waterSet, 35, 0, 14, 7);
     addRect(waterSet, 15, 57, 14, 7);
     addRect(waterSet, 35, 57, 14, 7);
-    // Central volcanic caldera ridge ring with 4 wide molten-rock breaches
     addRect(cliffSet, 24, 22, 6, 3);
     addRect(cliffSet, 34, 22, 6, 3);
     addRect(cliffSet, 24, 39, 6, 3);
@@ -658,6 +802,8 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     derricks = [
       [31, 12],
       [31, 50],
+    ];
+    coalmines = [
       [12, 31],
       [50, 31],
     ];
@@ -671,19 +817,16 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       { kind: "seastack", x: 44, y: 61, scale: 1.1 },
     ];
   } else if (id === "oilrig") {
-    // Offshore Megarig: Deep open ocean with 4 corner launch platforms + steel sea-bridges to a giant central oil platform!
     addRect(waterSet, 0, 0, MAP_W, MAP_H);
     clearRect(waterSet, 0, 0, 17, 17);
     clearRect(waterSet, 47, 0, 17, 17);
     clearRect(waterSet, 0, 47, 17, 17);
     clearRect(waterSet, 47, 47, 17, 17);
-    // Giant central offshore platform deck + 4 cardinal highway bridges
     clearRect(waterSet, 23, 23, 18, 18);
     clearRect(waterSet, 16, 29, 8, 6);
     clearRect(waterSet, 40, 29, 8, 6);
     clearRect(waterSet, 29, 16, 6, 8);
     clearRect(waterSet, 29, 40, 6, 8);
-    // Connector bridges to the 4 corner pads
     clearRect(waterSet, 12, 16, 5, 16);
     clearRect(waterSet, 47, 16, 5, 16);
     clearRect(waterSet, 12, 32, 5, 16);
@@ -708,7 +851,6 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       { kind: "shipwreck", x: 59, y: 32, rot: -2.9, scale: 1.1 },
     ];
   } else if (id === "cybergrid") {
-    // Neon Megastructure: High-tech orbital titanium battle deck with crystalline monolith barriers
     addRect(cliffSet, 20, 20, 4, 2);
     addRect(cliffSet, 40, 20, 4, 2);
     addRect(cliffSet, 20, 42, 4, 2);
@@ -720,6 +862,8 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     derricks = [
       [31, 21],
       [31, 41],
+    ];
+    coalmines = [
       [21, 31],
       [41, 31],
     ];
@@ -739,7 +883,6 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       { kind: "monolith", x: 42, y: 43, scale: 0.95 },
     ];
   } else {
-    // oasis
     addRect(cliffSet, 24, 15, 16, 2);
     addRect(cliffSet, 24, 47, 16, 2);
     addRect(cliffSet, 15, 24, 2, 16);
@@ -748,20 +891,23 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [31, 7],
       [31, 55],
     ];
+    coalmines = [
+      [9, 31],
+      [53, 31],
+    ];
     extraOre = [
       [22, 32, 3],
       [42, 32, 3],
     ];
   }
 
-  // Ensure cliffs and water never overlap
   for (const k of cliffSet) waterSet.delete(k);
 
   const cliffs: [number, number][] = [];
   for (const k of cliffSet) cliffs.push([k % MAP_W, (k / MAP_W) | 0]);
   const water: [number, number][] = [];
   for (const k of waterSet) water.push([k % MAP_W, (k / MAP_W) | 0]);
-  const layout: MapLayout = { cliffs, water, derricks, extraOre, artifacts };
+  const layout: MapLayout = { cliffs, water, derricks, coalmines, extraOre, artifacts };
   mapCache.set(id, layout);
   return layout;
 }
