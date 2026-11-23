@@ -165,6 +165,7 @@ export type GameEvent =
   | { e: "superweapon"; x: number; y: number; slot: number }
   | { e: "recon"; x: number; y: number; slot: number; r: number }
   | { e: "intercept"; fx: number; fy: number; tx: number; ty: number; slot: number }
+  | { e: "ewjam"; fx: number; fy: number; tx: number; ty: number; slot: number }
   | { e: "promote"; id: number; vet: number; x: number; y: number; slot: number }
   | { e: "crate"; x: number; y: number; kind: CrateKind; slot: number; text: string }
   | { e: "income"; x: number; y: number; amt: number; slot: number }

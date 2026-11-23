@@ -110,6 +110,20 @@ const UNIT_PROFILES: Record<UnitKind, UnitCameraProfile> = {
     recoilPitch: 0.045,
     recoilShake: 0.2,
   },
+  fpvdrone: {
+    eyeY: 2.65,
+    fov: 88,
+    initPitch: -0.24,
+    minPitch: -1.25,
+    maxPitch: 0.78,
+    bobAmp: 0.016,
+    bobFreq: 9.5,
+    strafeMode: "strafe",
+    turnRate: 3.1,
+    recoilKickZ: 0.14,
+    recoilPitch: 0.05,
+    recoilShake: 0.35,
+  },
   // Land Vehicles
   tank: {
     eyeY: 1.08,
@@ -238,6 +252,34 @@ const UNIT_PROFILES: Record<UnitKind, UnitCameraProfile> = {
     recoilPitch: 0.014,
     recoilShake: 0.09,
   },
+  shahed: {
+    eyeY: 3.15,
+    fov: 78,
+    initPitch: -0.24,
+    minPitch: -1.18,
+    maxPitch: 0.74,
+    bobAmp: 0.012,
+    bobFreq: 6.2,
+    strafeMode: "steer",
+    turnRate: 2.35,
+    recoilKickZ: 0.12,
+    recoilPitch: 0.04,
+    recoilShake: 0.32,
+  },
+  ewdrone: {
+    eyeY: 3.25,
+    fov: 76,
+    initPitch: -0.24,
+    minPitch: -1.1,
+    maxPitch: 0.74,
+    bobAmp: 0.014,
+    bobFreq: 4.4,
+    strafeMode: "strafe",
+    turnRate: 2.45,
+    recoilKickZ: 0.03,
+    recoilPitch: 0.01,
+    recoilShake: 0.06,
+  },
   interceptor: {
     eyeY: 3.42,
     fov: 78,
@@ -323,6 +365,20 @@ const UNIT_PROFILES: Record<UnitKind, UnitCameraProfile> = {
     recoilShake: 0.28,
   },
   // Navy
+  usv: {
+    eyeY: 0.42,
+    fov: 80,
+    initPitch: -0.02,
+    minPitch: -0.38,
+    maxPitch: 0.58,
+    bobAmp: 0.026,
+    bobFreq: 6.8,
+    strafeMode: "steer",
+    turnRate: 2.75,
+    recoilKickZ: 0.14,
+    recoilPitch: 0.04,
+    recoilShake: 0.32,
+  },
   gunboat: {
     eyeY: 0.98,
     fov: 72,
@@ -1149,6 +1205,264 @@ function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
       addPart(recoilGroup, new RoundedBoxGeometry(0.068, 0.026, 0.08, 1, 0.004), darkMetal, ox, oy - 0.032, -1.32);
       addMuzzleFlash(recoilGroup, ox, oy, -1.4, 2.15, 0x5cf6ff);
     }
+  } else if (kind === "fpvdrone") {
+    // Authentic FPV Suicide Drone Goggles Camera Feed:
+    // Carbon-fiber front arms & spinning front props at top-left & top-right corners + strapped RPG warhead tip low ahead!
+    const carbonMat = getChassisMat("#161b22", 0.36, 0.54);
+    const oliveWarhead = getChassisMat("#495738", 0.56, 0.28);
+    const copperMat = getChassisMat("#c97a38", 0.32, 0.8);
+
+    // Wide-angle FPV goggles peripheral corner brackets (keeps center 100% open for high-speed diving!)
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        addPart(swayGroup, new RoundedBoxGeometry(0.14, 0.018, 0.032, 1, 0.004), carbonMat, sx * 0.48, sy * 0.34, -0.42);
+        addPart(swayGroup, new RoundedBoxGeometry(0.018, 0.12, 0.032, 1, 0.004), carbonMat, sx * 0.54, sy * 0.29, -0.42);
+      }
+      // Subtle side camera-cage standoff posts with faction tape strips
+      addPart(swayGroup, new THREE.CylinderGeometry(0.008, 0.008, 0.22, 8), lightAlloy, sx * 0.52, -0.02, -0.44);
+      addPart(swayGroup, new THREE.BoxGeometry(0.014, 0.065, 0.014), factionMat, sx * 0.515, -0.04, -0.435);
+    }
+
+    // FPV Goggles OSD micro status LEDs along top & bottom edges (VTX link green + ARMED red)
+    glowPulses.push(
+      addPart(swayGroup, new THREE.BoxGeometry(0.032, 0.007, 0.008), greenGlow, -0.34, 0.335, -0.41),
+      addPart(swayGroup, new THREE.BoxGeometry(0.032, 0.007, 0.008), cyanGlow, -0.28, 0.335, -0.41),
+      addPart(swayGroup, new THREE.BoxGeometry(0.065, 0.009, 0.008), redGlow, 0.32, 0.335, -0.41),
+    );
+
+    // Carbon-fiber front quadcopter arms + fast-spinning front props visible right at top-left & top-right corners!
+    const propBlurMat = trackMat(
+      new THREE.MeshBasicMaterial({
+        color: 0x1a222b,
+        transparent: true,
+        opacity: 0.34,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    const propRimMat = trackMat(
+      new THREE.MeshBasicMaterial({
+        color: 0xff5a36,
+        transparent: true,
+        opacity: 0.36,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    for (const sx of [-1, 1]) {
+      // Diagonal carbon-fiber front arm reaching outward into upper screen corner
+      addPart(
+        swayGroup,
+        new RoundedBoxGeometry(0.044, 0.018, 0.44, 2, 0.005),
+        carbonMat,
+        sx * 0.34,
+        0.24,
+        -0.56,
+        -0.22,
+        -sx * 0.52,
+        sx * 0.08,
+      );
+      // Brushless motor bell & copper stator core at upper corner
+      addPart(swayGroup, new THREE.CylinderGeometry(0.036, 0.038, 0.034, 14), darkMetal, sx * 0.45, 0.285, -0.71, 0.24, 0, sx * 0.14);
+      addPart(swayGroup, new THREE.CylinderGeometry(0.032, 0.032, 0.012, 14), copperMat, sx * 0.45, 0.288, -0.71, 0.24, 0, sx * 0.14);
+
+      // Spinning 3-blade FPV prop + translucent motion-blur disc right in the top corners!
+      const propHub = new THREE.Group();
+      propHub.position.set(sx * 0.45, 0.308, -0.71);
+      propHub.rotation.set(0.24, 0, sx * 0.14);
+      swayGroup.add(propHub);
+      addPart(propHub, new THREE.CylinderGeometry(0.014, 0.016, 0.016, 10), lightAlloy, 0, 0, 0);
+      for (let b = 0; b < 3; b++) {
+        const ang = (b * Math.PI * 2) / 3;
+        addPart(
+          propHub,
+          new THREE.BoxGeometry(0.022, 0.004, 0.22),
+          carbonMat,
+          Math.sin(ang) * 0.11,
+          0,
+          Math.cos(ang) * 0.11,
+          0,
+          ang,
+          0,
+        );
+      }
+      const blurDisc = addPart(propHub, new THREE.CircleGeometry(0.225, 24), propBlurMat, 0, -0.003, 0, -Math.PI / 2, 0, 0);
+      blurDisc.renderOrder = 2;
+      const blurRim = addPart(propHub, new THREE.RingGeometry(0.205, 0.228, 24), propRimMat, 0, -0.002, 0, -Math.PI / 2, 0, 0);
+      blurRim.renderOrder = 2;
+      spinners.push({ obj: propHub, axis: "y", speed: sx < 0 ? 44 : -44 });
+    }
+
+    // Underslung strapped olive/metallic RPG shaped-charge warhead tip visible low ahead!
+    const warhead = new THREE.Group();
+    warhead.position.set(0, -0.295, -0.68);
+    warhead.rotation.set(0.09, 0, 0);
+    recoilGroup.add(warhead);
+    // Olive-drab shaped-charge body & tapered ballistic warhead cone
+    addPart(warhead, new THREE.CylinderGeometry(0.068, 0.074, 0.22, 16), oliveWarhead, 0, 0, 0.06, Math.PI / 2, 0, 0);
+    addPart(warhead, new THREE.ConeGeometry(0.068, 0.24, 16), oliveWarhead, 0, 0, -0.17, -Math.PI / 2, 0, 0);
+    // Metallic nose collar + piezoelectric standoff impact tip
+    addPart(warhead, new THREE.CylinderGeometry(0.044, 0.056, 0.045, 14), lightAlloy, 0, 0, -0.13, Math.PI / 2, 0, 0);
+    addPart(warhead, new THREE.CylinderGeometry(0.015, 0.022, 0.11, 10), darkMetal, 0, 0, -0.31, Math.PI / 2, 0, 0);
+    // Twin copper contact-detonator trigger wires jutting forward at nose tip
+    addPart(warhead, new THREE.CylinderGeometry(0.004, 0.004, 0.11, 6), copperMat, -0.022, 0.004, -0.36, Math.PI / 2, 0.18, 0);
+    addPart(warhead, new THREE.CylinderGeometry(0.004, 0.004, 0.11, 6), copperMat, 0.022, 0.004, -0.36, Math.PI / 2, -0.18, 0);
+    // Heavy black strap cinch + faction zip-tie band
+    addPart(warhead, new RoundedBoxGeometry(0.155, 0.026, 0.032, 1, 0.004), darkMetal, 0, 0.065, 0.04);
+    addPart(warhead, new THREE.BoxGeometry(0.16, 0.014, 0.018), factionMat, 0, 0.072, 0.04);
+    // Pulsing bright crimson armed warhead LED right on top of the warhead nose!
+    glowPulses.push(
+      addPart(warhead, new THREE.SphereGeometry(0.016, 10, 8), redGlow, 0, 0.058, -0.09),
+    );
+    addMuzzleFlash(warhead, 0, 0, -0.42, 2.2, 0xff5a28);
+  } else if (kind === "shahed") {
+    // Delta Kamikaze (Shahed): sleek nose-cam loitering munition feed with red armed indicator!
+    const matteWhite = getChassisMat("#c6cfd8", 0.56, 0.22);
+    const matteSlate = getChassisMat("#7e8c9a", 0.52, 0.28);
+    const crimsonPaint = getChassisMat("#cf2e24", 0.42, 0.36);
+
+    // Clean nose-camera optical corner brackets & upper horizon bar
+    for (const sx of [-1, 1]) {
+      addPart(swayGroup, new RoundedBoxGeometry(0.15, 0.02, 0.035, 1, 0.004), cockpitTrim, sx * 0.44, 0.32, -0.45);
+      addPart(swayGroup, new RoundedBoxGeometry(0.02, 0.13, 0.035, 1, 0.004), cockpitTrim, sx * 0.5, 0.265, -0.45);
+      // Swept matte-white cropped delta wing leading-edge shoulders peeking low-left & low-right!
+      addPart(
+        swayGroup,
+        new RoundedBoxGeometry(0.28, 0.032, 0.46, 2, 0.008),
+        matteWhite,
+        sx * 0.39,
+        -0.31,
+        -0.72,
+        0.04,
+        -sx * 0.48,
+        sx * 0.06,
+      );
+      // Crimson warhead warning stripe + faction wing mark along swept delta shoulder
+      addPart(
+        swayGroup,
+        new THREE.BoxGeometry(0.12, 0.036, 0.055),
+        crimsonPaint,
+        sx * 0.32,
+        -0.305,
+        -0.66,
+        0.04,
+        -sx * 0.48,
+        sx * 0.06,
+      );
+      addPart(
+        swayGroup,
+        new THREE.BoxGeometry(0.08, 0.036, 0.065),
+        factionMat,
+        sx * 0.44,
+        -0.305,
+        -0.78,
+        0.04,
+        -sx * 0.48,
+        sx * 0.06,
+      );
+    }
+
+    // Lower aerodynamic nose-cam housing lip & central armed telemetry bar
+    addPart(swayGroup, new RoundedBoxGeometry(0.56, 0.055, 0.14, 2, 0.01), matteSlate, 0, -0.335, -0.48, -0.22, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.24, 0.032, 0.025, 2, 0.005), darkMetal, 0, -0.295, -0.43, -0.32, 0, 0);
+
+    // Prominent glowing crimson ARMED warhead indicator strip & dual armed LED pips!
+    glowPulses.push(
+      addPart(swayGroup, new THREE.BoxGeometry(0.14, 0.011, 0.008), redGlow, 0, -0.292, -0.415, -0.32, 0, 0),
+      addPart(swayGroup, new THREE.SphereGeometry(0.012, 10, 8), redGlow, -0.092, -0.292, -0.415),
+      addPart(swayGroup, new THREE.SphereGeometry(0.012, 10, 8), redGlow, 0.092, -0.292, -0.415),
+      addPart(swayGroup, new THREE.BoxGeometry(0.05, 0.007, 0.008), amberGlow, 0, 0.315, -0.43),
+    );
+
+    // Sleek dark warhead nose tip & metallic pitot airspeed probe peeking forward-right
+    addPart(recoilGroup, new THREE.ConeGeometry(0.055, 0.24, 12), darkMetal, 0, -0.335, -0.82, -Math.PI / 2, 0, 0);
+    addPart(recoilGroup, new THREE.CylinderGeometry(0.006, 0.009, 0.26, 8), lightAlloy, 0.17, -0.285, -0.78, Math.PI / 2, 0, 0);
+    addMuzzleFlash(recoilGroup, 0, -0.32, -0.96, 2.3, 0xff4c24);
+  } else if (kind === "ewdrone") {
+    // EW Jammer Drone: electronic warfare optical pod with purple-cyan EW spectrum bezel!
+    const ewTitanium = getChassisMat("#222b36", 0.34, 0.76);
+    const purpleGlow = getGlowMat("#b45cff", 1.75);
+
+    // Hex-beveled dark-titanium optical pod peripheral frame
+    addPart(swayGroup, new RoundedBoxGeometry(0.76, 0.028, 0.05, 2, 0.006), ewTitanium, 0, 0.33, -0.45, 0.14, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.84, 0.048, 0.08, 2, 0.008), ewTitanium, 0, -0.33, -0.46, -0.24, 0, 0);
+    for (const sx of [-1, 1]) {
+      // Angled hexagonal side bezel struts
+      addPart(swayGroup, new RoundedBoxGeometry(0.028, 0.28, 0.045, 1, 0.005), ewTitanium, sx * 0.48, 0.15, -0.45, 0, -sx * 0.18, sx * 0.28);
+      addPart(swayGroup, new RoundedBoxGeometry(0.028, 0.28, 0.045, 1, 0.005), ewTitanium, sx * 0.48, -0.14, -0.45, 0, -sx * 0.18, -sx * 0.28);
+      // Faction & purple-cyan EW side emitter strips
+      addPart(swayGroup, new THREE.BoxGeometry(0.012, 0.11, 0.015), factionMat, sx * 0.465, 0.01, -0.435);
+      glowPulses.push(
+        addPart(swayGroup, new THREE.BoxGeometry(0.008, 0.065, 0.01), purpleGlow, sx * 0.45, 0.14, -0.43, 0, 0, sx * 0.28),
+        addPart(swayGroup, new THREE.BoxGeometry(0.008, 0.065, 0.01), cyanGlow, sx * 0.45, -0.13, -0.43, 0, 0, -sx * 0.28),
+      );
+      // Forward dark-titanium EW dipole jammer emitter prongs peeking low-left & low-right
+      addPart(swayGroup, new THREE.CylinderGeometry(0.01, 0.014, 0.34, 8), ewTitanium, sx * 0.32, -0.27, -0.74, Math.PI / 2, -sx * 0.08, 0);
+      glowPulses.push(
+        addPart(swayGroup, new THREE.SphereGeometry(0.018, 10, 8), sx < 0 ? purpleGlow : cyanGlow, sx * 0.335, -0.27, -0.92),
+      );
+    }
+
+    // Purple-cyan EW RF spectrum analyzer bars across the lower bezel
+    const specHeights = [0.016, 0.028, 0.02, 0.034, 0.022, 0.032, 0.018];
+    for (let i = 0; i < specHeights.length; i++) {
+      const bx = -0.24 + i * 0.024;
+      const h = specHeights[i];
+      glowPulses.push(
+        addPart(swayGroup, new THREE.BoxGeometry(0.014, h, 0.007), i % 2 === 0 ? purpleGlow : cyanGlow, bx, -0.292 + h * 0.25, -0.415, -0.24, 0, 0),
+        addPart(swayGroup, new THREE.BoxGeometry(0.014, h, 0.007), i % 2 === 0 ? cyanGlow : purpleGlow, -bx, -0.292 + h * 0.25, -0.415, -0.24, 0, 0),
+      );
+    }
+
+    // Rotating holographic purple-cyan phased EW emitter ring at lower center!
+    const ewRingOuter = addPart(swayGroup, new THREE.TorusGeometry(0.048, 0.005, 8, 28), purpleGlow, 0, -0.295, -0.43);
+    const ewRingInner = addPart(swayGroup, new THREE.TorusGeometry(0.03, 0.004, 8, 24), cyanGlow, 0, -0.295, -0.428);
+    spinners.push(
+      { obj: ewRingOuter, axis: "z", speed: 2.6 },
+      { obj: ewRingInner, axis: "z", speed: -4.2 },
+    );
+    // Subtle upper purple-cyan EW frequency calibration arc
+    addPart(swayGroup, new THREE.TorusGeometry(0.39, 0.0038, 6, 32, Math.PI * 0.38), purpleGlow, 0, -0.02, -0.46, 0, 0, Math.PI * 0.31);
+  } else if (kind === "usv") {
+    // Sea-Baby USV Drone Boat: ultra-low-waterline bow-cam skimming right across the 3D ocean waves!
+    const usvStealth = getChassisMat("#192028", 0.44, 0.56);
+    const satWhite = getChassisMat("#e4ecf4", 0.34, 0.16);
+
+    // Compact waterproof marine optical dome rim brackets & spray visor
+    for (const sx of [-1, 1]) {
+      addPart(swayGroup, new RoundedBoxGeometry(0.14, 0.02, 0.036, 1, 0.004), cockpitTrim, sx * 0.44, 0.32, -0.44);
+      addPart(swayGroup, new RoundedBoxGeometry(0.02, 0.12, 0.036, 1, 0.004), cockpitTrim, sx * 0.5, 0.27, -0.44);
+      addPart(swayGroup, new RoundedBoxGeometry(0.08, 0.016, 0.024, 1, 0.003), factionMat, sx * 0.34, -0.295, -0.43);
+    }
+    // Low marine telemetry dash with white satcom-link status indicator
+    addPart(swayGroup, new RoundedBoxGeometry(0.76, 0.055, 0.14, 2, 0.01), cockpitTrim, 0, -0.335, -0.46, -0.22, 0, 0);
+    addPart(swayGroup, new RoundedBoxGeometry(0.08, 0.014, 0.022, 1, 0.003), satWhite, -0.2, -0.302, -0.42, -0.22, 0, 0);
+    glowPulses.push(
+      addPart(swayGroup, new THREE.BoxGeometry(0.052, 0.008, 0.008), cyanGlow, -0.1, -0.302, -0.415, -0.22, 0, 0),
+      addPart(swayGroup, new THREE.BoxGeometry(0.052, 0.008, 0.008), redGlow, 0.1, -0.302, -0.415, -0.22, 0, 0),
+    );
+
+    // Sharp dark stealth wave-piercing USV bow deck extending straight forward right over the ocean!
+    const bow = new THREE.Group();
+    bow.position.set(0, -0.325, -0.78);
+    bow.rotation.set(0.04, 0, 0);
+    recoilGroup.add(bow);
+    // Tapered stealth bow prow hull & raised center spine
+    addPart(bow, new THREE.ConeGeometry(0.15, 0.54, 4), usvStealth, 0, -0.02, -0.04, -Math.PI / 2, Math.PI / 4, 0);
+    addPart(bow, new RoundedBoxGeometry(0.18, 0.026, 0.28, 2, 0.006), gunMetal, 0, 0.016, 0.12);
+    addPart(bow, new RoundedBoxGeometry(0.12, 0.014, 0.1, 1, 0.003), factionMat, 0, 0.032, 0.12);
+
+    // Twin metallic contact-detonator impact horns projecting forward from the sharp bow tip!
+    for (const sx of [-1, 1]) {
+      addPart(bow, new THREE.CylinderGeometry(0.009, 0.012, 0.15, 8), lightAlloy, sx * 0.052, 0.016, -0.31, Math.PI / 2, -sx * 0.14, 0);
+      addPart(bow, new THREE.SphereGeometry(0.013, 8, 8), darkMetal, sx * 0.062, 0.016, -0.385);
+    }
+
+    // Blinking crimson bow warhead detonator fuse beacon right at the bow nose!
+    glowPulses.push(
+      addPart(bow, new THREE.SphereGeometry(0.022, 12, 10), redGlow, 0, 0.038, -0.21),
+    );
+    addMuzzleFlash(bow, 0, 0.02, -0.42, 2.35, 0xff4a24);
   } else if (kind === "uav") {
     // Reaper Drone: sleek remote optical sensor feed frame + FLIR telemetry rails + wing micro-pods
     // Outer carbon-fiber optical viewport L-corner brackets (keeps entire center view razor-clear)
@@ -1717,9 +2031,12 @@ export class FirstPersonController {
     this.curSpeed += (instantSpeed - this.curSpeed) * (1 - Math.exp(-12 * clampedDt));
 
     // 4. Compute eye height, bob, sprint FOV easing & subtle recoil pitch kick
+    const firing = (this.mouseFire || this.keys.has("Space")) && def.range > 0;
+    const kamikazeDive = Boolean(def.kamikaze) && firing;
     const submerged = this.kind === "sub" && Boolean(t.last.sub);
-    const targetEyeY = submerged && prof.subEyeY !== undefined ? prof.subEyeY : prof.eyeY;
-    this.curEyeY += (targetEyeY - this.curEyeY) * (1 - Math.exp(-6 * clampedDt));
+    const baseEyeY = submerged && prof.subEyeY !== undefined ? prof.subEyeY : prof.eyeY;
+    const targetEyeY = kamikazeDive && this.domain === "air" ? Math.max(0.85, baseEyeY - 0.9) : baseEyeY;
+    this.curEyeY += (targetEyeY - this.curEyeY) * (1 - Math.exp(-(kamikazeDive ? 8 : 6) * clampedDt));
 
     const moveRatio = clamp(this.curSpeed / Math.max(0.5, baseMaxTilesPerSec), 0, 1);
     if (moveRatio > 0.05) {
@@ -1730,15 +2047,15 @@ export class FirstPersonController {
 
     const idleHeave =
       this.domain === "sea"
-        ? Math.sin(this.elapsed * 2.1) * 0.032
+        ? Math.sin(this.elapsed * (this.kind === "usv" ? 3.0 : 2.1)) * (this.kind === "usv" ? 0.02 : 0.032)
         : this.domain === "air"
-          ? Math.sin(this.elapsed * 2.6) * 0.045
+          ? Math.sin(this.elapsed * 2.6) * (this.kind === "fpvdrone" ? 0.028 : 0.045)
           : 0;
     const walkBobY = Math.sin(this.bobPhase * 2) * prof.bobAmp * moveRatio;
 
-    // Smooth sprint / forward-flight FOV boost (baseFov -> baseFov + 4.5, damped at dt * 7)
+    // Smooth sprint / forward-flight / kamikaze terminal-dive FOV boost
     const forwardSpeedFrac = fwdIn > 0.1 ? moveRatio : 0;
-    const targetFov = prof.fov + forwardSpeedFrac * 4.5;
+    const targetFov = prof.fov + forwardSpeedFrac * 4.5 + (kamikazeDive ? 5.5 : 0);
     this.curFov += (targetFov - this.curFov) * (1 - Math.exp(-7 * clampedDt));
 
     // Decay pitch kick smoothly
@@ -1748,7 +2065,8 @@ export class FirstPersonController {
     // 5. Update 3D FPV Camera
     const camY = this.curEyeY + idleHeave + walkBobY;
     this.camPos.set(this.predX, camY, this.predY);
-    const effPitch = clamp(this.renderPitch + this.pitchKick, prof.minPitch, prof.maxPitch + 0.08);
+    const divePitch = kamikazeDive && this.domain === "air" ? -0.14 : 0;
+    const effPitch = clamp(this.renderPitch + this.pitchKick + divePitch, prof.minPitch, prof.maxPitch + 0.08);
     this.gs.setFpvCamera(this.camPos, this.renderYaw, effPitch, this.curFov);
     this.gs.camera.updateMatrixWorld();
 
@@ -1763,7 +2081,6 @@ export class FirstPersonController {
     const aim = this.computeCrosshairAim(def);
 
     // 8. Send drive packet at ~18 Hz (every 55ms) or immediately on fire state edge
-    const firing = (this.mouseFire || this.keys.has("Space")) && def.range > 0;
     const now = performance.now();
     if (now - this.lastDriveSentAt >= DRIVE_SEND_INTERVAL_MS || firing !== this.lastFireSent) {
       this.lastDriveSentAt = now;

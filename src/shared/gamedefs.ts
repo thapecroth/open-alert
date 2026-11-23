@@ -42,10 +42,11 @@ export type BuildingKind =
 export type BuildCategory = "structure" | "defense";
 
 export type UnitKind =
-  // Land Infantry
+  // Land Infantry & Field Drones
   | "infantry"
   | "engineer"
   | "rocket"
+  | "fpvdrone"
   // Land Vehicles
   | "tank"
   | "arty"
@@ -55,15 +56,18 @@ export type UnitKind =
   | "railtank"
   | "supplytruck"
   | "harvester"
-  // Air Force
+  // Air Force & Modern Drones
   | "uav"
+  | "shahed"
+  | "ewdrone"
   | "interceptor"
   | "chopper"
   | "bomber"
   | "stealthbomber"
   | "hypersonic"
   | "zeppelin"
-  // Navy
+  // Navy & Unmanned Drone Boats
+  | "usv"
   | "gunboat"
   | "destroyer"
   | "sub"
@@ -253,7 +257,7 @@ export const UPGRADE_PATHS: Record<string, UpgradePath> = {
     to: "factory2",
     cost: 1500,
     requires: "techlab",
-    desc: "Upgrade War Factory to MKII — unlocks Mastodon, Spider Drone, HIMARS & Railgun MBT.",
+    desc: "Upgrade War Factory to MKII — unlocks Aegis Railgun MBT + faster armored production.",
   },
   airfield: {
     from: "airfield",
@@ -283,35 +287,44 @@ export interface UnitDef {
   domain: UnitDomain;
   canHitAir?: boolean;
   canHitGround?: boolean; // default true if omitted
-  stealth?: boolean; // cloaked until firing or detected (Kraken Sub / B-21 Stealth Bomber)
+  stealth?: boolean; // cloaked until firing or detected (Kraken Sub / B-21 Stealth Bomber / Sea-Baby USV)
+  kamikaze?: true; // self-detonates on strike for high splash damage (FPV Drone / Delta Drone / Sea-Baby USV)
+  ewJamRadius?: number; // electronic warfare jamming radius vs enemy drones
+  retired?: true; // legacy RA2-era unit hidden from modern roster (kept for test/script compatibility)
   vision?: number; // optional custom vision radius (default 9)
   requires?: BuildingKind; // extra prerequisite building
-  capacity?: number; // harvester cargo units
+  capacity?: number; // harvester / supplytruck cargo units
 }
 
 export const UNITS: Record<UnitKind, UnitDef> = {
-  // Land Infantry
+  // Land Infantry & Field Drones
   infantry: { hp: 90, speed: 0.1, range: 4, dmg: 6, rof: 15, cost: 100, buildTicks: 30, trainsAt: "barracks", domain: "land", canHitAir: true },
   engineer: { hp: 70, speed: 0.1, range: 0, dmg: 0, rof: 0, cost: 500, buildTicks: 40, trainsAt: "barracks", domain: "land" },
   rocket: { hp: 80, speed: 0.11, range: 6.5, dmg: 11, rof: 18, cost: 300, buildTicks: 35, trainsAt: "barracks", domain: "land", requires: "radar", canHitAir: true },
-  // Land Vehicles
+  fpvdrone: { hp: 48, speed: 0.36, range: 1.45, dmg: 150, rof: 10, cost: 180, buildTicks: 26, trainsAt: "barracks", domain: "air", kamikaze: true, vision: 10 },
+  // Modern Armor & Logistics
   tank: { hp: 340, speed: 0.16, range: 5, dmg: 22, rof: 22, cost: 700, buildTicks: 70, trainsAt: "factory", domain: "land" },
-  arty: { hp: 140, speed: 0.1, range: 9, dmg: 42, rof: 42, cost: 1100, buildTicks: 90, trainsAt: "factory", domain: "land", requires: "radar" },
-  heavy: { hp: 560, speed: 0.12, range: 5, dmg: 36, rof: 24, cost: 1100, buildTicks: 95, trainsAt: "factory", domain: "land", requires: "factory2" },
-  spider: { hp: 90, speed: 0.26, range: 1.4, dmg: 9, rof: 9, cost: 500, buildTicks: 45, trainsAt: "factory", domain: "land", requires: "factory2" },
-  himars: { hp: 220, speed: 0.13, range: 12.5, dmg: 68, rof: 44, cost: 1650, buildTicks: 105, trainsAt: "factory", domain: "land", requires: "satlink" },
-  railtank: { hp: 720, speed: 0.13, range: 7.5, dmg: 62, rof: 26, cost: 1750, buildTicks: 110, trainsAt: "factory", domain: "land", requires: "satlink", canHitAir: true },
+  himars: { hp: 220, speed: 0.13, range: 12.5, dmg: 68, rof: 44, cost: 1350, buildTicks: 95, trainsAt: "factory", domain: "land", requires: "radar" },
+  railtank: { hp: 720, speed: 0.13, range: 7.5, dmg: 62, rof: 26, cost: 1650, buildTicks: 105, trainsAt: "factory", domain: "land", requires: "factory2", canHitAir: true },
   supplytruck: { hp: 320, speed: 0.17, range: 0, dmg: 0, rof: 0, cost: 500, buildTicks: 50, trainsAt: "factory", domain: "land", requires: "refinery", capacity: 500 },
   harvester: { hp: 620, speed: 0.11, range: 0, dmg: 0, rof: 0, cost: 1400, buildTicks: 100, trainsAt: "factory", domain: "land", requires: "refinery", capacity: 45 },
-  // Air Force
+  // Retired legacy land units (hidden from modern UI roster)
+  arty: { hp: 140, speed: 0.1, range: 9, dmg: 42, rof: 42, cost: 1100, buildTicks: 90, trainsAt: "factory", domain: "land", requires: "radar", retired: true },
+  heavy: { hp: 560, speed: 0.12, range: 5, dmg: 36, rof: 24, cost: 1100, buildTicks: 95, trainsAt: "factory", domain: "land", requires: "factory2", retired: true },
+  spider: { hp: 90, speed: 0.26, range: 1.4, dmg: 9, rof: 9, cost: 500, buildTicks: 45, trainsAt: "factory", domain: "land", requires: "factory2", retired: true },
+  // Modern Air Force & Drones
   uav: { hp: 130, speed: 0.30, range: 6.5, dmg: 16, rof: 16, cost: 450, buildTicks: 45, trainsAt: "airfield", domain: "air", canHitAir: true, vision: 13 },
+  shahed: { hp: 95, speed: 0.28, range: 1.65, dmg: 230, rof: 10, cost: 320, buildTicks: 38, trainsAt: "airfield", domain: "air", kamikaze: true, vision: 9 },
+  ewdrone: { hp: 185, speed: 0.24, range: 0, dmg: 0, rof: 0, cost: 650, buildTicks: 55, trainsAt: "airfield", domain: "air", ewJamRadius: 8.5, vision: 12, requires: "radar" },
   interceptor: { hp: 190, speed: 0.34, range: 6.5, dmg: 26, rof: 18, cost: 900, buildTicks: 65, trainsAt: "airfield", domain: "air", canHitAir: true },
   chopper: { hp: 310, speed: 0.22, range: 6, dmg: 22, rof: 14, cost: 1100, buildTicks: 75, trainsAt: "airfield", domain: "air", canHitAir: true },
-  bomber: { hp: 420, speed: 0.18, range: 5.5, dmg: 80, rof: 46, cost: 1600, buildTicks: 95, trainsAt: "airfield", domain: "air", requires: "techlab" },
   stealthbomber: { hp: 480, speed: 0.23, range: 6.5, dmg: 125, rof: 48, cost: 2100, buildTicks: 115, trainsAt: "airfield", domain: "air", stealth: true, requires: "airfield2" },
   hypersonic: { hp: 280, speed: 0.44, range: 10.5, dmg: 78, rof: 34, cost: 1900, buildTicks: 105, trainsAt: "airfield", domain: "air", canHitAir: true, requires: "airfield2" },
-  zeppelin: { hp: 1400, speed: 0.085, range: 3.6, dmg: 135, rof: 38, cost: 2200, buildTicks: 120, trainsAt: "airfield", domain: "air", requires: "techlab" },
-  // Navy
+  // Retired legacy air units (hidden from modern UI roster)
+  bomber: { hp: 420, speed: 0.18, range: 5.5, dmg: 80, rof: 46, cost: 1600, buildTicks: 95, trainsAt: "airfield", domain: "air", requires: "techlab", retired: true },
+  zeppelin: { hp: 1400, speed: 0.085, range: 3.6, dmg: 135, rof: 38, cost: 2200, buildTicks: 120, trainsAt: "airfield", domain: "air", requires: "techlab", retired: true },
+  // Modern Navy & Unmanned Drone Boats
+  usv: { hp: 115, speed: 0.30, range: 1.75, dmg: 280, rof: 10, cost: 350, buildTicks: 40, trainsAt: "shipyard", domain: "sea", kamikaze: true, stealth: true, vision: 9 },
   gunboat: { hp: 240, speed: 0.24, range: 6.5, dmg: 16, rof: 14, cost: 600, buildTicks: 55, trainsAt: "shipyard", domain: "sea", canHitAir: true },
   destroyer: { hp: 580, speed: 0.14, range: 7.5, dmg: 32, rof: 22, cost: 1100, buildTicks: 80, trainsAt: "shipyard", domain: "sea", canHitAir: true },
   sub: { hp: 460, speed: 0.15, range: 7, dmg: 52, rof: 30, cost: 1200, buildTicks: 85, trainsAt: "shipyard", domain: "sea", stealth: true, requires: "radar" },
@@ -320,31 +333,31 @@ export const UNITS: Record<UnitKind, UnitDef> = {
 };
 
 export const TRAIN_ORDER: { unit: UnitKind; label: string; group: "land" | "air" | "sea" }[] = [
+  // Modern Land Infantry, Field Drones, Armor & Logistics
   { unit: "infantry", label: "Rifleman", group: "land" },
-  { unit: "engineer", label: "Sapper", group: "land" },
-  { unit: "rocket", label: "Rocket Trooper", group: "land" },
-  { unit: "tank", label: "Battle Tank", group: "land" },
-  { unit: "arty", label: "Siege Launcher", group: "land" },
-  { unit: "heavy", label: "Mastodon Tank", group: "land" },
-  { unit: "spider", label: "Spider Drone", group: "land" },
+  { unit: "engineer", label: "Combat Engineer", group: "land" },
+  { unit: "rocket", label: "AT / MANPADS", group: "land" },
+  { unit: "fpvdrone", label: "FPV Suicide Drone", group: "land" },
+  { unit: "tank", label: "Main Battle Tank", group: "land" },
   { unit: "himars", label: "HIMARS Launcher", group: "land" },
-  { unit: "railtank", label: "Aegis Railgun", group: "land" },
+  { unit: "railtank", label: "Aegis Railgun MBT", group: "land" },
   { unit: "supplytruck", label: "Supply Convoy", group: "land" },
   { unit: "harvester", label: "Ore Harvester", group: "land" },
-  // Air Force
-  { unit: "uav", label: "Reaper Drone", group: "air" },
-  { unit: "interceptor", label: "Valkyrie Jet", group: "air" },
+  // Modern Air Force & Drone Warfare
+  { unit: "uav", label: "Reaper UAV", group: "air" },
+  { unit: "shahed", label: "Delta Kamikaze", group: "air" },
+  { unit: "ewdrone", label: "EW Jammer Drone", group: "air" },
+  { unit: "interceptor", label: "Valkyrie Stealth Jet", group: "air" },
   { unit: "chopper", label: "Hornet Gunship", group: "air" },
-  { unit: "bomber", label: "Tempest Bomber", group: "air" },
-  { unit: "stealthbomber", label: "B-21 Phantom", group: "air" },
-  { unit: "hypersonic", label: "Mach-9 Strike", group: "air" },
-  { unit: "zeppelin", label: "Leviathan Airship", group: "air" },
-  // Navy
+  { unit: "stealthbomber", label: "B-21 Stealth Bomber", group: "air" },
+  { unit: "hypersonic", label: "Mach-9 Hypersonic", group: "air" },
+  // Modern Navy & Unmanned Surface Vessels
+  { unit: "usv", label: "Sea-Baby USV Drone", group: "sea" },
   { unit: "gunboat", label: "Viper Hydrofoil", group: "sea" },
   { unit: "destroyer", label: "Aegis Destroyer", group: "sea" },
-  { unit: "sub", label: "Kraken Sub", group: "sea" },
-  { unit: "dreadnought", label: "Poseidon Dreadnought", group: "sea" },
-  { unit: "carrier", label: "Nimitz Carrier", group: "sea" },
+  { unit: "sub", label: "Kraken Stealth Sub", group: "sea" },
+  { unit: "dreadnought", label: "Poseidon Cruiser", group: "sea" },
+  { unit: "carrier", label: "Nimitz Drone Carrier", group: "sea" },
 ];
 
 // display names for buildings (sidebar/tooltips)
@@ -421,6 +434,9 @@ export const SPLASH_RADIUS: Partial<Record<EntKind, number>> = {
   arty: 2.3,
   heavy: 1.15,
   himars: 2.8,
+  fpvdrone: 1.9,
+  shahed: 2.6,
+  usv: 2.4,
   bomber: 2.5,
   stealthbomber: 3.1,
   hypersonic: 2.2,

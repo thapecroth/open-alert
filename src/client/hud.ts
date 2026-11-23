@@ -39,17 +39,17 @@ const TOOLTIPS: Record<string, string> = {
   fusion: "Fusion Reactor — massive late-game clean power (+380⚡). Needs Tech Lab.",
   refinery: "Ore Refinery — unlocks harvesters; deploys one free.",
   supplyhub: "Forward Supply Hub — extends build zone (26 tiles) & refills Fuel, Ammo + light repair in 12-tile aura",
-  barracks: "Barracks — trains infantry: Riflemen, Sappers, Rocket Troopers. Upgrade to MKII for Veteran ★ troops.",
+  barracks: "Barracks — trains Riflemen, Combat Engineers, AT / MANPADS & FPV Suicide Drones. Upgrade to MKII for Veteran ★ troops.",
   barracks2: "Barracks II — elite infantry command; trains Veteran ★ troops faster.",
-  radar: "Radar Uplink — reveals the minimap; unlocks rockets, siege, air command, Patriot SAM & Arc Spire.",
-  factory: "War Factory — builds vehicles. Upgrade to MKII to unlock heavy armor.",
-  factory2: "War Factory II — heavy armor works; unlocks Mastodon Tank & Spider Drone.",
-  airfield: "Air Command — deploys Air Force aircraft that fly over cliffs & water. Upgrade to MKII for Stealth Wing.",
-  airfield2: "Air Command II — Stealth Wing; unlocks B-21 Phantom, Mach-9 Strike & Veteran ★ aircraft.",
-  shipyard: "Naval Shipyard — builds warships on navigable water. Upgrade to MKII for Fleet Dock.",
-  shipyard2: "Naval Shipyard II — Fleet Dock; unlocks Poseidon Dreadnought, Nimitz Carrier & Veteran ★ ships.",
-  techlab: "Tech Lab — unlocks heavy air/sea tech, Fusion Reactor, Ore Purifier, Defense Satellite & MKII upgrades.",
-  satlink: "Defense Satellite — orbital laser uplink & telemetry hub; unlocks HIMARS, Aegis Railgun & Ion Uplink. Limit 1.",
+  radar: "Radar Uplink — reveals the minimap; unlocks HIMARS, AT / MANPADS, Air Command, EW Jammer, Patriot SAM & Arc Spire.",
+  factory: "War Factory — builds Main Battle Tanks, HIMARS & logistics vehicles. Upgrade to MKII for Aegis Railgun MBT.",
+  factory2: "War Factory II — heavy armor works; unlocks Aegis Railgun MBT + faster armored production.",
+  airfield: "Air Command — deploys Reaper UAVs, Delta Kamikaze, EW Jammers & Air Force wings. Upgrade to MKII for Stealth Wing.",
+  airfield2: "Air Command II — Stealth Wing; unlocks B-21 Stealth Bomber, Mach-9 Hypersonic & Veteran ★ aircraft.",
+  shipyard: "Naval Shipyard — builds Sea-Baby USVs & modern warships on navigable water. Upgrade to MKII for Fleet Dock.",
+  shipyard2: "Naval Shipyard II — Fleet Dock; unlocks Poseidon Cruiser, Nimitz Drone Carrier & Veteran ★ ships.",
+  techlab: "Tech Lab — unlocks Fusion Reactor, Ore Purifier, Iron Dome, Helios Laser, Defense Satellite & MKII upgrades.",
+  satlink: "Defense Satellite — long-range orbital laser defense & telemetry hub; unlocks Ion Uplink. Limit 1.",
   turret: "Vulcan Turret — rapid-fire ground & anti-air (AA) base defense. Needs power.",
   sam: "Patriot SAM — long-range dedicated anti-air (AA) missile battery. Needs power + Radar.",
   arc: "Arc Spire — heavy ground & anti-air (AA) lightning defense in every direction. Needs power + Radar.",
@@ -58,31 +58,35 @@ const TOOLTIPS: Record<string, string> = {
   purifier: "Ore Purifier — +25% on every harvester deposit.",
   depot: "Service Depot — repairs nearby vehicles automatically.",
   superweapon: "Ion Uplink — charges an Orbital Ion Cannon strike (90s). Needs power & Defense Satellite. Limit 1.",
-  derrick: "Oil Derrick — capture with a Sapper for +$500 bonus & +$25/s income.",
-  coalmine: "Coal Mine — capture with a Sapper for +$400 bonus, +$20/s income & +60⚡ power.",
+  derrick: "Oil Derrick — capture with a Combat Engineer for +$500 bonus & +$25/s income.",
+  coalmine: "Coal Mine — capture with a Combat Engineer for +$400 bonus, +$20/s income & +60⚡ power.",
   infantry: "Rifleman — cheap, fast, anti-infantry & light AA.",
-  engineer: "Sapper — captures enemy buildings, Oil Derricks & Coal Mines on contact. Unarmed.",
-  rocket: "Rocket Trooper — long-range anti-armor & anti-air (AA) infantry. Needs Radar.",
-  tank: "Battle Tank — armored punch. Crushes infantry.",
+  engineer: "Combat Engineer — captures enemy buildings, Oil Derricks & Coal Mines on contact. Unarmed.",
+  rocket: "AT / MANPADS — long-range anti-armor & anti-air (AA) missile team. Needs Radar.",
+  fpvdrone: "FPV Suicide Drone — ultra-fast low-altitude kamikaze quadcopter; self-detonates for heavy anti-armor splash.",
+  tank: "Main Battle Tank — armored frontline punch. Crushes infantry.",
   arty: "Siege Launcher — long-range splash artillery. Fragile. Needs Radar.",
   heavy: "Mastodon Tank — twin-cannon monster. Needs War Factory II.",
   spider: "Spider Drone — fast melee scout. Needs War Factory II.",
-  himars: "HIMARS Launcher — ultra-long-range precision rocket artillery with heavy splash. Needs Defense Satellite.",
-  railtank: "Aegis Railgun — hyper-velocity electromagnetic MBT (Ground + AA). Needs Defense Satellite.",
+  himars: "HIMARS Launcher — ultra-long-range precision rocket artillery with heavy splash. Needs Radar.",
+  railtank: "Aegis Railgun MBT — hyper-velocity electromagnetic main battle tank (Ground + AA). Needs War Factory II.",
   supplytruck: "Supply Convoy — mobile 500-pt Fuel & Ammo resupply truck for frontline armies",
   harvester: "Ore Harvester — collects ore; a full load is worth $1,125.",
-  uav: "Reaper Drone — fast wide-vision reconnaissance & strike UAV (Air + Ground, AA).",
-  interceptor: "Valkyrie Jet — supersonic Air Force fighter (Air + Ground, AA).",
+  uav: "Reaper UAV — fast wide-vision reconnaissance & strike drone (Air + Ground, AA).",
+  shahed: "Delta Kamikaze — long-range loitering delta-wing munition; dives on targets for massive explosive splash.",
+  ewdrone: "EW Jammer Drone — electronic warfare aircraft with an 85m anti-drone jamming aura & wide recon optics. Needs Radar.",
+  interceptor: "Valkyrie Stealth Jet — supersonic Air Force fighter (Air + Ground, AA).",
   chopper: "Hornet Gunship — agile Air Force gunship (Air + Ground, AA).",
   bomber: "Tempest Bomber — heavy Air Force splash strike bomber vs ground & ships. Needs Tech Lab.",
-  stealthbomber: "B-21 Phantom — cloaked stealth bomber with devastating splash payloads. Needs Air Command II.",
-  hypersonic: "Mach-9 Strike — blisteringly fast long-range hypersonic striker (Air + Ground). Needs Air Command II.",
+  stealthbomber: "B-21 Stealth Bomber — cloaked stealth bomber with devastating splash payloads. Needs Air Command II.",
+  hypersonic: "Mach-9 Hypersonic — blisteringly fast long-range hypersonic striker (Air + Ground). Needs Air Command II.",
   zeppelin: "Leviathan Airship — armored Air Force flying dreadnought with massive splash bombs. Needs Tech Lab.",
+  usv: "Sea-Baby USV Drone — stealth explosive drone boat; skims waves unseen to ram warships & docks for massive splash.",
   gunboat: "Viper Hydrofoil — fast Navy patrol & anti-air (AA) picket craft.",
   destroyer: "Aegis Destroyer — versatile Navy warship with heavy cannons & anti-air (AA) defense.",
-  sub: "Kraken Sub — stealth Navy submarine; submerges unseen to launch torpedoes. Needs Radar.",
-  dreadnought: "Poseidon Dreadnought — long-range Navy bombardment cruiser with splash cruise missiles. Needs Naval Shipyard II.",
-  carrier: "Nimitz Carrier — fleet flagship launching long-range drone strikes (Air + Ground, wide vision). Needs Naval Shipyard II.",
+  sub: "Kraken Stealth Sub — stealth Navy submarine; submerges unseen to launch torpedoes. Needs Radar.",
+  dreadnought: "Poseidon Cruiser — long-range Navy bombardment cruiser with splash cruise missiles. Needs Naval Shipyard II.",
+  carrier: "Nimitz Drone Carrier — fleet flagship launching long-range drone strikes (Air + Ground, wide vision). Needs Naval Shipyard II.",
 };
 
 const MAP_PREVIEW_PALETTES: Record<
@@ -1848,7 +1852,7 @@ export class Hud {
     if (!this.fpvMode || !tel) return;
     const udef = !isBuildingKind(tel.kind) ? UNITS[tel.kind as UnitKind] : null;
     const domain = tel.domain ?? udef?.domain ?? "land";
-    const isInf = udef?.trainsAt === "barracks";
+    const isInf = domain === "land" && udef?.trainsAt === "barracks";
 
     // Top-center banner (pointer lock state)
     const banner = document.getElementById("fpv-banner");
@@ -1912,11 +1916,15 @@ export class Hud {
       if (domBadge) {
         domBadge.textContent = isInf
           ? "INFANTRY"
-          : domain === "air"
-            ? "AIRCRAFT"
-            : domain === "sea"
-              ? "NAVAL"
-              : "ARMOR";
+          : udef?.kamikaze
+            ? "KAMIKAZE"
+            : udef?.ewJamRadius
+              ? "EW DRONE"
+              : domain === "air"
+                ? "AIRCRAFT"
+                : domain === "sea"
+                  ? "NAVAL"
+                  : "ARMOR";
       }
     }
 
@@ -2019,6 +2027,22 @@ export class Hud {
         reloadFill.style.width = "100%";
         reloadFill.className = "utility";
         if (wpnRange) wpnRange.textContent = "RESUPPLY 55m";
+      } else if (udef?.kamikaze) {
+        wpnStatus.textContent = "ARMED — CLICK / SPACE TO DETONATE";
+        wpnStatus.className = "";
+        reloadFill.style.width = "100%";
+        reloadFill.className = "";
+        if (wpnRange) {
+          const rngM = udef.range > 0 ? Math.round(udef.range * 10) : 0;
+          wpnRange.textContent = rngM > 0 ? `RNG ${rngM}m` : "WARHEAD";
+        }
+      } else if (udef?.ewJamRadius) {
+        const jamM = Math.round(udef.ewJamRadius * 10);
+        wpnStatus.textContent = `EW JAMMER ACTIVE — ${jamM}m ANTI-DRONE AURA`;
+        wpnStatus.className = "utility";
+        reloadFill.style.width = "100%";
+        reloadFill.className = "utility";
+        if (wpnRange) wpnRange.textContent = `JAM ${jamM}m`;
       } else {
         const readyFrac = Math.max(0, Math.min(1, 1 - tel.reloading));
         const ready = tel.reloading <= 0.01;
@@ -2304,7 +2328,12 @@ export class Hud {
       title = label(unit);
       const bt = btn.querySelector<HTMLElement>(".btime")?.textContent ?? `${d.buildTicks / 10}s`;
       const timeLabel = bt === "NO SEA" ? `${d.buildTicks / 10}s` : bt;
-      chipsHtml = `<span class="si-cost">${fmtCost(d.cost)}</span><span class="si-time">${timeLabel}</span><span class="si-time">${SHORT_BUILDING_NAMES[d.trainsAt]}</span>`;
+      const roleChip = d.kamikaze
+        ? `<span class="si-pwr-neg">KAMIKAZE</span>`
+        : d.ewJamRadius
+          ? `<span class="si-pwr-pos">EW JAM ${Math.round(d.ewJamRadius * 10)}m</span>`
+          : "";
+      chipsHtml = `<span class="si-cost">${fmtCost(d.cost)}</span><span class="si-time">${timeLabel}</span><span class="si-time">${SHORT_BUILDING_NAMES[d.trainsAt]}</span>${roleChip}`;
       desc = TOOLTIPS[unit] ?? title;
     } else {
       box.classList.add("hidden");
@@ -2687,7 +2716,9 @@ export class Hud {
     let hpSum = 0,
       hpMax = 0,
       maxVet = 0,
-      anyHold = false;
+      anyHold = false,
+      anyKamikaze = false,
+      anyEwJam = false;
     let minFuel: number | null = null;
     let minAmmo: number | null = null;
     let singleId: number | null = null;
@@ -2700,6 +2731,11 @@ export class Hud {
       hpMax += t.last.mhp;
       if ((t.last.vet ?? 0) > maxVet) maxVet = t.last.vet ?? 0;
       if (t.last.hold) anyHold = true;
+      if (!isBuildingKind(t.last.k)) {
+        const ud = UNITS[t.last.k as UnitKind];
+        if (ud?.kamikaze) anyKamikaze = true;
+        if (ud?.ewJamRadius) anyEwJam = true;
+      }
       if (t.last.fl !== undefined && t.last.fl < 100) {
         const v = Math.max(0, Math.round(t.last.fl));
         if (minFuel === null || v < minFuel) minFuel = v;
@@ -2727,7 +2763,7 @@ export class Hud {
     const reqChain = upPath && !hasReq && has ? missingPrereqChain([upPath.requires], has) : [];
     const sig =
       [...counts].map(([k, n]) => `${k}:${n}`).join(",") +
-      `|${singleId ?? ""}|${singleKind ?? ""}|${hasReq ? 1 : 0}|${canAfford ? 1 : 0}|${reqChain.join(">")}|v${maxVet}|h${anyHold ? 1 : 0}`;
+      `|${singleId ?? ""}|${singleKind ?? ""}|${hasReq ? 1 : 0}|${canAfford ? 1 : 0}|${reqChain.join(">")}|v${maxVet}|h${anyHold ? 1 : 0}|k${anyKamikaze ? 1 : 0}|e${anyEwJam ? 1 : 0}`;
 
     // Only rebuild DOM structure when selection or upgrade readiness actually changes
     // (prevents 5Hz innerHTML destruction from eating clicks on the UPGRADE button)
@@ -2749,7 +2785,13 @@ export class Hud {
       const holdBadge = anyHold
         ? `<span class="si-hold" title="Holding position — fires in range without chasing">[HOLD]</span>`
         : "";
-      box.innerHTML = `<div class="si-row">${parts}${vetBadge}${holdBadge}</div><div class="si-hp"><i></i><span></span></div><div class="si-logi hidden"></div>`;
+      const kamikazeBadge = anyKamikaze
+        ? `<span class="si-logi-chip crit" title="Kamikaze drone — self-detonates on strike for heavy splash damage">[KAMIKAZE]</span>`
+        : "";
+      const ewJamBadge = anyEwJam
+        ? `<span class="si-hold" title="Electronic Warfare jammer — disrupts enemy drones within 85m">[EW JAM]</span>`
+        : "";
+      box.innerHTML = `<div class="si-row">${parts}${vetBadge}${holdBadge}${kamikazeBadge}${ewJamBadge}</div><div class="si-hp"><i></i><span></span></div><div class="si-logi hidden"></div>`;
       if (multiTypes) {
         for (const chip of box.querySelectorAll<HTMLElement>(".si-filter[data-filter-kind]")) {
           chip.addEventListener("click", () => {
@@ -2796,9 +2838,13 @@ export class Hud {
         b.className = "sbtn si-fpv";
         b.textContent =
           udef?.domain === "air"
-            ? "▶ PILOT AIRCRAFT [E]"
+            ? udef.kamikaze || udef.ewJamRadius || uk === "uav"
+              ? "▶ PILOT DRONE [E]"
+              : "▶ PILOT AIRCRAFT [E]"
             : udef?.domain === "sea"
-              ? "▶ COMMAND VESSEL [E]"
+              ? udef.kamikaze
+                ? "▶ PILOT USV DRONE [E]"
+                : "▶ COMMAND VESSEL [E]"
               : udef?.trainsAt === "barracks"
                 ? "▶ FIRST-PERSON FPS [E]"
                 : "▶ DRIVE VEHICLE [E]";
@@ -2847,15 +2893,18 @@ export class Hud {
     }
     if (ent) {
       if (ent.o === -1 && ent.k === "derrick") {
-        tip.innerHTML = `<span class="ht-dot" style="background:#ffc43d"></span><span>Oil Derrick — Capture with Sapper (+$25/s)</span>`;
+        tip.innerHTML = `<span class="ht-dot" style="background:#ffc43d"></span><span>Oil Derrick — Capture with Combat Engineer (+$25/s)</span>`;
       } else if (ent.o === -1 && ent.k === "coalmine") {
-        tip.innerHTML = `<span class="ht-dot" style="background:#e6b84c"></span><span>Coal Mine — Capture with Sapper (+$20/s &amp; +60⚡)</span>`;
+        tip.innerHTML = `<span class="ht-dot" style="background:#e6b84c"></span><span>Coal Mine — Capture with Combat Engineer (+$20/s &amp; +60⚡)</span>`;
       } else {
         const col = ent.o >= 0 ? PLAYER_COLORS[ent.o] ?? "#8a97a5" : "#8a97a5";
         const name = esc(label(ent.k));
+        const udef = !isBuildingKind(ent.k) ? UNITS[ent.k as UnitKind] : null;
         const vet = (ent.vet ?? 0) > 0 ? `<span class="ht-vet">${"★".repeat(Math.min(3, ent.vet!))}</span>` : "";
         const hold = ent.hold ? `<span class="ht-hold">[HOLD]</span>` : "";
         const sub = ent.sub ? `<span class="ht-hold">[SUB]</span>` : "";
+        const kamikaze = udef?.kamikaze ? `<span class="ht-logi crit">[KAMIKAZE]</span>` : "";
+        const ewJam = udef?.ewJamRadius ? `<span class="ht-hold">[EW JAM]</span>` : "";
         const fuelVal = ent.fl !== undefined && ent.fl < 100 ? Math.max(0, Math.round(ent.fl)) : null;
         const ammoVal = ent.am !== undefined && ent.am < 100 ? Math.max(0, Math.round(ent.am)) : null;
         const fuelSpan =
@@ -2866,7 +2915,7 @@ export class Hud {
           ammoVal !== null
             ? `<span class="ht-logi${ammoVal < 15 ? " crit" : ammoVal < 35 ? " warn" : ""}">AMMO ${ammoVal}%</span>`
             : "";
-        tip.innerHTML = `<span class="ht-dot" style="background:${col}"></span><span>${name}</span>${vet}${hold}${sub}<span class="ht-meta">· HP ${Math.round(ent.hp)}/${ent.mhp}</span>${fuelSpan}${ammoSpan}`;
+        tip.innerHTML = `<span class="ht-dot" style="background:${col}"></span><span>${name}</span>${vet}${hold}${sub}${kamikaze}${ewJam}<span class="ht-meta">· HP ${Math.round(ent.hp)}/${ent.mhp}</span>${fuelSpan}${ammoSpan}`;
       }
     } else if (crate) {
       tip.innerHTML = `<span class="ht-dot" style="background:#ffc43d"></span><span>Supply Crate — Walk unit over to collect</span>`;

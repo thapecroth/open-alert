@@ -318,7 +318,15 @@ function weaponFxOf(k: EntKind): WeaponFx {
   if (k === "spider") return "melee";
   if (k === "dreadnought" || k === "himars" || k === "hypersonic" || k === "carrier") return "missile";
   if (k === "sub") return "torpedo";
-  if (k === "bomber" || k === "stealthbomber" || k === "zeppelin") return "bomb";
+  if (
+    k === "bomber" ||
+    k === "stealthbomber" ||
+    k === "zeppelin" ||
+    k === "fpvdrone" ||
+    k === "shahed" ||
+    k === "usv"
+  )
+    return "bomb";
   if (k === "lasertower" || k === "satlink") return "laser";
   if (k === "railtank") return "railgun";
   if (k === "irondome") return "intercept";
@@ -676,6 +684,7 @@ net.onMsg = (m: S2C) => {
       renderer.applyEvents(m.events, mySlot);
       let shotSfx = 0;
       let boomSfx = 0;
+      let ewJamSfx = 0;
       const evNow = performance.now();
       const noteCombatPos = (x: number, y: number, w: number) => {
         if (mySlot >= 0) return;
@@ -712,6 +721,25 @@ net.onMsg = (m: S2C) => {
           noteCombatPos(ev.tx, ev.ty, 1.5);
           audio.playShot("intercept");
           audio.noteCombat(0.3);
+        } else if (ev.e === "ewjam") {
+          noteCombatPos(ev.tx, ev.ty, 1.5);
+          let vis = mySlot < 0 || !currentConfig.fog || ev.slot === mySlot || allies.has(ev.slot);
+          if (!vis) {
+            for (const t of renderer.tracked.values()) {
+              if (t.last.o === mySlot || allies.has(t.last.o)) {
+                const dx = t.last.x - ev.tx;
+                const dy = t.last.y - ev.ty;
+                if (dx * dx + dy * dy <= 144) {
+                  vis = true;
+                  break;
+                }
+              }
+            }
+          }
+          if (vis) {
+            if (ewJamSfx++ < 2) audio.playUi("ewjam");
+            audio.noteCombat(0.3);
+          }
         } else if (ev.e === "recon") {
           if (mySlot < 0 || ev.slot === mySlot || allies.has(ev.slot)) {
             audio.playUi("recon");

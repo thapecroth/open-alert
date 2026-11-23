@@ -71,6 +71,8 @@ const MCP_CORS_HEADERS: Record<string, string> = {
   "access-control-allow-headers": "content-type, accept, mcp-session-id, mcp-protocol-version, authorization",
 };
 
+const ACTIVE_UNITS = (Object.keys(UNITS) as UnitKind[]).filter((k) => !UNITS[k].retired);
+
 const MCP_TOOLS = [
   {
     name: "list_live_games",
@@ -158,13 +160,17 @@ const MCP_TOOLS = [
   },
   {
     name: "train_unit",
-    description: "Queue 1 to 5 units for training at your barracks, war factory, airfield, or naval shipyard.",
+    description: `Queue 1 to 5 active modern units for training at your barracks, war factory, airfield, or naval shipyard. Active units: ${ACTIVE_UNITS.join(", ")}.`,
     inputSchema: {
       type: "object",
       properties: {
         room: { type: "string" },
         token: { type: "string" },
-        unit: { type: "string", enum: Object.keys(UNITS) },
+        unit: {
+          type: "string",
+          enum: ACTIVE_UNITS,
+          description: `Active non-retired unit kind: ${ACTIVE_UNITS.join(", ")}.`,
+        },
         count: { type: "integer", minimum: 1, maximum: 5, default: 1 },
       },
       required: ["room", "token", "unit"],
@@ -173,7 +179,7 @@ const MCP_TOOLS = [
   {
     name: "command_units",
     description:
-      "Issue tactical orders (move, amove, attack, patrol, harvest, stop, hold) to specific unit IDs or a named unit group (all_combat, infantry, tanks, air, sea, harvesters).",
+      "Issue tactical orders (move, amove, attack, patrol, harvest, stop, hold) to specific unit IDs or a named unit group (all_combat, infantry, tanks [tank/himars/railtank], air [fpvdrone/shahed/ewdrone/uav/interceptor/chopper/stealthbomber/hypersonic], sea [usv/gunboat/destroyer/sub/dreadnought/carrier], harvesters).",
     inputSchema: {
       type: "object",
       properties: {
@@ -187,7 +193,8 @@ const MCP_TOOLS = [
         group: {
           type: "string",
           enum: ["all_combat", "infantry", "tanks", "air", "sea", "harvesters"],
-          description: "Select all your units matching this group if ids omitted.",
+          description:
+            "Select all your units matching this group if ids omitted (air includes fpvdrone/shahed/ewdrone/uav, sea includes usv, tanks includes himars/railtank).",
         },
       },
       required: ["room", "token", "kind"],
@@ -1489,17 +1496,22 @@ export class GameRoom extends Server<Env> {
           if (e.o !== p.slot || hasOwn(BUILDINGS, e.k)) continue;
           const u = UNITS[e.k as UnitKind];
           if (
-            (grp === "all_combat" && u.dmg > 0) ||
+            (grp === "all_combat" && (u.dmg > 0 || Boolean(u.ewJamRadius))) ||
             (grp === "infantry" && (e.k === "infantry" || e.k === "rocket" || e.k === "engineer")) ||
             (grp === "tanks" &&
               (e.k === "tank" ||
+                e.k === "himars" ||
+                e.k === "railtank" ||
                 e.k === "heavy" ||
                 e.k === "arty" ||
-                e.k === "spider" ||
-                e.k === "himars" ||
-                e.k === "railtank")) ||
-            (grp === "air" && u.domain === "air") ||
-            (grp === "sea" && u.domain === "sea") ||
+                e.k === "spider")) ||
+            (grp === "air" &&
+              (u.domain === "air" ||
+                e.k === "fpvdrone" ||
+                e.k === "shahed" ||
+                e.k === "ewdrone" ||
+                e.k === "uav")) ||
+            (grp === "sea" && (u.domain === "sea" || e.k === "usv")) ||
             (grp === "harvesters" && e.k === "harvester")
           ) {
             ids.push(e.id);
