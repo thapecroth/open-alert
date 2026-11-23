@@ -326,7 +326,7 @@ export const UNITS: Record<UnitKind, UnitDef> = {
   a10: { hp: 460, speed: 0.27, range: 6.8, dmg: 22, rof: 6, cost: 1250, buildTicks: 80, trainsAt: "airfield", domain: "air", canHitAir: true, requires: "radar" },
   ac130: { hp: 980, speed: 0.14, range: 8.8, dmg: 74, rof: 20, cost: 2300, buildTicks: 115, trainsAt: "airfield", domain: "air", vision: 13, requires: "airfield2" },
   stealthbomber: { hp: 480, speed: 0.23, range: 6.5, dmg: 125, rof: 48, cost: 2100, buildTicks: 115, trainsAt: "airfield", domain: "air", stealth: true, requires: "airfield2" },
-  hypersonic: { hp: 180, speed: 0.54, range: 1.9, dmg: 520, rof: 10, cost: 1200, buildTicks: 75, trainsAt: "airfield", domain: "air", kamikaze: true, vision: 10, requires: "airfield2" },
+  hypersonic: { hp: 180, speed: 1.25, range: 2.2, dmg: 520, rof: 10, cost: 1200, buildTicks: 75, trainsAt: "airfield", domain: "air", kamikaze: true, vision: 10, requires: "airfield2" },
   // Retired legacy air units (hidden from modern UI roster)
   bomber: { hp: 420, speed: 0.18, range: 5.5, dmg: 80, rof: 46, cost: 1600, buildTicks: 95, trainsAt: "airfield", domain: "air", requires: "techlab", retired: true },
   zeppelin: { hp: 1400, speed: 0.085, range: 3.6, dmg: 135, rof: 38, cost: 2200, buildTicks: 120, trainsAt: "airfield", domain: "air", requires: "techlab", retired: true },

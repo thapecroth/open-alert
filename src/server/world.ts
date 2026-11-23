@@ -168,8 +168,6 @@ const STEALTH_AIR_DETECTORS = new Set<EntKind>([
   "irondome",
   "satlink",
   "thaad",
-  "interceptor",
-  "uav",
 ]);
 const BASE_SUPPLY_PROVIDERS = new Set<EntKind>([
   "conyard",
@@ -567,8 +565,10 @@ export class World {
 
   private stealthDetectRadius(targetKind: EntKind, detectorKind: EntKind): number {
     if (targetKind === "stealthbomber") {
-      if (detectorKind === "thaad") return 14;
-      return STEALTH_AIR_DETECTORS.has(detectorKind) ? 11 : 6.5;
+      // Without powered Radar-tier sensors, B-21 Phantom is completely invisible & untargetable
+      if (detectorKind === "satlink") return 18;
+      if (detectorKind === "thaad") return 15;
+      return STEALTH_AIR_DETECTORS.has(detectorKind) ? 12 : 0;
     }
     if (targetKind === "usv") {
       return isSeaShip(detectorKind) || detectorKind === "radar" || detectorKind === "uav" ? 9 : 5.5;
@@ -594,7 +594,7 @@ export class World {
     // Precompute stealth detection bitmasks once per tick using spatial grid (eliminates O(N^3) rescans)
     for (const st of stealthed) {
       let mask = 0;
-      const scanR = st.k === "stealthbomber" ? 14.5 : 9.5;
+      const scanR = st.k === "stealthbomber" ? 18.5 : 9.5;
       const x0 = Math.max(0, ((st.x - scanR) | 0) >> 3);
       const x1 = Math.min(this.gridCols - 1, ((st.x + scanR) | 0) >> 3);
       const y0 = Math.max(0, ((st.y - scanR) | 0) >> 3);
@@ -606,6 +606,8 @@ export class World {
             const u = cell[i];
             if (u.o < 0 || u.id === st.id) continue;
             const detectR = this.stealthDetectRadius(st.k, u.k);
+            if (detectR <= 0) continue;
+            if (st.k === "stealthbomber" && this.players.get(u.o)?.lowPower) continue;
             const dx = st.x - u.x,
               dy = st.y - u.y;
             if (dx * dx + dy * dy <= detectR * detectR) {
@@ -631,6 +633,8 @@ export class World {
     for (const u of this.ents.values()) {
       if (u.o < 0 || !this.isAlly(viewerSlot, u.o)) continue;
       const detectR = this.stealthDetectRadius(target.k, u.k);
+      if (detectR <= 0) continue;
+      if (target.k === "stealthbomber" && this.players.get(u.o)?.lowPower) continue;
       if (dist(target.x, target.y, u.x, u.y) <= detectR) return true;
     }
     return false;
@@ -1198,25 +1202,24 @@ export class World {
     if (p.lowPower) return "low power";
     if (p.swLeft > 0 || p.swLeft < 0) return "superweapon charging";
     p.swLeft = SW_CHARGE_TICKS;
-    // Exo-atmospheric THAAD Nuclear ICBM interception scan
-    let bestThaad: Ent | null = null;
-    let bestThaadDist = Infinity;
+    // Exo-atmospheric THAAD Nuclear ICBM interception scan (50% stop chance per ready THAAD in range!)
+    const readyThaads: { ent: Ent; d: number }[] = [];
     for (const e of this.ents.values()) {
       if (e.k !== "thaad" || e.o < 0 || e.hp <= 0 || e.interceptCd > 0) continue;
       if (this.isAlly(slot, e.o)) continue;
       const owner = this.players.get(e.o);
       if (!owner || owner.eliminated || owner.lowPower) continue;
       const d = dist(e.x, e.y, x, y);
-      if (d <= THAAD_NUKE_RADIUS && d < bestThaadDist) {
-        bestThaadDist = d;
-        bestThaad = e;
-      }
+      if (d <= THAAD_NUKE_RADIUS) readyThaads.push({ ent: e, d });
     }
-    if (bestThaad) {
-      bestThaad.interceptCd = THAAD_NUKE_CD;
-      this.face(bestThaad, x, y);
-      this.events.push({ e: "nukeIntercept", fx: bestThaad.x, fy: bestThaad.y, tx: x, ty: y, slot: bestThaad.o });
-      return null;
+    readyThaads.sort((a, b) => a.d - b.d);
+    for (const { ent: thaad } of readyThaads) {
+      thaad.interceptCd = THAAD_NUKE_CD;
+      this.face(thaad, x, y);
+      if (Math.random() < 0.5) {
+        this.events.push({ e: "nukeIntercept", fx: thaad.x, fy: thaad.y, tx: x, ty: y, slot: thaad.o });
+        return null;
+      }
     }
     for (const e of [...this.ents.values()]) {
       if (!this.ents.has(e.id)) continue;
@@ -1798,7 +1801,14 @@ export class World {
     if (o?.kind === "attack" && o.target != null) {
       const tgt = this.ents.get(o.target);
       if (!tgt || !this.canAttack(e, tgt)) {
-        this.advanceOrder(e);
+        // Aggressive Attack Mode: when primary target dies (and no queued waypoint), immediately pursue nearest nearby enemy!
+        const nextEnemy = e.orderQueue.length === 0 ? this.nearestEnemy(e, Math.max(w.range + 6, 11)) : null;
+        if (nextEnemy) {
+          e.order = { kind: "attack", x: nextEnemy.x, y: nextEnemy.y, target: nextEnemy.id };
+          e.repath = 0;
+        } else {
+          this.advanceOrder(e);
+        }
       } else if (e.k === "engineer" && isBuilding(tgt.k)) {
         // engineers don't shoot — they walk in and take the building
         if (!this.tryCapture(e, tgt)) {
@@ -1822,8 +1832,16 @@ export class World {
         }
       }
     } else if (o?.kind === "amove" || o?.kind === "patrol") {
-      const scanR = o.kind === "patrol" ? Math.max(w.range + 2, 4) : Math.max(w.range + 2, e.k === "engineer" ? 5 : 3);
-      const enemy = this.nearestEnemy(e, scanR);
+      // Aggressive Attack-Move: wide acquisition radius actively hunts & closes in on enemies along the advance
+      const scanR =
+        o.kind === "patrol"
+          ? Math.max(w.range + 5, 10)
+          : Math.max(w.range + 7, e.k === "engineer" ? 8 : 12);
+      const tracked = e.agro != null ? this.ents.get(e.agro) : null;
+      const enemy =
+        tracked && this.canAttack(e, tracked) && entityDist(e, tracked) <= scanR + 2
+          ? tracked
+          : this.nearestEnemy(e, scanR);
       if (enemy) {
         if (e.k === "engineer" && isBuilding(enemy.k)) {
           // attack-moving engineers capture buildings they reach
@@ -2353,7 +2371,32 @@ export class World {
 
   private tryIntercept(attacker: Ent, tx: number, ty: number, defenderSlot?: number): boolean {
     if (!INTERCEPTABLE.has(attacker.k)) return false;
-    const thaadCanIntercept = attacker.k === "hypersonic" || attacker.k === "dreadnought";
+    // Mach-9 Kamikaze hypersonic glide missile: ONLY THAAD can intercept it, and at a 50% stop chance per ready battery!
+    if (attacker.k === "hypersonic") {
+      const thaads: { ent: Ent; d: number }[] = [];
+      for (const dome of this.ents.values()) {
+        if (dome.k !== "thaad" || dome.o < 0 || dome.interceptCd > 0) continue;
+        if (this.players.get(dome.o)?.lowPower) continue;
+        if (defenderSlot !== undefined && defenderSlot >= 0) {
+          if (!this.isAlly(defenderSlot, dome.o)) continue;
+        } else {
+          if (this.isAlly(attacker.o, dome.o)) continue;
+        }
+        const d = dist(dome.x, dome.y, tx, ty);
+        if (d <= 16) thaads.push({ ent: dome, d });
+      }
+      thaads.sort((a, b) => a.d - b.d);
+      for (const { ent: thaad } of thaads) {
+        thaad.interceptCd = IRONDOME_COOLDOWN;
+        this.face(thaad, tx, ty);
+        if (Math.random() < 0.5) {
+          this.events.push({ e: "intercept", fx: thaad.x, fy: thaad.y, tx, ty, slot: thaad.o });
+          return true;
+        }
+      }
+      return false;
+    }
+    const thaadCanIntercept = attacker.k === "dreadnought";
     let bestDome: Ent | null = null;
     let bestD = Infinity;
     for (const dome of this.ents.values()) {
