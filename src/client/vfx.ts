@@ -24,7 +24,10 @@ const sharedSpark = new THREE.BoxGeometry(0.1, 0.1, 0.1);
 const sharedSmoke = new THREE.DodecahedronGeometry(0.28, 0);
 const sharedFire = new THREE.SphereGeometry(0.5, 10, 8);
 const sharedRing = new THREE.TorusGeometry(1, 0.055, 8, 28);
-const sharedBeamCyl = new THREE.CylinderGeometry(1, 1, 60, 18, 1, true);
+const sharedNukeStem = new THREE.CylinderGeometry(0.76, 1.28, 1, 18);
+const sharedNukeCap = new THREE.SphereGeometry(1, 20, 14);
+const sharedNukeTorus = new THREE.TorusGeometry(1, 0.34, 12, 32);
+const sharedNukeCollar = new THREE.TorusGeometry(1, 0.12, 10, 32);
 const sharedCraterGeo = new THREE.PlaneGeometry(1, 1);
 sharedCraterGeo.rotateX(-Math.PI / 2);
 const sharedWakeRing = new THREE.RingGeometry(0.64, 1.0, 20);
@@ -1203,172 +1206,721 @@ export class VfxSystem {
     }
   }
 
-  // ---------- Orbital Ion Cannon Sky-Beam Superweapon VFX ----------
+  // ---------- Thermonuclear ICBM Strike & Rising Mushroom Cloud VFX ----------
 
   spawnSuperweapon(x: number, y: number) {
-    // Phase 1 (0..450ms): 3 converging cyan-white plasma target rings on the ground
-    for (let i = 0; i < 3; i++) {
-      const startR = 5.6 - i * 1.1;
+    const descentMs = 750;
+    const cloudMs = 2450; // 750ms -> 3200ms total spectacle
+    const startPos = new THREE.Vector3(x + 2.4, 48, y - 1.6);
+    const impactPos = new THREE.Vector3(x, 0.2, y);
+    const flightDir = impactPos.clone().sub(startPos).normalize();
+
+    // ===== PHASE 1 (0..750ms): Ground nuclear targeting lock rings + blazing descending ICBM =====
+    for (let i = 0; i < 2; i++) {
+      const startR = i === 0 ? 5.8 : 3.2;
       const ringMat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(1.4, 2.8, 3.6),
+        color: i === 0 ? new THREE.Color(3.6, 0.65, 0.25) : new THREE.Color(4.0, 2.2, 0.45),
         transparent: true,
         opacity: 0.9,
         depthWrite: false,
       });
       const ring = new THREE.Mesh(sharedRing, ringMat);
       ring.rotation.x = -Math.PI / 2;
-      ring.position.set(x, 0.14 + i * 0.04, y);
-      this.add(ring, 460 + i * 35, (o, t) => {
-        const ease = t * t;
-        const sc = Math.max(0.2, startR * (1 - ease * 0.92));
+      ring.position.set(x, 0.14 + i * 0.03, y);
+      this.add(ring, descentMs, (o, t) => {
+        const pulse = 1 + 0.08 * Math.sin(t * 36 + i * 2);
+        const sc = Math.max(0.45, startR * (1 - t * 0.68) * pulse);
         o.scale.setScalar(sc);
-        ringMat.opacity = t < 0.85 ? 0.3 + t * 0.7 : (1 - t) * 6;
+        ringMat.opacity = t < 0.88 ? 0.45 + 0.52 * Math.sin(t * 28 + i) * 0.5 + 0.25 : (1 - t) * 7;
       });
     }
 
-    // Ground charge glow buildup during convergence
-    const chargeMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(1.6, 3.0, 3.8),
+    // Fiery plasma condensation trail ribbon behind the plunging ICBM warhead
+    const trailSegs = 20;
+    const trailPts: THREE.Vector3[] = [];
+    for (let i = 0; i <= trailSegs; i++) {
+      trailPts.push(startPos.clone().lerp(impactPos, i / trailSegs));
+    }
+    const trailGeo = new THREE.BufferGeometry().setFromPoints(trailPts);
+    trailGeo.setDrawRange(0, 2);
+    const trailMat = new THREE.LineBasicMaterial({
+      color: new THREE.Color(4.4, 1.9, 0.55),
       transparent: true,
-      opacity: 0.2,
+      opacity: 0.96,
       depthWrite: false,
     });
-    const charge = new THREE.Mesh(sharedFire, chargeMat);
-    charge.position.set(x, 0.25, y);
-    this.add(charge, 480, (o, t) => {
-      o.scale.setScalar(0.5 + t * 2.2);
-      chargeMat.opacity = 0.2 + t * 0.75;
-    });
+    const trailLine = new THREE.Line(trailGeo, trailMat);
+    const trailLife = descentMs + 650;
+    this.add(
+      trailLine,
+      trailLife,
+      (_o, t) => {
+        const elapsed = t * trailLife;
+        const u = Math.min(1, elapsed / descentMs);
+        const drawN = Math.max(2, Math.min(trailSegs + 1, Math.ceil(u * (trailSegs + 1))));
+        trailGeo.setDrawRange(0, drawN);
+        trailMat.opacity = elapsed <= descentMs ? 0.96 : Math.max(0, 0.96 * (1 - (elapsed - descentMs) / 650));
+      },
+      true,
+    );
 
-    // Phase 2 & 3 (total 1700ms): Colossal orbital sky-beam descending from y=60 + blast detonation at t=0.26 (~450ms)
-    const beamGroup = new THREE.Group();
-    beamGroup.position.set(x, 0, y);
+    // Blazing red-orange ICBM re-entry warhead screaming steeply down (y = 48 -> 0.2)
+    const warhead = new THREE.Group();
+    warhead.quaternion.setFromUnitVectors(UP, flightDir);
+    warhead.position.copy(startPos);
 
-    const coreMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(2.6, 3.6, 4.2),
-      transparent: true,
-      opacity: 0,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
-    const core = new THREE.Mesh(sharedBeamCyl, coreMat);
-    core.position.y = 30;
-    beamGroup.add(core);
+    const whBody = new THREE.Mesh(
+      sharedCyl,
+      new THREE.MeshBasicMaterial({ color: 0xeef4fa }),
+    );
+    whBody.scale.set(6.5, 1.55, 6.5);
+    warhead.add(whBody);
 
-    const outerMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(0.55, 2.0, 3.4),
-      transparent: true,
-      opacity: 0,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
-    const outer = new THREE.Mesh(sharedBeamCyl, outerMat);
-    outer.position.y = 30;
-    beamGroup.add(outer);
+    const whNose = new THREE.Mesh(
+      sharedCone,
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(3.8, 0.65, 0.22) }),
+    );
+    whNose.scale.set(2.1, 2.2, 2.1);
+    whNose.position.y = 1.15;
+    warhead.add(whNose);
 
-    // Spiralling plasma energy helix rings cascading down the beam
-    const helixMats: THREE.MeshBasicMaterial[] = [];
-    const helixRings: THREE.Mesh[] = [];
-    for (let i = 0; i < 4; i++) {
-      const hm = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(1.5, 3.0, 4.0),
+    // Blazing incandescent re-entry bow shock sheath + long plasma wake plume
+    const bowGlow = new THREE.Mesh(
+      sharedCone,
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(4.6, 2.35, 0.65),
         transparent: true,
-        opacity: 0,
+        opacity: 0.86,
+        blending: THREE.AdditiveBlending,
         depthWrite: false,
-      });
-      const hr = new THREE.Mesh(sharedRing, hm);
-      hr.rotation.x = Math.PI / 2 + (i % 2 === 0 ? 0.28 : -0.28);
-      hr.position.y = 48;
-      beamGroup.add(hr);
-      helixMats.push(hm);
-      helixRings.push(hr);
-    }
+      }),
+    );
+    bowGlow.scale.set(3.2, 3.8, 3.2);
+    bowGlow.position.y = 0.72;
+    warhead.add(bowGlow);
 
+    const wakePlume = new THREE.Mesh(
+      sharedCone,
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(4.2, 1.55, 0.35),
+        transparent: true,
+        opacity: 0.92,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    );
+    wakePlume.rotation.x = Math.PI;
+    wakePlume.scale.set(2.5, 7.6, 2.5);
+    wakePlume.position.y = -2.25;
+    warhead.add(wakePlume);
+
+    let contrailAcc = 0;
     let detonated = false;
-    this.add(beamGroup, 1700, (_o, t) => {
-      const fireStart = 0.265; // ~450ms
-      if (t < fireStart) {
-        coreMat.opacity = 0;
-        outerMat.opacity = 0;
-        return;
-      }
-      const u = (t - fireStart) / (1 - fireStart); // 0..1 across beam duration
 
-      if (!detonated) {
+    this.add(warhead, descentMs, (o, t, dt) => {
+      // Accelerating terminal re-entry curve (48 -> 0.2)
+      const fall = Math.pow(t, 1.25);
+      o.position.lerpVectors(startPos, impactPos, fall);
+      const flick = 0.9 + 0.25 * Math.sin(t * 70);
+      bowGlow.scale.set(3.2 * flick, 3.8 * flick, 3.2 * flick);
+      wakePlume.scale.set(2.5 * flick, (6.8 + t * 2.4) * flick, 2.5 * flick);
+
+      contrailAcc += dt;
+      if (contrailAcc >= 0.026 && t < 0.95) {
+        contrailAcc = 0;
+        this.spawnContrail(o.position.x, o.position.y, o.position.z, 1.6);
+      }
+
+      // ===== PHASE 2 (750..3200ms): Thermonuclear Detonation & Colossal Rising Mushroom Cloud! =====
+      if (t >= 0.96 && !detonated) {
         detonated = true;
-        // Massive scorch crater
-        this.spawnCrater(x, y, 4.4);
-        // Blinding ground impact flash core
-        const blastMat = new THREE.MeshBasicMaterial({
-          color: new THREE.Color(2.4, 3.2, 3.8),
+
+        // 1. Massive persistent blackened blast crater
+        this.spawnCrater(x, y, 5.2);
+
+        // 2. Blinding incandescent white-gold thermonuclear flash dome + towering flash flare!
+        const flashHot = new THREE.Color(5.2, 4.6, 3.1);
+        const flashAmber = new THREE.Color(3.9, 1.85, 0.42);
+        const domeMat = new THREE.MeshBasicMaterial({
+          color: flashHot.clone(),
           transparent: true,
           opacity: 0.98,
+          blending: THREE.AdditiveBlending,
           depthWrite: false,
         });
-        const blast = new THREE.Mesh(sharedFire, blastMat);
-        blast.position.set(x, 0.8, y);
-        this.add(blast, 820, (bo, bt) => {
-          bo.scale.setScalar(1.4 + bt * 6.8);
-          bo.position.y = 0.7 + bt * 1.4;
-          blastMat.opacity = (1 - bt) * (1 - bt);
+        const flashDome = new THREE.Mesh(sharedNukeCap, domeMat);
+        flashDome.position.set(x, 0.4, y);
+        this.add(flashDome, 1150, (fo, ft) => {
+          const ease = 1 - Math.pow(1 - ft, 2.6);
+          const r = 1.4 + ease * 10.6;
+          fo.scale.set(r, r * 0.72, r);
+          domeMat.color.copy(flashHot).lerp(flashAmber, Math.min(1, ft * 1.45));
+          domeMat.opacity = Math.pow(Math.max(0, 1 - ft), 1.75) * 0.96;
         });
-        // Colossal expanding cyan plasma shockwave + secondary fiery thermal ring
-        this.spawnImpactRing(x, y, 5.4, new THREE.Color(1.1, 2.8, 3.8), 760);
-        this.spawnImpactRing(x, y, 4.2, new THREE.Color(3.0, 1.35, 0.32), 680);
 
-        // 14 fiery debris & ionized chunks rocketing outward
-        for (let i = 0; i < 14; i++) {
-          const ang = (i / 14) * Math.PI * 2 + Math.random() * 0.35;
-          const spd = 4.2 + Math.random() * 5.2;
-          const vy = 4.6 + Math.random() * 4.2;
-          const col = i % 3 === 0 ? 0x52e8ff : i % 2 === 0 ? 0xff9828 : 0x2e343c;
+        // Blinding core flash billboard flare
+        this.spawnFlash(new THREE.Vector3(x, 2.4, y), new THREE.Color(5.4, 4.8, 3.3), 10.5, 620);
+        this.spawnFlash(new THREE.Vector3(x, 1.2, y), new THREE.Color(4.5, 2.2, 0.55), 8.2, 920);
+
+        // 3. Huge expanding ground thermal shockwave ring (r = 1 -> 14) + secondary thermal wave!
+        const swMat = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(4.4, 3.4, 1.5),
+          transparent: true,
+          opacity: 0.95,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        const swRing = new THREE.Mesh(sharedRing, swMat);
+        swRing.rotation.x = -Math.PI / 2;
+        swRing.position.set(x, 0.22, y);
+        this.add(swRing, 1280, (ro, rt) => {
+          const ease = 1 - Math.pow(1 - rt, 1.85);
+          const sc = 1.0 + ease * 13.0; // r = 1 -> 14!
+          ro.scale.set(sc, sc, Math.max(0.35, 1.8 - rt * 1.3));
+          swMat.opacity = 0.95 * Math.pow(1 - rt, 1.35);
+        });
+
+        const sw2Mat = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(3.8, 1.35, 0.28),
+          transparent: true,
+          opacity: 0.86,
+          depthWrite: false,
+        });
+        const swRing2 = new THREE.Mesh(sharedRing, sw2Mat);
+        swRing2.rotation.x = -Math.PI / 2;
+        swRing2.position.set(x, 0.16, y);
+        this.add(swRing2, 1520, (ro, rt) => {
+          const ease = 1 - Math.pow(1 - rt, 1.65);
+          const sc = 0.8 + ease * 10.6;
+          ro.scale.set(sc, sc, Math.max(0.25, 1.2 - rt * 0.85));
+          sw2Mat.opacity = 0.86 * Math.pow(1 - rt, 1.4);
+        });
+
+        // 4. Colossal Rising Thermonuclear Mushroom Cloud (750ms -> 3200ms)
+        const cIncand = new THREE.Color(4.5, 3.7, 1.75);
+        const cFire = new THREE.Color(3.25, 1.12, 0.22);
+        const cEmber = new THREE.Color(0.95, 0.26, 0.1);
+        const cSoot = new THREE.Color(0.15, 0.14, 0.16);
+        const tmpColor = new THREE.Color();
+
+        const evalNuclearColor = (u: number, out: THREE.Color) => {
+          if (u < 0.22) {
+            out.copy(cIncand).lerp(cFire, u / 0.22);
+          } else if (u < 0.56) {
+            out.copy(cFire).lerp(cEmber, (u - 0.22) / 0.34);
+          } else {
+            out.copy(cEmber).lerp(cSoot, Math.min(1, (u - 0.56) / 0.34));
+          }
+        };
+
+        const cloudGroup = new THREE.Group();
+        cloudGroup.position.set(x, 0, y);
+
+        // Rising fireball stem column (CylinderGeometry)
+        const stemMat = new THREE.MeshBasicMaterial({
+          color: cIncand.clone(),
+          transparent: true,
+          opacity: 0.95,
+          depthWrite: false,
+        });
+        const stem = new THREE.Mesh(sharedNukeStem, stemMat);
+        cloudGroup.add(stem);
+
+        // Ground base-surge dust/fire skirt torus
+        const baseMat = new THREE.MeshBasicMaterial({
+          color: cFire.clone(),
+          transparent: true,
+          opacity: 0.86,
+          depthWrite: false,
+        });
+        const baseSurge = new THREE.Mesh(sharedNukeTorus, baseMat);
+        baseSurge.rotation.x = Math.PI / 2;
+        baseSurge.position.y = 0.65;
+        cloudGroup.add(baseSurge);
+
+        // Billowing toroidal mushroom cap: main dome + rolled toroidal under-cap + volumetric lobes
+        const capGroup = new THREE.Group();
+        cloudGroup.add(capGroup);
+
+        const capMat = new THREE.MeshBasicMaterial({
+          color: cIncand.clone(),
+          transparent: true,
+          opacity: 0.96,
+          depthWrite: false,
+        });
+        const capDome = new THREE.Mesh(sharedNukeCap, capMat);
+        capGroup.add(capDome);
+
+        const capRollMat = new THREE.MeshBasicMaterial({
+          color: cFire.clone(),
+          transparent: true,
+          opacity: 0.92,
+          depthWrite: false,
+        });
+        const capRoll = new THREE.Mesh(sharedNukeTorus, capRollMat);
+        capRoll.rotation.x = Math.PI / 2;
+        capRoll.position.y = -0.35;
+        capGroup.add(capRoll);
+
+        // Inner glowing nuclear plasma core tucked inside the mushroom crown
+        const innerCoreMat = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(4.6, 2.8, 0.85),
+          transparent: true,
+          opacity: 0.92,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        const innerCore = new THREE.Mesh(sharedNukeCap, innerCoreMat);
+        innerCore.position.y = -0.15;
+        capGroup.add(innerCore);
+
+        // 6 billowing perimeter cloud lobes giving dramatic sculpted mushroom volume
+        const lobes: THREE.Mesh[] = [];
+        for (let i = 0; i < 6; i++) {
+          const ang = (i / 6) * Math.PI * 2;
+          const lobe = new THREE.Mesh(sharedNukeCap, capRollMat);
+          lobe.userData.ang = ang;
+          capGroup.add(lobe);
+          lobes.push(lobe);
+        }
+
+        // Expanding Wilson condensation collar ring (TorusGeometry) encircling the rising stem!
+        const collarMat = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(2.6, 2.4, 2.1),
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+        });
+        const collar = new THREE.Mesh(sharedNukeCollar, collarMat);
+        collar.rotation.x = Math.PI / 2;
+        cloudGroup.add(collar);
+
+        this.add(cloudGroup, cloudMs, (_co, ct) => {
+          const rise = 1 - Math.pow(1 - ct, 2.1);
+          const fade = ct < 0.72 ? 1.0 : Math.max(0, 1 - (ct - 0.72) / 0.28);
+
+          // Stem rises smoothly from ground to y ~ 10.5
+          const stemH = 1.6 + rise * 9.8;
+          const stemR = 1.05 + rise * 0.95;
+          stem.position.y = stemH * 0.5;
+          stem.scale.set(stemR, stemH, stemR);
+          evalNuclearColor(Math.min(1, ct * 1.12), tmpColor);
+          stemMat.color.copy(tmpColor);
+          stemMat.opacity = 0.92 * fade;
+
+          // Base surge churns outward along the ground
+          const bR = 1.5 + rise * 4.4;
+          baseSurge.scale.set(bR, bR, 0.9 + rise * 1.1);
+          baseSurge.position.y = 0.45 + rise * 0.65;
+          evalNuclearColor(Math.min(1, ct * 1.25 + 0.14), tmpColor);
+          baseMat.color.copy(tmpColor);
+          baseMat.opacity = 0.82 * Math.pow(fade, 1.15);
+
+          // Mushroom cap rises to y ~ 12.2 and billows wide into an iconic toroidal crown!
+          const capY = 1.6 + rise * 10.6;
+          const capRx = 1.45 + rise * 4.85;
+          const capRy = 1.05 + rise * 2.35;
+          capGroup.position.y = capY;
+          capGroup.rotation.y = ct * 0.55;
+
+          capDome.scale.set(capRx, capRy, capRx);
+          evalNuclearColor(ct, tmpColor);
+          capMat.color.copy(tmpColor);
+          capMat.opacity = 0.96 * fade;
+
+          const rollR = capRx * 0.86;
+          capRoll.scale.set(rollR, rollR, capRy * 0.78);
+          capRoll.position.y = -capRy * 0.36;
+          evalNuclearColor(Math.min(1, ct * 1.08 + 0.08), tmpColor);
+          capRollMat.color.copy(tmpColor);
+          capRollMat.opacity = 0.92 * fade;
+
+          innerCore.scale.set(capRx * 0.68, capRy * 0.62, capRx * 0.68);
+          innerCoreMat.opacity = Math.max(0, 0.92 * Math.pow(1 - ct * 1.28, 1.6));
+
+          for (let i = 0; i < lobes.length; i++) {
+            const lb = lobes[i];
+            const ang = (lb.userData.ang as number) + ct * 0.35;
+            const orbitR = capRx * 0.64;
+            lb.position.set(Math.cos(ang) * orbitR, -capRy * 0.18 + Math.sin(ct * 5 + i) * 0.25, Math.sin(ang) * orbitR);
+            const ls = capRy * (0.64 + 0.1 * Math.sin(i * 1.7 + ct * 4));
+            lb.scale.set(ls * 1.15, ls * 0.85, ls * 1.15);
+          }
+
+          // Wilson condensation collar ring forms mid-stem and expands crisply outward
+          const collarIn = ct < 0.1 ? ct / 0.1 : 1;
+          const collarFade = ct < 0.45 ? 1 : Math.max(0, 1 - (ct - 0.45) / 0.48);
+          const collarR = 1.8 + rise * 6.2;
+          collar.position.y = stemH * 0.54;
+          collar.scale.set(collarR, collarR, 0.85 + rise * 0.75);
+          collarMat.opacity = 0.76 * collarIn * collarFade;
+        });
+
+        // 5. Flying fiery nuclear debris chunks & incandescent embers
+        for (let i = 0; i < 20; i++) {
+          const ang = (i / 20) * Math.PI * 2 + (Math.random() - 0.5) * 0.32;
+          const spd = 4.6 + Math.random() * 6.8;
+          const vy = 5.4 + Math.random() * 5.6;
+          const col =
+            i % 3 === 0
+              ? new THREE.Color(4.2, 2.6, 0.75)
+              : i % 3 === 1
+                ? new THREE.Color(3.6, 1.15, 0.22)
+                : 0x262a30;
           const dMat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 1 });
           const deb = new THREE.Mesh(sharedSpark, dMat);
-          deb.scale.setScalar(1.6 + Math.random() * 1.2);
-          deb.position.set(x, 0.7, y);
-          this.add(deb, 880, (doObj, dt0) => {
-            const s = dt0 * 0.88;
+          deb.scale.setScalar(1.65 + Math.random() * 1.45);
+          deb.position.set(x, 0.85, y);
+          this.add(deb, 1080 + Math.random() * 260, (doObj, dt0) => {
+            const s = dt0 * 1.15;
             doObj.position.set(
               x + Math.cos(ang) * spd * s,
-              Math.max(0.1, 0.7 + vy * s - 6.4 * s * s),
+              Math.max(0.1, 0.85 + vy * s - 6.8 * s * s),
               y + Math.sin(ang) * spd * s,
             );
-            doObj.rotation.x = s * 14.4;
-            doObj.rotation.y = s * 11.4;
-            dMat.opacity = 1 - dt0;
+            doObj.rotation.x = s * 15.2;
+            doObj.rotation.y = s * 11.8;
+            dMat.opacity = 1 - dt0 * dt0;
           });
         }
 
-        // Dense billowing blast smoke clouds
-        for (let i = 0; i < 6; i++) {
-          const ang = (i / 6) * Math.PI * 2;
-          this.spawnSmoke(x + Math.cos(ang) * 1.8, 0.9, y + Math.sin(ang) * 1.8, true);
+        // Dense perimeter ring of dark nuclear battle smoke
+        for (let i = 0; i < 8; i++) {
+          const ang = (i / 8) * Math.PI * 2;
+          this.spawnSmoke(x + Math.cos(ang) * 2.6, 1.1, y + Math.sin(ang) * 2.6, true);
         }
       }
+    });
+  }
 
-      // Beam strike descent & taper envelope
-      const drop = Math.min(1, u / 0.08);
-      const env = u < 0.12 ? u / 0.12 : Math.pow(Math.max(0, 1 - (u - 0.12) / 0.88), 1.45);
-      const pulse = 1 + 0.1 * Math.sin(u * 42);
-      const coreR = Math.max(0.05, 1.55 * env * pulse);
-      const outerR = Math.max(0.1, 3.05 * env * pulse);
+  // ---------- THAAD Hit-To-Kill Exo-Atmospheric Nuke Interception VFX ----------
 
-      core.position.y = 60 - 30 * drop;
-      core.scale.set(coreR, drop, coreR);
-      coreMat.opacity = Math.min(0.98, env * 1.25);
+  spawnNukeIntercept(fx: number, fy: number, tx: number, ty: number) {
+    const flightMs = 700;
+    const icbmStart = new THREE.Vector3(tx + 1.4, 46, ty - 0.9);
+    const thaadStart = new THREE.Vector3(fx, 1.8, fy);
+    const interceptP = new THREE.Vector3(tx, 19, ty);
 
-      outer.position.y = 60 - 30 * drop;
-      outer.scale.set(outerR, drop, outerR);
-      outerMat.opacity = Math.min(0.55, env * 0.72);
+    // Launch booster flare + white smoke puff at THAAD battery pad
+    this.spawnFlash(thaadStart, new THREE.Color(3.2, 4.2, 4.8), 2.1, 260);
+    this.spawnFlash(thaadStart, new THREE.Color(4.4, 2.8, 0.9), 1.4, 200);
+    this.spawnSmoke(fx, 1.6, fy, false);
 
-      // Spiralling helix energy rings rushing downward along the sky-beam
-      for (let i = 0; i < helixRings.length; i++) {
-        const phase = (u * 3.2 + i * 0.25) % 1;
-        helixRings[i].position.y = 46 * (1 - phase) + 0.5;
-        helixRings[i].rotation.y = u * 14 + i * 1.6;
-        const rSc = Math.max(0.1, (2.2 + 0.6 * Math.sin(phase * Math.PI)) * env);
-        helixRings[i].scale.setScalar(rSc);
-        helixMats[i].opacity = env * (1 - phase * 0.5) * 0.85;
+    // Ground danger ring that transforms into a safe cyan shield ripple on intercept (ZERO crater!)
+    const warnMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(3.4, 0.75, 0.35),
+      transparent: true,
+      opacity: 0.78,
+      depthWrite: false,
+    });
+    const warnRing = new THREE.Mesh(sharedRing, warnMat);
+    warnRing.rotation.x = -Math.PI / 2;
+    warnRing.position.set(tx, 0.14, ty);
+    this.add(warnRing, flightMs, (o, t) => {
+      const sc = 4.6 * (1 - t * 0.45);
+      o.scale.setScalar(sc);
+      warnMat.opacity = 0.75 * (1 - t * 0.65);
+    });
+
+    // 1. Descending crimson-tipped Nuclear ICBM trajectory ribbon & missile: (tx, 46, ty) -> (tx, 19, ty)
+    const icbmSegs = 16;
+    const icbmPts: THREE.Vector3[] = [];
+    for (let i = 0; i <= icbmSegs; i++) {
+      icbmPts.push(icbmStart.clone().lerp(interceptP, i / icbmSegs));
+    }
+    const icbmTrailGeo = new THREE.BufferGeometry().setFromPoints(icbmPts);
+    icbmTrailGeo.setDrawRange(0, 2);
+    const icbmTrailMat = new THREE.LineBasicMaterial({
+      color: new THREE.Color(4.0, 1.35, 0.4),
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+    });
+    const icbmTrailLine = new THREE.Line(icbmTrailGeo, icbmTrailMat);
+    const trailLife = 1550;
+    this.add(
+      icbmTrailLine,
+      trailLife,
+      (_o, t) => {
+        const elapsed = t * trailLife;
+        const u = Math.min(1, elapsed / flightMs);
+        icbmTrailGeo.setDrawRange(0, Math.max(2, Math.min(icbmSegs + 1, Math.ceil(u * (icbmSegs + 1)))));
+        icbmTrailMat.opacity = elapsed <= flightMs ? 0.95 : Math.max(0, 0.95 * (1 - (elapsed - flightMs) / (trailLife - flightMs)));
+      },
+      true,
+    );
+
+    const icbmDir = interceptP.clone().sub(icbmStart).normalize();
+    const icbmObj = new THREE.Group();
+    icbmObj.quaternion.setFromUnitVectors(UP, icbmDir);
+    icbmObj.position.copy(icbmStart);
+
+    const icbmFuselage = new THREE.Mesh(sharedCyl, new THREE.MeshBasicMaterial({ color: 0xedf2f7 }));
+    icbmFuselage.scale.set(6.0, 1.45, 6.0);
+    icbmObj.add(icbmFuselage);
+
+    const icbmTip = new THREE.Mesh(
+      sharedCone,
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(3.9, 0.52, 0.22) }),
+    );
+    icbmTip.scale.set(2.0, 2.1, 2.0);
+    icbmTip.position.y = 1.05;
+    icbmObj.add(icbmTip);
+
+    const icbmPlume = new THREE.Mesh(
+      sharedCone,
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(4.2, 1.65, 0.38),
+        transparent: true,
+        opacity: 0.88,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    );
+    icbmPlume.rotation.x = Math.PI;
+    icbmPlume.scale.set(2.2, 5.8, 2.2);
+    icbmPlume.position.y = -1.9;
+    icbmObj.add(icbmPlume);
+
+    let icbmTrailCd = 0;
+    this.add(icbmObj, flightMs, (o, t, dt) => {
+      o.position.lerpVectors(icbmStart, interceptP, t);
+      icbmTrailCd += dt;
+      if (icbmTrailCd >= 0.036 && t < 0.94) {
+        icbmTrailCd = 0;
+        this.spawnContrail(o.position.x, o.position.y, o.position.z, 1.55);
+      }
+    });
+
+    // 2. Blazing white-cyan THAAD Interceptor Missile launching steeply from (fx, 1.8, fy) -> (tx, 19, ty)
+    const thaadSegs = 22;
+    const thaadPts: THREE.Vector3[] = [];
+    for (let i = 0; i <= thaadSegs; i++) {
+      const u = i / thaadSegs;
+      const p = thaadStart.clone().lerp(interceptP, u);
+      // Steep initial boost climb curving gracefully into exo-atmospheric intercept point
+      p.y += Math.sin(u * Math.PI) * 2.6;
+      thaadPts.push(p);
+    }
+    const thaadTrailGeo = new THREE.BufferGeometry().setFromPoints(thaadPts);
+    thaadTrailGeo.setDrawRange(0, 2);
+    const thaadTrailMat = new THREE.LineBasicMaterial({
+      color: new THREE.Color(1.9, 3.8, 4.6),
+      transparent: true,
+      opacity: 0.98,
+      depthWrite: false,
+    });
+    const thaadTrailLine = new THREE.Line(thaadTrailGeo, thaadTrailMat);
+    this.add(
+      thaadTrailLine,
+      trailLife + 150,
+      (_o, t) => {
+        const elapsed = t * (trailLife + 150);
+        const u = Math.min(1, elapsed / flightMs);
+        thaadTrailGeo.setDrawRange(0, Math.max(2, Math.min(thaadSegs + 1, Math.ceil(u * (thaadSegs + 1)))));
+        thaadTrailMat.opacity =
+          elapsed <= flightMs ? 0.98 : Math.max(0, 0.98 * (1 - (elapsed - flightMs) / (trailLife + 150 - flightMs)));
+      },
+      true,
+    );
+
+    const thaadObj = new THREE.Group();
+    thaadObj.position.copy(thaadStart);
+
+    const tBody = new THREE.Mesh(sharedCyl, new THREE.MeshBasicMaterial({ color: new THREE.Color(2.4, 3.8, 4.4) }));
+    tBody.scale.set(4.6, 1.38, 4.6);
+    thaadObj.add(tBody);
+
+    const tTip = new THREE.Mesh(sharedCone, new THREE.MeshBasicMaterial({ color: new THREE.Color(4.2, 3.3, 1.1) }));
+    tTip.scale.set(1.55, 1.75, 1.55);
+    tTip.position.y = 0.98;
+    thaadObj.add(tTip);
+
+    const tExhaust = new THREE.Mesh(
+      sharedCone,
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(2.0, 4.0, 4.8),
+        transparent: true,
+        opacity: 0.92,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    );
+    tExhaust.rotation.x = Math.PI;
+    tExhaust.scale.set(1.85, 5.4, 1.85);
+    tExhaust.position.y = -1.75;
+    thaadObj.add(tExhaust);
+
+    let thaadTrailCd = 0;
+    let intercepted = false;
+    const prevP = thaadStart.clone();
+    const vel = new THREE.Vector3();
+
+    this.add(thaadObj, flightMs, (o, t, dt) => {
+      const p = thaadStart.clone().lerp(interceptP, t);
+      p.y += Math.sin(t * Math.PI) * 2.6;
+      vel.copy(p).sub(prevP);
+      if (vel.lengthSq() > 0.00001) {
+        o.quaternion.setFromUnitVectors(UP, vel.normalize());
+      }
+      prevP.copy(p);
+      o.position.copy(p);
+
+      thaadTrailCd += dt;
+      if (thaadTrailCd >= 0.03 && t < 0.94) {
+        thaadTrailCd = 0;
+        this.spawnContrail(p.x, p.y, p.z, 1.38);
+      }
+
+      // 3. At 700ms: COLOSSAL SKY-HIGH KINETIC INTERCEPT AIRBURST at y = 19 (ZERO ground crater!)
+      if (t >= 0.96 && !intercepted) {
+        intercepted = true;
+
+        // Blinding cyan-gold starburst flash sprites high in the sky
+        this.spawnFlash(interceptP, new THREE.Color(2.6, 4.6, 5.4), 9.2, 620);
+        this.spawnFlash(interceptP, new THREE.Color(4.8, 3.6, 1.25), 6.4, 480);
+
+        // Expanding incandescent kinetic kill core sphere at y = 19
+        const coreMat = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(2.4, 4.2, 5.0),
+          transparent: true,
+          opacity: 0.96,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        const coreBall = new THREE.Mesh(sharedNukeCap, coreMat);
+        coreBall.position.copy(interceptP);
+        this.add(coreBall, 640, (bo, bt) => {
+          const ease = 1 - Math.pow(1 - bt, 2.2);
+          bo.scale.setScalar(0.75 + ease * 5.2);
+          coreMat.opacity = 0.96 * Math.pow(1 - bt, 1.6);
+        });
+
+        // 3D Starburst kinetic flare spikes radiating from the hit-to-kill intercept point!
+        const starGroup = new THREE.Group();
+        starGroup.position.copy(interceptP);
+        const rayMat = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(3.6, 4.6, 5.0),
+          transparent: true,
+          opacity: 0.95,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        const rayDirs: [number, number, number][] = [
+          [1, 0, 0],
+          [0, 1, 0],
+          [0, 0, 1],
+          [1, 1, 0],
+          [0, 1, 1],
+          [1, 0, -1],
+        ];
+        for (const [rx, ry, rz] of rayDirs) {
+          const ray = new THREE.Mesh(sharedCyl, rayMat);
+          ray.quaternion.setFromUnitVectors(UP, new THREE.Vector3(rx, ry, rz).normalize());
+          ray.scale.set(3.2, 11.5, 3.2);
+          starGroup.add(ray);
+        }
+        this.add(starGroup, 560, (so, st) => {
+          const ease = 1 - Math.pow(1 - st, 2.4);
+          so.scale.setScalar(0.35 + ease * 1.45);
+          so.rotation.y = st * 0.9;
+          so.rotation.z = st * 0.55;
+          rayMat.opacity = 0.95 * Math.pow(1 - st, 1.5);
+        });
+
+        // Dual 3D spherical shockwave rings high in the sky (y = 19) + translucent 3D shockwave shell!
+        const ring1Mat = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(1.6, 4.0, 5.0),
+          transparent: true,
+          opacity: 0.96,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        const ring1 = new THREE.Mesh(sharedRing, ring1Mat);
+        ring1.position.copy(interceptP);
+        ring1.rotation.x = -Math.PI / 2 + 0.42;
+        ring1.rotation.z = 0.35;
+        this.add(ring1, 960, (ro, rt) => {
+          const ease = 1 - Math.pow(1 - rt, 1.85);
+          ro.scale.setScalar(0.6 + ease * 9.2);
+          ring1Mat.opacity = 0.96 * Math.pow(1 - rt, 1.3);
+        });
+
+        const ring2Mat = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(4.2, 3.2, 1.05),
+          transparent: true,
+          opacity: 0.94,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        const ring2 = new THREE.Mesh(sharedRing, ring2Mat);
+        ring2.position.copy(interceptP);
+        ring2.rotation.x = -Math.PI / 2 - 0.52;
+        ring2.rotation.y = 0.6;
+        this.add(ring2, 860, (ro, rt) => {
+          const ease = 1 - Math.pow(1 - rt, 1.9);
+          ro.scale.setScalar(0.5 + ease * 7.6);
+          ring2Mat.opacity = 0.94 * Math.pow(1 - rt, 1.35);
+        });
+
+        // Translucent expanding 3D spherical exo-atmospheric shockwave shell
+        const shellMat = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(1.4, 3.6, 4.4),
+          transparent: true,
+          opacity: 0.34,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        const shell = new THREE.Mesh(sharedNukeCap, shellMat);
+        shell.position.copy(interceptP);
+        this.add(shell, 820, (so, st) => {
+          const ease = 1 - Math.pow(1 - st, 2.0);
+          so.scale.setScalar(0.8 + ease * 7.2);
+          shellMat.opacity = 0.34 * Math.pow(1 - st, 1.5);
+        });
+
+        // Subtle protective cyan shield ripple on ground far below (confirming ZERO ground impact!)
+        this.spawnImpactRing(tx, ty, 3.8, new THREE.Color(1.4, 3.5, 4.4), 680);
+
+        // 18 bright high-altitude kinetic embers spraying radially in 3D space at y = 19
+        for (let i = 0; i < 18; i++) {
+          const theta = Math.random() * Math.PI * 2;
+          const phi = Math.acos(2 * Math.random() - 1);
+          const spd = 5.5 + Math.random() * 8.5;
+          const vx = Math.sin(phi) * Math.cos(theta) * spd;
+          const vy = Math.cos(phi) * spd * 0.72;
+          const vz = Math.sin(phi) * Math.sin(theta) * spd;
+          const eCol =
+            i % 3 === 0
+              ? new THREE.Color(2.0, 4.4, 5.0)
+              : i % 3 === 1
+                ? new THREE.Color(4.5, 3.3, 1.1)
+                : new THREE.Color(4.2, 1.4, 0.45);
+          const eMat = new THREE.MeshBasicMaterial({
+            color: eCol,
+            transparent: true,
+            opacity: 1,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+          });
+          const ember = new THREE.Mesh(sharedSpark, eMat);
+          ember.scale.setScalar(1.35 + Math.random() * 1.1);
+          ember.position.copy(interceptP);
+          this.add(ember, 820 + Math.random() * 340, (eo, et) => {
+            const drag = 1 - Math.pow(1 - et, 1.7);
+            eo.position.set(
+              interceptP.x + vx * drag * 0.95,
+              interceptP.y + vy * drag * 0.95 - et * et * 2.4,
+              interceptP.z + vz * drag * 0.95,
+            );
+            eo.rotation.x = et * 14;
+            eo.rotation.y = et * 11;
+            eMat.opacity = Math.pow(1 - et, 1.25);
+          });
+        }
+
+        // Crisp floating "🛡 THAAD INTERCEPTED NUKE!" popup right at the sky-high intercept!
+        this.spawnPopup(tx, ty, "🛡 THAAD INTERCEPTED NUKE!", "#5cf4ff", 17.6);
       }
     });
   }
@@ -1764,7 +2316,8 @@ export class VfxSystem {
   // ---------- Floating World-Space Text Popups ----------
 
   spawnPopup(x: number, y: number, text: string, color = "#ffd84d", startY = 1.65) {
-    const W = 384;
+    const wide = text.length > 16;
+    const W = wide ? 640 : 384;
     const H = 80;
     const c = document.createElement("canvas");
     c.width = W;
@@ -1799,7 +2352,7 @@ export class VfxSystem {
     const sp = new THREE.Sprite(mat);
     sp.position.set(x, startY, y);
     sp.renderOrder = 30;
-    const baseW = 3.8;
+    const baseW = wide ? 6.4 : 3.8;
     const baseH = baseW * (H / W);
     sp.scale.set(baseW, baseH, 1);
 

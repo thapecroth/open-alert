@@ -403,7 +403,7 @@ export class Input {
     this.swArmed = true;
     if (this.labelTimer) clearTimeout(this.labelTimer);
     this.onOrderLabel(
-      "ION CANNON ARMED — LEFT-CLICK TARGET (RIGHT-CLICK / ESC TO CANCEL)",
+      "☢ NUCLEAR STRIKE ARMED — LEFT-CLICK TARGET (RIGHT-CLICK / ESC TO CANCEL)",
       Math.max(20, this.px + 12),
       Math.max(50, this.py - 12),
     );
@@ -636,7 +636,7 @@ export class Input {
           this.net.send({ t: "superweapon", x: ground.x, y: ground.z });
           this.disarmSuperweapon();
           this.orderMarker(ground, "amove", false, 0x4ad8ff);
-          this.flashLabel("ORBITAL STRIKE INBOUND!", 1600);
+          this.flashLabel("☢ NUCLEAR MISSILE LAUNCHED!", 1600);
           this.onUiSound("attack");
         }
       } else {

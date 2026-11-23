@@ -25,6 +25,8 @@ import {
   SHIPYARD_BUILD_DIST,
   IRONDOME_RADIUS,
   IRONDOME_COOLDOWN,
+  THAAD_NUKE_RADIUS,
+  THAAD_NUKE_CD,
   SUPPLY_HUB_RADIUS,
   SUPPLY_TRUCK_RADIUS,
   BASE_SUPPLY_RADIUS,
@@ -165,6 +167,7 @@ const STEALTH_AIR_DETECTORS = new Set<EntKind>([
   "sam",
   "irondome",
   "satlink",
+  "thaad",
   "interceptor",
   "uav",
 ]);
@@ -256,6 +259,16 @@ const armorMult = (attacker: EntKind, target: EntKind): number => {
     if (isVehicle(target) || isSeaShip(target)) return 1.4;
   } else if (attacker === "sam") {
     if (tDom === "air") return 1.5;
+  } else if (attacker === "thaad") {
+    if (
+      target === "stealthbomber" ||
+      target === "ac130" ||
+      target === "hypersonic" ||
+      target === "a10" ||
+      target === "interceptor"
+    ) {
+      return 1.5;
+    }
   } else if (attacker === "uav") {
     if (isLightUnit(target)) return 1.25;
   } else if (attacker === "sub") {
@@ -335,7 +348,7 @@ const weaponFxOf = (k: EntKind): WeaponFx => {
   if (k === "arty" || k === "ac130") return "arty";
   if (k === "arc") return "arc";
   if (k === "spider") return "melee";
-  if (k === "dreadnought" || k === "himars" || k === "hypersonic" || k === "carrier") return "missile";
+  if (k === "dreadnought" || k === "himars" || k === "hypersonic" || k === "carrier" || k === "thaad") return "missile";
   if (k === "sub") return "torpedo";
   if (k === "bomber" || k === "stealthbomber" || k === "zeppelin") return "bomb";
   return "bullet";
@@ -554,6 +567,7 @@ export class World {
 
   private stealthDetectRadius(targetKind: EntKind, detectorKind: EntKind): number {
     if (targetKind === "stealthbomber") {
+      if (detectorKind === "thaad") return 14;
       return STEALTH_AIR_DETECTORS.has(detectorKind) ? 11 : 6.5;
     }
     if (targetKind === "usv") {
@@ -580,7 +594,7 @@ export class World {
     // Precompute stealth detection bitmasks once per tick using spatial grid (eliminates O(N^3) rescans)
     for (const st of stealthed) {
       let mask = 0;
-      const scanR = st.k === "stealthbomber" ? 11.5 : 9.5;
+      const scanR = st.k === "stealthbomber" ? 14.5 : 9.5;
       const x0 = Math.max(0, ((st.x - scanR) | 0) >> 3);
       const x1 = Math.min(this.gridCols - 1, ((st.x + scanR) | 0) >> 3);
       const y0 = Math.max(0, ((st.y - scanR) | 0) >> 3);
@@ -1184,6 +1198,26 @@ export class World {
     if (p.lowPower) return "low power";
     if (p.swLeft > 0 || p.swLeft < 0) return "superweapon charging";
     p.swLeft = SW_CHARGE_TICKS;
+    // Exo-atmospheric THAAD Nuclear ICBM interception scan
+    let bestThaad: Ent | null = null;
+    let bestThaadDist = Infinity;
+    for (const e of this.ents.values()) {
+      if (e.k !== "thaad" || e.o < 0 || e.hp <= 0 || e.interceptCd > 0) continue;
+      if (this.isAlly(slot, e.o)) continue;
+      const owner = this.players.get(e.o);
+      if (!owner || owner.eliminated || owner.lowPower) continue;
+      const d = dist(e.x, e.y, x, y);
+      if (d <= THAAD_NUKE_RADIUS && d < bestThaadDist) {
+        bestThaadDist = d;
+        bestThaad = e;
+      }
+    }
+    if (bestThaad) {
+      bestThaad.interceptCd = THAAD_NUKE_CD;
+      this.face(bestThaad, x, y);
+      this.events.push({ e: "nukeIntercept", fx: bestThaad.x, fy: bestThaad.y, tx: x, ty: y, slot: bestThaad.o });
+      return null;
+    }
     for (const e of [...this.ents.values()]) {
       if (!this.ents.has(e.id)) continue;
       if (this.isAlly(slot, e.o)) continue;
@@ -2319,18 +2353,22 @@ export class World {
 
   private tryIntercept(attacker: Ent, tx: number, ty: number, defenderSlot?: number): boolean {
     if (!INTERCEPTABLE.has(attacker.k)) return false;
+    const thaadCanIntercept = attacker.k === "hypersonic" || attacker.k === "dreadnought";
     let bestDome: Ent | null = null;
-    let bestD = IRONDOME_RADIUS;
+    let bestD = Infinity;
     for (const dome of this.ents.values()) {
-      if (dome.k !== "irondome" || dome.o < 0 || dome.interceptCd > 0) continue;
+      const isDome = dome.k === "irondome";
+      const isThaad = thaadCanIntercept && dome.k === "thaad";
+      if ((!isDome && !isThaad) || dome.o < 0 || dome.interceptCd > 0) continue;
       if (this.players.get(dome.o)?.lowPower) continue;
       if (defenderSlot !== undefined && defenderSlot >= 0) {
         if (!this.isAlly(defenderSlot, dome.o)) continue;
       } else {
         if (this.isAlly(attacker.o, dome.o)) continue;
       }
+      const maxR = isThaad ? 14 : IRONDOME_RADIUS;
       const d = dist(dome.x, dome.y, tx, ty);
-      if (d <= bestD) {
+      if (d <= maxR && d < bestD) {
         bestD = d;
         bestDome = dome;
       }

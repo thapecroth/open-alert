@@ -537,148 +537,317 @@ export class AudioEngine {
     const now = ctx.currentTime;
     if (!this.allow("superweapon", 0.4, now)) return;
 
-    // Superweapon spikes battle intensity and ducks music briefly for maximum drama
+    // Nuclear ICBM strike spikes battle intensity and ducks music dramatically
     this.noteCombat(1.0);
     if (this.musicBus && this.musicOn) {
       this.musicBus.gain.cancelScheduledValues(now);
-      this.musicBus.gain.setTargetAtTime(MUSIC_GAIN * 0.25, now, 0.08);
-      this.musicDuckUntil = now + 2.1;
+      this.musicBus.gain.setTargetAtTime(MUSIC_GAIN * 0.2, now, 0.08);
+      this.musicDuckUntil = now + 2.95;
     }
 
     try {
       const bus = this.sfxBus;
-      const chargeEnd = now + 0.6;
-      const beamStart = now + 0.58;
-      const beamDur = 1.62;
-      const beamEnd = beamStart + beamDur;
+      const impactAt = now + 0.75;
+      const blastDur = 2.35;
+      const blastEnd = impactAt + blastDur;
 
-      // ===== PHASE 1: Rising resonant orbital charge sweep (0.6s) =====
-      const chargeFilter = ctx.createBiquadFilter();
-      chargeFilter.type = "bandpass";
-      chargeFilter.Q.value = 5.5;
-      chargeFilter.frequency.setValueAtTime(260, now);
-      chargeFilter.frequency.exponentialRampToValueAtTime(3400, chargeEnd);
+      // ===== PHASE 1 (0..0.75s): Chilling descending ICBM missile shriek + air-raid alarm pulse =====
+      // 1a. Dual pulsing civil-defense air-raid klaxon siren
+      const sirenFilter = ctx.createBiquadFilter();
+      sirenFilter.type = "bandpass";
+      sirenFilter.Q.value = 3.2;
+      sirenFilter.frequency.setValueAtTime(920, now);
+      sirenFilter.frequency.linearRampToValueAtTime(1480, now + 0.36);
+      sirenFilter.frequency.linearRampToValueAtTime(860, impactAt);
 
-      const chargeGain = ctx.createGain();
-      chargeGain.gain.setValueAtTime(0.0001, now);
-      chargeGain.gain.exponentialRampToValueAtTime(0.32, chargeEnd - 0.04);
-      chargeGain.gain.exponentialRampToValueAtTime(0.0001, chargeEnd + 0.04);
+      const sirenGain = ctx.createGain();
+      sirenGain.gain.setValueAtTime(0.0001, now);
+      sirenGain.gain.linearRampToValueAtTime(0.24, now + 0.06);
+      sirenGain.gain.linearRampToValueAtTime(0.09, now + 0.24);
+      sirenGain.gain.linearRampToValueAtTime(0.26, now + 0.44);
+      sirenGain.gain.linearRampToValueAtTime(0.11, now + 0.62);
+      sirenGain.gain.exponentialRampToValueAtTime(0.0001, impactAt + 0.03);
 
-      chargeFilter.connect(chargeGain);
-      chargeGain.connect(bus);
+      sirenFilter.connect(sirenGain);
+      sirenGain.connect(bus);
 
-      for (const detune of [-7, 7]) {
-        const osc = ctx.createOscillator();
-        osc.type = "sawtooth";
-        osc.detune.value = detune;
-        osc.frequency.setValueAtTime(110, now);
-        osc.frequency.exponentialRampToValueAtTime(880, chargeEnd);
-        osc.connect(chargeFilter);
-        osc.start(now);
-        osc.stop(chargeEnd + 0.05);
+      for (const detune of [-12, 12]) {
+        const sOsc = ctx.createOscillator();
+        sOsc.type = "sawtooth";
+        sOsc.detune.value = detune;
+        sOsc.frequency.setValueAtTime(520, now);
+        sOsc.frequency.linearRampToValueAtTime(860, now + 0.24);
+        sOsc.frequency.linearRampToValueAtTime(560, now + 0.44);
+        sOsc.frequency.linearRampToValueAtTime(940, impactAt);
+        sOsc.connect(sirenFilter);
+        sOsc.start(now);
+        sOsc.stop(impactAt + 0.05);
       }
 
-      // Orbital targeting lock shimmer
-      const lockOsc = ctx.createOscillator();
-      const lockG = ctx.createGain();
-      lockOsc.type = "sine";
-      lockOsc.frequency.setValueAtTime(440, now);
-      lockOsc.frequency.exponentialRampToValueAtTime(1760, chargeEnd);
-      lockG.gain.setValueAtTime(0.0001, now);
-      lockG.gain.linearRampToValueAtTime(0.18, chargeEnd - 0.03);
-      lockG.gain.exponentialRampToValueAtTime(0.0001, chargeEnd + 0.03);
-      lockOsc.connect(lockG);
-      lockG.connect(bus);
-      lockOsc.start(now);
-      lockOsc.stop(chargeEnd + 0.04);
+      // 1b. Descending supersonic ICBM re-entry Doppler shriek (2950Hz -> 310Hz)
+      const shriekOsc = ctx.createOscillator();
+      const shriekG = ctx.createGain();
+      shriekOsc.type = "sine";
+      shriekOsc.frequency.setValueAtTime(2950, now);
+      shriekOsc.frequency.exponentialRampToValueAtTime(310, impactAt);
+      shriekG.gain.setValueAtTime(0.0001, now);
+      shriekG.gain.exponentialRampToValueAtTime(0.22, now + 0.56);
+      shriekG.gain.linearRampToValueAtTime(0.3, impactAt - 0.02);
+      shriekG.gain.exponentialRampToValueAtTime(0.0001, impactAt + 0.03);
+      shriekOsc.connect(shriekG);
+      shriekG.connect(bus);
+      shriekOsc.start(now);
+      shriekOsc.stop(impactAt + 0.04);
 
-      // ===== PHASE 2: Sky-beam bass drop + roaring plasma crackle (1.6s) =====
-      // Colossal sub-bass drop
-      const drop = ctx.createOscillator();
-      const dropG = ctx.createGain();
-      drop.type = "sine";
-      drop.frequency.setValueAtTime(135, beamStart);
-      drop.frequency.exponentialRampToValueAtTime(22, beamStart + 1.35);
-      dropG.gain.setValueAtTime(0.0001, beamStart);
-      dropG.gain.linearRampToValueAtTime(0.85, beamStart + 0.025);
-      dropG.gain.exponentialRampToValueAtTime(0.45, beamStart + 0.55);
-      dropG.gain.exponentialRampToValueAtTime(0.0001, beamEnd);
-      drop.connect(dropG);
-      dropG.connect(bus);
-      drop.start(beamStart);
-      drop.stop(beamEnd + 0.03);
+      if (this.whiteNoise) {
+        const reentry = this.makeNoiseSource(ctx, this.whiteNoise);
+        const bp = ctx.createBiquadFilter();
+        bp.type = "bandpass";
+        bp.Q.value = 3.8;
+        bp.frequency.setValueAtTime(3400, now);
+        bp.frequency.exponentialRampToValueAtTime(420, impactAt);
 
-      // Distorted plasma beam harmonic column
-      const beamLp = ctx.createBiquadFilter();
-      beamLp.type = "lowpass";
-      beamLp.Q.value = 3.0;
-      beamLp.frequency.setValueAtTime(2600, beamStart);
-      beamLp.frequency.exponentialRampToValueAtTime(160, beamEnd);
+        const rg = ctx.createGain();
+        rg.gain.setValueAtTime(0.0001, now);
+        rg.gain.exponentialRampToValueAtTime(0.28, impactAt - 0.03);
+        rg.gain.exponentialRampToValueAtTime(0.0001, impactAt + 0.03);
+
+        reentry.connect(bp);
+        bp.connect(rg);
+        rg.connect(bus);
+        reentry.start(now);
+        reentry.stop(impactAt + 0.04);
+      }
+
+      // ===== PHASE 2 (0.75s..3.1s): Colossal deep seismic thermonuclear detonation boom =====
+      // 2a. Massive sub-seismic earth-shaker drop (115Hz -> 18Hz)
+      const sub = ctx.createOscillator();
+      const subG = ctx.createGain();
+      sub.type = "sine";
+      sub.frequency.setValueAtTime(115, impactAt);
+      sub.frequency.exponentialRampToValueAtTime(26, impactAt + 0.65);
+      sub.frequency.exponentialRampToValueAtTime(18, blastEnd);
+      subG.gain.setValueAtTime(0.0001, impactAt);
+      subG.gain.linearRampToValueAtTime(0.95, impactAt + 0.018);
+      subG.gain.exponentialRampToValueAtTime(0.54, impactAt + 0.85);
+      subG.gain.exponentialRampToValueAtTime(0.0001, blastEnd);
+      sub.connect(subG);
+      subG.connect(bus);
+      sub.start(impactAt);
+      sub.stop(blastEnd + 0.04);
+
+      // 2b. Punchy nuclear shock-front transient slam
+      const slam = ctx.createOscillator();
+      const slamG = ctx.createGain();
+      slam.type = "triangle";
+      slam.frequency.setValueAtTime(210, impactAt);
+      slam.frequency.exponentialRampToValueAtTime(30, impactAt + 0.28);
+      slamG.gain.setValueAtTime(0.0001, impactAt);
+      slamG.gain.linearRampToValueAtTime(0.68, impactAt + 0.005);
+      slamG.gain.exponentialRampToValueAtTime(0.0001, impactAt + 0.34);
+      slam.connect(slamG);
+      slamG.connect(bus);
+      slam.start(impactAt);
+      slam.stop(impactAt + 0.36);
+
+      // 2c. Overdriven seismic thermonuclear rumble column
+      const rumbleLp = ctx.createBiquadFilter();
+      rumbleLp.type = "lowpass";
+      rumbleLp.Q.value = 2.4;
+      rumbleLp.frequency.setValueAtTime(1950, impactAt);
+      rumbleLp.frequency.exponentialRampToValueAtTime(95, blastEnd);
 
       const shaper = ctx.createWaveShaper();
       if (this.hardDrive) shaper.curve = this.hardDrive;
 
-      const beamG = ctx.createGain();
-      beamG.gain.setValueAtTime(0.0001, beamStart);
-      beamG.gain.linearRampToValueAtTime(0.36, beamStart + 0.02);
-      beamG.gain.exponentialRampToValueAtTime(0.16, beamStart + 0.7);
-      beamG.gain.exponentialRampToValueAtTime(0.0001, beamEnd);
+      const rumbleG = ctx.createGain();
+      rumbleG.gain.setValueAtTime(0.0001, impactAt);
+      rumbleG.gain.linearRampToValueAtTime(0.42, impactAt + 0.02);
+      rumbleG.gain.exponentialRampToValueAtTime(0.22, impactAt + 0.95);
+      rumbleG.gain.exponentialRampToValueAtTime(0.0001, blastEnd);
 
-      shaper.connect(beamLp);
-      beamLp.connect(beamG);
-      beamG.connect(bus);
+      shaper.connect(rumbleLp);
+      rumbleLp.connect(rumbleG);
+      rumbleG.connect(bus);
 
-      for (const freq of [N.D2, N.A2, N.D3]) {
-        const bOsc = ctx.createOscillator();
-        bOsc.type = "sawtooth";
-        bOsc.frequency.setValueAtTime(freq * 1.45, beamStart);
-        bOsc.frequency.exponentialRampToValueAtTime(freq * 0.75, beamEnd);
-        bOsc.connect(shaper);
-        bOsc.start(beamStart);
-        bOsc.stop(beamEnd + 0.03);
+      for (const freq of [N.D1, N.D2, N.A2 * 0.5]) {
+        const rOsc = ctx.createOscillator();
+        rOsc.type = "sawtooth";
+        rOsc.frequency.setValueAtTime(freq * 1.25, impactAt);
+        rOsc.frequency.exponentialRampToValueAtTime(freq * 0.62, blastEnd);
+        rOsc.connect(shaper);
+        rOsc.start(impactAt);
+        rOsc.stop(blastEnd + 0.04);
       }
 
-      // Roaring broadband plasma wash
+      // 2d. Colossal broadband nuclear shockwave roar (pinkNoise)
       if (this.pinkNoise) {
         const roar = this.makeNoiseSource(ctx, this.pinkNoise);
         const lp = ctx.createBiquadFilter();
         lp.type = "lowpass";
-        lp.frequency.setValueAtTime(2400, beamStart);
-        lp.frequency.exponentialRampToValueAtTime(210, beamEnd);
+        lp.Q.value = 1.4;
+        lp.frequency.setValueAtTime(2800, impactAt);
+        lp.frequency.exponentialRampToValueAtTime(480, impactAt + 0.7);
+        lp.frequency.exponentialRampToValueAtTime(110, blastEnd);
 
         const rg = ctx.createGain();
-        rg.gain.setValueAtTime(0.0001, beamStart);
-        rg.gain.linearRampToValueAtTime(0.68, beamStart + 0.03);
-        rg.gain.exponentialRampToValueAtTime(0.32, beamStart + 0.65);
-        rg.gain.exponentialRampToValueAtTime(0.0001, beamEnd);
+        rg.gain.setValueAtTime(0.0001, impactAt);
+        rg.gain.linearRampToValueAtTime(0.84, impactAt + 0.02);
+        rg.gain.exponentialRampToValueAtTime(0.44, impactAt + 0.85);
+        rg.gain.exponentialRampToValueAtTime(0.0001, blastEnd);
 
         roar.connect(lp);
         lp.connect(rg);
         rg.connect(bus);
-        roar.start(beamStart);
-        roar.stop(beamEnd + 0.03);
+        roar.start(impactAt);
+        roar.stop(blastEnd + 0.04);
       }
 
-      // High-voltage sky-beam crackle
+      // 2e. Initial white-hot pressure crack + rolling nuclear shockwave debris tail
       if (this.whiteNoise) {
         const crack = this.makeNoiseSource(ctx, this.whiteNoise);
-        const hp = ctx.createBiquadFilter();
-        hp.type = "highpass";
-        hp.frequency.setValueAtTime(2800, beamStart);
+        const bp = ctx.createBiquadFilter();
+        bp.type = "bandpass";
+        bp.Q.value = 0.9;
+        bp.frequency.setValueAtTime(3200, impactAt);
+        bp.frequency.exponentialRampToValueAtTime(620, blastEnd - 0.15);
 
         const cg = ctx.createGain();
-        cg.gain.setValueAtTime(0.0001, beamStart);
-        cg.gain.linearRampToValueAtTime(0.34, beamStart + 0.015);
-        cg.gain.exponentialRampToValueAtTime(0.11, beamStart + 0.25);
-        cg.gain.linearRampToValueAtTime(0.22, beamStart + 0.38);
-        cg.gain.exponentialRampToValueAtTime(0.07, beamStart + 0.8);
-        cg.gain.exponentialRampToValueAtTime(0.0001, beamEnd - 0.08);
+        cg.gain.setValueAtTime(0.0001, impactAt);
+        cg.gain.linearRampToValueAtTime(0.52, impactAt + 0.006);
+        cg.gain.exponentialRampToValueAtTime(0.14, impactAt + 0.24);
+        cg.gain.linearRampToValueAtTime(0.28, impactAt + 0.48);
+        cg.gain.exponentialRampToValueAtTime(0.08, impactAt + 1.25);
+        cg.gain.exponentialRampToValueAtTime(0.0001, blastEnd - 0.1);
 
-        crack.connect(hp);
-        hp.connect(cg);
+        crack.connect(bp);
+        bp.connect(cg);
         cg.connect(bus);
-        crack.start(beamStart);
-        crack.stop(beamEnd);
+        crack.start(impactAt);
+        crack.stop(blastEnd);
+      }
+    } catch {
+      // Ignore transient Web Audio errors
+    }
+  }
+
+  playNukeIntercept(): void {
+    const ctx = this.readySfxCtx();
+    if (!ctx || !this.sfxBus) return;
+
+    const now = ctx.currentTime;
+    if (!this.allow("nukeIntercept", 0.35, now)) return;
+
+    this.noteCombat(0.75);
+    if (this.musicBus && this.musicOn) {
+      this.musicBus.gain.cancelScheduledValues(now);
+      this.musicBus.gain.setTargetAtTime(MUSIC_GAIN * 0.35, now, 0.06);
+      this.musicDuckUntil = now + 1.55;
+    }
+
+    try {
+      const bus = this.sfxBus;
+      const hitAt = now + 0.7;
+
+      // ===== PHASE 1 (0..0.70s): Sharp steep THAAD solid-rocket booster launch whoosh =====
+      // Pneumatic canister ignition pop
+      this.playTone(ctx, bus, "triangle", 260, 68, now, 0.08, 0.38, 0.003);
+
+      // Rising supersonic interceptor climb whine (640Hz -> 2780Hz)
+      const climbOsc = ctx.createOscillator();
+      const climbG = ctx.createGain();
+      climbOsc.type = "sine";
+      climbOsc.frequency.setValueAtTime(640, now + 0.01);
+      climbOsc.frequency.exponentialRampToValueAtTime(2780, hitAt);
+      climbG.gain.setValueAtTime(0.0001, now + 0.01);
+      climbG.gain.linearRampToValueAtTime(0.18, now + 0.14);
+      climbG.gain.exponentialRampToValueAtTime(0.24, hitAt - 0.03);
+      climbG.gain.exponentialRampToValueAtTime(0.0001, hitAt + 0.02);
+      climbOsc.connect(climbG);
+      climbG.connect(bus);
+      climbOsc.start(now + 0.01);
+      climbOsc.stop(hitAt + 0.04);
+
+      if (this.whiteNoise) {
+        const whoosh = this.makeNoiseSource(ctx, this.whiteNoise);
+        const bp = ctx.createBiquadFilter();
+        bp.type = "bandpass";
+        bp.Q.value = 2.2;
+        bp.frequency.setValueAtTime(520, now);
+        bp.frequency.exponentialRampToValueAtTime(4200, hitAt);
+
+        const wg = ctx.createGain();
+        wg.gain.setValueAtTime(0.0001, now);
+        wg.gain.linearRampToValueAtTime(0.42, now + 0.045);
+        wg.gain.exponentialRampToValueAtTime(0.28, now + 0.45);
+        wg.gain.exponentialRampToValueAtTime(0.0001, hitAt + 0.02);
+
+        whoosh.connect(bp);
+        bp.connect(wg);
+        wg.connect(bus);
+        whoosh.start(now);
+        whoosh.stop(hitAt + 0.04);
+      }
+
+      if (this.pinkNoise) {
+        const thrust = this.makeNoiseSource(ctx, this.pinkNoise);
+        const lp = ctx.createBiquadFilter();
+        lp.type = "lowpass";
+        lp.frequency.setValueAtTime(1400, now);
+        lp.frequency.exponentialRampToValueAtTime(320, hitAt);
+
+        const tg = ctx.createGain();
+        tg.gain.setValueAtTime(0.0001, now);
+        tg.gain.linearRampToValueAtTime(0.36, now + 0.03);
+        tg.gain.exponentialRampToValueAtTime(0.0001, hitAt + 0.04);
+
+        thrust.connect(lp);
+        lp.connect(tg);
+        tg.connect(bus);
+        thrust.start(now);
+        thrust.stop(hitAt + 0.05);
+      }
+
+      // ===== PHASE 2 (0.70s): Crisp high-altitude kinetic crack & echoing triumphant shield chime! =====
+      // Razor-sharp exo-atmospheric hit-to-kill kinetic snap
+      this.playTone(ctx, bus, "sine", 340, 62, hitAt, 0.22, 0.56, 0.002);
+      this.playTone(ctx, bus, "triangle", 1180, 190, hitAt, 0.09, 0.34, 0.002);
+
+      if (this.whiteNoise) {
+        const crack = this.makeNoiseSource(ctx, this.whiteNoise);
+        const bp = ctx.createBiquadFilter();
+        bp.type = "bandpass";
+        bp.Q.value = 1.3;
+        bp.frequency.setValueAtTime(3600, hitAt);
+        bp.frequency.exponentialRampToValueAtTime(820, hitAt + 0.24);
+
+        const cg = ctx.createGain();
+        cg.gain.setValueAtTime(0.0001, hitAt);
+        cg.gain.linearRampToValueAtTime(0.62, hitAt + 0.003);
+        cg.gain.exponentialRampToValueAtTime(0.16, hitAt + 0.07);
+        cg.gain.exponentialRampToValueAtTime(0.0001, hitAt + 0.28);
+
+        crack.connect(bp);
+        bp.connect(cg);
+        cg.connect(bus);
+        crack.start(hitAt);
+        crack.stop(hitAt + 0.3);
+      }
+
+      // Echoing triumphant crystalline shield chime (A4 -> E5 -> A5 -> D6 with shimmering echo!)
+      const chimeNotes: [number, number, number][] = [
+        [N.A4, 0.03, 0.2],
+        [N.E5, 0.095, 0.22],
+        [N.A5, 0.16, 0.24],
+        [N.D6, 0.23, 0.22],
+      ];
+      for (const [freq, off, vol] of chimeNotes) {
+        const t0 = hitAt + off;
+        // Primary crystalline chime
+        this.playTone(ctx, bus, "sine", freq, freq * 1.004, t0, 0.42, vol, 0.004);
+        this.playTone(ctx, bus, "triangle", freq * 2, freq * 2, t0, 0.24, vol * 0.26, 0.004);
+        // Echoing sky-high reflection tail
+        this.playTone(ctx, bus, "sine", freq, freq, t0 + 0.18, 0.38, vol * 0.44, 0.008);
       }
     } catch {
       // Ignore transient Web Audio errors

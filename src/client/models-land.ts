@@ -1964,103 +1964,177 @@ export function buildLandModel(kind: EntKind, colorHex: string, body: THREE.Grou
     }
 
     case "superweapon": {
-      // Ion Uplink (3x3) — Breathtaking Orbital Strike Facility
+      // Underground ICBM Nuclear Silo (3x3) — Reinforced Octagonal Apron, Parted Blast Doors & Towering Multi-Stage ICBM
       body.add(foundationPad(3, 3, colorHex, 0.24));
 
-      // Armored stepped octagonal silo base
-      add(cyl(2.68, 0.48, matDk, "oct"), 0, 0.48, 0);
-      add(cyl(2.16, 0.36, matCer, "oct"), 0, 0.88, 0);
-      add(cyl(1.72, 0.18, matAcc, "oct"), 0, 1.14, 0);
-      // Command viewport slits on cardinal flanks
-      for (const [vx, vz, rotY] of [
-        [0, 1.24, 0],
-        [0, -1.24, 0],
-        [1.24, 0, Math.PI / 2],
-        [-1.24, 0, Math.PI / 2],
-      ]) {
-        const vp = rbox(0.96, 0.14, 0.06, matGlass, true);
-        vp.rotation.y = rotY;
-        add(vp, vx, 0.56, vz);
+      const matIcbmWhite = getChassisMat("#e8eef4", 0.3, 0.34);
+      const matIcbmCrimson = getChassisMat("#c9222b", 0.34, 0.42);
+
+      // Massive reinforced octagonal concrete/steel launch apron
+      add(cyl(2.74, 0.34, matDk, "oct"), 0, 0.4, 0);
+      add(cyl(2.42, 0.16, matCer, "oct"), 0, 0.62, 0);
+
+      // Yellow/black octagonal hazard warning trim perimeter segments around the silo apron
+      for (let i = 0; i < 8; i++) {
+        const ang = (i * Math.PI) / 4 + Math.PI / 8;
+        const rx = Math.cos(ang) * 1.16;
+        const rz = Math.sin(ang) * 1.16;
+        const trimBlock = rbox(0.56, 0.06, 0.12, i % 2 === 0 ? matHaz : matGraph, true);
+        trimBlock.rotation.y = -ang + Math.PI / 2;
+        add(trimBlock, rx, 0.72, rz);
       }
 
-      // Sculpted LatheGeometry emitter aperture collar & glowing plasma core
-      const ap = meshOf(geoIonAperture, matGun);
-      ap.scale.set(1.24, 0.54, 1.24);
-      add(ap, 0, 1.18, 0);
-      const skyCore = cyl(0.56, 0.24, getGlowMat(CYAN_GLOW, 0.94));
-      add(skyCore, 0, 1.62, 0);
-      pulse.push(skyCore);
+      // Recessed circular blast shaft rim, sculpted LatheGeometry launch throat & glowing thermal bay collar
+      const shaftThroat = meshOf(geoIonAperture, matGun);
+      shaftThroat.scale.set(1.56, 0.38, 1.56);
+      add(shaftThroat, 0, 0.44, 0);
+      const shaftRim = torus(1.46, matLt);
+      shaftRim.rotation.x = Math.PI / 2;
+      add(shaftRim, 0, 0.78, 0);
+      // Dark recessed launch well interior
+      add(cyl(1.18, 0.14, matGraph), 0, 0.64, 0);
+      // Glowing deep-bay amber-red launch readiness ring (`powerGlow`)
+      const bayRing = torus(1.22, getGlowMat(HEAT_GLOW, 0.88), true);
+      bayRing.rotation.x = Math.PI / 2;
+      add(bayRing, 0, 0.72, 0);
+      trackPowerGlow(bayRing, powerGlow);
 
-      // Giant curved LatheGeometry orbital emitter dish (spins smoothly around Y)
-      spin = new THREE.Group();
-      spin.position.set(0, 1.98, 0);
-      body.add(spin);
+      // Parted heavy armored hydraulic blast doors retracted left & right (-X, +X)
+      for (const sx of [-1, 1]) {
+        const doorGroup = new THREE.Group();
+        doorGroup.position.set(sx * 0.94, 0.78, 0);
+        body.add(doorGroup);
 
-      const gimbal = torus(1.28, matLt);
-      gimbal.rotation.x = Math.PI / 2;
-      spin.add(gimbal);
-      const ionDish = meshOf(geoParabolicDish, matCer);
-      ionDish.scale.set(1.88, 1.72, 1.88);
-      ionDish.rotation.x = 0.52;
-      ionDish.position.set(0, 0.16, -0.14);
-      spin.add(ionDish);
-      const dishRim = torus(1.86, getGlowMat(CYAN_GLOW, 0.88), true);
-      dishRim.rotation.x = Math.PI / 2 + 0.52;
-      dishRim.position.set(0, 0.52, 0.065);
-      spin.add(dishRim);
-      const dishBand = torus(1.56, matAcc, true);
-      dishBand.rotation.x = Math.PI / 2 + 0.52;
-      dishBand.position.set(0, 0.34, -0.04);
-      spin.add(dishBand);
-      // Central focus emitter spire & focal orb
-      const focusRod = cyl(0.11, 0.86, matLt);
-      focusRod.rotation.x = 0.52;
-      add(focusRod, 0, 0.56, 0.08, spin);
-      const focusOrb = sph(0.26, getGlowMat(CYAN_GLOW, 0.98), true);
-      add(focusOrb, 0, 0.92, 0.29, spin);
-      pulse.push(focusOrb);
-
-      // Counter-rotating plasma containment rings (spin2 rotates around -Y)
-      spin2 = new THREE.Group();
-      spin2.position.set(0, 2.32, 0);
-      body.add(spin2);
-      const accel1 = torus(1.74, matLt, true);
-      accel1.rotation.x = Math.PI / 2 + 0.28;
-      spin2.add(accel1);
-      const accel1Glow = torus(1.66, getGlowMat(CYAN_GLOW, 0.84), true);
-      accel1Glow.rotation.x = Math.PI / 2 + 0.28;
-      spin2.add(accel1Glow);
-      const accel2 = torus(1.38, matAcc, true);
-      accel2.rotation.x = Math.PI / 2 - 0.3;
-      spin2.add(accel2);
-
-      // 3 angled titanium focus pylons converging symmetrically toward the orbital emitter
-      for (let i = 0; i < 3; i++) {
-        const ang = (i * Math.PI * 2) / 3 + Math.PI / 6;
-        const px = Math.cos(ang) * 1.1;
-        const pz = Math.sin(ang) * 1.1;
-
-        const pylonGroup = new THREE.Group();
-        pylonGroup.position.set(px, 0.84, pz);
-        pylonGroup.rotation.order = "YXZ";
-        pylonGroup.rotation.y = -ang + Math.PI / 2;
-        pylonGroup.rotation.x = -0.14; // angle symmetrically inward toward the emitter dish
-        body.add(pylonGroup);
-
-        add(cyl(0.26, 1.94, matCer, "taper"), 0, 0.92, 0, pylonGroup);
-        add(rbox(0.12, 1.32, 0.34, matAcc, true), 0, 0.68, 0.16, pylonGroup);
-        for (const ry of [1.1, 1.44, 1.76]) {
-          const coil = torus(0.32, getGlowMat(CYAN_GLOW, 0.85), true);
-          coil.rotation.x = Math.PI / 2;
-          add(coil, 0, ry, 0, pylonGroup);
+        // Thick beveled armored blast slab slightly angled open from the shaft rim
+        const doorSlab = rbox(0.68, 0.22, 1.38, matCer, true);
+        doorSlab.rotation.z = sx * -0.14;
+        add(doorSlab, 0, 0.04, 0, doorGroup);
+        // Inner dark steel lip + yellow hazard caution stripe facing the shaft
+        const innerLip = rbox(0.1, 0.24, 1.34, matHaz, true);
+        innerLip.rotation.z = sx * -0.14;
+        add(innerLip, sx * -0.34, 0.01, 0, doorGroup);
+        // Outer faction armored rib & structural gussets
+        add(rbox(0.14, 0.12, 1.12, matAcc, true), sx * 0.24, 0.18, 0, doorGroup);
+        for (const gz of [-0.46, 0, 0.46]) {
+          add(rbox(0.56, 0.08, 0.1, matDk, true), 0.02 * sx, 0.16, gz, doorGroup);
         }
-        const tip = sph(0.18, getGlowMat(CYAN_GLOW, 0.96), true);
-        add(tip, 0, 1.96, 0, pylonGroup);
-        pulse.push(tip);
+        // Twin hydraulic door actuator pistons anchored to the outer apron
+        for (const pz of [-0.42, 0.42]) {
+          const piston = cyl(0.08, 0.48, matLt);
+          piston.rotation.z = Math.PI / 2;
+          add(piston, sx * 0.42, -0.02, pz, doorGroup);
+        }
       }
 
-      smokePos = new THREE.Vector3(-0.78, 1.65, -0.78);
-      topY = 3.28;
+      // Exhaust flame deflector vents at front & rear (+Z, -Z) with angled concrete hoods & recessed louvers
+      for (const sz of [-1, 1]) {
+        const vent = new THREE.Group();
+        vent.position.set(0, 0.54, sz * 1.14);
+        body.add(vent);
+
+        // Reinforced armored flame-trench deflector hood
+        add(rbox(0.98, 0.44, 0.44, matDk, true), 0, 0.06, 0, vent);
+        const hood = rbox(0.92, 0.14, 0.46, matCer, true);
+        hood.rotation.x = sz * 0.26;
+        add(hood, 0, 0.3, sz * -0.04, vent);
+        // Dark recessed exhaust grate & louvered baffles
+        add(rbox(0.76, 0.28, 0.08, matGraph, true), 0, 0.04, sz * 0.21, vent);
+        for (const ly of [-0.05, 0.05, 0.14]) {
+          add(rbox(0.74, 0.04, 0.1, matGun, true), 0, ly, sz * 0.24, vent);
+        }
+        // Hazard exhaust warning bar + faction trim
+        add(rbox(0.84, 0.055, 0.07, matHaz, true), 0, 0.24, sz * 0.2, vent);
+        add(rbox(0.42, 0.06, 0.06, matAcc, true), 0, 0.38, sz * -0.08, vent);
+      }
+
+      // 4 corner flashing radiation warning beacons (`pulse`, `powerGlow`)
+      for (const [bx, bz] of [
+        [-1.12, -1.12],
+        [1.12, -1.12],
+        [-1.12, 1.12],
+        [1.12, 1.12],
+      ]) {
+        add(rbox(0.32, 0.56, 0.32, matDk, true), bx, 0.52, bz);
+        add(rbox(0.36, 0.1, 0.36, matHaz, true), bx, 0.82, bz);
+        add(cyl(0.14, 0.28, matGun, "oct"), bx, 0.98, bz);
+        const radBeacon = sph(0.2, getGlowMat(AMBER_GLOW, 0.98), true);
+        add(radBeacon, bx, 1.18, bz);
+        trackPowerGlow(radBeacon, powerGlow);
+        pulse.push(radBeacon);
+      }
+
+      // Vertical umbilical service mast beside the missile inside the shaft rim
+      add(rbox(0.12, 1.85, 0.14, matGun, true), -0.52, 1.62, -0.44);
+      add(rbox(0.08, 1.65, 0.08, matHaz, true), -0.52, 1.62, -0.36);
+      for (const uy of [1.22, 1.82, 2.34]) {
+        const arm = rbox(0.38, 0.06, 0.08, matLt, true);
+        arm.rotation.y = -0.68;
+        add(arm, -0.34, uy, -0.28);
+      }
+
+      // Towering White-and-Crimson Multi-Stage ICBM Thermonuclear Missile standing upright in the shaft!
+      const icbm = new THREE.Group();
+      icbm.position.set(0, 0.58, 0);
+      body.add(icbm);
+
+      // Engine bell & subtle warm pre-ignition core glow down inside the shaft
+      add(cyl(0.5, 0.22, matGun, "taper"), 0, 0.12, 0, icbm);
+      const preGlow = cyl(0.36, 0.08, getGlowMat(HEAT_GLOW, 0.86));
+      add(preGlow, 0, 0.06, 0, icbm);
+      trackPowerGlow(preGlow, powerGlow);
+
+      // 4 heavy swept aerodynamic launch stabilizer fins at Stage 1 base
+      for (let i = 0; i < 4; i++) {
+        const a = (i * Math.PI) / 2 + Math.PI / 4;
+        const fin = rbox(0.08, 0.54, 0.38, matIcbmCrimson, true);
+        fin.position.set(Math.cos(a) * 0.36, 0.36, Math.sin(a) * 0.36);
+        fin.rotation.y = -a + Math.PI / 2;
+        icbm.add(fin);
+      }
+
+      // Stage 1 white main booster fuselage + bold crimson & faction strategic bands
+      add(cyl(0.56, 1.02, matIcbmWhite), 0, 0.68, 0, icbm);
+      add(cyl(0.585, 0.18, matIcbmCrimson), 0, 0.42, 0, icbm);
+      add(cyl(0.585, 0.12, matAcc), 0, 0.94, 0, icbm);
+      // Gunmetal interstage separation collar
+      add(cyl(0.54, 0.16, matGun, "taper"), 0, 1.24, 0, icbm);
+
+      // Stage 2 upper fuselage (white ceramic + crimson warhead collar)
+      add(cyl(0.46, 0.86, matIcbmWhite), 0, 1.72, 0, icbm);
+      add(cyl(0.485, 0.16, matIcbmCrimson), 0, 1.98, 0, icbm);
+      add(cyl(0.48, 0.07, matGun), 0, 2.14, 0, icbm);
+
+      // Glowing vertical telemetry strips running up Stage 1 & Stage 2 (`powerGlow`, `pulse`)
+      for (let i = 0; i < 4; i++) {
+        const a = (i * Math.PI) / 2;
+        const tx = Math.cos(a) * 0.255;
+        const tz = Math.sin(a) * 0.255;
+        const tStrip = rbox(0.045, 0.58, 0.045, getGlowMat(CYAN_GLOW, 0.95), true);
+        add(tStrip, tx, 1.64, tz, icbm);
+        trackPowerGlow(tStrip, powerGlow);
+        if (i % 2 === 0) pulse.push(tStrip);
+
+        const lowerLed = rbox(0.05, 0.12, 0.05, getGlowMat(AMBER_GLOW, 0.94), true);
+        add(lowerLed, Math.cos(a) * 0.3, 0.72, Math.sin(a) * 0.3, icbm);
+        trackPowerGlow(lowerLed, powerGlow);
+      }
+
+      // Pointed aerodynamic ogive thermonuclear warhead nosecone (crimson-and-white + metallic tip!)
+      const noseBase = meshOf(geoMissileCone, matIcbmCrimson);
+      noseBase.scale.set(0.46, 0.78, 0.46);
+      add(noseBase, 0, 2.54, 0, icbm);
+      // Crisp white heat-shield ring + gleaming titanium warhead apex needle
+      const noseBand = torus(0.36, matIcbmWhite, true);
+      noseBand.rotation.x = Math.PI / 2;
+      add(noseBand, 0, 2.34, 0, icbm);
+      add(cyl(0.06, 0.24, matLt), 0, 2.94, 0, icbm);
+      const warheadTip = sph(0.11, getGlowMat(HEAT_GLOW, 0.96), true);
+      add(warheadTip, 0, 3.06, 0, icbm);
+      trackPowerGlow(warheadTip, powerGlow);
+      pulse.push(warheadTip);
+
+      smokePos = new THREE.Vector3(-0.85, 0.82, -0.85);
+      topY = 3.72;
       break;
     }
 
@@ -2419,6 +2493,169 @@ export function buildLandModel(kind: EntKind, colorHex: string, body: THREE.Grou
 
       smokePos = new THREE.Vector3(0, 1.5, 0);
       topY = 2.74;
+      break;
+    }
+
+    case "thaad": {
+      // THAAD Ballistic Missile Defense Battery (2x2) — AN/TPY-2 X-Band Phased-Array Radar & 8-Tube Elevated Interceptor Rack
+      body.add(foundationPad(2, 2, colorHex, 0.2));
+
+      const matThaadWhite = getChassisMat("#e2e8ee", 0.34, 0.34);
+      const matThaadOlive = getChassisMat("#505c44", 0.48, 0.42);
+
+      // Reinforced tactical concrete equipment deck + 4 corner hydraulic leveling stabilizers
+      add(rbox(1.72, 0.18, 1.66, matDk), 0, 0.29, 0);
+      for (const [ox, oz] of [
+        [-0.8, -0.76],
+        [0.8, -0.76],
+        [-0.8, 0.76],
+        [0.8, 0.76],
+      ]) {
+        add(rbox(0.15, 0.24, 0.15, matGun, true), ox, 0.28, oz);
+        add(rbox(0.22, 0.055, 0.22, matHaz, true), ox, 0.14, oz);
+      }
+
+      // Armored Fire-Control / Battle-Management C2 cabinet on rear-left
+      add(rbox(0.5, 0.36, 0.62, matThaadOlive, true), -0.58, 0.56, 0.44);
+      add(rbox(0.52, 0.08, 0.46, matAcc, true), -0.58, 0.72, 0.44);
+      add(rbox(0.06, 0.2, 0.42, matGraph, true), -0.84, 0.55, 0.44);
+      // C2 status uplink mast
+      add(cyl(0.032, 0.62, matLt), -0.72, 0.96, 0.62);
+      const c2Beacon = sph(0.09, getGlowMat(CYAN_GLOW, 0.96), true);
+      add(c2Beacon, -0.72, 1.3, 0.62);
+      trackPowerGlow(c2Beacon, powerGlow);
+      pulse.push(c2Beacon);
+
+      // Prominent AN/TPY-2 Forward-Deployed Angled X-Band Phased-Array Radar Panel (`powerGlow`, `pulse`)
+      const tpyBase = new THREE.Group();
+      tpyBase.position.set(-0.52, 0.46, -0.34);
+      tpyBase.rotation.y = 0.36;
+      body.add(tpyBase);
+
+      add(rbox(0.68, 0.22, 0.54, matGun, true), 0, 0.08, 0, tpyBase);
+      // Rear hydraulic elevation braces supporting the large X-band array
+      for (const bx of [-0.22, 0.22]) {
+        const brace = cyl(0.052, 0.62, matLt);
+        brace.rotation.x = -0.45;
+        add(brace, bx, 0.42, -0.18, tpyBase);
+      }
+
+      const tpyPanel = new THREE.Group();
+      tpyPanel.position.set(0, 0.52, 0.04);
+      tpyPanel.rotation.x = -0.46; // Steep skyward ballistic-tracking tilt
+      tpyBase.add(tpyPanel);
+
+      // Distinctive wide beveled AN/TPY-2 phased-array housing
+      add(rbox(0.84, 0.64, 0.22, matThaadOlive, true), 0, 0, 0, tpyPanel);
+      add(rbox(0.88, 0.68, 0.08, matCer, true), 0, 0, 0.08, tpyPanel);
+      add(rbox(0.76, 0.07, 0.24, matAcc, true), 0, 0.34, 0, tpyPanel);
+
+      // Glowing X-band phased-array emitter face with grid ribs (`powerGlow`)
+      const tpyFace = rbox(0.72, 0.52, 0.04, getGlowMat("#28c8ff", 0.8), true);
+      add(tpyFace, 0, 0, 0.125, tpyPanel);
+      trackPowerGlow(tpyFace, powerGlow);
+      for (const gx of [-0.22, 0, 0.22]) {
+        add(rbox(0.028, 0.52, 0.055, matGun, true), gx, 0, 0.132, tpyPanel);
+      }
+      for (const gy of [-0.14, 0.14]) {
+        add(rbox(0.72, 0.028, 0.055, matGun, true), 0, gy, 0.132, tpyPanel);
+      }
+
+      // Prominent glowing cyan X-band sweep bar across the radar face (`powerGlow`, `pulse`)
+      const sweepBar = rbox(0.74, 0.08, 0.055, getGlowMat(CYAN_GLOW, 0.98), true);
+      add(sweepBar, 0, 0.04, 0.148, tpyPanel);
+      trackPowerGlow(sweepBar, powerGlow);
+      pulse.push(sweepBar);
+
+      // Gold-cyan top IFF tracking emitter bar on AN/TPY-2 crown
+      const iffBar = rbox(0.42, 0.06, 0.07, getGlowMat(AMBER_GLOW, 0.94), true);
+      add(iffBar, 0, 0.37, 0.12, tpyPanel);
+      trackPowerGlow(iffBar, powerGlow);
+      pulse.push(iffBar);
+
+      // Heavy armored octagonal launcher turntable ring + glowing cyan-gold shield power collar
+      add(cyl(0.92, 0.16, matGun, "oct"), 0.26, 0.45, 0.08);
+      const shieldCollar = torus(0.9, getGlowMat(CYAN_GLOW, 0.88), true);
+      shieldCollar.rotation.x = Math.PI / 2;
+      add(shieldCollar, 0.26, 0.51, 0.08);
+      trackPowerGlow(shieldCollar, powerGlow);
+      const goldTrimRing = torus(0.78, matGold, true);
+      goldTrimRing.rotation.x = Math.PI / 2;
+      add(goldTrimRing, 0.26, 0.54, 0.08);
+
+      // Rotating Heavy 8-Tube Elongated White/Olive THAAD TEL Interceptor Canister Rack (`turret`, `recoil`)
+      turret = new THREE.Group();
+      turret.position.set(0.26, 0.58, 0.08);
+      body.add(turret);
+
+      // Armored launcher carriage deck & twin heavy elevation trunnions
+      add(rbox(0.84, 0.16, 0.78, matThaadOlive, true), 0, 0.06, 0, turret);
+      for (const sx of [-0.42, 0.42]) {
+        add(rbox(0.11, 0.44, 0.48, matCer, true), sx, 0.26, -0.06, turret);
+        add(rbox(0.04, 0.18, 0.36, matAcc, true), sx + (sx > 0 ? 0.06 : -0.06), 0.28, -0.06, turret);
+        // Steep hydraulic launcher elevation piston
+        const ram = cyl(0.054, 0.62, matLt);
+        ram.rotation.x = 0.24;
+        add(ram, sx * 0.74, 0.38, 0.16, turret);
+      }
+      // Armored rear exhaust blast deflector shield
+      const blastShield = rbox(0.82, 0.34, 0.08, matDk, true);
+      blastShield.rotation.x = 0.32;
+      add(blastShield, 0, 0.2, -0.42, turret);
+
+      // Steeply elevated THAAD canister cradle (~50 degrees = -0.87 rad!)
+      const pitchCradle = new THREE.Group();
+      pitchCradle.position.set(0, 0.46, -0.04);
+      pitchCradle.rotation.x = -0.87;
+      turret.add(pitchCradle);
+
+      recoil = new THREE.Group();
+      recoil.position.set(0, 0.04, 0.14);
+      pitchCradle.add(recoil);
+
+      // Heavy olive-drab & gunmetal clamping bands binding the 8 elongated THAAD launch tubes
+      for (const rz of [-0.52, 0.02, 0.52]) {
+        add(rbox(0.82, 0.44, 0.09, matThaadOlive, true), 0, 0, rz, recoil);
+      }
+      // Side stiffening rails & top faction armor bridge
+      for (const sx of [-0.41, 0.41]) {
+        add(rbox(0.06, 0.34, 1.38, matGun, true), sx, 0, 0, recoil);
+      }
+      add(rbox(0.76, 0.065, 1.12, matAcc, true), 0, 0.24, -0.04, recoil);
+      const rackStatus = rbox(0.56, 0.045, 0.08, getGlowMat(CYAN_GLOW, 0.94), true);
+      add(rackStatus, 0, 0.275, 0.48, recoil);
+      trackPowerGlow(rackStatus, powerGlow);
+
+      // 8-tube (4 wide x 2 high) elongated white/olive cylindrical THAAD interceptor canisters + gleaming kill-vehicle tips!
+      const matKkvTip = getGlowMat(WHITE_GLOW, 0.96);
+      const colXs = [-0.285, -0.095, 0.095, 0.285];
+      const rowYs = [-0.098, 0.098];
+      for (const cx of colXs) {
+        for (const cy of rowYs) {
+          // Elongated white aerodynamic interceptor canister tube
+          const tube = cyl(0.165, 1.48, matThaadWhite, "oct");
+          tube.rotation.x = Math.PI / 2;
+          add(tube, cx, cy, 0.02, recoil);
+          // Olive-drab tactical mid-collar + dark gunmetal muzzle ring + rear exhaust cap
+          const midBand = cyl(0.178, 0.24, matThaadOlive, "oct");
+          midBand.rotation.x = Math.PI / 2;
+          add(midBand, cx, cy, -0.18, recoil);
+          const muzzle = cyl(0.18, 0.1, matGun, "oct");
+          muzzle.rotation.x = Math.PI / 2;
+          add(muzzle, cx, cy, 0.72, recoil);
+          const rearCap = cyl(0.175, 0.08, matDk, "oct");
+          rearCap.rotation.x = Math.PI / 2;
+          add(rearCap, cx, cy, -0.71, recoil);
+          // Pointed exo-atmospheric THAAD interceptor warhead nose peeking from tube
+          const tip = meshOf(geoMissileCone, matKkvTip, false, false);
+          tip.scale.set(0.095, 0.2, 0.095);
+          tip.rotation.x = Math.PI / 2;
+          add(tip, cx, cy, 0.84, recoil);
+        }
+      }
+
+      smokePos = new THREE.Vector3(-0.52, 1.05, -0.45);
+      topY = 2.08;
       break;
     }
 

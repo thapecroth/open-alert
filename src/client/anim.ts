@@ -805,10 +805,17 @@ export function stepEntityAnim(
   // ---------- 6. Buildings Idle Loops & Low-Power Dimming ----------
   else if (isBuildingKind(k)) {
     const offlineDef =
-      lowPower && (k === "turret" || k === "arc" || k === "sam" || k === "irondome" || k === "lasertower" || k === "satlink");
+      lowPower &&
+      (k === "turret" ||
+        k === "arc" ||
+        k === "sam" ||
+        k === "irondome" ||
+        k === "lasertower" ||
+        k === "satlink" ||
+        k === "thaad");
     const powerSpeed = lowPower ? 0.28 : 1.0;
 
-    if ((k === "turret" || k === "sam" || k === "irondome" || k === "lasertower" || k === "satlink") && rig.turret) {
+    if ((k === "turret" || k === "sam" || k === "irondome" || k === "lasertower" || k === "satlink" || k === "thaad") && rig.turret) {
       if (!offlineDef) {
         const targetYaw = Math.PI / 2 - headingRad;
         const diff = angleDiff(rig.turret.rotation.y, targetYaw);
@@ -862,7 +869,8 @@ export function stepEntityAnim(
             k === "sam" ||
             k === "irondome" ||
             k === "lasertower" ||
-            k === "satlink"));
+            k === "satlink" ||
+            k === "thaad"));
       const dimFactor = dimmed ? 0.18 + 0.08 * Math.sin(nowSec * 2.4 + last.id) : 1.0;
       for (const gm of rig.powerGlow) {
         const mat = gm.material;
@@ -886,10 +894,12 @@ export function stepEntityAnim(
         k === "arc" ||
         k === "radar" ||
         k === "supplyhub" ||
+        k === "superweapon" ||
         k === "sam" ||
         k === "irondome" ||
         k === "lasertower" ||
-        k === "satlink");
+        k === "satlink" ||
+        k === "thaad");
     const isJetBurner =
       k === "interceptor" ||
       k === "a10" ||
@@ -904,7 +914,7 @@ export function stepEntityAnim(
         ? 9.5
         : k === "ewdrone"
           ? 4.8
-          : k === "superweapon" || k === "satlink"
+          : k === "superweapon" || k === "satlink" || k === "thaad"
             ? 5.2
             : 3.6;
     const amp = isJetBurner
@@ -913,7 +923,7 @@ export function stepEntityAnim(
         ? 0.26
         : k === "ewdrone"
           ? 0.18
-          : k === "superweapon" || k === "satlink"
+          : k === "superweapon" || k === "satlink" || k === "thaad"
             ? 0.18
             : 0.14;
     const s = offlinePulse

@@ -49,15 +49,16 @@ const TOOLTIPS: Record<string, string> = {
   shipyard: "Naval Shipyard — builds Sea-Baby USVs & modern warships on navigable water. Upgrade to MKII for Fleet Dock.",
   shipyard2: "Naval Shipyard II — Fleet Dock; unlocks Poseidon Cruiser, Nimitz Drone Carrier & Veteran ★ ships.",
   techlab: "Tech Lab — unlocks Fusion Reactor, Ore Purifier, Iron Dome, Helios Laser, Defense Satellite & MKII upgrades.",
-  satlink: "Defense Satellite — long-range orbital laser defense & telemetry hub; unlocks Ion Uplink. Limit 1.",
+  satlink: "Defense Satellite — long-range orbital laser defense & telemetry hub; unlocks Nuclear Silo & THAAD Defense. Limit 1.",
   turret: "Vulcan Turret — rapid-fire ground & anti-air (AA) base defense. Needs power.",
   sam: "Patriot SAM — long-range dedicated anti-air (AA) missile battery. Needs power + Radar.",
   arc: "Arc Spire — heavy ground & anti-air (AA) lightning defense in every direction. Needs power + Radar.",
   irondome: "Iron Dome — active point-defense system; intercepts enemy artillery & missiles mid-air + AA. Limit 3.",
   lasertower: "Helios Laser — high-energy beam tower that melts heavy armor & aircraft. Needs power + Tech Lab.",
+  thaad: "THAAD Defense — high-altitude interceptor shoots down enemy Nuclear ICBMs within 18 tiles + Mach-9 & stealth aircraft (limit 2)",
   purifier: "Ore Purifier — +25% on every harvester deposit.",
   depot: "Service Depot — repairs nearby vehicles automatically.",
-  superweapon: "Ion Uplink — charges an Orbital Ion Cannon strike (90s). Needs power & Defense Satellite. Limit 1.",
+  superweapon: "Nuclear Silo — launches a devastating thermonuclear ICBM anywhere on the map (can be intercepted by enemy THAAD!)",
   derrick: "Oil Derrick — capture with a Combat Engineer for +$500 bonus & +$25/s income.",
   coalmine: "Coal Mine — capture with a Combat Engineer for +$400 bonus, +$20/s income & +60⚡ power.",
   infantry: "Rifleman — cheap, fast, anti-infantry & light AA.",
@@ -282,9 +283,10 @@ const SHORT_BUILDING_NAMES: Record<BuildingKind, string> = {
   arc: "Arc Spire",
   irondome: "Iron Dome",
   lasertower: "Helios Laser",
+  thaad: "THAAD",
   purifier: "Purifier",
   depot: "Depot",
-  superweapon: "Ion Uplink",
+  superweapon: "Nuke Silo",
   derrick: "Oil Derrick",
   coalmine: "Coal Mine",
 };
@@ -312,9 +314,10 @@ const COMPACT_BUILDING_NAMES: Record<BuildingKind, string> = {
   arc: "Arc Spire",
   irondome: "Iron Dome",
   lasertower: "Laser",
+  thaad: "THAAD",
   purifier: "Purifier",
   depot: "Depot",
-  superweapon: "Ion Uplink",
+  superweapon: "Nuke Silo",
   derrick: "Derrick",
   coalmine: "Coal Mine",
 };
@@ -2251,14 +2254,14 @@ export class Hud {
       btn.classList.add("offline");
       const pct = Math.max(0, Math.min(100, (1 - state.swLeft / total) * 100));
       if (prog) prog.style.width = `${pct.toFixed(1)}%`;
-      if (txt) txt.textContent = "ION OFFLINE (LOW PWR)";
+      if (txt) txt.textContent = "☢ NUKE OFFLINE (LOW PWR)";
     } else if (state.swReady) {
       btn.disabled = false;
       btn.classList.remove("offline");
       btn.classList.add("ready");
       btn.classList.toggle("armed", swArmed);
       if (prog) prog.style.width = "100%";
-      if (txt) txt.textContent = swArmed ? "TARGET STRIKE — CLICK MAP" : "⚡ ION CANNON READY — CLICK TO FIRE";
+      if (txt) txt.textContent = swArmed ? "☢ NUKE ARMED — CLICK TARGET" : "☢ NUCLEAR STRIKE READY";
     } else {
       btn.disabled = true;
       btn.classList.remove("ready", "armed", "offline");
@@ -2267,7 +2270,7 @@ export class Hud {
       const s = String(sec % 60).padStart(2, "0");
       const pct = Math.max(0, Math.min(100, (1 - state.swLeft / total) * 100));
       if (prog) prog.style.width = `${pct.toFixed(1)}%`;
-      if (txt) txt.textContent = `ION CANNON ${m}:${s}`;
+      if (txt) txt.textContent = `☢ NUKE ${m}:${s}`;
     }
   }
 

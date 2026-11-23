@@ -298,13 +298,20 @@ export class RtsBot {
         y: clamp(base.y + (dy / l) * offset, 3, w.h - 4),
       };
     }
-    if (kind === "turret" || kind === "arc" || kind === "sam" || kind === "lasertower" || kind === "irondome") {
+    if (
+      kind === "turret" ||
+      kind === "arc" ||
+      kind === "sam" ||
+      kind === "lasertower" ||
+      kind === "irondome" ||
+      kind === "thaad"
+    ) {
       const foe = this.enemyBasePt(base);
       const dir = foe ?? { x: w.w / 2, y: w.h / 2 };
       const dx = dir.x - base.x,
         dy = dir.y - base.y,
         l = Math.hypot(dx, dy) || 1;
-      const offset = kind === "irondome" ? 3 : 8;
+      const offset = kind === "irondome" || kind === "thaad" ? 3 : 8;
       return { x: base.x + (dx / l) * offset, y: base.y + (dy / l) * offset };
     }
     return base;
@@ -480,13 +487,20 @@ export class RtsBot {
     const arcs = bc.get("arc") ?? 0;
     const domes = bc.get("irondome") ?? 0;
     const lasers = bc.get("lasertower") ?? 0;
-    const totalDef = turrets + sams + arcs + domes + lasers;
+    const thaads = bc.get("thaad") ?? 0;
+    const totalDef = turrets + sams + arcs + domes + lasers + thaads;
     const defGoal =
       this.phase === "early"
         ? Math.min(1, this.turretCap)
         : this.phase === "mid"
           ? Math.min(3, this.turretCap + 1)
           : this.turretCap + (this.profile === "turtle" ? 3 : 1);
+    if (this.diff !== "easy") {
+      const thaadCap = this.profile === "turtle" || this.diff === "brutal" ? 2 : 1;
+      if (has("satlink") && thaads < thaadCap && me.credits >= BUILDINGS.thaad.cost + 200) {
+        return "thaad";
+      }
+    }
     if (totalDef >= defGoal) return null;
     if (this.diff === "easy") return "turret";
     const domeCap = this.profile === "turtle" ? 2 : 1;
@@ -952,7 +966,7 @@ export class RtsBot {
     }
   }
 
-  // Fire charged Orbital Ion Cannon at the highest-value enemy structure.
+  // Fire charged Nuclear Silo ICBM at the highest-value enemy structure.
   private fireSuperweapon(me: P, bc: Map<BuildingKind, number>) {
     if (this.diff === "easy") return;
     if (me.lowPower || me.swLeft !== 0 || !this.hasBuilding(bc, "superweapon")) return;
@@ -964,6 +978,7 @@ export class RtsBot {
       factory2: 90,
       airfield2: 88,
       shipyard2: 88,
+      thaad: 86,
       factory: 85,
       techlab: 82,
       fusion: 78,
