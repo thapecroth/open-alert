@@ -317,7 +317,7 @@ export class LocalRoom {
         w.cmdHold(slot, m.ids);
         break;
       case "drive":
-        w.cmdDrive(slot, m.id, m.fwd, m.strafe, m.yaw, m.fire, m.aimX, m.aimY, m.aimTarget);
+        w.cmdDrive(slot, m.id, m.fwd, m.strafe, m.yaw, m.fire, m.aimX, m.aimY, m.aimTarget, m.alt, m.sprint, m.wpn, m.lock);
         break;
       case "driveExit":
         w.cmdDriveExit(slot, m.id);

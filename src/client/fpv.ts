@@ -7,6 +7,10 @@ import { Renderer } from "./render";
 import { Net } from "./net";
 import { getChassisMat, getAccentMat, getGlassMat, getGlowMat } from "./textures";
 import { isBuildingKind } from "./util";
+import { makeVmKit, type VmKit } from "./fpv/vmkit";
+import { LAND_VM } from "./fpv/vm-land";
+import { AIR_VM } from "./fpv/vm-air";
+import { SEA_VM } from "./fpv/vm-sea";
 
 export interface FpvTelemetry {
   id: number;
@@ -23,6 +27,13 @@ export interface FpvTelemetry {
   submerged: boolean;
   pointerLocked: boolean;
   reloading: number; // 0 = ready, 0..1 = cooldown fraction
+  sprint: boolean; // Shift sprint/boost engaged
+  alt: number; // normalized altitude 0..1 for driven aircraft (server-synced), else 0
+  wpn: number; // selected weapon slot 0..2 on multi-weapon platforms
+  wpnName: string; // display name of selected weapon system
+  lockState: "none" | "locking" | "locked"; // missile/guided lock-on progress
+  lockPct: number; // 0..1 lock acquisition progress
+  crouch: boolean; // infantry crouch engaged
   target: {
     id: number;
     kind: EntKind;
@@ -497,6 +508,45 @@ const CENTER_NDC = new THREE.Vector2(0, 0);
 const GROUND_PLANE = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const MOUSE_SENS = 0.0024;
 const DRIVE_SEND_INTERVAL_MS = 55;
+const SPRINT_MULT = 1.4; // server applies the same x1.4 drive speed while sprint flag is set
+const LOCK_ACQUIRE_S = 0.9;
+const LOCK_GRACE_S = 0.4;
+const FPV_KEYS = new Set([
+  "KeyW",
+  "KeyA",
+  "KeyS",
+  "KeyD",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Space",
+  "ShiftLeft",
+  "ShiftRight",
+  "KeyC",
+  "KeyR",
+  "KeyF",
+  "Digit1",
+  "Digit2",
+  "Digit3",
+]);
+const INF_KINDS: ReadonlySet<UnitKind> = new Set(["infantry", "rocket", "engineer"]);
+const LOCK_KINDS: ReadonlySet<UnitKind> = new Set([
+  "rocket",
+  "interceptor",
+  "uav",
+  "gunboat",
+  "destroyer",
+  "himars",
+  "stealthbomber",
+  "shahed",
+  "hypersonic",
+  "sub",
+  "dreadnought",
+]);
+const WPN_NAMES: Partial<Record<UnitKind, string[]>> = {
+  ac130: ["105MM HOWITZER", "40MM BOFORS", "25MM GATLING"],
+};
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
@@ -517,7 +567,22 @@ function isTypingTarget(target: EventTarget | null): boolean {
 
 // ---------- Sculpted 3D Camera-Attached Weapon & Cockpit Viewmodels ----------
 
+// Per-domain viewmodel overrides live in fpv/vm-{land,air,sea}.ts — when a kind
+// has an upgraded builder registered it fully replaces the legacy branch below.
+const VM_OVERRIDES: Partial<Record<UnitKind, (kit: VmKit) => void>> = {
+  ...LAND_VM,
+  ...AIR_VM,
+  ...SEA_VM,
+};
+
 function buildViewmodel(kind: UnitKind, factionColor: string): ViewmodelRig {
+  const override = VM_OVERRIDES[kind];
+  if (override) {
+    const kit = makeVmKit(factionColor);
+    override(kit);
+    return kit.rig;
+  }
+
   const root = new THREE.Group();
   const swayGroup = new THREE.Group();
   const recoilGroup = new THREE.Group();
@@ -1861,6 +1926,9 @@ export class FirstPersonController {
   entId: number | null = null;
   onExit: (reason?: "dead" | "user") => void = () => {};
   onFireSfx: (kind: EntKind, vet: number) => void = () => {};
+  // Auxiliary 1P feedback sfx: "lock" | "locked" | "lost" | "sprint" | "boost"
+  // | "wpn" | "ads" | "crouch" | "hitmark" | "damage" | "climb" | "dive"
+  onSfx: (name: string) => void = () => {};
 
   private gs: GameScene;
   private renderer: Renderer;
@@ -1892,6 +1960,21 @@ export class FirstPersonController {
   private mouseFire = false;
   private lastFireSent = false;
   private lastDriveSentAt = 0;
+
+  // Sprint / ADS / crouch / weapon-select / lock-on / altitude state
+  private sprint = false;
+  private ads = false;
+  private crouched = false;
+  private rmbHeld = false;
+  private wpn = 0;
+  private lockId = 0;
+  private lockPct = 0;
+  private lockState: FpvTelemetry["lockState"] = "none";
+  private lockGrace = 0;
+  private altSm = 0.6;
+  private altTrend = 0;
+  private altTrendT = 0;
+  private altSfxDir = 0;
 
   // Animation, recoil & viewmodel state
   private viewmodel: ViewmodelRig | null = null;
@@ -1956,6 +2039,15 @@ export class FirstPersonController {
       this.keys.clear();
       this.mouseFire = false;
       this.dragLooking = false;
+      this.rmbHeld = false;
+      this.ads = false;
+      this.sprint = false;
+      this.crouched = false;
+      this.wpn = 0;
+      this.clearLock();
+      this.altTrend = 0;
+      this.altTrendT = 0;
+      this.altSfxDir = 0;
     };
     this.boundWheel = (e) => {
       if (this.active) {
@@ -2010,7 +2102,9 @@ export class FirstPersonController {
     this.targetPitch = initPitch;
     this.renderPitch = initPitch;
     this.curFov = profile.fov;
-    this.curEyeY = kind === "sub" && t.last.sub && profile.subEyeY !== undefined ? profile.subEyeY : profile.eyeY;
+    this.curEyeY =
+      (kind === "sub" && t.last.sub && profile.subEyeY !== undefined ? profile.subEyeY : profile.eyeY) +
+      (def.domain === "air" ? ((t.last.alt ?? 0.6) - 0.6) * 4.5 : 0);
     this.curSpeed = 0;
 
     this.keys.clear();
@@ -2018,6 +2112,16 @@ export class FirstPersonController {
     this.dragLooking = false;
     this.lastFireSent = false;
     this.lastDriveSentAt = 0;
+    this.sprint = false;
+    this.ads = false;
+    this.crouched = false;
+    this.rmbHeld = false;
+    this.wpn = 0;
+    this.clearLock();
+    this.altSm = t.last.alt ?? 0.6;
+    this.altTrend = 0;
+    this.altTrendT = 0;
+    this.altSfxDir = 0;
     this.bobPhase = 0;
     this.swayX = 0;
     this.swayY = 0;
@@ -2057,6 +2161,12 @@ export class FirstPersonController {
     this.dragLooking = false;
     this.lastFireSent = false;
     this.lastTelemetry = null;
+    this.rmbHeld = false;
+    this.ads = false;
+    this.sprint = false;
+    this.crouched = false;
+    this.wpn = 0;
+    this.clearLock();
 
     if (!silent && reason === "user" && prevId !== null) {
       this.net.send({ t: "driveExit", id: prevId });
@@ -2110,11 +2220,12 @@ export class FirstPersonController {
     const t = this.renderer.tracked.get(this.entId);
     if (t && vet === 0) vet = t.last.vet ?? 0;
 
+    const recoilK = this.crouched ? 0.7 : 1;
     this.lastShotAt = performance.now();
     this.recoil = 1.0;
-    this.pitchKick = Math.min(0.08, this.pitchKick + this.profile.recoilPitch);
+    this.pitchKick = Math.min(0.08, this.pitchKick + this.profile.recoilPitch * recoilK);
     this.flashTimer = 0.085;
-    this.gs.shake(this.profile.recoilShake);
+    this.gs.shake(this.profile.recoilShake * recoilK);
     this.onFireSfx(this.kind, vet);
   }
 
@@ -2150,11 +2261,21 @@ export class FirstPersonController {
     const prof = this.profile;
 
     // 1. Read WASD + Arrow controls
-    const fwdIn =
+    let fwdIn =
       (this.keys.has("KeyW") || this.keys.has("ArrowUp") ? 1 : 0) -
       (this.keys.has("KeyS") || this.keys.has("ArrowDown") ? 1 : 0);
     const adIn = (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0);
     const arrowTurn = (this.keys.has("ArrowRight") ? 1 : 0) - (this.keys.has("ArrowLeft") ? 1 : 0);
+
+    // Sprint / boost: server applies the same x1.4 speed while the flag is set
+    const sprint = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
+    if (sprint && !this.sprint) this.onSfx("sprint");
+    this.sprint = sprint;
+
+    // Infantry aim-down-sights: RMB held while pointer-locked
+    const ads = this.rmbHeld && this.pointerLocked && INF_KINDS.has(this.kind);
+    if (ads !== this.ads) this.onSfx("ads");
+    this.ads = ads;
 
     let strafeIn = 0;
     let steerTurn = arrowTurn;
@@ -2164,6 +2285,10 @@ export class FirstPersonController {
       // Ground vehicles, naval ships & jets: A/D smoothly steers yaw + light lateral drift
       steerTurn += adIn;
       strafeIn = adIn * 0.3;
+    }
+    if (this.crouched) {
+      fwdIn *= 0.5;
+      strafeIn *= 0.5;
     }
 
     if (steerTurn !== 0) {
@@ -2190,7 +2315,7 @@ export class FirstPersonController {
 
     const baseMaxTilesPerSec = def.speed * 1.15 * 10;
     const fuelMult = t.last.fl !== undefined && t.last.fl <= 0 ? 0.38 : 1;
-    const maxTilesPerSec = baseMaxTilesPerSec * fuelMult;
+    const maxTilesPerSec = baseMaxTilesPerSec * fuelMult * (sprint ? SPRINT_MULT : 1);
     const step = maxTilesPerSec * clampedDt;
     const prevX = this.predX;
     const prevY = this.predY;
@@ -2252,15 +2377,45 @@ export class FirstPersonController {
     const firing = (this.mouseFire || this.keys.has("Space")) && def.range > 0;
     const kamikazeDive = Boolean(def.kamikaze) && firing;
     const submerged = this.kind === "sub" && Boolean(t.last.sub);
+
+    // Aircraft pitch-to-climb: render pitch -> -1..1 altitude command (deadzone +/-0.04)
+    let altIn = 0;
+    if (this.domain === "air") {
+      const p = this.renderPitch;
+      if (p > 0.04) altIn = Math.min(1, (p - 0.04) / Math.max(0.08, prof.maxPitch - 0.04));
+      else if (p < -0.04) altIn = Math.max(-1, (p + 0.04) / Math.max(0.08, -prof.minPitch - 0.04));
+
+      const srvAlt = t.last.alt ?? 0.6;
+      this.altSm += (srvAlt - this.altSm) * (1 - Math.exp(-8 * clampedDt));
+
+      // Climb / dive callouts fire once per sustained transition
+      const climbDir = altIn > 0.22 ? 1 : altIn < -0.22 ? -1 : 0;
+      if (climbDir !== 0 && climbDir === this.altTrend) {
+        this.altTrendT += clampedDt;
+        if (this.altTrendT > 0.5 && this.altSfxDir !== climbDir) {
+          this.altSfxDir = climbDir;
+          this.onSfx(climbDir > 0 ? "climb" : "dive");
+        }
+      } else {
+        this.altTrend = climbDir;
+        this.altTrendT = 0;
+        if (climbDir === 0) this.altSfxDir = 0;
+      }
+    }
+
     const baseEyeY = submerged && prof.subEyeY !== undefined ? prof.subEyeY : prof.eyeY;
-    const targetEyeY = kamikazeDive && this.domain === "air" ? Math.max(0.85, baseEyeY - 0.9) : baseEyeY;
+    const cruiseEyeY =
+      baseEyeY + (this.domain === "air" ? (this.altSm - 0.6) * 4.5 : 0) - (this.crouched ? 0.28 : 0);
+    const targetEyeY =
+      kamikazeDive && this.domain === "air" ? Math.max(0.85, cruiseEyeY - 0.9) : cruiseEyeY;
     this.curEyeY += (targetEyeY - this.curEyeY) * (1 - Math.exp(-(kamikazeDive ? 8 : 6) * clampedDt));
 
     const moveRatio = clamp(this.curSpeed / Math.max(0.5, baseMaxTilesPerSec), 0, 1);
+    const bobF = prof.bobFreq * (sprint ? 1.16 : 1);
     if (moveRatio > 0.05) {
-      this.bobPhase += clampedDt * prof.bobFreq * (0.65 + moveRatio * 0.45);
+      this.bobPhase += clampedDt * bobF * (0.65 + moveRatio * 0.45);
     } else if (this.domain === "sea" || this.domain === "air") {
-      this.bobPhase += clampedDt * prof.bobFreq * 0.5;
+      this.bobPhase += clampedDt * bobF * 0.5;
     }
 
     const idleHeave =
@@ -2269,11 +2424,15 @@ export class FirstPersonController {
         : this.domain === "air"
           ? Math.sin(this.elapsed * 2.6) * (this.kind === "fpvdrone" ? 0.028 : 0.045)
           : 0;
-    const walkBobY = Math.sin(this.bobPhase * 2) * prof.bobAmp * moveRatio;
+    const walkBobY = Math.sin(this.bobPhase * 2) * prof.bobAmp * moveRatio * (ads ? 0.3 : 1);
 
-    // Smooth sprint / forward-flight / kamikaze terminal-dive FOV boost
+    // Smooth sprint / forward-flight / kamikaze terminal-dive FOV boost + ADS zoom
     const forwardSpeedFrac = fwdIn > 0.1 ? moveRatio : 0;
-    const targetFov = prof.fov + forwardSpeedFrac * 4.5 + (kamikazeDive ? 5.5 : 0);
+    const targetFov =
+      prof.fov * (ads ? 0.62 : 1) +
+      forwardSpeedFrac * 4.5 +
+      (sprint ? 4 * moveRatio : 0) +
+      (kamikazeDive ? 5.5 : 0);
     this.curFov += (targetFov - this.curFov) * (1 - Math.exp(-7 * clampedDt));
 
     // Decay pitch kick smoothly
@@ -2292,11 +2451,55 @@ export class FirstPersonController {
     const supplyFrac =
       this.kind === "supplytruck"
         ? clamp((t.last.cargo ?? (UNITS.supplytruck.capacity ?? 500)) / Math.max(1, UNITS.supplytruck.capacity ?? 500), 0.04, 1)
-        : 1;
+        : this.kind === "harvester"
+          ? clamp((t.last.cargo ?? 0) / Math.max(1, UNITS.harvester.capacity ?? 40), 0.04, 1)
+          : 1;
     this.updateViewmodel(clampedDt, moveRatio, supplyFrac);
 
     // 7. Center-Screen 3D Crosshair Raycast for aiming & telemetry
     const aim = this.computeCrosshairAim(def);
+
+    // 7.5 Guided lock-on: hold crosshair on an enemy to acquire, brief grace to hold lock
+    if (LOCK_KINDS.has(this.kind)) {
+      const centerId = aim.target && aim.target.enemy && aim.target.hp > 0 ? aim.target.id : 0;
+      if (this.lockId === 0) {
+        if (centerId !== 0) {
+          this.lockId = centerId;
+          this.lockPct = 0;
+          this.lockGrace = 0;
+          this.lockState = "locking";
+          this.onSfx("lock");
+        }
+      } else {
+        const lt = this.renderer.tracked.get(this.lockId);
+        const mySlot = this.getSlot();
+        const valid =
+          lt !== undefined &&
+          lt.last.hp > 0 &&
+          lt.last.o >= 0 &&
+          lt.last.o !== mySlot &&
+          !this.isAlly(lt.last.o);
+        if (centerId === this.lockId) {
+          this.lockGrace = 0;
+          if (this.lockState === "locking") {
+            this.lockPct += clampedDt / LOCK_ACQUIRE_S;
+            if (this.lockPct >= 1) {
+              this.lockPct = 1;
+              this.lockState = "locked";
+              this.onSfx("locked");
+            }
+          }
+        } else {
+          this.lockGrace += clampedDt;
+        }
+        if (!valid || this.lockGrace > LOCK_GRACE_S) {
+          this.clearLock();
+          this.onSfx("lost");
+        }
+      }
+    } else if (this.lockId !== 0) {
+      this.clearLock();
+    }
 
     // 8. Send drive packet at ~18 Hz (every 55ms) or immediately on fire state edge
     const now = performance.now();
@@ -2313,6 +2516,10 @@ export class FirstPersonController {
         aimX: Math.round(aim.aimX * 100) / 100,
         aimY: Math.round(aim.aimY * 100) / 100,
         aimTarget: aim.target?.enemy ? aim.target.id : undefined,
+        alt: Math.round(altIn * 100) / 100,
+        sprint,
+        wpn: this.wpn,
+        lock: this.lockState === "locked" ? this.lockId : 0,
       });
     }
 
@@ -2338,6 +2545,13 @@ export class FirstPersonController {
       submerged,
       pointerLocked: this.pointerLocked,
       reloading,
+      sprint,
+      alt: this.domain === "air" ? Number(this.altSm.toFixed(2)) : 0,
+      wpn: this.wpn,
+      wpnName: WPN_NAMES[this.kind]?.[this.wpn] ?? "",
+      lockState: this.lockState,
+      lockPct: Number(this.lockPct.toFixed(2)),
+      crouch: this.crouched,
       target: aim.target,
       aimDist: Number(aim.aimDist.toFixed(1)),
     };
@@ -2363,6 +2577,13 @@ export class FirstPersonController {
 
   private getMapBounds(): { w: number; h: number } {
     return { w: this.gs.mapW, h: this.gs.mapH };
+  }
+
+  private clearLock(): void {
+    this.lockId = 0;
+    this.lockPct = 0;
+    this.lockState = "none";
+    this.lockGrace = 0;
   }
 
   private canOccupy(x: number, y: number, domain: UnitDomain): boolean {
@@ -2463,20 +2684,23 @@ export class FirstPersonController {
     this.swayRoll *= swayDecay;
 
     // Smooth figure-8 sinusoidal weapon bob + subtle organic idle breathing
-    const bobX = Math.sin(this.bobPhase) * this.profile.bobAmp * 0.58 * moveRatio;
-    const bobY = -Math.abs(Math.cos(this.bobPhase)) * this.profile.bobAmp * 0.68 * moveRatio;
-    const idleX = Math.cos(this.elapsed * 1.15) * 0.0016;
-    const idleY = Math.sin(this.elapsed * 2.3) * 0.0022;
+    // ADS steadies the weapon: bob/sway/breathing amplitudes x0.3
+    const adsAmp = this.ads ? 0.3 : 1;
+    const bobX = Math.sin(this.bobPhase) * this.profile.bobAmp * 0.58 * moveRatio * adsAmp;
+    const bobY = -Math.abs(Math.cos(this.bobPhase)) * this.profile.bobAmp * 0.68 * moveRatio * adsAmp;
+    const idleX = Math.cos(this.elapsed * 1.15) * 0.0016 * adsAmp;
+    const idleY = Math.sin(this.elapsed * 2.3) * 0.0022 * adsAmp;
     const waveRoll = this.domain === "sea" ? Math.sin(this.elapsed * 1.7) * 0.018 : 0;
 
-    vm.swayGroup.position.set(this.swayX + bobX + idleX, this.swayY + bobY + idleY, 0);
-    vm.swayGroup.rotation.set(this.swayY * 0.65, this.swayX * 0.85, this.swayRoll + waveRoll);
+    vm.swayGroup.position.set(this.swayX * adsAmp + bobX + idleX, this.swayY * adsAmp + bobY + idleY, 0);
+    vm.swayGroup.rotation.set(this.swayY * 0.65 * adsAmp, this.swayX * 0.85 * adsAmp, this.swayRoll * adsAmp + waveRoll);
 
-    // Recoil kick & smooth spring recovery
+    // Recoil kick & smooth spring recovery (crouch braces the weapon: x0.7)
+    const recoilK = this.crouched ? 0.7 : 1;
     this.recoil *= Math.exp(-dt * 11.5);
     if (this.recoil < 0.0015) this.recoil = 0;
-    vm.recoilGroup.position.z = this.recoil * this.profile.recoilKickZ;
-    vm.recoilGroup.rotation.x = this.recoil * this.profile.recoilPitch * 1.4;
+    vm.recoilGroup.position.z = this.recoil * this.profile.recoilKickZ * recoilK;
+    vm.recoilGroup.rotation.x = this.recoil * this.profile.recoilPitch * 1.4 * recoilK;
 
     // Muzzle flash flicker
     if (this.flashTimer > 0) {
@@ -2552,20 +2776,22 @@ export class FirstPersonController {
       return;
     }
 
-    if (
-      e.code === "KeyW" ||
-      e.code === "KeyA" ||
-      e.code === "KeyS" ||
-      e.code === "KeyD" ||
-      e.code === "ArrowUp" ||
-      e.code === "ArrowDown" ||
-      e.code === "ArrowLeft" ||
-      e.code === "ArrowRight" ||
-      e.code === "Space"
-    ) {
+    if (FPV_KEYS.has(e.code)) {
       e.preventDefault();
       e.stopImmediatePropagation();
       this.keys.add(e.code);
+      if (e.repeat) return;
+      if (e.code === "KeyC" && INF_KINDS.has(this.kind)) {
+        this.crouched = !this.crouched;
+        this.onSfx("crouch");
+      } else if (e.code === "Digit1" || e.code === "Digit2" || e.code === "Digit3") {
+        const slot = Number(e.code[5]) - 1;
+        const names = WPN_NAMES[this.kind];
+        if (names && slot < names.length && slot !== this.wpn) {
+          this.wpn = slot;
+          this.onSfx("wpn");
+        }
+      }
     }
   }
 
@@ -2594,7 +2820,9 @@ export class FirstPersonController {
         this.mouseFire = true;
       }
     } else if (e.button === 2) {
-      this.dragLooking = true;
+      this.rmbHeld = true;
+      // RMB doubles as drag-look only when the pointer isn't locked (ADS takes over when locked)
+      if (!this.pointerLocked) this.dragLooking = true;
     }
   }
 
@@ -2604,6 +2832,7 @@ export class FirstPersonController {
       this.mouseFire = false;
       if ((e.buttons & 2) === 0) this.dragLooking = false;
     } else if (e.button === 2) {
+      this.rmbHeld = false;
       if ((e.buttons & 1) === 0) this.dragLooking = false;
     }
   }
@@ -2628,7 +2857,7 @@ export class FirstPersonController {
     const dy = clamp(rawDy, -220, 220);
     if (dx === 0 && dy === 0) return;
 
-    const sens = this.pointerLocked ? MOUSE_SENS : MOUSE_SENS * 1.35;
+    const sens = (this.pointerLocked ? MOUSE_SENS : MOUSE_SENS * 1.35) * (this.ads ? 0.55 : 1);
     const dYaw = dx * sens;
     const dPitch = -dy * sens;
 

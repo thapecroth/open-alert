@@ -112,7 +112,12 @@ export interface Ent {
     aimX: number;
     aimY: number;
     aimTarget?: number;
+    alt?: number; // -1..1 climb/dive input (aircraft)
+    sprint?: boolean; // sprint/flank/boost throttle
+    wpn?: number; // selected weapon slot 0..2 (multi-weapon platforms)
+    lock?: number; // persistent lock-on target id
   };
+  fpvAlt?: number; // normalized altitude 0..1 while player-driven (air only)
 }
 
 export interface P {
@@ -355,6 +360,14 @@ const weaponOf = (e: Ent) =>
   isBuilding(e.k)
     ? { range: BUILDINGS[e.k].range ?? 0, dmg: BUILDINGS[e.k].dmg ?? 0, rof: BUILDINGS[e.k].rof ?? 0 }
     : { range: UNITS[e.k as UnitKind].range, dmg: UNITS[e.k as UnitKind].dmg, rof: UNITS[e.k as UnitKind].rof };
+
+// AC-130 gunship selectable guns — chosen by drive msg `wpn` slot while player-driven only.
+// The UNITS.ac130 base def stays the AI/auto-attack profile; ammo cost unchanged (ammoCostOf).
+const AC130_GUNS: readonly { name: string; dmg: number; rof: number; splash: number; fx: WeaponFx }[] = [
+  { name: "105MM", dmg: 55, rof: 90, splash: 2.6, fx: "cannon" },
+  { name: "40MM", dmg: 22, rof: 30, splash: 1.2, fx: "cannon" },
+  { name: "25MM", dmg: 7, rof: 4, splash: 0.35, fx: "brrrt" },
+];
 
 export class World {
   readonly w: number;
@@ -1016,6 +1029,10 @@ export class World {
     aimX?: number,
     aimY?: number,
     aimTarget?: number,
+    alt?: number,
+    sprint?: boolean,
+    wpn?: number,
+    lock?: number,
   ): string | null {
     if (!Number.isFinite(id) || !Number.isFinite(fwd) || !Number.isFinite(strafe) || !Number.isFinite(yaw)) {
       return "bad drive";
@@ -1040,13 +1057,21 @@ export class World {
       aimX: Number.isFinite(aimX) ? aimX! : e.x + Math.cos(yaw) * 6,
       aimY: Number.isFinite(aimY) ? aimY! : e.y + Math.sin(yaw) * 6,
       aimTarget: Number.isFinite(aimTarget) ? aimTarget : undefined,
+      alt: Number.isFinite(alt) ? Math.max(-1, Math.min(1, alt!)) : undefined,
+      sprint: !!sprint,
+      wpn: Number.isFinite(wpn) ? Math.max(0, Math.min(2, Math.round(wpn!))) : undefined,
+      lock: Number.isFinite(lock) ? lock : undefined,
     };
+    if (domainOf(e.k) === "air" && e.fpvAlt === undefined) e.fpvAlt = 0.6; // lazy cruise alt on first takeover
     return null;
   }
 
   cmdDriveExit(slot: number, id: number): void {
     const e = this.ents.get(id);
-    if (e && e.o === slot) delete e.direct;
+    if (e && e.o === slot) {
+      delete e.direct;
+      delete e.fpvAlt;
+    }
   }
 
   private buildingCostBasis(k: BuildingKind): number {
@@ -1449,6 +1474,7 @@ export class World {
         this.alertVictim(t.o, t.x, t.y);
         if (t.hp <= 0) {
           this.grantXp(e, t.mhp * 0.8);
+          this.events.push({ e: "kill", src: e.id, id: t.id, x: t.x, y: t.y });
           this.destroy(t, e.o);
         } else {
           this.grantXp(e, 32);
@@ -1790,6 +1816,7 @@ export class World {
     if (e.direct) {
       if (this.tick > e.direct.until) {
         delete e.direct;
+        delete e.fpvAlt;
       } else {
         this.tickDirect(e);
         return;
@@ -1912,6 +1939,11 @@ export class World {
     if (!dir) return;
     e.d = dir.yaw;
 
+    // 1P altitude: air units climb/dive with dir.alt while driven (field cleared when drive ends)
+    if (domainOf(e.k) === "air") {
+      e.fpvAlt = Math.max(0.12, Math.min(1, (e.fpvAlt ?? 0.6) + (dir.alt ?? 0) * 0.025));
+    }
+
     // Movement vector in map (x, y) coords:
     // Forward = (cos(yaw), sin(yaw)), Right (strafe) = (-sin(yaw), cos(yaw))
     let vx = Math.cos(dir.yaw) * dir.fwd - Math.sin(dir.yaw) * dir.strafe;
@@ -1924,7 +1956,7 @@ export class World {
     if (len > 0.001) {
       const logisticsOn = this.config.logistics !== false;
       const fuelMult = logisticsOn && usesFuel(e.k) && e.fuel <= 0 ? 0.38 : 1;
-      const speed = UNITS[e.k as UnitKind].speed * 1.15 * fuelMult;
+      const speed = UNITS[e.k as UnitKind].speed * 1.15 * fuelMult * (dir.sprint ? 1.4 : 1);
       const dx = vx * speed;
       const dy = vy * speed;
       const dom = domainOf(e.k);
@@ -1952,7 +1984,7 @@ export class World {
       if (logisticsOn && usesFuel(e.k)) {
         const moved = Math.hypot(e.x - prevX, e.y - prevY);
         if (moved > 0) {
-          e.fuel = Math.max(0, e.fuel - moved * fuelBurnOf(e.k, dom));
+          e.fuel = Math.max(0, e.fuel - moved * fuelBurnOf(e.k, dom) * (dir.sprint ? 1.6 : 1));
         }
       }
     }
@@ -2005,6 +2037,13 @@ export class World {
     const w = weaponOf(e);
     if (!dir.fire || e.cd > 0 || w.range <= 0) return;
 
+    // AC-130 gunship weapon select — wpn slot overrides the gun only while player-driven
+    const gun = e.k === "ac130" ? AC130_GUNS[dir.wpn ?? 0] : null;
+    if (gun) {
+      w.dmg = gun.dmg;
+      w.rof = gun.rof;
+    }
+
     const pointDistToEnt = (px: number, py: number, t: Ent) => {
       if (!isBuilding(t.k)) return dist(px, py, t.x, t.y);
       const bd = BUILDINGS[t.k];
@@ -2014,11 +2053,18 @@ export class World {
       );
     };
 
-    // Priority 1: Explicit aimTarget lock
-    if (dir.aimTarget != null) {
-      const tgt = this.ents.get(dir.aimTarget);
-      if (tgt && !this.isAlly(e.o, tgt.o) && this.canAttack(e, tgt) && entityDist(e, tgt) <= w.range + 1.5) {
-        this.tryFire(e, tgt);
+    // Priority 1: Explicit aimTarget / persistent lock-on (dir.lock sticks across drive msgs;
+    // locked guided weapons track with a slightly wider slack)
+    const lockId = dir.lock ?? dir.aimTarget;
+    if (lockId != null) {
+      const tgt = this.ents.get(lockId);
+      if (
+        tgt &&
+        !this.isAlly(e.o, tgt.o) &&
+        this.canAttack(e, tgt) &&
+        entityDist(e, tgt) <= w.range + (dir.lock != null ? 3 : 1.5)
+      ) {
+        this.tryFire(e, tgt, gun);
         return;
       }
     }
@@ -2037,7 +2083,7 @@ export class World {
       }
     }
     if (best) {
-      this.tryFire(e, best);
+      this.tryFire(e, best, gun);
       return;
     }
 
@@ -2072,7 +2118,7 @@ export class World {
         fy: e.y,
         tx,
         ty,
-        w: weaponFxOf(e.k),
+        w: gun ? gun.fx : weaponFxOf(e.k),
         src: e.id,
         ...(e.vet > 0 ? { vet: e.vet } : {}),
       });
@@ -2083,7 +2129,7 @@ export class World {
       return;
     }
 
-    const splashR = SPLASH_RADIUS[e.k];
+    const splashR = gun ? gun.splash : SPLASH_RADIUS[e.k];
     if (splashR) {
       const baseDmg = w.dmg * VET_DMG[e.vet];
       const hitAir = canHitAirOf(e.k);
@@ -2102,6 +2148,7 @@ export class World {
         this.alertVictim(other.o, other.x, other.y);
         if (other.hp <= 0) {
           if (!kamikaze) this.grantXp(e, other.mhp * 0.8);
+          this.events.push({ e: "kill", src: e.id, id: other.id, x: other.x, y: other.y });
           this.destroy(other, e.o);
         } else if (isBuilding(other.k) && BUILDINGS[other.k].power > 0) {
           this.recomputePower(other.o);
@@ -2118,6 +2165,7 @@ export class World {
     if (e.direct) {
       if (this.tick > e.direct.until) {
         delete e.direct;
+        delete e.fpvAlt;
       } else {
         this.tickDirect(e);
         return;
@@ -2429,14 +2477,20 @@ export class World {
     return true;
   }
 
-  private tryFire(e: Ent, tgt: Ent) {
+  private tryFire(e: Ent, tgt: Ent, gun: (typeof AC130_GUNS)[number] | null = null) {
     if (e.cd > 0) return;
     const w = weaponOf(e);
     if (w.range <= 0) return;
     if (isBuilding(e.k) && this.players.get(e.o)?.lowPower) return; // powered defenses offline
     if (!this.canAttack(e, tgt)) return;
     const kamikaze = isKamikaze(e.k);
-    if (this.config.logistics !== false && !isBuilding(e.k) && !kamikaze) {
+    const unitShooter = !isBuilding(e.k); // kill-confirm credit goes to unit shooters only
+    if (gun) {
+      // 1P-driven AC-130 selected gun — overrides dmg/rof; ammo cost unchanged
+      w.dmg = gun.dmg;
+      w.rof = gun.rof;
+    }
+    if (this.config.logistics !== false && unitShooter && !kamikaze) {
       e.ammo = Math.max(0, e.ammo - ammoCostOf(e.k));
       e.cd = e.ammo <= 0 ? Math.round(w.rof * 3.0) : w.rof;
     } else {
@@ -2454,7 +2508,7 @@ export class World {
         fy: e.y,
         tx,
         ty,
-        w: weaponFxOf(e.k),
+        w: gun ? gun.fx : weaponFxOf(e.k),
         src: e.id,
         ...(e.vet > 0 ? { vet: e.vet } : {}),
       });
@@ -2469,7 +2523,7 @@ export class World {
     this.alertVictim(tgt.o, tx, ty);
 
     // Splash damage to non-ally targets within SPLASH_RADIUS (ground-only splash skips air targets)
-    const splashR = SPLASH_RADIUS[e.k];
+    const splashR = gun ? gun.splash : SPLASH_RADIUS[e.k];
     if (splashR) {
       const hitAir = canHitAirOf(e.k);
       for (const other of [...this.ents.values()]) {
@@ -2487,6 +2541,7 @@ export class World {
         this.alertVictim(other.o, other.x, other.y);
         if (other.hp <= 0) {
           if (!kamikaze) this.grantXp(e, other.mhp * 0.8);
+          if (unitShooter) this.events.push({ e: "kill", src: e.id, id: other.id, x: other.x, y: other.y });
           this.destroy(other, e.o);
         } else if (isBuilding(other.k) && BUILDINGS[other.k].power > 0) {
           this.recomputePower(other.o);
@@ -2496,6 +2551,7 @@ export class World {
 
     if (tgt.hp <= 0 && this.ents.has(tgt.id)) {
       if (!kamikaze) this.grantXp(e, tgt.mhp * 0.8);
+      if (unitShooter) this.events.push({ e: "kill", src: e.id, id: tgt.id, x: tgt.x, y: tgt.y });
       this.destroy(tgt, e.o);
     } else if (this.ents.has(tgt.id) && isBuilding(tgt.k) && BUILDINGS[tgt.k].power > 0) {
       this.recomputePower(tgt.o);
@@ -2695,11 +2751,13 @@ export class World {
                 if (aDom === "land") {
                   if (isCrusher(a.k) && crushable(b.k) && !this.isAlly(a.o, b.o)) {
                     this.grantXp(a, b.mhp * 0.8);
+                    this.events.push({ e: "kill", src: a.id, id: b.id, x: b.x, y: b.y });
                     this.destroy(b, a.o);
                     continue;
                   }
                   if (isCrusher(b.k) && crushable(a.k) && !this.isAlly(a.o, b.o)) {
                     this.grantXp(b, a.mhp * 0.8);
+                    this.events.push({ e: "kill", src: b.id, id: a.id, x: a.x, y: a.y });
                     this.destroy(a, b.o);
                     aDead = true;
                     break;
@@ -2788,6 +2846,7 @@ export class World {
       if (e.vet > 0) s.vet = e.vet;
       if (e.hold) s.hold = true;
       if (this.isStealthed(e)) s.sub = true;
+      if (e.fpvAlt !== undefined) s.alt = Math.round(e.fpvAlt * 100) / 100;
       if (e.rally) s.rally = [e.rally[0], e.rally[1]];
       if (!isBuilding(e.k) && (e.order || e.orderQueue.length)) {
         const wp: [number, number, OrderKind][] = [];

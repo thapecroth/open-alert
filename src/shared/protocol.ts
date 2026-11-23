@@ -18,6 +18,10 @@ export type C2S =
       aimX?: number;
       aimY?: number;
       aimTarget?: number;
+      alt?: number; // -1..1 climb/dive input (aircraft pitch-to-climb)
+      sprint?: boolean; // sprint/flank/boost throttle — faster, burns extra fuel
+      wpn?: number; // selected weapon slot 0..2 on multi-weapon platforms (AC-130)
+      lock?: number; // persistent missile/guided lock-on target entity id (0/undefined = none)
     } // direct first-person WASD + aim/fire control
   | { t: "driveExit"; id: number } // exit first-person control
   | { t: "recon"; x: number; y: number } // fire Radar Uplink Recon Scan (reveals fog)
@@ -105,6 +109,7 @@ export interface EntSnap {
   vet?: number; // 0..3 veterancy rank
   hold?: boolean; // unit holding position (fires in range, will not chase)
   sub?: boolean; // submarine currently submerged (stealth)
+  alt?: number; // normalized altitude 0..1 for player-driven aircraft (0.6 = cruise)
   rally?: [number, number]; // rally point on production buildings
   wp?: [number, number, OrderKind][]; // active + queued waypoints
 }
@@ -171,7 +176,9 @@ export type GameEvent =
   | { e: "promote"; id: number; vet: number; x: number; y: number; slot: number }
   | { e: "crate"; x: number; y: number; kind: CrateKind; slot: number; text: string }
   | { e: "income"; x: number; y: number; amt: number; slot: number }
-  | { e: "hit"; id: number };
+  | { e: "hit"; id: number }
+  // kill confirm — src = killer entity id (only emitted when a unit shooter is known, e.g. 1P direct fire)
+  | { e: "kill"; src: number; id: number; x: number; y: number };
 
 export type S2C =
   | { t: "lobby"; players: LobbyPlayer[]; you: string; room: string; map: MapId; phase?: "lobby" | "playing" | "ended"; config?: GameConfig }

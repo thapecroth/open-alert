@@ -31,6 +31,7 @@ import {
 import { el, fmtCost, isBuildingKind } from "./util";
 import { Renderer } from "./render";
 import type { FpvTelemetry } from "./fpv";
+import { fpvStreakName, type FpvStoryState } from "./story";
 
 const TOOLTIPS: Record<string, string> = {
   conyard: "Construction Yard — the heart of your base.",
@@ -1868,6 +1869,7 @@ export class Hud {
       fpvHud?.classList.remove("hidden");
     } else {
       fpvHud?.classList.add("hidden");
+      this.clearFpvStory();
       document.getElementById("selinfo")?.classList.remove("hidden");
       document.getElementById("chat-box")?.classList.remove("hidden");
       this.setSpectatorMode(spectating);
@@ -2081,6 +2083,145 @@ export class Hud {
           wpnRange.textContent = rngM > 0 ? `RNG ${rngM}m` : "";
         }
       }
+    }
+
+    // Selected weapon-system name (multi-weapon platforms like the AC-130)
+    const wpnEl = document.getElementById("fpv-wpn");
+    if (wpnEl) {
+      if (tel.wpnName) {
+        wpnEl.textContent = tel.wpnName.toUpperCase();
+        wpnEl.classList.remove("hidden");
+      } else {
+        wpnEl.classList.add("hidden");
+      }
+    }
+
+    // Right-edge altitude tape (driven aircraft only)
+    const altape = document.getElementById("fpv-altape");
+    if (altape) {
+      if (domain === "air") {
+        altape.classList.remove("hidden");
+        const tapeFill = document.getElementById("fpv-altape-fill");
+        if (tapeFill) {
+          tapeFill.style.height = `${(Math.max(0, Math.min(1, tel.alt)) * 100).toFixed(1)}%`;
+        }
+        const tapeText = document.getElementById("fpv-altape-text");
+        if (tapeText) tapeText.textContent = `ALT ${Math.round(tel.altitude)}m`;
+      } else {
+        altape.classList.add("hidden");
+      }
+    }
+
+    // Telemetry chip row — sprint / crouch / submerged flags
+    const chips = document.getElementById("fpv-chips");
+    if (chips) {
+      const chip = (id: string, on: boolean) => document.getElementById(id)?.classList.toggle("hidden", !on);
+      chip("fpv-chip-sprint", tel.sprint);
+      chip("fpv-chip-crouch", tel.crouch);
+      chip("fpv-chip-sub", tel.submerged);
+      chips.classList.toggle("hidden", !(tel.sprint || tel.crouch || tel.submerged));
+    }
+  }
+
+  /** Render the story director's state — feed, objective, streaks, hitmarker & lock UI. */
+  updateFpvStory(s: FpvStoryState | null) {
+    if (!s || !this.fpvMode) {
+      this.clearFpvStory();
+      return;
+    }
+
+    // Kill feed (bottom-left): reconcile 1 div per line, fade by age
+    const feedEl = document.getElementById("fpv-feed");
+    if (feedEl) {
+      while (feedEl.children.length < s.feed.length) {
+        feedEl.appendChild(document.createElement("div"));
+      }
+      while (feedEl.children.length > s.feed.length) {
+        feedEl.removeChild(feedEl.firstChild as Node);
+      }
+      for (let i = 0; i < s.feed.length; i++) {
+        const line = s.feed[i];
+        const d = feedEl.children[i] as HTMLElement;
+        if (d.textContent !== line.text) d.textContent = line.text;
+        const cls = `fl fl-${line.tone}`;
+        if (d.className !== cls) d.className = cls;
+        const op = Math.max(0, Math.min(1, (5 - line.age) / 1.2)).toFixed(2);
+        if (d.style.opacity !== op) d.style.opacity = op;
+      }
+    }
+
+    // Objective card (top-center)
+    const objEl = document.getElementById("fpv-objective");
+    if (objEl) {
+      if (s.objective) {
+        objEl.classList.remove("hidden");
+        objEl.classList.toggle("done", s.objective.done);
+        const titleEl = document.getElementById("fpv-obj-title");
+        if (titleEl && titleEl.textContent !== s.objective.text) titleEl.textContent = s.objective.text;
+        const progEl = document.getElementById("fpv-obj-prog");
+        const progTxt = s.objective.done ? "★" : `${s.objective.prog}/${s.objective.total}`;
+        if (progEl && progEl.textContent !== progTxt) progEl.textContent = progTxt;
+        const fillEl = document.getElementById("fpv-obj-fill");
+        if (fillEl) {
+          const pct = s.objective.total > 0 ? (s.objective.prog / s.objective.total) * 100 : 0;
+          fillEl.style.width = `${Math.max(0, Math.min(100, pct)).toFixed(0)}%`;
+        }
+      } else {
+        objEl.classList.add("hidden");
+      }
+    }
+
+    // Kill counter + streak callout (top-right)
+    const streakEl = document.getElementById("fpv-streak");
+    if (streakEl) {
+      streakEl.classList.toggle("hidden", s.kills <= 0);
+      const killsEl = document.getElementById("fpv-kills");
+      const killsTxt = `☠ ${s.kills}`;
+      if (killsEl && killsEl.textContent !== killsTxt) killsEl.textContent = killsTxt;
+      const spreeEl = document.getElementById("fpv-spree");
+      const spreeTxt = s.streak >= 2 ? `${fpvStreakName(s.streak)} ×${s.streak}` : "";
+      if (spreeEl && spreeEl.textContent !== spreeTxt) spreeEl.textContent = spreeTxt;
+      streakEl.classList.toggle("hot", s.streak >= 2);
+    }
+
+    // Center hitmarker flash
+    const hitEl = document.getElementById("fpv-hitmark") as HTMLElement | null;
+    if (hitEl) {
+      const hm = Math.max(0, Math.min(1, s.hitmark));
+      hitEl.style.opacity = hm.toFixed(2);
+      hitEl.style.transform = `translate(-50%, -50%) scale(${(0.85 + hm * 0.45).toFixed(3)})`;
+    }
+
+    // Missile lock readout under the reticle + reticle ring state.
+    // "locked" stays an OR with updateFpv's target-in-range state (that class is
+    // re-evaluated by updateFpv every frame), "locking" is owned here exclusively.
+    const locked = s.lockMsg === "◈ LOCKED";
+    const locking = s.lockMsg !== "" && !locked;
+    const reticle = document.getElementById("fpv-reticle");
+    if (reticle) {
+      reticle.classList.toggle("locking", locking);
+      if (locked) reticle.classList.add("locked");
+    }
+    const lockEl = document.getElementById("fpv-lock");
+    if (lockEl) {
+      if (lockEl.textContent !== s.lockMsg) lockEl.textContent = s.lockMsg;
+      lockEl.classList.toggle("hidden", s.lockMsg === "");
+      lockEl.classList.toggle("on", locked);
+    }
+  }
+
+  /** Wipe all story-layer HUD elements (called on FPV exit / match end). */
+  private clearFpvStory() {
+    const feedEl = document.getElementById("fpv-feed");
+    if (feedEl) feedEl.innerHTML = "";
+    for (const id of ["fpv-objective", "fpv-streak", "fpv-lock", "fpv-wpn", "fpv-altape", "fpv-chips"]) {
+      document.getElementById(id)?.classList.add("hidden");
+    }
+    const hitEl = document.getElementById("fpv-hitmark") as HTMLElement | null;
+    if (hitEl) hitEl.style.opacity = "0";
+    document.getElementById("fpv-reticle")?.classList.remove("locking");
+    for (const id of ["fpv-chip-sprint", "fpv-chip-crouch", "fpv-chip-sub"]) {
+      document.getElementById(id)?.classList.add("hidden");
     }
   }
 
