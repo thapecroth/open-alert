@@ -4,6 +4,7 @@ import {
   UNITS,
   SUPPLY_HUB_RADIUS,
   SUPPLY_TRUCK_RADIUS,
+  THAAD_NUKE_RADIUS,
   type CrateKind,
   type UnitKind,
 } from "../shared/gamedefs";
@@ -168,6 +169,16 @@ ewJamAuraInnerRingGeo.rotateX(-Math.PI / 2);
 const ewJamAuraFillGeo = new THREE.CircleGeometry(EW_JAM_RADIUS - 0.16, 72);
 ewJamAuraFillGeo.rotateX(-Math.PI / 2);
 
+const thaadAuraRingGeo = new THREE.RingGeometry(THAAD_NUKE_RADIUS - 0.24, THAAD_NUKE_RADIUS, 96);
+thaadAuraRingGeo.rotateX(-Math.PI / 2);
+const thaadAuraGoldRingGeo = new THREE.RingGeometry(THAAD_NUKE_RADIUS - 0.54, THAAD_NUKE_RADIUS - 0.38, 96);
+thaadAuraGoldRingGeo.rotateX(-Math.PI / 2);
+const thaadAuraMidRingGeo = new THREE.RingGeometry(THAAD_NUKE_RADIUS * 0.84 - 0.12, THAAD_NUKE_RADIUS * 0.84, 72);
+thaadAuraMidRingGeo.rotateX(-Math.PI / 2);
+const thaadAuraFillGeo = new THREE.CircleGeometry(THAAD_NUKE_RADIUS - 0.24, 96);
+thaadAuraFillGeo.rotateX(-Math.PI / 2);
+const thaadAuraDomeGeo = new THREE.SphereGeometry(THAAD_NUKE_RADIUS, 44, 12, 0, Math.PI * 2, 0, Math.PI * 0.5);
+
 const supplyAuraRingMat = new THREE.MeshBasicMaterial({
   color: 0x3ef088,
   transparent: true,
@@ -203,11 +214,73 @@ const ewAuraFillMat = new THREE.MeshBasicMaterial({
   side: THREE.DoubleSide,
   depthWrite: false,
 });
+const thaadAuraRingMat = new THREE.MeshBasicMaterial({
+  color: 0x48eeff,
+  transparent: true,
+  opacity: 0.58,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
+const thaadAuraGoldMat = new THREE.MeshBasicMaterial({
+  color: 0xffd252,
+  transparent: true,
+  opacity: 0.52,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
+const thaadAuraFillMat = new THREE.MeshBasicMaterial({
+  color: 0x36c8e8,
+  transparent: true,
+  opacity: 0.055,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
+const thaadAuraDomeMat = new THREE.MeshBasicMaterial({
+  color: 0x56e4ff,
+  transparent: true,
+  opacity: 0.048,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+});
 
-function makeSupplyAura(kind: "supplyhub" | "supplytruck" | "ewdrone"): THREE.Group {
+function makeSupplyAura(kind: "supplyhub" | "supplytruck" | "ewdrone" | "thaad"): THREE.Group {
   const g = new THREE.Group();
   g.visible = false;
   g.userData.isBar = true;
+
+  if (kind === "thaad") {
+    const outerRing = new THREE.Mesh(thaadAuraRingGeo, thaadAuraRingMat);
+    outerRing.position.y = 0.062;
+    outerRing.renderOrder = 6;
+    outerRing.userData.isBar = true;
+    g.add(outerRing);
+
+    const goldRing = new THREE.Mesh(thaadAuraGoldRingGeo, thaadAuraGoldMat);
+    goldRing.position.y = 0.06;
+    goldRing.renderOrder = 6;
+    goldRing.userData.isBar = true;
+    g.add(goldRing);
+
+    const midRing = new THREE.Mesh(thaadAuraMidRingGeo, thaadAuraGoldMat);
+    midRing.position.y = 2.65;
+    midRing.renderOrder = 6;
+    midRing.userData.isBar = true;
+    g.add(midRing);
+
+    const fill = new THREE.Mesh(thaadAuraFillGeo, thaadAuraFillMat);
+    fill.position.y = 0.052;
+    fill.renderOrder = 4;
+    fill.userData.isBar = true;
+    g.add(fill);
+
+    const dome = new THREE.Mesh(thaadAuraDomeGeo, thaadAuraDomeMat);
+    dome.scale.set(1, 0.28, 1);
+    dome.position.y = 0.05;
+    dome.renderOrder = 5;
+    dome.userData.isBar = true;
+    g.add(dome);
+    return g;
+  }
 
   if (kind === "ewdrone") {
     const ring = new THREE.Mesh(ewJamAuraRingGeo, ewAuraRingMat);
@@ -407,7 +480,7 @@ export class Renderer {
       const anim = createAnimState(e, this.hasInitialSnap);
       const isStaticBld = isBuilding && isStaticBuildingRig(vis);
       let supplyAura: THREE.Group | undefined;
-      if (e.k === "supplyhub" || e.k === "supplytruck" || e.k === "ewdrone") {
+      if (e.k === "supplyhub" || e.k === "supplytruck" || e.k === "ewdrone" || e.k === "thaad") {
         supplyAura = makeSupplyAura(e.k);
         vis.root.add(supplyAura);
       }
@@ -549,7 +622,7 @@ export class Renderer {
         t.holdInd = undefined;
         t.logBars = undefined;
         t.supplyAura = undefined;
-        if (e.k === "supplyhub" || e.k === "supplytruck" || e.k === "ewdrone") {
+        if (e.k === "supplyhub" || e.k === "supplytruck" || e.k === "ewdrone" || e.k === "thaad") {
           t.supplyAura = makeSupplyAura(e.k);
           vis.root.add(t.supplyAura);
         }
@@ -917,10 +990,13 @@ export class Renderer {
       (cv.beacon.material as THREE.MeshBasicMaterial).opacity = 0.14 + 0.08 * Math.sin(phase * 1.35);
     }
 
-    // Subtle breathing pulse on selected supply hub / supply truck & EW jammer coverage aura rings
+    // Subtle breathing pulse on selected supply hub / supply truck, EW jammer & THAAD nuke-shield aura rings
     supplyAuraRingMat.opacity = 0.36 + 0.08 * Math.sin(nowSec * 2.6);
     ewAuraRingMat.opacity = 0.42 + 0.1 * Math.sin(nowSec * 3.8);
     ewAuraInnerRingMat.opacity = 0.24 + 0.09 * Math.sin(nowSec * 3.8 + 1.4);
+    thaadAuraRingMat.opacity = 0.52 + 0.12 * Math.sin(nowSec * 2.8);
+    thaadAuraGoldMat.opacity = 0.44 + 0.12 * Math.sin(nowSec * 2.8 + 1.2);
+    thaadAuraDomeMat.opacity = 0.042 + 0.014 * Math.sin(nowSec * 2.2);
 
     this.waypoints.update(this.wpEntries, nowSec, this.rallyEntries);
     this.vfx.update();
@@ -958,12 +1034,20 @@ export class Renderer {
         if (hitEnt) triggerHitFlash(hitEnt.anim);
       } else if (ev.e === "superweapon") {
         this.vfx.spawnSuperweapon(ev.x, ev.y);
-        this.gs.shake(0.75);
+        this.gs.shake(0.35);
         const tm = setTimeout(() => {
-          this.gs.shake(1.85);
+          this.gs.shake(1.6);
           const idx = this.swShakeTimers.indexOf(tm);
           if (idx >= 0) this.swShakeTimers.splice(idx, 1);
-        }, 450);
+        }, 750);
+        this.swShakeTimers.push(tm);
+      } else if (ev.e === "nukeIntercept") {
+        this.vfx.spawnNukeIntercept(ev.fx, ev.fy, ev.tx, ev.ty);
+        const tm = setTimeout(() => {
+          this.gs.shake(0.95);
+          const idx = this.swShakeTimers.indexOf(tm);
+          if (idx >= 0) this.swShakeTimers.splice(idx, 1);
+        }, 700);
         this.swShakeTimers.push(tm);
       } else if (ev.e === "income") {
         if (mySlot < 0 || ev.slot === mySlot) {
@@ -1055,9 +1139,11 @@ export class Renderer {
         const baseR = t.isBuilding
           ? k === "radar" || k === "superweapon" || k === "satlink"
             ? 17
-            : k === "supplyhub"
-              ? 15
-              : 14
+            : k === "thaad"
+              ? 16
+              : k === "supplyhub"
+                ? 15
+                : 14
           : (UNITS[k as UnitKind]?.vision ?? 9);
         const r = baseR * visionMult;
         const subDetectR = k === "gunboat" || k === "destroyer" || k === "sub" || k === "carrier" ? 9 : 5.5;
@@ -1073,14 +1159,16 @@ export class Renderer {
             ? 9
             : 5.5;
         const stealthAirDetectR =
-          k === "radar" ||
-          k === "sam" ||
-          k === "irondome" ||
-          k === "satlink" ||
-          k === "interceptor" ||
-          k === "uav"
-            ? 11
-            : 6.5;
+          k === "thaad"
+            ? 14
+            : k === "radar" ||
+                k === "sam" ||
+                k === "irondome" ||
+                k === "satlink" ||
+                k === "interceptor" ||
+                k === "uav"
+              ? 11
+              : 6.5;
         visionSources.push({ x: t.last.x, y: t.last.y, r, subDetectR, usvDetectR, stealthAirDetectR });
       }
     }

@@ -128,7 +128,7 @@ const MCP_TOOLS = [
   {
     name: "build_structure",
     description:
-      "Start constructing a structure or defense in your Construction Yard parallel queues (structures & defenses build simultaneously).",
+      "Start constructing a structure (power, coalplant, fusion, refinery, supplyhub, barracks, radar, factory, airfield, shipyard, depot, techlab, purifier, satlink, superweapon [Nuclear Silo]) or defense (turret, sam, arc, irondome, lasertower, thaad [anti-nuke & anti-hypersonic missile shield]) in your Construction Yard parallel queues (structures & defenses build simultaneously).",
     inputSchema: {
       type: "object",
       properties: {
@@ -203,7 +203,7 @@ const MCP_TOOLS = [
   {
     name: "special_action",
     description:
-      "Trigger special commander actions: superweapon (Ion Cannon at x,y), recon (Radar Scan at x,y), upgrade (War Factory -> II), sell, repair, rally, chat, or resign.",
+      "Trigger special commander actions: superweapon (Nuclear Silo strike at x,y — interceptable by enemy THAAD Defense), recon (Radar Scan at x,y), upgrade (War Factory/Barracks/Air Command/Shipyard -> II), sell, repair, rally, chat, or resign.",
     inputSchema: {
       type: "object",
       properties: {

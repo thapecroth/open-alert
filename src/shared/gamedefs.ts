@@ -35,6 +35,7 @@ export type BuildingKind =
   | "arc"
   | "irondome"
   | "lasertower"
+  | "thaad"
   // Neutral captureable resource structures
   | "derrick"
   | "coalmine";
@@ -201,6 +202,7 @@ export const BUILDINGS: Record<BuildingKind, BuildingDef> = {
   arc: { w: 1, h: 1, cost: 800, hp: 550, power: -40, buildTicks: 70, category: "defense", range: 7.5, dmg: 32, rof: 24, canHitAir: true, requires: ["radar"] },
   irondome: { w: 2, h: 2, cost: 1400, hp: 720, power: -55, buildTicks: 85, category: "defense", range: 10.5, dmg: 24, rof: 14, canHitAir: true, canHitGround: false, requires: ["radar", "techlab"], limit: 3 },
   lasertower: { w: 2, h: 2, cost: 1600, hp: 820, power: -70, buildTicks: 95, category: "defense", range: 9.5, dmg: 68, rof: 28, canHitAir: true, requires: ["techlab"] },
+  thaad: { w: 2, h: 2, cost: 1800, hp: 780, power: -65, buildTicks: 105, category: "defense", range: 14, dmg: 54, rof: 26, canHitAir: true, canHitGround: false, requires: ["satlink"], limit: 2 },
 
   // Neutral Captureable Resource Landmarks
   derrick: { w: 2, h: 2, cost: 0, hp: 850, power: 0, buildTicks: 0, noBuild: true },
@@ -235,6 +237,7 @@ export const DEFENSE_ORDER: BuildingKind[] = [
   "arc",
   "irondome",
   "lasertower",
+  "thaad",
 ];
 
 // Upgrade paths for production buildings (deep tech tree!)
@@ -387,13 +390,14 @@ export const BUILDING_NAMES: Record<BuildingKind, string> = {
   techlab: "Tech Lab",
   purifier: "Ore Purifier",
   satlink: "Defense Satellite",
-  superweapon: "Ion Uplink",
+  superweapon: "Nuclear Silo",
   // Defenses
   turret: "Vulcan Turret",
   sam: "Patriot SAM",
   arc: "Arc Spire",
   irondome: "Iron Dome",
   lasertower: "Helios Laser",
+  thaad: "THAAD Defense",
   // Resource landmarks
   derrick: "Oil Derrick",
   coalmine: "Coal Mine",
@@ -408,6 +412,8 @@ export const CAPTURE_RANGE = 1.9; // engineer must be this close to capture
 export const SHIPYARD_BUILD_DIST = 13; // max gap from own base to place Naval Shipyard on water
 export const IRONDOME_RADIUS = 9.5; // active projectile interception radius
 export const IRONDOME_COOLDOWN = 22; // ticks between missile/shell intercepts per Iron Dome
+export const THAAD_NUKE_RADIUS = 18; // exo-atmospheric Nuclear ICBM interception radius
+export const THAAD_NUKE_CD = 450; // 45s reload after intercepting a nuclear missile
 export const SUPPLY_HUB_RADIUS = 12; // Forward Supply Hub fuel/ammo/repair aura radius
 export const SUPPLY_TRUCK_RADIUS = 5.5; // Mobile Logistics Supply Truck aura radius
 export const BASE_SUPPLY_RADIUS = 8.5; // Base buildings (conyard/refinery/depot/airfield/shipyard/carrier) resupply radius

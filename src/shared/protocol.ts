@@ -164,6 +164,7 @@ export type GameEvent =
   | { e: "cap"; x: number; y: number; slot: number } // building captured, slot = new owner
   | { e: "elim"; slot: number }
   | { e: "superweapon"; x: number; y: number; slot: number }
+  | { e: "nukeIntercept"; fx: number; fy: number; tx: number; ty: number; slot: number }
   | { e: "recon"; x: number; y: number; slot: number; r: number }
   | { e: "intercept"; fx: number; fy: number; tx: number; ty: number; slot: number }
   | { e: "ewjam"; fx: number; fy: number; tx: number; ty: number; slot: number }

@@ -316,7 +316,7 @@ function weaponFxOf(k: EntKind): WeaponFx {
   if (k === "arty" || k === "ac130") return "arty";
   if (k === "arc") return "arc";
   if (k === "spider") return "melee";
-  if (k === "dreadnought" || k === "himars" || k === "carrier") return "missile";
+  if (k === "dreadnought" || k === "himars" || k === "carrier" || k === "thaad") return "missile";
   if (k === "sub") return "torpedo";
   if (
     k === "bomber" ||
@@ -716,9 +716,16 @@ net.onMsg = (m: S2C) => {
           noteCombatPos(ev.x, ev.y, 8.0);
           audio.playSuperweapon();
           audio.noteCombat(1.0);
-          hud.toast("⚡ ORBITAL ION CANNON FIRED!", ev.slot === mySlot);
+          hud.toast("☢ NUCLEAR MISSILE STRIKE!", ev.slot === mySlot);
           hud.ping(ev.x, ev.y);
           input.setLastAlert(ev.x, ev.y);
+        } else if (ev.e === "nukeIntercept") {
+          noteCombatPos(ev.tx, ev.ty, 7.0);
+          audio.playNukeIntercept();
+          audio.noteCombat(0.8);
+          hud.toast("🛡 THAAD INTERCEPTED NUCLEAR MISSILE!", ev.slot === mySlot || allies.has(ev.slot));
+          hud.ping(ev.tx, ev.ty);
+          input.setLastAlert(ev.tx, ev.ty);
         } else if (ev.e === "intercept") {
           noteCombatPos(ev.tx, ev.ty, 1.5);
           audio.playShot("intercept");
