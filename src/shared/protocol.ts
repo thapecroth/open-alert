@@ -36,6 +36,7 @@ export type C2S =
   | { t: "rally"; id: number; x: number; y: number } // set production building rally point
   | { t: "superweapon"; x: number; y: number } // fire Orbital Ion Cannon
   | { t: "resign" } // self-destruct everything you own
+  | { t: "pause"; paused: boolean } // freeze sim — only honored when you're the sole human (solo / vs-bots)
   | { t: "chat"; text: string }
   | { t: "ping"; x: number; y: number } // minimap ping for allies
   | { t: "addbot"; diff?: BotDiff; profile?: BotProfile } // host: add an AI player to the lobby
@@ -112,6 +113,7 @@ export interface EntSnap {
   alt?: number; // normalized altitude 0..1 for player-driven aircraft (0.6 = cruise)
   rally?: [number, number]; // rally point on production buildings
   wp?: [number, number, OrderKind][]; // active + queued waypoints
+  disg?: EntKind; // real kind when this ent is disguised (spy shows k:"infantry")
 }
 
 export interface CrateSnap {
@@ -178,7 +180,9 @@ export type GameEvent =
   | { e: "income"; x: number; y: number; amt: number; slot: number }
   | { e: "hit"; id: number }
   // kill confirm — src = killer entity id (only emitted when a unit shooter is known, e.g. 1P direct fire)
-  | { e: "kill"; src: number; id: number; x: number; y: number };
+  | { e: "kill"; src: number; id: number; x: number; y: number }
+  // spy infiltrated an enemy building — kind = sabotaged building, slot = spy owner, vslot = victim
+  | { e: "sabotage"; x: number; y: number; slot: number; vslot: number; kind: EntKind };
 
 export type S2C =
   | { t: "lobby"; players: LobbyPlayer[]; you: string; room: string; map: MapId; phase?: "lobby" | "playing" | "ended"; config?: GameConfig }
@@ -211,6 +215,7 @@ export type S2C =
     }
   | { t: "chat"; name: string; color: string; text: string }
   | { t: "ping"; x: number; y: number; slot: number }
+  | { t: "paused"; paused: boolean }
   | { t: "deny"; msg: string };
 
 export const partyName = "game-room";

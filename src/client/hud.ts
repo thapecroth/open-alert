@@ -71,6 +71,8 @@ const TOOLTIPS: Record<string, string> = {
   heavy: "Mastodon Tank — twin-cannon monster. Needs War Factory II.",
   spider: "Spider Drone — fast melee scout. Needs War Factory II.",
   himars: "HIMARS Launcher — ultra-long-range precision rocket artillery with heavy splash. Needs Radar.",
+  spy: "Spy — disguised infiltration infantry. Auto-defenses ignore it; only powered Radar-tier sensors blow its cover for 15s. Walk into enemy buildings to SABOTAGE: power plants black out 30s, defenses disable 45s, Radar scrambles 30s, production queues wipe, refineries & HQs get looted. Needs Radar Tower.",
+  ballistic: "Ballistic Missile TEL — mobile truck launching a long-range single-shot ballistic missile with massive splash. ONLY Anti-Nuke batteries can intercept it (80%, 18 tiles). Needs War Factory II.",
   railtank: "Aegis Railgun MBT — hyper-velocity electromagnetic main battle tank (Ground + AA). Needs War Factory II.",
   supplytruck: "Supply Convoy — mobile 500-pt Fuel & Ammo resupply truck for frontline armies",
   harvester: "Ore Harvester — collects ore; a full load is worth $1,125.",
@@ -167,6 +169,30 @@ const MAP_PREVIEW_PALETTES: Record<
     cliffEdge: "#44e2ff",
     accentGrid: "rgba(64, 230, 255, 0.1)",
   }, // Sleek dark carbon orbital deck + glowing cyan circuits
+  hormuz: {
+    bg: "#8a6f46",
+    grid: "rgba(255, 226, 170, 0.09)",
+    cliff: "#7a684a",
+    cliffEdge: "#a08a5e",
+    water: "#0e5a76",
+    waterGlint: "rgba(150, 226, 250, 0.3)",
+  }, // Gulf Strait golden coasts + teal shipping channels
+  delta: {
+    bg: "#2e5a30",
+    grid: "rgba(180, 240, 190, 0.08)",
+    cliff: "#3c5c40",
+    cliffEdge: "#5a7a56",
+    water: "#1a6a50",
+    waterGlint: "rgba(140, 235, 200, 0.3)",
+  }, // Mekong Delta jungle greens + muddy braided rivers
+  bering: {
+    bg: "#6d8296",
+    grid: "rgba(220, 240, 255, 0.1)",
+    cliff: "#8cb4d0",
+    cliffEdge: "#d2e8f8",
+    water: "#155272",
+    waterGlint: "rgba(160, 215, 245, 0.3)",
+  }, // Polar Strait ice fields + steel-blue arctic water
   europa: {
     bg: "#2d4029",
     grid: "rgba(186, 220, 174, 0.08)",
@@ -410,6 +436,9 @@ export class Hud {
   onFilterSelection?: (kind: string) => void;
   onGroupClick?: (n: number, dbl: boolean) => void;
   onToggleWasd?: () => void;
+  onTogglePause?: () => void;
+  private pauseBtn: HTMLElement | null = null;
+  private paused = false;
   onToggleMute?: () => void;
   onToggleMusic?: () => void;
   onSwitchLocal?: () => void;
@@ -512,6 +541,8 @@ export class Hud {
       resignBtn.textContent = "RESIGN";
       this.onResign();
     });
+    this.pauseBtn = document.getElementById("pause-btn");
+    this.pauseBtn?.addEventListener("click", () => this.onTogglePause?.());
     const copy = (e: Event) => {
       navigator.clipboard?.writeText(location.href).catch(() => {});
       this.toast("invite link copied", true);
@@ -2291,6 +2322,21 @@ export class Hud {
     el("endscreen").classList.add("hidden");
   }
 
+  setPaused(p: boolean) {
+    this.paused = p;
+    el("paused-overlay")?.classList.toggle("hidden", !p);
+    if (this.pauseBtn) this.pauseBtn.textContent = p ? "▶ RESUME" : "⏸ PAUSE";
+  }
+
+  setPauseVisible(v: boolean) {
+    this.pauseBtn?.classList.toggle("hidden", !v);
+    if (!v) this.setPaused(false);
+  }
+
+  isPaused() {
+    return this.paused;
+  }
+
   toast(msg: string, info = false) {
     const box = el("toasts");
     while (box.children.length >= 4) box.firstChild?.remove();
@@ -2893,7 +2939,9 @@ export class Hud {
     for (const id of sel) {
       const t = tracked.get(id);
       if (!t) continue;
-      counts.set(t.last.k, (counts.get(t.last.k) ?? 0) + 1);
+      // Owner sees their disguised spy's real kind; enemies still see the rifleman cover
+      const effK = t.last.disg && t.last.o === mySlot ? t.last.disg : t.last.k;
+      counts.set(effK, (counts.get(effK) ?? 0) + 1);
       hpSum += t.last.hp;
       hpMax += t.last.mhp;
       if ((t.last.vet ?? 0) > maxVet) maxVet = t.last.vet ?? 0;
@@ -2913,7 +2961,7 @@ export class Hud {
       }
       if (sel.size === 1 && t.last.o === mySlot) {
         singleId = id;
-        singleKind = t.last.k;
+        singleKind = effK;
       }
     }
     if (!hpMax) {

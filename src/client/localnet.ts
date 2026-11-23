@@ -296,6 +296,7 @@ export class LocalRoom {
       this.stopTimer();
       this.world = null;
       this.bots.clear();
+      this.paused = false;
       this.phase = "lobby";
       this.endSent = false;
       this.broadcastLobby();
@@ -351,6 +352,10 @@ export class LocalRoom {
         break;
       case "superweapon":
         err = w.cmdSuperweapon(slot, m.x, m.y);
+        break;
+      case "pause":
+        this.paused = !!m.paused;
+        this.emit({ t: "paused", paused: this.paused });
         break;
       case "recon":
         err = w.cmdRecon(slot, m.x, m.y);
@@ -411,9 +416,11 @@ export class LocalRoom {
     this.timer = setInterval(() => this.tick(), tickMs);
   }
 
+  paused = false;
+
   private tick() {
     const w = this.world;
-    if (!w) return;
+    if (!w || this.paused) return;
     for (const bot of this.bots.values()) {
       try {
         bot.think();

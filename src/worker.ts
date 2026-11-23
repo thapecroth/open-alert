@@ -301,6 +301,7 @@ export class GameRoom extends Server<Env> {
   connPlayer = new Map<string, string>(); // conn id -> player id
   world: World | null = null;
   alarmActive = false;
+  paused = false; // solo-vs-bots freeze: alarm keeps rescheduling, sim skips stepping
   resetTimer: ReturnType<typeof setTimeout> | null = null;
   lastTickAt = 0;
   endSent = false;
@@ -611,6 +612,20 @@ export class GameRoom extends Server<Env> {
       case "resign":
         this.world.cmdResign(slot);
         break;
+      case "pause": {
+        // Pause only works when the requester is the sole human — solo games vs bots
+        let humans = 0;
+        for (const [opid, p] of this.players) {
+          if (!p.spectator && !this.bots.has(opid)) humans++;
+        }
+        if (humans > 1) {
+          send(conn, { t: "deny", msg: "pause only works in solo games vs bots" });
+          return;
+        }
+        this.paused = !!m.paused;
+        this.broadcast(JSON.stringify({ t: "paused", paused: this.paused } satisfies S2C));
+        return;
+      }
     }
     if (err) send(conn, { t: "deny", msg: err });
   }
@@ -862,6 +877,7 @@ export class GameRoom extends Server<Env> {
     }
     this.world = new World(slots, { map: this.map, teams, names, config: this.config });
     this.phase = "playing";
+    this.paused = false;
     this.endSent = false;
     for (const conn of this.getConnections()) {
       const pid = this.connPlayer.get(conn.id);
@@ -913,6 +929,7 @@ export class GameRoom extends Server<Env> {
     const w = this.world;
     if (!w) return;
     this.lastTickAt = Date.now();
+    if (this.paused) return; // sim frozen — keep the alarm alive, skip stepping
     try {
       for (const [pid, bot] of this.bots) {
         const p = this.players.get(pid);
@@ -972,6 +989,7 @@ export class GameRoom extends Server<Env> {
     void this.ctx.storage.deleteAlarm().catch(() => {});
     this.world = null;
     this.lastTickAt = 0;
+    this.paused = false;
     this.phase = "lobby";
     this.map = "crossroads";
     this.config = { ...DEFAULT_CONFIG };

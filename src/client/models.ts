@@ -441,6 +441,24 @@ export function applyFacing(node: THREE.Object3D, d: number) {
   node.rotation.y = Math.PI / 2 - d;
 }
 
+// Flat ground ring marking a defensive structure's firing range (radius in tiles)
+export function makeRangeRing(radius: number, color = 0x5ae8ff): THREE.Mesh {
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(Math.max(0.05, radius - 0.14), radius, 72),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.5,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.06;
+  ring.userData.isBar = true; // overlay: exempt from rig animation like the selection ring
+  return ring;
+}
+
 export function makePlacementGhost(kind: EntKind): THREE.Mesh {
   const d = isBuildingKind(kind) ? BUILDINGS[kind] : { w: 1, h: 1 };
   const slabMat = new THREE.MeshBasicMaterial({
@@ -457,6 +475,13 @@ export function makePlacementGhost(kind: EntKind): THREE.Mesh {
   const wire = new THREE.LineSegments(edges, wireMat);
   wire.position.y = 0.32;
   slab.add(wire);
+
+  const rng = isBuildingKind(kind) ? (BUILDINGS[kind].range ?? 0) : 0;
+  if (rng > 0) {
+    const rr = makeRangeRing(rng, 0xffffff);
+    rr.position.y = -0.07; // slab-local: lands ~0.06 above ground in world space
+    slab.add(rr);
+  }
 
   slab.userData.wireMat = wireMat;
   return slab;

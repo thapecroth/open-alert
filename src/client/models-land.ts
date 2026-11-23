@@ -840,6 +840,13 @@ export function buildLandModel(kind: EntKind, colorHex: string, body: THREE.Grou
       topY = 1.08;
       break;
 
+    case "spy":
+      // Revealed spy keeps the rifleman silhouette it was disguised as
+      soldierParts = buildSoldierRig(body, colorHex, "infantry", pulse);
+      recoil = soldierParts.recoil;
+      topY = 1.0;
+      break;
+
     // =========================================================================
     // LAND VEHICLES (5)
     // =========================================================================
@@ -3151,6 +3158,100 @@ export function buildLandModel(kind: EntKind, colorHex: string, body: THREE.Grou
 
       smokePos = new THREE.Vector3(0, 0.68, -0.82);
       topY = 1.66;
+      break;
+    }
+
+    case "ballistic": {
+      // Ballistic Missile TEL — 8x8 transporter-erector-launcher with single elevated SRBM tube
+      addContactShadow(body, 1.04, 1.34);
+
+      // 8 rugged heavy transport tires with alloy rims
+      for (const [wx, wz] of [
+        [-0.56, 0.86],
+        [0.56, 0.86],
+        [-0.56, 0.3],
+        [0.56, 0.3],
+        [-0.56, -0.32],
+        [0.56, -0.32],
+        [-0.56, -0.86],
+        [0.56, -0.86],
+      ]) {
+        const tire = cyl(0.4, 0.26, matGraph);
+        tire.rotation.z = Math.PI / 2;
+        add(tire, wx, 0.2, wz);
+        const rim = cyl(0.21, 0.278, matLt, "oct");
+        rim.rotation.z = Math.PI / 2;
+        add(rim, wx, 0.2, wz);
+      }
+
+      // Long armored 8x8 chassis + side equipment lockers
+      add(rbox(0.98, 0.22, 2.34, matGun, true), 0, 0.36, -0.04);
+      add(rbox(1.14, 0.1, 2.2, matCer, true), 0, 0.49, -0.04);
+      for (const sx of [-0.56, 0.56]) {
+        add(rbox(0.12, 0.18, 0.9, matDk, true), sx, 0.42, -0.18);
+        add(rbox(0.03, 0.07, 0.78, matAcc, true), sx + (sx > 0 ? 0.06 : -0.06), 0.44, -0.18);
+      }
+      // Armored prow + headlights
+      add(rbox(1.1, 0.15, 0.14, matDk, true), 0, 0.37, 1.14);
+      for (const hx of [-0.36, 0.36]) {
+        add(rbox(0.13, 0.055, 0.03, getGlowMat(WHITE_GLOW, 0.92), true), hx, 0.55, 1.14);
+      }
+
+      // Armored forward cab (shared HIMARS cab geometry) + panoramic glass
+      add(meshOf(geoHimarsCab, matCer), 0, 0.72, 0.78);
+      add(rbox(0.78, 0.055, 0.48, matAcc, true), 0, 0.96, 0.7);
+      const cabWind = rbox(0.74, 0.18, 0.06, matGlass, true);
+      cabWind.rotation.x = -0.36;
+      add(cabWind, 0, 0.8, 1.08);
+      add(cyl(0.2, 0.05, matLt), 0.18, 1.01, 0.62);
+      add(cyl(0.02, 0.56, matLt), -0.36, 1.22, 0.5);
+
+      // Rotating erector turntable (`turret`)
+      turret = new THREE.Group();
+      turret.position.set(0, 0.56, -0.42);
+      body.add(turret);
+      add(cyl(0.64, 0.13, matGun, "oct"), 0, 0.04, 0, turret);
+      // Twin erector hydraulic rams
+      for (const sx of [-0.36, 0.36]) {
+        add(rbox(0.11, 0.36, 0.5, matDk, true), sx, 0.24, -0.06, turret);
+        const hyd = cyl(0.055, 0.52, matLt);
+        hyd.rotation.x = 0.36;
+        add(hyd, sx * 0.72, 0.3, 0.2, turret);
+      }
+
+      // Elevated single SRBM launch tube pitched upward (`recoil`)
+      const podPitch = new THREE.Group();
+      podPitch.position.set(0, 0.4, 0.04);
+      podPitch.rotation.x = -0.58;
+      turret.add(podPitch);
+      recoil = new THREE.Group();
+      recoil.position.set(0, 0.06, 0.12);
+      podPitch.add(recoil);
+
+      add(rbox(0.56, 0.56, 1.9, matCer, true), 0, 0, 0, recoil);
+      add(rbox(0.58, 0.08, 1.6, matAcc, true), 0, 0.3, -0.04, recoil);
+      for (const rz of [-0.7, -0.24, 0.24, 0.7]) {
+        add(rbox(0.58, 0.58, 0.07, matGun, true), 0, 0, rz, recoil);
+      }
+      // Hazard chevrons down the tube flanks
+      for (const rz of [-0.5, -0.14, 0.22, 0.58]) {
+        add(rbox(0.59, 0.12, 0.12, matGold, true), 0, -0.24, rz, recoil);
+      }
+      // Big missile nose cone + glowing tip at the muzzle end
+      const tube = cyl(0.24, 0.2, matLt);
+      tube.rotation.x = Math.PI / 2;
+      add(tube, 0, 0, 0.96, recoil);
+      const collar = cyl(0.25, 0.06, matGold);
+      collar.rotation.x = Math.PI / 2;
+      add(collar, 0, 0, 1.04, recoil);
+      const nose = meshOf(geoMissileCone, getGlowMat(HEAT_GLOW, 0.96), false, false);
+      nose.scale.set(0.21, 0.44, 0.21);
+      nose.rotation.x = Math.PI / 2;
+      add(nose, 0, 0, 1.14, recoil);
+      pulse.push(nose);
+
+      smokePos = new THREE.Vector3(0, 0.72, -0.9);
+      topY = 1.78;
       break;
     }
 

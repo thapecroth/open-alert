@@ -8,10 +8,10 @@ import {
   type CrateKind,
   type UnitKind,
 } from "../shared/gamedefs";
-import { makeEntVis, makeCrateVis, setVetBadge, tagEntity, applyFacing, EntVis, CrateVis } from "./models";
+import { makeEntVis, makeCrateVis, setVetBadge, tagEntity, applyFacing, makeRangeRing, EntVis, CrateVis } from "./models";
 import { createAnimState, stepEntityAnim, triggerFireAnim, triggerHitFlash, AnimState } from "./anim";
 import { VfxSystem, WaypointOverlay } from "./vfx";
-import { BUILDINGS, isBuildingKind } from "./util";
+import { BUILDINGS, isBuildingKind, type BuildingKind } from "./util";
 import { GameScene } from "./scene";
 
 const INTERP_MS = 250; // 50ms WAN jitter cushion above 200ms (5 Hz) snapshot interval
@@ -58,6 +58,7 @@ interface Tracked {
   lastLowPower: boolean;
   cullR: number; // bounding-sphere radius for frustum update culling (includes stale-matrix margin)
   cullY: number; // bounding-sphere center height
+  rangeRing?: THREE.Mesh | null; // lazily-built defense range ring (buildings with range only)
 }
 
 function isStaticBuildingRig(vis: EntVis): boolean {
@@ -427,6 +428,35 @@ export class Renderer {
     }
   }
 
+  private defenseRangesOn = false;
+
+  // Coverage view while placing a defense: every own building with a range shows its ring
+  setDefenseRangesVisible(v: boolean) {
+    this.defenseRangesOn = v;
+    for (const [id, t] of this.tracked) this.syncRangeRing(t, this.selection.has(id));
+  }
+
+  private syncRangeRing(t: Tracked, selected: boolean) {
+    const bd = t.last && isBuildingKind(t.last.k) ? BUILDINGS[t.last.k as BuildingKind] : undefined;
+    const range = bd?.range ?? 0;
+    const show =
+      range > 0 && (selected || (this.defenseRangesOn && (t.last.o === this.lastVisSlot || this.lastVisSlot < 0)));
+    if (show && !t.rangeRing) {
+      t.rangeRing = makeRangeRing(range);
+      t.vis.root.add(t.rangeRing);
+    }
+    if (t.rangeRing) t.rangeRing.visible = show;
+  }
+
+  private disposeTracked(t: Tracked) {
+    if (t.rangeRing) {
+      t.rangeRing.geometry.dispose();
+      (t.rangeRing.material as THREE.Material).dispose();
+      t.rangeRing = null;
+    }
+    this.disposeVis(t.vis);
+  }
+
   private disposeVis(vis: EntVis) {
     if (vis.rig.subMats) {
       for (const m of vis.rig.subMats) m.dispose();
@@ -448,7 +478,7 @@ export class Renderer {
     const scene = this.gs.scene;
     for (const t of this.tracked.values()) {
       scene.remove(t.vis.root);
-      this.disposeVis(t.vis);
+      this.disposeTracked(t);
     }
     this.tracked.clear();
     for (const cv of this.crateVis.values()) {
@@ -461,6 +491,7 @@ export class Renderer {
     this.gs.pickables.length = 0;
     this.snaps = [];
     this.selection.clear();
+    this.defenseRangesOn = false;
     this.seen.clear();
     this.hasInitialSnap = false;
     this.lastAllies = undefined;
@@ -486,7 +517,7 @@ export class Renderer {
     for (const [id, t] of this.tracked) {
       if (!map.has(id)) {
         scene.remove(t.vis.root);
-        this.disposeVis(t.vis);
+        this.disposeTracked(t);
         const i = this.gs.pickables.indexOf(t.vis.root);
         if (i >= 0) this.gs.pickables.splice(i, 1);
         this.tracked.delete(id);
@@ -639,7 +670,7 @@ export class Renderer {
         const scene = this.gs.scene;
         const wasVisible = t.vis.root.visible;
         scene.remove(t.vis.root);
-        this.disposeVis(t.vis);
+        this.disposeTracked(t);
         const i = this.gs.pickables.indexOf(t.vis.root);
         if (i >= 0) this.gs.pickables.splice(i, 1);
         const color = this.slotColors.get(e.o) ?? "#888888";
@@ -704,6 +735,7 @@ export class Renderer {
       if (t.supplyAura) {
         t.supplyAura.visible = selected;
       }
+      this.syncRangeRing(t, selected);
       this.updateLogBars(t, e, selected);
 
       // Hold Position stance indicator (ground amber anchor ring + centered shield badge)
@@ -726,6 +758,7 @@ export class Renderer {
       const sel = ids.has(id);
       t.vis.ring.visible = sel;
       if (t.supplyAura) t.supplyAura.visible = sel;
+      this.syncRangeRing(t, sel);
       this.updateLogBars(t, t.last, sel);
     }
   }

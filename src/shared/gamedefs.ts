@@ -48,6 +48,7 @@ export type UnitKind =
   | "engineer"
   | "rocket"
   | "fpvdrone"
+  | "spy"
   // Land Vehicles
   | "tank"
   | "arty"
@@ -55,6 +56,7 @@ export type UnitKind =
   | "spider"
   | "himars"
   | "railtank"
+  | "ballistic"
   | "supplytruck"
   | "harvester"
   // Air Force & Modern Drones
@@ -97,6 +99,10 @@ export type MapId =
   | "volcano"
   | "oilrig"
   | "cybergrid"
+  // Real-world naval theaters
+  | "hormuz"
+  | "delta"
+  | "bering"
   // Huge 8-Player Grand Theater Maps (96x96 & 128x128)
   | "europa"
   | "pacific_theatre"
@@ -319,10 +325,12 @@ export const UNITS: Record<UnitKind, UnitDef> = {
   engineer: { hp: 70, speed: 0.1, range: 0, dmg: 0, rof: 0, cost: 500, buildTicks: 40, trainsAt: "barracks", domain: "land" },
   rocket: { hp: 80, speed: 0.11, range: 6.5, dmg: 11, rof: 18, cost: 300, buildTicks: 35, trainsAt: "barracks", domain: "land", requires: "radar", canHitAir: true },
   fpvdrone: { hp: 48, speed: 0.36, range: 1.45, dmg: 135, rof: 10, cost: 45, buildTicks: 14, trainsAt: "barracks", domain: "air", kamikaze: true, vision: 10 },
+  spy: { hp: 90, speed: 0.14, range: 0, dmg: 0, rof: 0, cost: 700, buildTicks: 50, trainsAt: "barracks", domain: "land", requires: "radar" },
   // Modern Armor & Logistics
   tank: { hp: 340, speed: 0.16, range: 5, dmg: 22, rof: 22, cost: 700, buildTicks: 70, trainsAt: "factory", domain: "land" },
   himars: { hp: 220, speed: 0.13, range: 12.5, dmg: 68, rof: 44, cost: 1100, buildTicks: 85, trainsAt: "factory", domain: "land", requires: "radar" },
   railtank: { hp: 720, speed: 0.13, range: 7.5, dmg: 62, rof: 26, cost: 1650, buildTicks: 105, trainsAt: "factory", domain: "land", requires: "factory2", canHitAir: true },
+  ballistic: { hp: 320, speed: 0.115, range: 17, dmg: 300, rof: 110, cost: 1600, buildTicks: 110, trainsAt: "factory", domain: "land", requires: "factory2" },
   supplytruck: { hp: 320, speed: 0.17, range: 0, dmg: 0, rof: 0, cost: 420, buildTicks: 45, trainsAt: "factory", domain: "land", requires: "refinery", capacity: 500 },
   harvester: { hp: 620, speed: 0.11, range: 0, dmg: 0, rof: 0, cost: 1400, buildTicks: 100, trainsAt: "factory", domain: "land", requires: "refinery", capacity: 45 },
   // Retired legacy land units (hidden from modern UI roster)
@@ -357,9 +365,11 @@ export const TRAIN_ORDER: { unit: UnitKind; label: string; group: "land" | "air"
   { unit: "engineer", label: "Combat Engineer", group: "land" },
   { unit: "rocket", label: "AT / MANPADS", group: "land" },
   { unit: "fpvdrone", label: "FPV Suicide Drone", group: "land" },
+  { unit: "spy", label: "Spy", group: "land" },
   { unit: "tank", label: "Main Battle Tank", group: "land" },
   { unit: "himars", label: "HIMARS Launcher", group: "land" },
   { unit: "railtank", label: "Aegis Railgun MBT", group: "land" },
+  { unit: "ballistic", label: "Ballistic Missile", group: "land" },
   { unit: "supplytruck", label: "Supply Convoy", group: "land" },
   { unit: "harvester", label: "Ore Harvester", group: "land" },
   // Modern Air Force & Autonomous Defense-Tech Drones
@@ -444,6 +454,13 @@ export const RECON_CHARGE_TICKS = 450; // 45s cooldown on Radar Uplink
 export const RECON_DURATION_TICKS = 100; // 10s fog reveal
 export const RECON_RADIUS = 12;
 
+// Spy / Infiltrator sabotage mechanics
+export const SPY_REVEAL_TICKS = 150; // blown cover lasts 15s once a powered Radar-tier sensor spots the spy
+export const SPY_POWERCUT_TICKS = 300; // infiltrating a power plant blacks out the grid for 30s
+export const SPY_DISABLE_TICKS = 450; // infiltrating a defense battery disables it for 45s
+export const SPY_RADAR_SCRAMBLE_TICKS = 300; // infiltrating a radar/satellite blinds enemy sensors for 30s
+export const SPY_CAPTURE_RANGE = 0.9;
+
 // Neutral Oil Derricks, Coal Mines & Battlefield Supply Crates
 export const DERRICK_CAPTURE_BONUS = 500;
 export const DERRICK_INCOME = 25; // credits per second (every 10 ticks)
@@ -458,6 +475,7 @@ export const SPLASH_RADIUS: Partial<Record<EntKind, number>> = {
   arty: 2.3,
   heavy: 1.15,
   himars: 2.8,
+  ballistic: 3.4,
   fpvdrone: 1.9,
   shahed: 2.6,
   usv: 2.4,
@@ -534,6 +552,9 @@ export const MAP_LIST: {
   { id: "volcano", name: "Caldera Forge", biome: "Volcanic", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Steaming coastal sea ringing a glowing molten caldera & obsidian bridges" },
   { id: "oilrig", name: "Offshore Megarig", biome: "Deep Sea", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Open-ocean platform bridges converging on a giant central oil megastructure" },
   { id: "cybergrid", name: "Neon Megastructure", biome: "Orbital", w: 64, h: 64, maxPlayers: 8, desc: "High-tech titanium battle deck with floating crystal monoliths & energy trenches" },
+  { id: "hormuz", name: "Strait of Hormuz", biome: "Gulf Strait", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Persian Gulf chokepoint — twin tanker channels, mid-strait oil islets & contested shore crossings" },
+  { id: "delta", name: "Mekong Delta", biome: "River Delta", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Braided jungle rivers fanning into a wide bay — ford crossings, mangrove islets & brown-water navy fights" },
+  { id: "bering", name: "Bering Strait (96×96 · 8P)", biome: "Polar Strait", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Two continents split by an icy strait — Diomede stepping-stone isles, ice floes & carrier-lane dominance" },
   // HUGE 8-Player Grand Strategy Theaters (96x96 & 128x128 — built for 4v4 / 8P FFA & Real Logistics!)
   { id: "europa", name: "Iron Frontier (96×96 · 8P)", biome: "Continental", w: 96, h: 96, maxPlayers: 8, desc: "Huge 96×96 European theater — mountain ridges, long supply lines, 4 Oil & 4 Coal" },
   { id: "pacific_theatre", name: "Coral Sea Theatre (96×96 · 8P)", biome: "Grand Ocean", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Massive 96×96 8-player naval archipelago with central carrier atoll & sea lanes" },
@@ -979,6 +1000,131 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       { kind: "monolith", x: 42, y: 21, scale: 0.95 },
       { kind: "monolith", x: 22, y: 43, scale: 0.95 },
       { kind: "monolith", x: 42, y: 43, scale: 0.95 },
+    ];
+  } else if (id === "hormuz") {
+    // Strait of Hormuz (64x64): two coasts split by a wide shipping strait with twin channels
+    addRect(waterSet, 0, 25, W, 14);
+    // Contested land bridges hugging the far west & east edges
+    clearRect(waterSet, 0, 25, 9, 14);
+    clearRect(waterSet, 55, 25, 9, 14);
+    // Mid-strait island chain splitting the strait into twin tanker channels
+    clearRect(waterSet, 22, 29, 5, 5);
+    clearRect(waterSet, 31, 30, 4, 4);
+    clearRect(waterSet, 39, 29, 5, 5);
+    // Coastal bluffs guarding the shore approaches
+    addRect(cliffSet, 16, 20, 4, 3);
+    addRect(cliffSet, 44, 20, 4, 3);
+    addRect(cliffSet, 16, 41, 4, 3);
+    addRect(cliffSet, 44, 41, 4, 3);
+    derricks = [
+      [24, 30],
+      [41, 30],
+      [15, 10],
+      [48, 52],
+    ];
+    coalmines = [
+      [10, 20],
+      [52, 42],
+    ];
+    extraOre = [
+      [32, 14, 3],
+      [32, 50, 3],
+    ];
+    artifacts = [
+      { kind: "oilrig_tower", x: 30, y: 32, scale: 1.35 },
+      { kind: "lighthouse", x: 24, y: 30, scale: 1.0 },
+      { kind: "lighthouse", x: 40, y: 30, scale: 1.0 },
+      { kind: "shipwreck", x: 50, y: 34, rot: -0.5, scale: 1.2 },
+      { kind: "buoy", x: 18, y: 27 },
+      { kind: "buoy", x: 47, y: 36 },
+      { kind: "buoy", x: 28, y: 36 },
+      { kind: "buoy", x: 36, y: 27 },
+    ];
+  } else if (id === "delta") {
+    // Mekong Delta (64x64): braided jungle rivers fanning into a wide southern bay
+    addRect(waterSet, 14, 0, 7, 52); // west river joins the bay
+    addRect(waterSet, 45, 0, 7, 52); // east river joins the bay
+    addRect(waterSet, 0, 52, W, 12); // wide open sea bay along the south edge
+    // River-mouth fans & a mid-map distributary channel between the rivers
+    addRect(waterSet, 10, 47, 15, 5);
+    addRect(waterSet, 39, 47, 15, 5);
+    addRect(waterSet, 14, 31, 38, 4);
+    // Narrow land fords across each river (chokepoint crossings)
+    clearRect(waterSet, 14, 11, 7, 3);
+    clearRect(waterSet, 14, 38, 7, 3);
+    clearRect(waterSet, 45, 18, 7, 3);
+    clearRect(waterSet, 45, 40, 7, 3);
+    // Islets in the bay
+    clearRect(waterSet, 20, 55, 6, 6);
+    clearRect(waterSet, 38, 56, 5, 5);
+    // Mangrove high ground in the center paddies
+    addRect(cliffSet, 30, 20, 4, 3);
+    addRect(cliffSet, 36, 44, 3, 3);
+    derricks = [
+      [31, 40],
+      [8, 45],
+      [39, 57],
+    ];
+    coalmines = [
+      [6, 20],
+      [56, 20],
+    ];
+    extraOre = [
+      [32, 12, 3],
+      [32, 24, 3],
+    ];
+    artifacts = [
+      { kind: "lighthouse", x: 39, y: 57, scale: 0.95 },
+      { kind: "seastack", x: 27, y: 58, scale: 1.1 },
+      { kind: "shipwreck", x: 50, y: 58, rot: 2.3, scale: 1.0 },
+      { kind: "buoy", x: 17, y: 6 },
+      { kind: "buoy", x: 48, y: 44 },
+      { kind: "buoy", x: 32, y: 33 },
+    ];
+  } else if (id === "bering") {
+    // Bering Strait (96x96): two continents split by an icy north-south strait
+    addRect(waterSet, 40, 0, 16, H);
+    // Diomede stepping-stone islands mid-strait
+    clearRect(waterSet, 44, 43, 5, 5);
+    clearRect(waterSet, 49, 49, 5, 6);
+    // Ice floes clogging strait edges & approaches (impassable to ships AND walkers)
+    addRect(cliffSet, 38, 12, 3, 3);
+    addRect(cliffSet, 58, 20, 3, 3);
+    addRect(cliffSet, 37, 60, 2, 3);
+    addRect(cliffSet, 59, 74, 3, 2);
+    addRect(cliffSet, 44, 28, 2, 2);
+    addRect(cliffSet, 52, 34, 2, 2);
+    addRect(cliffSet, 43, 68, 2, 2);
+    addRect(cliffSet, 53, 82, 2, 2);
+    // Continental ridge lines
+    addRect(cliffSet, 18, 10, 5, 3);
+    addRect(cliffSet, 72, 14, 5, 3);
+    addRect(cliffSet, 18, 80, 4, 3);
+    addRect(cliffSet, 74, 78, 4, 3);
+    derricks = [
+      [30, 48],
+      [64, 48],
+      [20, 20],
+      [76, 76],
+    ];
+    coalmines = [
+      [12, 46],
+      [82, 46],
+      [45, 44],
+    ];
+    extraOre = [
+      [24, 64, 4],
+      [72, 32, 4],
+      [30, 30, 3],
+      [66, 66, 3],
+    ];
+    artifacts = [
+      { kind: "lighthouse", x: 46, y: 44, scale: 1.05 },
+      { kind: "seastack", x: 44, y: 18, scale: 1.25 },
+      { kind: "seastack", x: 51, y: 72, scale: 1.25 },
+      { kind: "shipwreck", x: 47, y: 36, rot: 0.9, scale: 1.3 },
+      { kind: "buoy", x: 43, y: 30 },
+      { kind: "buoy", x: 52, y: 60 },
     ];
   } else if (id === "europa") {
     // Iron Frontier (96x96, 8-player continental theater): mountain ridges, 4 regional hubs, 4 Oil & 4 Coal

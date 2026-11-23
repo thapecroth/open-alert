@@ -540,6 +540,117 @@ function buildHimars(kit: VmKit): void {
   kit.addMuzzleFlash(rail, 0, 0.02, -0.34, 1.35, 0xff9238);
 }
 
+// ---------- spy: suppressed pistol + covert sabotage tablet ----------
+function buildSpy(kit: VmKit): void {
+  const m = kit.mats;
+  const gun = new THREE.Group();
+  gun.position.set(0.24, -0.24, -0.44);
+  gun.rotation.set(0.03, 0.07, -0.02);
+  kit.recoilGroup.add(gun);
+
+  const sleeveMat = armor(kit, "#1a1d24", 0.6, 0.28);
+  const gloveMat = armor(kit, "#101318", 0.5, 0.38);
+
+  // Compact suppressed pistol: slide, frame, suppressor tube
+  kit.addPart(gun, new RoundedBoxGeometry(0.052, 0.058, 0.21, 2, 0.008), m.gunMetal, 0, 0.01, -0.05);
+  kit.addPart(gun, new RoundedBoxGeometry(0.048, 0.05, 0.19, 2, 0.007), m.darkMetal, 0, -0.018, -0.045);
+  kit.addPart(gun, new RoundedBoxGeometry(0.042, 0.078, 0.05, 2, 0.008), m.cockpitTrim, 0, -0.075, 0.03, -0.22, 0, 0);
+  // Suppressor — the spy's signature
+  kit.addPart(gun, new THREE.CylinderGeometry(0.021, 0.021, 0.15, 14), m.darkMetal, 0, 0.012, -0.235, Math.PI / 2, 0, 0);
+  for (const z of [-0.19, -0.24, -0.29]) {
+    kit.addPart(gun, new THREE.TorusGeometry(0.023, 0.0024, 6, 16), m.lightAlloy, 0, 0.012, z);
+  }
+  // Slide serrations + low-profile night sights
+  for (let i = 0; i < 4; i++) {
+    kit.addPart(gun, new THREE.BoxGeometry(0.056, 0.004, 0.008), m.cockpitTrim, 0, 0.028, 0.01 - i * 0.014);
+  }
+  kit.glowPulses.push(kit.addPart(gun, new THREE.BoxGeometry(0.005, 0.008, 0.004), m.greenGlow, 0, 0.045, -0.155));
+  kit.glowPulses.push(kit.addPart(gun, new THREE.BoxGeometry(0.016, 0.006, 0.003), m.greenGlow, 0, 0.043, 0.045));
+  kit.addMuzzleFlash(gun, 0, 0.012, -0.33, 0.55, 0x9adfff);
+
+  // Left hand steadying — dark operative glove
+  const leftArm = new THREE.Group();
+  leftArm.position.set(-0.055, -0.085, -0.06);
+  gun.add(leftArm);
+  kit.addPart(leftArm, new RoundedBoxGeometry(0.05, 0.046, 0.06, 2, 0.012), gloveMat, 0.03, 0, 0, 0.12, 0.3, 0.22);
+  kit.addPart(leftArm, new RoundedBoxGeometry(0.056, 0.05, 0.2, 2, 0.016), sleeveMat, -0.05, -0.05, 0.13, -0.3, -0.5, 0.16);
+
+  // Covert sabotage tablet on the left — hacking interface with progress bars
+  const tab = new THREE.Group();
+  tab.position.set(-0.28, -0.16, -0.42);
+  tab.rotation.set(-0.3, 0.3, 0.12);
+  kit.swayGroup.add(tab);
+  kit.addPart(tab, new RoundedBoxGeometry(0.2, 0.13, 0.012, 2, 0.004), m.darkMetal, 0, 0, 0);
+  kit.addPart(tab, new THREE.BoxGeometry(0.184, 0.114, 0.004), screen(kit, "#0e3324"), 0, 0, 0.007);
+  const bars: [number, number, THREE.Material][] = [
+    [-0.045, 0.034, m.greenGlow],
+    [0.02, 0.034, m.cyanGlow],
+    [-0.02, 0.012, m.greenGlow],
+    [0.045, 0.012, m.amberGlow],
+    [-0.055, -0.01, m.cyanGlow],
+    [0.01, -0.01, m.greenGlow],
+    [0.058, -0.032, m.redGlow],
+    [-0.03, -0.032, m.greenGlow],
+  ];
+  for (const [bx, by, mat] of bars) {
+    kit.glowPulses.push(kit.addPart(tab, new THREE.BoxGeometry(0.032, 0.007, 0.003), mat, bx, by, 0.01));
+  }
+}
+
+// ---------- ballistic: elevated SRBM launch rail + arming console ----------
+function buildBallistic(kit: VmKit): void {
+  const m = kit.mats;
+  // Launch-vehicle cab frame + heavy dash
+  kit.addPart(kit.swayGroup, new RoundedBoxGeometry(1.12, 0.08, 0.15, 2, 0.012), m.cockpitTrim, 0, 0.36, -0.46, 0.16, 0, 0);
+  kit.addPart(kit.swayGroup, new RoundedBoxGeometry(0.078, 0.66, 0.1, 2, 0.012), m.cockpitTrim, -0.53, 0.03, -0.46, -0.08, 0.24, -0.1);
+  kit.addPart(kit.swayGroup, new RoundedBoxGeometry(0.078, 0.66, 0.1, 2, 0.012), m.cockpitTrim, 0.53, 0.03, -0.46, -0.08, -0.24, 0.1);
+  kit.addPart(kit.swayGroup, new RoundedBoxGeometry(1.12, 0.11, 0.22, 2, 0.014), m.cockpitTrim, 0, -0.34, -0.48, -0.24, 0, 0);
+  kit.addPart(kit.swayGroup, new RoundedBoxGeometry(0.26, 0.026, 0.038, 1, 0.004), m.factionMat, -0.33, -0.29, -0.44, -0.24, 0, 0);
+  kit.addPart(kit.swayGroup, new RoundedBoxGeometry(0.26, 0.026, 0.038, 1, 0.004), m.factionMat, 0.33, -0.29, -0.44, -0.24, 0, 0);
+
+  // Trajectory-plot MFD center console + launch-authorize key lights
+  kit.addPart(kit.swayGroup, new RoundedBoxGeometry(0.3, 0.07, 0.028, 2, 0.005), m.darkMetal, 0, -0.27, -0.43, -0.38, 0, 0);
+  kit.addPart(kit.swayGroup, new THREE.BoxGeometry(0.274, 0.056, 0.006), screen(kit, "#30180c"), 0, -0.268, -0.415, -0.38, 0, 0);
+  const traj: [number, number, THREE.Material][] = [
+    [-0.11, -0.258, m.amberGlow],
+    [-0.06, -0.252, m.amberGlow],
+    [0.0, -0.262, m.redGlow],
+    [0.06, -0.274, m.amberGlow],
+    [0.11, -0.28, m.redGlow],
+  ];
+  for (const [tx, ty, mat] of traj) {
+    kit.glowPulses.push(kit.addPart(kit.swayGroup, new THREE.BoxGeometry(0.03, 0.006, 0.004), mat, tx, ty, -0.411, -0.38, 0, 0));
+  }
+  [m.redGlow, m.amberGlow, m.greenGlow].forEach((mat, i) => {
+    kit.glowPulses.push(kit.addPart(kit.swayGroup, new THREE.BoxGeometry(0.016, 0.009, 0.006), mat, 0.18 + i * 0.03, -0.27, -0.417, -0.38, 0, 0));
+  });
+
+  // Elevated SRBM rail over the right shoulder — the big single-shot tube
+  const rail = new THREE.Group();
+  rail.position.set(0.34, 0.1, -0.58);
+  rail.rotation.set(-0.34, -0.12, -0.04);
+  kit.recoilGroup.add(rail);
+  kit.addPart(rail, new RoundedBoxGeometry(0.22, 0.22, 0.72, 3, 0.02), m.gunMetal, 0, 0, 0);
+  kit.addPart(rail, new RoundedBoxGeometry(0.232, 0.06, 0.5, 2, 0.008), m.factionMat, 0, 0.02, 0.04);
+  kit.addPart(rail, new THREE.CylinderGeometry(0.085, 0.085, 0.62, 18), m.darkMetal, 0, 0.02, -0.05, Math.PI / 2, 0, 0);
+  for (const z of [-0.24, -0.08, 0.08, 0.24]) {
+    kit.addPart(rail, new THREE.TorusGeometry(0.088, 0.006, 8, 20), m.lightAlloy, 0, 0.02, z);
+  }
+  // Nose-cone tip peeking into view + warning chevrons
+  kit.addPart(rail, new THREE.ConeGeometry(0.078, 0.16, 18), m.redGlow, 0, 0.02, -0.44, -Math.PI / 2, 0, 0);
+  kit.addPart(rail, new THREE.BoxGeometry(0.19, 0.02, 0.06), m.amberGlow, 0, -0.1, 0.3);
+  kit.addMuzzleFlash(rail, 0, 0.02, -0.5, 2.6, 0xffa02a);
+
+  // Left launch-safety rail + countdown display
+  const aux = new THREE.Group();
+  aux.position.set(-0.42, -0.06, -0.56);
+  aux.rotation.set(0.16, 0.1, 0.03);
+  kit.recoilGroup.add(aux);
+  kit.addPart(aux, new RoundedBoxGeometry(0.08, 0.1, 0.4, 2, 0.01), m.darkMetal, 0, 0, 0);
+  kit.glowPulses.push(kit.addPart(aux, new THREE.BoxGeometry(0.05, 0.03, 0.016), m.redGlow, 0, 0.02, -0.2));
+  kit.addPart(aux, new RoundedBoxGeometry(0.03, 0.03, 0.44, 1, 0.004), m.lightAlloy, 0, -0.06, 0);
+}
+
 // ---------- railtank: electromagnetic twin rails + capacitors ----------
 function buildRailtank(kit: VmKit): void {
   const m = kit.mats;
@@ -725,6 +836,8 @@ export const LAND_VM: Partial<Record<UnitKind, (kit: VmKit) => void>> = {
   arty: buildArty,
   spider: buildSpider,
   himars: buildHimars,
+  spy: buildSpy,
+  ballistic: buildBallistic,
   railtank: buildRailtank,
   supplytruck: buildSupplytruck,
   harvester: buildHarvester,

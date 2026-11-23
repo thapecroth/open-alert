@@ -73,6 +73,7 @@ window.addEventListener("keydown", unlockAudio, { passive: true });
 let mySlot = -1;
 let myTeam = 0;
 let myId = "";
+let lobbyHumans = 1; // non-spectator, non-bot count from latest lobby state — gates the pause button
 let phase: "lobby" | "playing" | "ended" = "lobby";
 let currentMap: MapId = "crossroads";
 let currentConfig: GameConfig = { ...DEFAULT_CONFIG };
@@ -521,6 +522,7 @@ hud.onGroupClick = (n, dbl) => {
   if (dbl) input.centerOnSelection();
 };
 hud.onToggleWasd = () => input.setWasdPan(!input.wasdPan);
+hud.onTogglePause = () => net.send({ t: "pause", paused: !hud.isPaused() });
 hud.onToggleMute = () => {
   audio.unlock();
   audio.toggleMute();
@@ -596,6 +598,7 @@ net.onMsg = (m: S2C) => {
   switch (m.t) {
     case "lobby": {
       myId = m.you;
+      lobbyHumans = m.players.filter((p) => !p.spectator && !p.bot).length;
       currentMap = m.map ?? "crossroads";
       if (m.config) currentConfig = { ...DEFAULT_CONFIG, ...m.config };
       if (phase === "ended") {
@@ -632,6 +635,7 @@ net.onMsg = (m: S2C) => {
       prevAwaitingDef = null;
       prevLowPower = false;
       latestState = null;
+      hud.setPauseVisible(mySlot >= 0 && lobbyHumans <= 1);
       myTeam = m.players.find((p) => p.slot === mySlot)?.team ?? 0;
       allies.clear();
       if (mySlot >= 0) {
@@ -804,6 +808,19 @@ net.onMsg = (m: S2C) => {
           hud.toast(ev.slot === mySlot ? "BUILDING CAPTURED!" : "a building was captured!", ev.slot !== mySlot);
           hud.ping(ev.x, ev.y);
           input.setLastAlert(ev.x, ev.y);
+        } else if (ev.e === "sabotage") {
+          noteCombatPos(ev.x, ev.y, 5.0);
+          if (ev.vslot === mySlot) {
+            audio.playUi("alert");
+            hud.toast(`SABOTAGED! An enemy spy infiltrated your ${ev.kind}!`);
+            hud.ping(ev.x, ev.y);
+            input.setLastAlert(ev.x, ev.y);
+          } else if (ev.slot === mySlot) {
+            audio.playUi("cap");
+            hud.toast(`SABOTAGE COMPLETE — enemy ${ev.kind} hit!`, true);
+          } else {
+            hud.toast("a spy sabotage op went down!", true);
+          }
         } else if (ev.e === "promote" && ev.slot === mySlot) {
           audio.playUi("promote");
           hud.toast(`UNIT PROMOTED ${"★".repeat(Math.min(3, ev.vet))}`, true);
@@ -872,6 +889,7 @@ net.onMsg = (m: S2C) => {
       if (fpv.active) fpv.exit("dead");
       phase = "ended";
       setAutoCam(false);
+      hud.setPauseVisible(false);
       const mine =
         mySlot >= 0 &&
         (m.winner === mySlot || (m.winnerTeam != null && m.winnerTeam > 0 && m.winnerTeam === myTeam));
@@ -888,6 +906,10 @@ net.onMsg = (m: S2C) => {
     case "ping":
       hud.ping(m.x, m.y);
       input.setLastAlert(m.x, m.y);
+      break;
+    case "paused":
+      hud.setPaused(m.paused);
+      hud.toast(m.paused ? "⏸ game paused" : "▶ game resumed", true);
       break;
     case "deny":
       input.clearPlacePending();

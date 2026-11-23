@@ -529,6 +529,8 @@ export class RtsBot {
       supplytrucks = 0,
       army = 0,
       engi = 0,
+      spies = 0,
+      ballistics = 0,
       fpvdrones = 0,
       himars = 0,
       railtanks = 0,
@@ -561,6 +563,8 @@ export class RtsBot {
         if (e.k === "engineer") engi++;
         else if (e.k === "fpvdrone") fpvdrones++;
         else if (e.k === "himars") himars++;
+        else if (e.k === "ballistic") ballistics++;
+        else if (e.k === "spy") spies++;
         else if (e.k === "railtank") railtanks++;
         else if (e.k === "uav") uavs++;
         else if (e.k === "shahed") shaheds++;
@@ -595,12 +599,14 @@ export class RtsBot {
       if (this.diff !== "easy" && !q && !engi && (wantLandmarkEngi || me.credits > 800)) {
         this.trycmd(() => w.cmdTrain(this.slot, "engineer"));
       } else if (!q) {
-        const step = this.barracksCycle % 3;
+        const step = this.barracksCycle % 4;
         let unit: UnitKind = "infantry";
         if (step === 1 && fpvdrones < fpvCap && (this.phase !== "early" || this.profile === "rusher")) {
           unit = "fpvdrone";
         } else if (step === 2 && radar) {
           unit = "rocket";
+        } else if (step === 3 && radar && spies < 1 && this.diff !== "easy" && this.phase !== "early") {
+          unit = "spy";
         }
         if (me.credits >= UNITS[unit].cost + reserve) {
           this.trycmd(() => w.cmdTrain(this.slot, unit));
@@ -751,12 +757,14 @@ export class RtsBot {
         this.phase === "late" ? this.tankCap + (this.diff === "easy" ? 1 : this.diff === "normal" ? 2 : 3) : this.tankCap;
       const himarsCap = this.diff === "easy" ? 1 : this.diff === "brutal" ? 3 : 2;
       const railCap = this.diff === "brutal" || this.profile === "tech" ? 5 : 4;
+      const ballisticCap = this.diff === "easy" ? 0 : this.diff === "brutal" ? 2 : 1;
       if (!q) {
-        // fresh queue: Aegis Railgun MBTs (factory2), HIMARS rocket artillery (radar), else Main Battle Tanks
+        // fresh queue: Aegis Railgun MBTs (factory2), HIMARS rocket artillery (radar), Ballistic TELs, else Main Battle Tanks
         let unit: UnitKind | null = null;
         if (this.phase !== "early") {
           if (f2 && railtanks < railCap && railtanks <= himars + 2) unit = "railtank";
           else if (radar && himars < himarsCap) unit = "himars";
+          else if (f2 && ballistics < ballisticCap && this.phase === "late") unit = "ballistic";
           else if (f2 && railtanks < railCap) unit = "railtank";
           else unit = "tank";
         }
@@ -774,10 +782,13 @@ export class RtsBot {
             ? tankGoal
             : u === "himars"
               ? himarsCap
-              : u === "railtank"
-                ? railCap
-                : 0;
-        const fielded = u === "himars" ? himars : u === "railtank" ? railtanks : 0;
+              : u === "ballistic"
+                ? ballisticCap
+                : u === "railtank"
+                  ? railCap
+                  : 0;
+        const fielded =
+          u === "himars" ? himars : u === "ballistic" ? ballistics : u === "railtank" ? railtanks : 0;
         const eliteU = (f2 && u === "railtank") || (radar && u === "himars" && this.phase === "late");
         if (cap > 0 && fielded + q.count < cap && (army < this.armyCap || eliteU) && me.credits >= UNITS[u].cost + reserve) {
           this.trycmd(() => w.cmdTrain(this.slot, u));
