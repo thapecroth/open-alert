@@ -8,7 +8,7 @@ import {
   type CrateKind,
   type UnitKind,
 } from "../shared/gamedefs";
-import { makeEntVis, makeCrateVis, setVetBadge, tagEntity, applyFacing, makeRangeRing, EntVis, CrateVis } from "./models";
+import { makeEntVis, makeCrateVis, setVetBadge, setGroupTag, tagEntity, applyFacing, makeRangeRing, EntVis, CrateVis } from "./models";
 import { createAnimState, stepEntityAnim, triggerFireAnim, triggerHitFlash, AnimState } from "./anim";
 import { VfxSystem, WaypointOverlay } from "./vfx";
 import { BUILDINGS, isBuildingKind, type BuildingKind, type EntKind } from "./util";
@@ -411,6 +411,40 @@ function makeLogBars(topY: number, barW: number): LogBars {
 
 export class Renderer {
   tracked = new Map<number, Tracked>();
+  groupOf = new Map<number, number>(); // entId → control-group digit
+
+  setGroups(groups: Map<number, Set<number>>) {
+    this.groupOf.clear();
+    for (const [n, ids] of groups) for (const id of ids) this.groupOf.set(id, n);
+  }
+
+  private bridgeMesh: THREE.InstancedMesh | null = null;
+  private bridgeMat: THREE.MeshStandardMaterial | null = null;
+  private bridgeKey = "";
+  setBridges(tiles?: number[]) {
+    const key = tiles?.length ? tiles.join(",") : "";
+    if (key === this.bridgeKey) return;
+    this.bridgeKey = key;
+    if (this.bridgeMesh) {
+      this.gs.scene.remove(this.bridgeMesh);
+      this.bridgeMesh.geometry.dispose();
+      this.bridgeMesh = null;
+    }
+    if (!tiles?.length) return;
+    this.bridgeMat ??= new THREE.MeshStandardMaterial({ color: 0x9a7648, roughness: 0.85, metalness: 0.05 });
+    const geo = new THREE.BoxGeometry(1.0, 0.14, 1.0);
+    const im = new THREE.InstancedMesh(geo, this.bridgeMat, tiles.length);
+    const d = new THREE.Object3D();
+    const w = this.gs.mapW;
+    for (let i = 0; i < tiles.length; i++) {
+      d.position.set((tiles[i] % w) + 0.5, 0.1, Math.floor(tiles[i] / w) + 0.5);
+      d.updateMatrix();
+      im.setMatrixAt(i, d.matrix);
+    }
+    im.castShadow = im.receiveShadow = true;
+    this.gs.scene.add(im);
+    this.bridgeMesh = im;
+  }
   crates = new Map<number, CrateSnap>();
   snaps: Snap[] = [];
   selection = new Set<number>();
@@ -612,6 +646,7 @@ export class Renderer {
     (vis.barBg.material as THREE.Material).dispose();
     (vis.barFg.material as THREE.Material).dispose();
     (vis.vetBadge.material as THREE.Material).dispose();
+    (vis.groupTag.material as THREE.Material).dispose();
   }
 
   reset() {
@@ -628,6 +663,7 @@ export class Renderer {
     }
     this.crateVis.clear();
     this.crates.clear();
+    this.setBridges(undefined);
     this.gs.pickables.length = 0;
     this.snaps = [];
     this.selection.clear();
@@ -910,6 +946,7 @@ export class Renderer {
       t.vis.barBg.visible = show;
       t.vis.barFg.visible = show;
       setVetBadge(t.vis, e.vet ?? 0);
+      setGroupTag(t.vis, this.groupOf.get(id) ?? 0);
       if (t.vis.bin) {
         const cap = !t.isBuilding ? (UNITS[e.k as UnitKind]?.capacity ?? 45) : 45;
         t.vis.bin.scale.y = Math.max(0.05, Math.min(1, (e.cargo ?? 0) / Math.max(1, cap)));

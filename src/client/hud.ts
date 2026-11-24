@@ -419,7 +419,7 @@ export class Hud {
   onResign: () => void = () => {};
   onChat: (text: string) => void = () => {};
   onBuild: (k: BuildingKind) => void = () => {};
-  onBuildCancel: (cat?: BuildCategory) => void = () => {};
+  onBuildCancel: (cat?: BuildCategory, kind?: BuildingKind, awaiting?: boolean) => void = () => {};
   onPlaceMode: (k: BuildingKind) => void = () => {};
   onTrain: (u: UnitKind) => void = () => {};
   onTrainCancel: (u: UnitKind) => void = () => {};
@@ -429,7 +429,7 @@ export class Hud {
   onMinimapOrder?: (x: number, y: number, shift: boolean) => boolean;
   onSuperweaponClick: () => void = () => {};
   onReconClick: () => void = () => {};
-  onVerb: (v: "amove" | "patrol" | "hold" | "stop" | "sell" | "repair") => void = () => {};
+  onVerb: (v: "amove" | "patrol" | "hold" | "stop" | "sell" | "repair" | "bridge") => void = () => {};
   onUpgrade?: (id: number) => void;
   onEnterFpv?: (id: number) => void;
   onExitFpv?: () => void;
@@ -462,6 +462,10 @@ export class Hud {
   private hoveredBtn: HTMLButtonElement | null = null;
   private lastBlockedToast = { msg: "", t: 0 };
   private minimap = el<HTMLCanvasElement>("minimap");
+  private bridgeSet = new Set<number>();
+  setBridges(tiles?: number[]) {
+    this.bridgeSet = new Set(tiles ?? []);
+  }
   private mmCtx = this.minimap.getContext("2d")!;
   private mmLast = 0;
   private mmW = MAP_W;
@@ -565,14 +569,14 @@ export class Hud {
     });
     document.getElementById("ready-pill")?.addEventListener("contextmenu", (e) => {
       e.preventDefault();
-      if (this.readyAwaiting) this.onBuildCancel("structure");
+      if (this.readyAwaiting) this.onBuildCancel("structure", this.readyAwaiting, true);
     });
     document.getElementById("ready-def-pill")?.addEventListener("click", () => {
       if (this.readyAwaitingDef) this.onPlaceMode(this.readyAwaitingDef);
     });
     document.getElementById("ready-def-pill")?.addEventListener("contextmenu", (e) => {
       e.preventDefault();
-      if (this.readyAwaitingDef) this.onBuildCancel("defense");
+      if (this.readyAwaitingDef) this.onBuildCancel("defense", this.readyAwaitingDef, true);
     });
     el("help-btn")?.addEventListener("click", () => el("help").classList.toggle("hidden"));
     el("help-close")?.addEventListener("click", () => el("help").classList.add("hidden"));
@@ -736,7 +740,7 @@ export class Hud {
       this.updateMapDesc(MAP_LIST[0].id);
     }
 
-    for (const v of ["amove", "patrol", "hold", "stop", "sell", "repair"] as const) {
+    for (const v of ["amove", "patrol", "hold", "stop", "sell", "repair", "bridge"] as const) {
       el(`verb-${v}`)?.addEventListener("click", () => this.onVerb(v));
     }
 
@@ -765,13 +769,12 @@ export class Hud {
       b.dataset.kind = kind;
       b.dataset.cat = cat;
       b.title = this.buildTooltip(kind);
-      b.innerHTML = `<span class="icon" data-kind="${kind}"></span><span class="slabel"><span class="sname">${BUILDING_NAMES[kind]}</span><span class="req-tag"></span></span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span>`;
+      b.innerHTML = `<span class="icon" data-kind="${kind}"></span><span class="slabel"><span class="sname">${BUILDING_NAMES[kind]}</span><span class="req-tag"></span></span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span><span class="qcount hidden"></span>`;
       b.addEventListener("click", () => this.clickBuild(kind));
       b.addEventListener("contextmenu", (e) => {
         e.preventDefault();
-        if (b.dataset.busy === "1" || b.classList.contains("ready")) {
-          this.onBuildCancel(cat);
-        }
+        if (b.classList.contains("ready")) this.onBuildCancel(cat, kind, true);
+        else if (b.dataset.busy === "1") this.onBuildCancel(cat, kind);
       });
       container.appendChild(b);
       this.buildBtns.set(kind, b);
@@ -1685,7 +1688,7 @@ export class Hud {
   private clickBuild(kind: BuildingKind) {
     const b = this.buildBtns.get(kind)!;
     if (b.classList.contains("ready")) this.onPlaceMode(kind);
-    else if (!b.dataset.busy) this.onBuild(kind);
+    else if (!b.disabled) this.onBuild(kind); // always enqueue — the queue absorbs it
   }
 
   setRoom(code: string) {
@@ -2612,8 +2615,17 @@ export class Hud {
       const d = BUILDINGS[kind];
       const cat = buildCategoryOf(kind);
       const isDef = cat === "defense";
-      const catAwaiting = isDef ? (state?.awaitingDef ?? null) : (state?.awaiting ?? null);
-      const catQueue = isDef ? (state?.dq ?? null) : (state?.bq ?? null);
+      const readyArr = isDef ? (state?.awaitingDef ?? []) : (state?.awaiting ?? []);
+      const queueArr = isDef ? (state?.dq ?? []) : (state?.bq ?? []);
+      const readyCount = readyArr.filter((k2) => k2 === kind).length;
+      const queueIdx = queueArr.findIndex((i) => i.kind === kind);
+      const queueCount = queueArr.filter((i) => i.kind === kind).length;
+      const qBadge = b.querySelector<HTMLElement>(".qcount");
+      const totalQueued = readyCount + queueCount;
+      if (qBadge) {
+        qBadge.textContent = totalQueued > 0 ? `×${totalQueued}` : "";
+        qBadge.classList.toggle("hidden", totalQueued === 0);
+      }
       b.classList.remove("ready", "locked");
       delete b.dataset.busy;
       b.disabled = false;
@@ -2656,29 +2668,35 @@ export class Hud {
         applyReason(b, "Need ConYard", detail, "busy", "blocked");
         continue;
       }
-      if (catAwaiting === kind) {
+      if (readyCount > 0) {
         b.classList.add("ready");
         bt.textContent = "READY";
         b.title = this.buildTooltip(kind);
         applyReason(
           b,
           "Click to place",
-          "Finished — click (or press B) to place · right-click here to cancel & refund.",
+          `Finished (×${readyCount}) — click (or press B) to place · right-click here to cancel & refund.`,
           "",
           "ready",
           "Finished — click (or press B) to place · right-click to cancel & refund.",
         );
         continue;
       }
-      if (catQueue?.kind === kind) {
+      if (queueIdx >= 0) {
         b.dataset.busy = "1";
-        prog.style.width = `${(1 - catQueue.left / catQueue.total) * 100}%`;
-        bt.textContent = `${(catQueue.left / 10).toFixed(1)}s`;
+        const head = queueArr[queueIdx];
+        if (queueIdx === 0) {
+          prog.style.width = `${(1 - head.left / head.total) * 100}%`;
+          bt.textContent = `${(head.left / 10).toFixed(1)}s`;
+          applyReason(b, "", "", "", "building", `Constructing (×${queueCount} queued) — right-click to cancel & refund.`);
+        } else {
+          bt.textContent = `#${queueIdx + 1}`;
+          applyReason(b, "", "", "", "building", `Queued #${queueIdx + 1} — right-click to cancel & refund.`);
+        }
         b.title = this.buildTooltip(kind);
-        applyReason(b, "", "", "", "building", "Constructing — right-click to cancel & refund.");
         continue;
       }
-      if (d.limit !== undefined && countOf && countOf(kind) >= d.limit) {
+      if (d.limit !== undefined && countOf && countOf(kind) + totalQueued >= d.limit) {
         b.disabled = true;
         bt.textContent = "MAX";
         const detail = `Limit reached — you can only have ${d.limit} ${BUILDING_NAMES[kind]} at a time.`;
@@ -2696,22 +2714,6 @@ export class Hud {
         applyReason(b, formatShortNeed(missing), detail, "lock", "blocked");
         continue;
       }
-      if (catAwaiting) {
-        b.disabled = true;
-        const awaitingName = BUILDING_NAMES[catAwaiting];
-        const detail = `Place your finished ${awaitingName} on the map first (or right-click to cancel).`;
-        applyReason(b, `Place ${SHORT_BUILDING_NAMES[catAwaiting]}`, detail, "lock", "blocked");
-        continue;
-      }
-      if (catQueue) {
-        b.disabled = true;
-        const qName = BUILDING_NAMES[catQueue.kind];
-        const detail = isDef
-          ? `Defense bay is busy building ${qName}.`
-          : `Construction Yard is busy building ${qName}.`;
-        applyReason(b, "Queue busy", detail, "busy", "blocked");
-        continue;
-      }
       if (state.credits < d.cost) {
         b.disabled = true;
         const detail = `Insufficient funds — need ${fmtCost(d.cost)} (have ${fmtCost(Math.floor(state.credits))}). Build Refineries/Harvesters or capture Oil Derricks & Coal Mines.`;
@@ -2722,23 +2724,25 @@ export class Hud {
     }
 
     // Sticky ready-to-place banners at top of sidebar (both Structure & Defense can sit ready simultaneously!)
-    this.readyAwaiting = state?.awaiting ?? null;
+    const readyList = state?.awaiting ?? [];
+    this.readyAwaiting = readyList[0] ?? null;
     const readyPill = document.getElementById("ready-pill");
     if (readyPill) {
       if (this.readyAwaiting && !this.spectating && !this.fpvMode) {
         readyPill.classList.remove("hidden");
-        readyPill.textContent = `▶ READY: ${BUILDING_NAMES[this.readyAwaiting].toUpperCase()} [B]`;
+        readyPill.textContent = `▶ READY: ${BUILDING_NAMES[this.readyAwaiting].toUpperCase()}${readyList.length > 1 ? ` ×${readyList.length}` : ""} [B]`;
       } else {
         readyPill.classList.add("hidden");
       }
     }
 
-    this.readyAwaitingDef = state?.awaitingDef ?? null;
+    const readyDefList = state?.awaitingDef ?? [];
+    this.readyAwaitingDef = readyDefList[0] ?? null;
     const readyDefPill = document.getElementById("ready-def-pill");
     if (readyDefPill) {
       if (this.readyAwaitingDef && !this.spectating && !this.fpvMode) {
         readyDefPill.classList.remove("hidden");
-        readyDefPill.textContent = `▶ DEFENSE: ${BUILDING_NAMES[this.readyAwaitingDef].toUpperCase()} [B]`;
+        readyDefPill.textContent = `▶ DEFENSE: ${BUILDING_NAMES[this.readyAwaitingDef].toUpperCase()}${readyDefList.length > 1 ? ` ×${readyDefList.length}` : ""} [B]`;
       } else {
         readyDefPill.classList.add("hidden");
       }
@@ -3220,6 +3224,13 @@ export class Hud {
     ctx.fillStyle = "#b58b2e";
     for (const key of oreCells.keys()) {
       ctx.fillRect((key % mw) * sx, ((key / mw) | 0) * sy, Math.max(1.4, sx), Math.max(1.4, sy));
+    }
+    // Pontoon bridges (tan planks over water)
+    if (this.bridgeSet.size) {
+      ctx.fillStyle = "#c8a05e";
+      for (const key of this.bridgeSet) {
+        ctx.fillRect((key % mw) * sx, ((key / mw) | 0) * sy, cw, ch);
+      }
     }
     // Supply crates (pulsing bright white/gold dots)
     if (r.crates && r.crates.size) {

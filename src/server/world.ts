@@ -99,6 +99,8 @@ export interface Ent {
   ammo: number; // 0..100 military logistics ammunition reserve
   hstate: "toOre" | "mining" | "toRef" | null;
   oreIdx: number;
+  bTiles?: number[]; // engineer: pending pontoon-bridge tiles to lay (ordered near→far)
+  bT?: number; // ticks until next bridge tile completes
   repath: number;
   agro: number | null; // enemy id an amove unit is currently chasing (for resume-after-kill)
   hold: boolean; // unit holding position (fires in range, will not chase)
@@ -131,10 +133,10 @@ export interface P {
   slot: number;
   team: number; // 0 = FFA, 1..4 = allied team
   credits: number;
-  awaiting: BuildingKind | null;
-  bq: { kind: BuildingKind; left: number; total: number } | null;
-  awaitingDef: BuildingKind | null;
-  dq: { kind: BuildingKind; left: number; total: number } | null;
+  awaiting: BuildingKind[]; // finished structures stacked for placement
+  bq: { kind: BuildingKind; left: number; total: number }[]; // head builds, rest queued
+  awaitingDef: BuildingKind[]; // defense has a parallel queue
+  dq: { kind: BuildingKind; left: number; total: number }[];
   queues: Partial<Record<ProdCat, ProdQueue>>;
   eliminated: boolean;
   pwrHave: number;
@@ -173,9 +175,16 @@ export interface WorldSave {
   players: P[];
   crates: CrateSnap[];
   ore?: Int16Array; // stored under a separate DO key at a slower cadence
+  bridges?: number[];
   lastAlert: [number, number][];
 }
 
+const DIRS4: readonly [number, number][] = [
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+];
 const PROD_CATS: readonly ProdCat[] = ["barracks", "factory", "airfield", "shipyard"];
 const UPGRADED_OF: Partial<Record<BuildingKind, BuildingKind>> = {
   barracks: "barracks2",
@@ -418,6 +427,7 @@ export class World {
   private block: Uint8Array; // 1 = building footprint
   private cliff: Uint8Array; // 1 = impassable rocky cliff
   private water: Uint8Array; // 1 = navigable water
+  bridges = new Set<number>(); // pontoon-bridge tiles — land+sea passable, still water underneath
   private waterCount = 0;
   private bld: Int32Array; // ent id per tile
   private ore: Int16Array; // remaining per tile
@@ -482,10 +492,10 @@ export class World {
         slot,
         team,
         credits: this.config.startCredits,
-        awaiting: null,
-        bq: null,
-        awaitingDef: null,
-        dq: null,
+        awaiting: [],
+        bq: [],
+        awaitingDef: [],
+        dq: [],
         queues: {},
         eliminated: false,
         pwrHave: 0,
@@ -554,6 +564,7 @@ export class World {
       players: [...this.players.values()],
       crates: [...this.crates.values()],
       ore: this.ore,
+      bridges: [...this.bridges],
       lastAlert: [...this.lastAlert.entries()],
     };
   }
@@ -569,6 +580,7 @@ export class World {
     w.block = new Uint8Array(area);
     w.cliff = new Uint8Array(area);
     w.water = new Uint8Array(area);
+    w.bridges = new Set(d.bridges ?? []);
     w.bld = new Int32Array(area).fill(-1);
     w.gridCols = Math.ceil(w.w / 8);
     w.gridRows = Math.ceil(w.h / 8);
@@ -597,6 +609,13 @@ export class World {
     w.nextCrateId = d.nextCrateId;
     w.names = { ...d.names };
     w.ents = new Map(d.ents.map((e) => [e.id, e]));
+    // normalize pre-queue saves: singletons → arrays
+    for (const p of d.players) {
+      if (!Array.isArray(p.awaiting)) p.awaiting = p.awaiting ? [p.awaiting] : [];
+      if (!Array.isArray(p.bq)) p.bq = p.bq ? [p.bq] : [];
+      if (!Array.isArray(p.awaitingDef)) p.awaitingDef = p.awaitingDef ? [p.awaitingDef] : [];
+      if (!Array.isArray(p.dq)) p.dq = p.dq ? [p.dq] : [];
+    }
     w.players = new Map(d.players.map((p) => [p.slot, p]));
     w.crates = new Map(d.crates.map((c) => [c.id, c]));
     w.events = [];
@@ -626,7 +645,10 @@ export class World {
     w.nextId = Math.max(d.nextId, maxId + 1);
     // arrow-function fields aren't prototype members — rebind them
     w.passable = (x: number, y: number) =>
-      w.inBounds(x, y) && w.block[w.idx(x, y)] === 0 && w.cliff[w.idx(x, y)] === 0 && w.water[w.idx(x, y)] === 0;
+      w.inBounds(x, y) &&
+      w.block[w.idx(x, y)] === 0 &&
+      w.cliff[w.idx(x, y)] === 0 &&
+      (w.water[w.idx(x, y)] === 0 || w.bridges.has(w.idx(x, y)));
     w.passableSea = (x: number, y: number) =>
       w.inBounds(x, y) && w.block[w.idx(x, y)] === 0 && w.cliff[w.idx(x, y)] === 0 && w.water[w.idx(x, y)] === 1;
     return w;
@@ -851,7 +873,7 @@ export class World {
     this.inBounds(x, y) &&
     this.block[this.idx(x, y)] === 0 &&
     this.cliff[this.idx(x, y)] === 0 &&
-    this.water[this.idx(x, y)] === 0;
+    (this.water[this.idx(x, y)] === 0 || this.bridges.has(this.idx(x, y)));
 
   passableSea = (x: number, y: number) =>
     this.inBounds(x, y) &&
@@ -1020,6 +1042,7 @@ export class World {
         if (this.block[i]) return "blocked";
         if (d.waterOnly) {
           if (!this.water[i]) return "must build on water";
+          if (this.bridges.has(i)) return "blocked by bridge";
         } else {
           if (this.water[i]) return "can't build on water";
           if (this.ore[i] > 0) return "can't build on ore";
@@ -1109,6 +1132,7 @@ export class World {
       e.orderQueue = [];
       e.order = ord;
       e.agro = null;
+      e.bTiles = undefined;
       if (e.k === "harvester") {
         if (ord.kind === "harvest") {
           e.hstate = hstate;
@@ -1126,11 +1150,128 @@ export class World {
     return n ? null : "nothing to order";
   }
 
+  // Engineer lays a pontoon bridge: walks to the shore approach, then converts water tiles
+  // near→far along a water path to a DIFFERENT landmass ($40 & 18 ticks per tile, max 16).
+  // Bridges stay water — ships pass under, land units cross on top.
+  cmdBridge(slot: number, id: number, tx: number, ty: number): string | null {
+    const e = this.ents.get(id);
+    if (!e || e.o !== slot || e.k !== "engineer") return "need an engineer";
+    if (!this.inBounds(tx, ty)) return "off map";
+    const x0 = Math.floor(e.x),
+      y0 = Math.floor(e.y);
+    // Bresenham engineer→click: entry = first water tile on the line
+    const line: [number, number][] = [];
+    {
+      let cx = x0,
+        cy = y0;
+      const dx = Math.abs(tx - x0),
+        dy = Math.abs(ty - y0);
+      const sx = x0 < tx ? 1 : -1,
+        sy = y0 < ty ? 1 : -1;
+      let err = dx - dy;
+      for (let guard = 0; guard < this.w + this.h + 4; guard++) {
+        line.push([cx, cy]);
+        if (cx === tx && cy === ty) break;
+        const e2 = err * 2;
+        if (e2 > -dy) {
+          err -= dy;
+          cx += sx;
+        }
+        if (e2 < dx) {
+          err += dx;
+          cy += sy;
+        }
+      }
+    }
+    let start = -1;
+    for (let i = 0; i < line.length; i++)
+      if (this.water[this.idx(line[i][0], line[i][1])]) {
+        start = i;
+        break;
+      }
+    if (start < 0) return "no water to bridge";
+    const [ax, ay] = start > 0 ? line[start - 1] : [x0, y0];
+    if (!this.passable(ax, ay)) return "no shore access";
+    const entry = this.idx(line[start][0], line[start][1]);
+    const approach = this.idx(ax, ay);
+    // landmass the engineer stands on (bounded flood) — the bridge must reach a DIFFERENT one
+    const landSet = new Set<number>([approach]);
+    {
+      const q = [approach];
+      while (q.length && landSet.size < 9000) {
+        const t = q.pop()!;
+        const lx = t % this.w,
+          ly = (t / this.w) | 0;
+        for (const [dx, dy] of DIRS4) {
+          const nx = lx + dx,
+            ny = ly + dy;
+          if (!this.inBounds(nx, ny)) continue;
+          const n = this.idx(nx, ny);
+          if (!landSet.has(n) && this.water[n] === 0 && this.cliff[n] === 0 && this.block[n] === 0) {
+            landSet.add(n);
+            q.push(n);
+          }
+        }
+      }
+    }
+    // BFS over water from entry; goal = water tile with a land neighbor OUTSIDE landSet
+    const prev = new Map<number, number>([[entry, -1]]);
+    const q = [entry];
+    let goal = -1;
+    while (q.length) {
+      const t = q.shift()!;
+      const lx = t % this.w,
+        ly = (t / this.w) | 0;
+      // count water-steps so far
+      let depth = 0;
+      for (let p2 = prev.get(t)!; p2 !== -1; p2 = prev.get(p2)!) depth++;
+      if (depth > 16) continue;
+      let goalHit = false;
+      for (const [dx, dy] of DIRS4) {
+        const nx = lx + dx,
+          ny = ly + dy;
+        if (!this.inBounds(nx, ny)) continue;
+        const n = this.idx(nx, ny);
+        if (this.water[n] === 1) {
+          if (!prev.has(n) && !this.bridges.has(n)) {
+            prev.set(n, t);
+            q.push(n);
+          }
+        } else if (this.cliff[n] === 0 && this.block[n] === 0 && !landSet.has(n)) {
+          goalHit = true;
+        }
+      }
+      if (goalHit) {
+        goal = t;
+        break;
+      }
+    }
+    if (goal < 0) return "no far shore within 16 tiles";
+    // backtrack → ordered tile list near→far (exclude goal-adjacent land; include all water steps)
+    const tiles: number[] = [];
+    for (let t = goal; t !== -1; t = prev.get(t)!) {
+      if (!this.bridges.has(t)) tiles.push(t);
+    }
+    tiles.reverse();
+    if (!tiles.length) return "already bridged";
+    if (tiles.length > 16) return "span too long (max 16 tiles)";
+    e.bTiles = tiles;
+    e.bT = 0;
+    e.hold = false;
+    e.agro = null;
+    e.orderQueue = [];
+    e.order = { kind: "bridge", x: ax + 0.5, y: ay + 0.5 };
+    e.path = null;
+    e.repath = 0;
+    return null;
+  }
+
   private advanceOrder(e: Ent) {
     e.order = null;
     e.path = null;
     e.repath = 0;
     e.agro = null;
+    e.bTiles = undefined;
     while (e.orderQueue.length) {
       const next = e.orderQueue.shift()!;
       if (next.kind === "attack" && next.target != null) {
@@ -1263,65 +1404,59 @@ export class World {
     const d = BUILDINGS[kind];
     if (d.noBuild) return "can't build that";
     const cat = buildCategoryOf(kind);
-    if (cat === "defense") {
-      if (p.dq || p.awaitingDef) return "construction in progress";
-    } else {
-      if (p.bq || p.awaiting) return "construction in progress";
-    }
     if (kind === "superweapon" && !this.config.superweapons) return "superweapons disabled";
     if (d.waterOnly && !this.hasWater()) return "no water on this map";
     if (d.requires) for (const r of d.requires) if (!this.hasBuilding(slot, r)) return `need a ${r}`;
     if (d.limit != null) {
       let count = 0;
       for (const e of this.ents.values()) if (e.o === slot && e.k === kind) count++;
+      for (const k2 of p.awaiting) if (k2 === kind) count++;
+      for (const k2 of p.awaitingDef) if (k2 === kind) count++;
+      for (const i of p.bq) if (i.kind === kind) count++;
+      for (const i of p.dq) if (i.kind === kind) count++;
       if (count >= d.limit) return "limit reached";
     }
     if (p.credits < d.cost) return "insufficient funds";
     if (!this.hasBuilding(slot, "conyard")) return "need a construction yard";
     p.credits -= d.cost;
-    if (cat === "defense") {
-      p.dq = { kind, left: d.buildTicks, total: d.buildTicks };
-    } else {
-      p.bq = { kind, left: d.buildTicks, total: d.buildTicks };
-    }
+    if (cat === "defense") p.dq.push({ kind, left: d.buildTicks, total: d.buildTicks });
+    else p.bq.push({ kind, left: d.buildTicks, total: d.buildTicks });
     return null;
   }
 
-  cmdBuildCancel(slot: number, cat?: BuildCategory) {
+  cmdBuildCancel(slot: number, cat?: BuildCategory, index = 0, awaiting = false, kind?: BuildingKind) {
     const p = this.players.get(slot);
     if (!p) return;
-    if (cat === "defense") {
-      if (p.dq) {
-        p.credits += BUILDINGS[p.dq.kind].cost;
-        p.dq = null;
-      } else if (p.awaitingDef) {
-        p.credits += BUILDINGS[p.awaitingDef].cost;
-        p.awaitingDef = null;
+    const drop = (queue: typeof p.bq, ready: BuildingKind[]) => {
+      if (awaiting) {
+        const i = kind != null ? ready.lastIndexOf(kind) : index;
+        if (i >= 0 && i < ready.length) {
+          p.credits += BUILDINGS[ready[i]].cost;
+          ready.splice(i, 1);
+        }
+      } else {
+        const i = kind != null ? queue.map((q) => q.kind).lastIndexOf(kind) : index;
+        if (i >= 0 && i < queue.length) {
+          p.credits += BUILDINGS[queue[i].kind].cost;
+          queue.splice(i, 1);
+        }
       }
-      return;
-    }
-    if (cat === "structure") {
-      if (p.bq) {
-        p.credits += BUILDINGS[p.bq.kind].cost;
-        p.bq = null;
-      } else if (p.awaiting) {
-        p.credits += BUILDINGS[p.awaiting].cost;
-        p.awaiting = null;
-      }
-      return;
-    }
-    if (p.bq) {
-      p.credits += BUILDINGS[p.bq.kind].cost;
-      p.bq = null;
-    } else if (p.awaiting) {
-      p.credits += BUILDINGS[p.awaiting].cost;
-      p.awaiting = null;
-    } else if (p.dq) {
-      p.credits += BUILDINGS[p.dq.kind].cost;
-      p.dq = null;
-    } else if (p.awaitingDef) {
-      p.credits += BUILDINGS[p.awaitingDef].cost;
-      p.awaitingDef = null;
+    };
+    if (cat === "defense") return drop(p.dq, p.awaitingDef);
+    if (cat === "structure") return drop(p.bq, p.awaiting);
+    // legacy no-cat: cancel the first item found, old priority order
+    if (p.bq.length) {
+      p.credits += BUILDINGS[p.bq[0].kind].cost;
+      p.bq.shift();
+    } else if (p.awaiting.length) {
+      p.credits += BUILDINGS[p.awaiting[0]].cost;
+      p.awaiting.shift();
+    } else if (p.dq.length) {
+      p.credits += BUILDINGS[p.dq[0].kind].cost;
+      p.dq.shift();
+    } else if (p.awaitingDef.length) {
+      p.credits += BUILDINGS[p.awaitingDef[0]].cost;
+      p.awaitingDef.shift();
     }
   }
 
@@ -1458,23 +1593,34 @@ export class World {
     // checkEnd picks up the elimination next tick
   }
 
-  cmdPlace(slot: number, tx: number, ty: number, cat?: BuildCategory): string | null {
+  cmdPlace(slot: number, tx: number, ty: number, cat?: BuildCategory, kind?: BuildingKind): string | null {
     const p = this.players.get(slot);
     if (!p) return "nothing to place";
-    const useDef = cat === "defense" ? true : cat === "structure" ? false : !p.awaiting && !!p.awaitingDef;
-    const kind = useDef ? p.awaitingDef : p.awaiting;
-    if (!kind) return "nothing to place";
-    const err = this.canPlace(slot, kind, tx, ty);
+    const list =
+      kind != null
+        ? buildCategoryOf(kind) === "defense"
+          ? p.awaitingDef
+          : p.awaiting
+        : cat === "defense"
+          ? p.awaitingDef
+          : cat === "structure"
+            ? p.awaiting
+            : p.awaiting.length
+              ? p.awaiting
+              : p.awaitingDef;
+    const i = kind != null ? list.indexOf(kind) : 0;
+    if (i < 0 || !list.length) return "nothing to place";
+    const k = list[i];
+    const err = this.canPlace(slot, k, tx, ty);
     if (err) return err;
-    if (useDef) p.awaitingDef = null;
-    else p.awaiting = null;
-    const b = this.placeBuilding(slot, kind, tx, ty);
+    list.splice(i, 1);
+    const b = this.placeBuilding(slot, k, tx, ty);
     this.recomputePower(slot);
-    if (kind === "refinery") {
+    if (k === "refinery") {
       if (this.spawnNearBuilding(slot, "harvester", b)) p.unitsBuilt++;
-    } else if (kind === "superweapon" && p.swLeft < 0) {
+    } else if (k === "superweapon" && p.swLeft < 0) {
       p.swLeft = SW_CHARGE_TICKS;
-    } else if (kind === "radar" && p.reconLeft < 0) {
+    } else if (k === "radar" && p.reconLeft < 0) {
       p.reconLeft = 150;
     }
     return null;
@@ -1598,8 +1744,8 @@ export class World {
       case "shipyard2":
         // Corrupt the production line — wipe active build queues
         if (vp) {
-          vp.bq = null;
-          vp.dq = null;
+          vp.bq.length = 0;
+          vp.dq.length = 0;
         }
         break;
       case "refinery":
@@ -2002,18 +2148,20 @@ export class World {
   private tickProduction() {
     for (const p of this.players.values()) {
       const rate = p.lowPower ? 0.5 : 1;
-      if (p.bq) {
-        p.bq.left -= rate;
-        if (p.bq.left <= 0) {
-          p.awaiting = p.bq.kind;
-          p.bq = null;
+      const bh = p.bq[0];
+      if (bh) {
+        bh.left -= rate;
+        if (bh.left <= 0) {
+          p.awaiting.push(bh.kind);
+          p.bq.shift();
         }
       }
-      if (p.dq) {
-        p.dq.left -= rate;
-        if (p.dq.left <= 0) {
-          p.awaitingDef = p.dq.kind;
-          p.dq = null;
+      const dh = p.dq[0];
+      if (dh) {
+        dh.left -= rate;
+        if (dh.left <= 0) {
+          p.awaitingDef.push(dh.kind);
+          p.dq.shift();
         }
       }
       if (this.hasBuilding(p.slot, "superweapon")) {
@@ -2084,7 +2232,44 @@ export class World {
     }
     const w = weaponOf(e);
     const o = e.order;
-    if (o?.kind === "attack" && o.target != null) {
+    if (o?.kind === "bridge") {
+      if (!e.bTiles?.length) {
+        this.advanceOrder(e);
+      } else {
+        const dx = o.x - e.x,
+          dy = o.y - e.y;
+        if (dx * dx + dy * dy > 0.64) {
+          // walk to the shore approach tile first
+          if (e.repath-- <= 0) {
+            e.repath = 12;
+            if (this.astarBudget > 0) {
+              this.astarBudget--;
+              e.path = findPath(Math.floor(e.x), Math.floor(e.y), Math.floor(o.x), Math.floor(o.y), this.passable) ?? [];
+            } else {
+              e.repath = 1;
+            }
+          }
+          this.stepAlong(e);
+        } else {
+          e.path = null;
+          const t = e.bTiles[0];
+          const p = this.players.get(e.o);
+          this.face(e, (t % this.w) + 0.5, ((t / this.w) | 0) + 0.5);
+          if ((e.bT = (e.bT ?? 0) - 1) <= 0) {
+            if (!p || p.credits < 40) {
+              e.bTiles = undefined;
+              this.advanceOrder(e);
+            } else {
+              p.credits -= 40;
+              this.bridges.add(t);
+              e.bTiles.shift();
+              e.bT = 18;
+              if (!e.bTiles.length) this.advanceOrder(e);
+            }
+          }
+        }
+      }
+    } else if (o?.kind === "attack" && o.target != null) {
       const tgt = this.ents.get(o.target);
       if (!tgt || !this.canAttack(e, tgt)) {
         // Aggressive Attack Mode: when primary target dies (and no queued waypoint), immediately pursue nearest nearby enemy!
@@ -3161,7 +3346,7 @@ export class World {
     }
   }
 
-  snapshot(): { ents: EntSnap[]; crates: CrateSnap[]; players: Record<number, PlayerState>; events: GameEvent[] } {
+  snapshot(): { ents: EntSnap[]; crates: CrateSnap[]; bridges: number[]; players: Record<number, PlayerState>; events: GameEvent[] } {
     const ents: EntSnap[] = [];
     for (const e of this.ents.values()) {
       const s: EntSnap = {
@@ -3218,10 +3403,10 @@ export class World {
         pwrUse: p.pwrUse,
         lowPower: p.lowPower,
         eliminated: p.eliminated,
-        awaiting: p.awaiting,
-        bq: p.bq ? { ...p.bq } : null,
-        awaitingDef: p.awaitingDef,
-        dq: p.dq ? { ...p.dq } : null,
+        awaiting: [...p.awaiting],
+        bq: p.bq.map((i) => ({ ...i })),
+        awaitingDef: [...p.awaitingDef],
+        dq: p.dq.map((i) => ({ ...i })),
         queues: qCopy,
         team: p.team,
       };
@@ -3245,6 +3430,6 @@ export class World {
     }
     const events = this.events;
     this.events = [];
-    return { ents, crates: [...this.crates.values()], players, events };
+    return { ents, crates: [...this.crates.values()], bridges: [...this.bridges], players, events };
   }
 }

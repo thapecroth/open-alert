@@ -4,7 +4,7 @@ import { Renderer } from "./render";
 import { Input } from "./input";
 import { Hud, type GraphicsBridge } from "./hud";
 import { AudioEngine } from "./audio";
-import { FirstPersonController } from "./fpv";
+import type { FirstPersonController } from "./fpv";
 import { FpvStory } from "./story";
 import { generateIcons } from "./icons";
 import { isBuildingKind, el } from "./util";
@@ -80,8 +80,8 @@ let currentConfig: GameConfig = { ...DEFAULT_CONFIG };
 let latestState: PlayerState | null = null;
 const oreCells = new Set<number>();
 const allies = new Set<number>();
-let prevAwaiting: BuildingKind | null = null;
-let prevAwaitingDef: BuildingKind | null = null;
+let prevAwaiting = "";
+let prevAwaitingDef = "";
 let prevLowPower = false;
 let iconColor = "";
 let lastTrainSfx = 0;
@@ -340,7 +340,39 @@ function weaponFxOf(k: EntKind): WeaponFx {
 
 const input = new Input(gs, renderer, net, () => mySlot, placeReason, oreAt);
 input.isAlly = isAlly;
-const fpv = new FirstPersonController(gs, renderer, net, () => mySlot, isAlly);
+// FPV bundle is ~5k lines of viewmodel code — loaded on first POV entry, not at startup.
+let fpvReal: FirstPersonController | null = null;
+let fpvLoading: Promise<FirstPersonController> | null = null;
+const fpvHandlers: Partial<Pick<FirstPersonController, "onSfx" | "onExit" | "onFireSfx">> = {};
+function loadFpv(): Promise<FirstPersonController> {
+  if (fpvReal) return Promise.resolve(fpvReal);
+  if (!fpvLoading) {
+    fpvLoading = import("./fpv").then((m) => {
+      fpvReal = new m.FirstPersonController(gs, renderer, net, () => mySlot, isAlly);
+      Object.assign(fpvReal, fpvHandlers);
+      return fpvReal;
+    });
+  }
+  return fpvLoading;
+}
+const fpv = {
+  get active() { return fpvReal?.active ?? false; },
+  get entId() { return fpvReal?.entId ?? null; },
+  get onSfx() { return fpvHandlers.onSfx; },
+  set onSfx(v) { fpvHandlers.onSfx = v; if (fpvReal) fpvReal.onSfx = v; },
+  get onExit() { return fpvHandlers.onExit; },
+  set onExit(v) { fpvHandlers.onExit = v; if (fpvReal) fpvReal.onExit = v; },
+  get onFireSfx() { return fpvHandlers.onFireSfx; },
+  set onFireSfx(v) { fpvHandlers.onFireSfx = v; if (fpvReal) fpvReal.onFireSfx = v; },
+  enter(id: number) {
+    if (fpvReal) return fpvReal.enter(id);
+    void loadFpv().then((c) => { if (!c.enter(id)) fpvHandlers.onExit?.("user"); });
+    return true;
+  },
+  exit(reason: "user" | "dead") { fpvReal?.exit(reason); },
+  update(dt: number) { return fpvReal?.update(dt); },
+  onShotEvent(id: number) { fpvReal?.onShotEvent(id); },
+};
 const story = new FpvStory();
 fpv.onSfx = (n) => audio.playFpvSfx(n);
 story.onSfx = (n) => audio.playFpvSfx(n);
@@ -432,11 +464,11 @@ hud.onBuild = (kind) => {
   net.send({ t: "build", kind });
   audio.playUi("buildStart");
 };
-hud.onBuildCancel = (cat) => {
+hud.onBuildCancel = (cat, kind, awaiting) => {
   if (input.placing && (!cat || buildCategoryOf(input.placing) === cat)) {
     input.exitPlacing();
   }
-  net.send(cat ? { t: "buildCancel", cat } : { t: "buildCancel" });
+  net.send({ t: "buildCancel", cat, kind, awaiting });
   audio.playUi("select");
   hud.toast(cat === "defense" ? "Defense cancelled & refunded" : "Construction cancelled & refunded", true);
 };
@@ -473,21 +505,18 @@ hud.onFilterSelection = (kind) => {
   }
 };
 input.onPlaceReadyHotkey = () => {
-  const aw = latestState?.awaiting ?? null;
-  const awDef = latestState?.awaitingDef ?? null;
-  if (!aw && !awDef) return;
-  if (aw && awDef) {
-    const next = input.placing === aw ? awDef : aw;
-    input.placingCancelled = false;
-    input.enterPlacing(next);
-    audio.playUi("select");
-    return;
-  }
-  const only = (aw ?? awDef)!;
-  if (input.placing === only) input.exitPlacing();
+  const aw = latestState?.awaiting ?? [];
+  const awDef = latestState?.awaitingDef ?? [];
+  if (!aw.length && !awDef.length) return;
+  // Prefer the pile matching current placing cat; B cycles through its ready kinds
+  const curCat = input.placing ? buildCategoryOf(input.placing) : null;
+  const pile = curCat === "defense" ? (awDef.length ? awDef : aw) : (aw.length ? aw : awDef);
+  const idx = input.placing ? pile.indexOf(input.placing) : -1;
+  const next = pile[(idx + 1) % pile.length];
+  if (input.placing === next && pile.length === 1) input.exitPlacing();
   else {
     input.placingCancelled = false;
-    input.enterPlacing(only);
+    input.enterPlacing(next);
     audio.playUi("select");
   }
 };
@@ -631,8 +660,8 @@ net.onMsg = (m: S2C) => {
       currentMap = m.map ?? "crossroads";
       currentConfig = m.config ? { ...DEFAULT_CONFIG, ...m.config } : { ...DEFAULT_CONFIG };
       phase = "playing";
-      prevAwaiting = null;
-      prevAwaitingDef = null;
+      prevAwaiting = "";
+      prevAwaitingDef = "";
       prevLowPower = false;
       latestState = null;
       hud.setPauseVisible(mySlot >= 0 && lobbyHumans <= 1);
@@ -705,6 +734,8 @@ net.onMsg = (m: S2C) => {
     case "snap": {
       if (phase !== "playing") break;
       renderer.pushSnap(m.ents, m.crates);
+      renderer.setBridges(m.bridges);
+      hud.setBridges(m.bridges);
       // Remember every seen entity kind BEFORE pruning — dead ents vanish from
       // the snap but kill events still need to resolve their names.
       for (const e of m.ents) lastKind.set(e.id, e.k);
@@ -855,32 +886,39 @@ net.onMsg = (m: S2C) => {
       hud.updateSidebar(latestState, has, countOf, currentConfig, gs.hasWater());
       hud.updateSelInfo(input.selection, renderer.tracked, mySlot, latestState, has);
       hud.updateGroups(input.groups, renderer.tracked, mySlot);
+      renderer.setGroups(input.groups);
       if (mySlot >= 0) {
         const awaiting = latestState?.awaiting ?? null;
         const awaitingDef = latestState?.awaitingDef ?? null;
-        if (awaiting !== prevAwaiting) {
+        const aKey = awaiting?.join(",") ?? "";
+        const dKey = awaitingDef?.join(",") ?? "";
+        if (aKey !== prevAwaiting) {
           input.placingCancelled = false;
           if (!input.placing || buildCategoryOf(input.placing) === "structure") input.clearPlacePending();
-          if (awaiting) {
+          if (awaiting?.length) {
+            const prevSet = new Set(prevAwaiting ? prevAwaiting.split(",") : []);
+            const fresh = awaiting.find((k) => !prevSet.has(k)) ?? awaiting[0];
             audio.playUi("buildDone");
-            hud.toast(`${BUILDING_NAMES[awaiting]} READY — click in sidebar or press B to place`, true);
+            hud.toast(`${BUILDING_NAMES[fresh]} READY — click in sidebar or press B to place`, true);
           }
         }
-        if (awaitingDef !== prevAwaitingDef) {
+        if (dKey !== prevAwaitingDef) {
           input.placingCancelled = false;
           if (!input.placing || buildCategoryOf(input.placing) === "defense") input.clearPlacePending();
-          if (awaitingDef) {
+          if (awaitingDef?.length) {
+            const prevSet = new Set(prevAwaitingDef ? prevAwaitingDef.split(",") : []);
+            const fresh = awaitingDef.find((k) => !prevSet.has(k)) ?? awaitingDef[0];
             audio.playUi("buildDone");
-            hud.toast(`${BUILDING_NAMES[awaitingDef]} READY — click in sidebar or press B to place`, true);
+            hud.toast(`${BUILDING_NAMES[fresh]} READY — click in sidebar or press B to place`, true);
           }
         }
-        prevAwaiting = awaiting;
-        prevAwaitingDef = awaitingDef;
+        prevAwaiting = aKey;
+        prevAwaitingDef = dKey;
         // Classic RA2 flow: NEVER auto-hijack cursor when a structure/defense finishes; player clicks READY or presses B!
         if (input.placing) {
           const cat = buildCategoryOf(input.placing);
           const expected = cat === "defense" ? awaitingDef : awaiting;
-          if (expected !== input.placing) input.exitPlacing();
+          if (!expected?.includes(input.placing)) input.exitPlacing();
         }
       }
       break;

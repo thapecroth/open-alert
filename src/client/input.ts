@@ -13,7 +13,7 @@ export class Input {
   placing: BuildingKind | null = null;
   placingCancelled = false;
   placePending = false;
-  verb: "sell" | "repair" | null = null;
+  verb: "sell" | "repair" | "bridge" | null = null;
   swArmed = false;
   reconArmed = false;
   wasdPan = localStorage.getItem("oa-wasd") === "1";
@@ -729,7 +729,7 @@ export class Input {
     this.stopSelected();
   }
 
-  armVerb(v: "sell" | "repair" | null) {
+  armVerb(v: "sell" | "repair" | "bridge" | null) {
     if (v && this.placing) return;
     if (v) {
       this.disarmSuperweapon();
@@ -739,13 +739,29 @@ export class Input {
     }
     this.verb = this.verb === v ? null : v;
     if (this.labelTimer) clearTimeout(this.labelTimer);
-    this.onOrderLabel(this.verb ? `${this.verb.toUpperCase()} — click your building` : null, this.px + 12, this.py - 12);
-    for (const id of ["verb-sell", "verb-repair"]) {
+    const hint =
+      this.verb === "bridge" ? "BRIDGE — click water to span ($40/tile)" : this.verb ? `${this.verb.toUpperCase()} — click your building` : null;
+    this.onOrderLabel(hint, this.px + 12, this.py - 12);
+    for (const id of ["verb-sell", "verb-repair", "verb-bridge"]) {
       document.getElementById(id)?.classList.toggle("armed", `verb-${this.verb}` === id);
     }
   }
 
   private useVerb() {
+    if (this.verb === "bridge") {
+      const eng = this.myUnits().find((id) => this.r.tracked.get(id)?.last.k === "engineer");
+      if (eng == null) {
+        this.flashLabel("select an ENGINEER first", 1100);
+        this.armVerb(null);
+        return;
+      }
+      const ground = this.gs.pickGround();
+      if (!ground) return;
+      this.net.send({ t: "bridge", id: eng, tx: Math.floor(ground.x), ty: Math.floor(ground.z) });
+      this.orderMarker(ground, "move", false, 0xd8a04a);
+      this.armVerb(null);
+      return;
+    }
     const id = this.gs.pickEntity();
     const t = id != null ? this.r.tracked.get(id) : null;
     const slot = this.getSlot();
@@ -1067,10 +1083,11 @@ export class Input {
 
   cancelPlacing() {
     const cat = this.placing ? buildCategoryOf(this.placing) : undefined;
+    const kind = this.placing ?? undefined;
     this.placingCancelled = true;
     this.clearPlacePending();
     this.exitPlacing();
-    this.net.send(cat ? { t: "buildCancel", cat } : { t: "buildCancel" });
+    this.net.send({ t: "buildCancel", cat, kind, awaiting: true });
   }
 
   private moveGhost() {
@@ -1116,7 +1133,7 @@ export class Input {
       this.placePending = false;
       this.placePendingTimer = null;
     }, 1500);
-    this.net.send({ t: "place", tx, ty, cat: buildCategoryOf(this.placing) });
+    this.net.send({ t: "place", tx, ty, cat: buildCategoryOf(this.placing), kind: this.placing });
     this.onUiSound("place");
   }
 

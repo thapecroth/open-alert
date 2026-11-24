@@ -26,10 +26,11 @@ export type C2S =
   | { t: "driveExit"; id: number } // exit first-person control
   | { t: "recon"; x: number; y: number } // fire Radar Uplink Recon Scan (reveals fog)
   | { t: "build"; kind: BuildingKind } // start building or defense production (parallel queues!)
-  | { t: "buildCancel"; cat?: BuildCategory }
-  | { t: "place"; tx: number; ty: number; cat?: BuildCategory } // place finished structure or defense
+  | { t: "buildCancel"; cat?: BuildCategory; index?: number; awaiting?: boolean; kind?: BuildingKind } // cancel queued (index/kind) or ready-pile (awaiting) item
+  | { t: "place"; tx: number; ty: number; cat?: BuildCategory; kind?: BuildingKind } // place finished structure or defense
   | { t: "train"; unit: UnitKind } // queue one unit
   | { t: "trainCancel"; unit: UnitKind } // dequeue one
+  | { t: "bridge"; id: number; tx: number; ty: number } // engineer lays a pontoon bridge toward (tx,ty)
   | { t: "sell"; id: number } // sell own building for 50% refund
   | { t: "repair"; id: number } // repair own building to full (25% cost)
   | { t: "upgrade"; id: number } // upgrade factory -> factory2 (needs techlab)
@@ -49,7 +50,7 @@ export type C2S =
   | { t: "rematch" }
   | { t: "hb" }; // lightweight keepalive heartbeat
 
-export type OrderKind = "move" | "amove" | "attack" | "harvest" | "patrol";
+export type OrderKind = "move" | "amove" | "attack" | "harvest" | "patrol" | "bridge";
 export type WeaponFx =
   | "bullet"
   | "cannon"
@@ -137,10 +138,10 @@ export interface PlayerState {
   pwrUse: number;
   lowPower: boolean;
   eliminated: boolean;
-  awaiting: BuildingKind | null; // structure finished, waiting for placement
-  bq: { kind: BuildingKind; left: number; total: number } | null;
-  awaitingDef?: BuildingKind | null; // defense finished (parallel queue!), waiting for placement
-  dq?: { kind: BuildingKind; left: number; total: number } | null;
+  awaiting: BuildingKind[]; // finished structures stacked for placement
+  bq: { kind: BuildingKind; left: number; total: number }[]; // head builds, rest queued
+  awaitingDef?: BuildingKind[]; // defense finished (parallel queue!), waiting for placement
+  dq?: { kind: BuildingKind; left: number; total: number }[];
   queues: Partial<Record<ProdCat, ProdQueue>>;
   team?: number;
   swReady?: boolean;
@@ -202,6 +203,7 @@ export type S2C =
       tick: number;
       ents: EntSnap[];
       crates?: CrateSnap[];
+      bridges?: number[]; // pontoon-bridge tile indices (land+sea passable)
       players: Record<number, PlayerState>; // keyed by slot
       events: GameEvent[];
     }

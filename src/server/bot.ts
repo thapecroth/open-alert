@@ -156,25 +156,25 @@ export class RtsBot {
     // Finished structures (`awaiting`) and defenses (`awaitingDef`) place in parallel —
     // pace placement by difficulty so Easy/Normal feel human rather than instant.
     const placeStep = this.diff === "easy" ? 16 : this.diff === "brutal" ? 4 : 10;
-    if (me.awaiting) {
+    if (me.awaiting.length) {
       if (this.awaitingSince < 0) {
         this.awaitingSince = t;
         this.nextPlaceTry = t + placeStep;
       }
       if (t >= this.nextPlaceTry) {
         this.nextPlaceTry = t + placeStep;
-        this.place(me.awaiting, t, "structure");
+        this.place(me.awaiting[0], t, "structure");
       }
     } else this.awaitingSince = -1;
 
-    if (me.awaitingDef) {
+    if (me.awaitingDef.length) {
       if (this.awaitingDefSince < 0) {
         this.awaitingDefSince = t;
         this.nextDefPlaceTry = t + placeStep;
       }
       if (t >= this.nextDefPlaceTry) {
         this.nextDefPlaceTry = t + placeStep;
-        this.place(me.awaitingDef, t, "defense");
+        this.place(me.awaitingDef[0], t, "defense");
       }
     } else this.awaitingDefSince = -1;
 
@@ -1306,12 +1306,12 @@ export class RtsBot {
     }
     this.phase = this.phaseOf(me, bc, army, t);
     const want = this.wantBuilding(me, bc);
-    if (want && !me.bq && !me.awaiting && me.credits >= BUILDINGS[want].cost) {
+    if (want && !me.bq.length && !me.awaiting.length && me.credits >= BUILDINGS[want].cost) {
       this.trycmd(() => w.cmdBuild(this.slot, want));
     }
     const wantDef = this.wantDefense(me, bc);
-    const structReserve = want && !me.bq && !me.awaiting ? Math.min(BUILDINGS[want].cost, 600) : 0;
-    if (wantDef && !me.dq && !me.awaitingDef && me.credits >= BUILDINGS[wantDef].cost + structReserve) {
+    const structReserve = want && !me.bq.length && !me.awaiting.length ? Math.min(BUILDINGS[want].cost, 600) : 0;
+    if (wantDef && !me.dq.length && !me.awaitingDef.length && me.credits >= BUILDINGS[wantDef].cost + structReserve) {
       this.trycmd(() => w.cmdBuild(this.slot, wantDef));
     }
     this.produce(me, bc, want);

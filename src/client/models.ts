@@ -42,6 +42,7 @@ export interface EntVis {
   barBg: THREE.Sprite;
   barFg: THREE.Sprite;
   vetBadge: THREE.Sprite;
+  groupTag: THREE.Sprite;
   ring: THREE.Mesh;
   topY: number;
   spin?: THREE.Group;
@@ -204,6 +205,46 @@ export function setVetBadge(vis: EntVis, vet: number): void {
   vis.vetBadge.visible = true;
 }
 
+// ---------- Control-Group Digit Badges ----------
+
+const grpTexCache = new Map<number, THREE.CanvasTexture>();
+
+function getGroupTexture(n: number): THREE.CanvasTexture {
+  const cached = grpTexCache.get(n);
+  if (cached) return cached;
+  const W = 48, H = 48;
+  const c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const ctx = c.getContext("2d")!;
+  ctx.fillStyle = "rgba(10, 14, 20, 0.85)";
+  ctx.strokeStyle = "#6ec1ff";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.roundRect(2, 2, W - 4, H - 4, 10);
+  ctx.fill();
+  ctx.stroke();
+  ctx.font = "900 30px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#9fd8ff";
+  ctx.fillText(String(n), W / 2, H / 2 + 1);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  grpTexCache.set(n, tex);
+  return tex;
+}
+
+export function setGroupTag(vis: EntVis, n: number): void {
+  const tag = vis.groupTag;
+  if (!tag) return;
+  if (tag.userData.grp === n) return;
+  tag.userData.grp = n;
+  if (n <= 0) { tag.visible = false; return; }
+  (tag.material as THREE.SpriteMaterial).map = getGroupTexture(n);
+  tag.material.needsUpdate = true;
+  tag.visible = true;
+}
+
 // ---------- Main Entity Visual Orchestrator ----------
 
 export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene): EntVis {
@@ -273,6 +314,17 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
   vetBadge.userData.vetRank = 0;
   root.add(vetBadge);
 
+  // Control-group digit badge (left of vet badge; hidden until grouped)
+  const grpMat = new THREE.SpriteMaterial({ transparent: true, opacity: 0.95, depthTest: false });
+  const groupTag = new THREE.Sprite(grpMat);
+  groupTag.position.set(-0.62, topY + 0.58, 0);
+  groupTag.scale.set(0.3, 0.3, 1);
+  groupTag.renderOrder = 22;
+  groupTag.visible = false;
+  groupTag.userData.isBar = true;
+  groupTag.userData.grp = 0;
+  root.add(groupTag);
+
   // Selection ring on ground/water directly beneath unit
   const ringSize = isBuildingKind(kind)
     ? Math.max(BUILDINGS[kind].w, BUILDINGS[kind].h) * 0.78
@@ -337,6 +389,7 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
     barBg: bg,
     barFg: fg,
     vetBadge,
+    groupTag,
     ring,
     topY,
     spin: rig.spin,
