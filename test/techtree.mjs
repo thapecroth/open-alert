@@ -6,6 +6,7 @@
 //  5. depot: builds, sim keeps running
 //  6. arc: placed coil fires on an enemy unit that attacks it (shot events + damage/death)
 // Run: node test/techtree.mjs   (dev server on :8787, party "game-room")
+import { wsconn } from "./wsconn.mjs";
 const ROOM = "tt" + Date.now().toString(36);
 const URL = `ws://localhost:8787/parties/game-room/${ROOM}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -28,24 +29,20 @@ const queueBusy = (p, kind) =>
   DEFK.has(kind) ? (p?.dq?.length ?? 0) + (p?.awaitingDef?.length ?? 0) : (p?.bq?.length ?? 0) + (p?.awaiting?.length ?? 0);
 
 function conn(name, token) {
-  const ws = new WebSocket(URL);
-  const st = { ws, msgs: [], slot: null, snaps: [], lobby: null, ore: new Map() };
-  ws.onmessage = (e) => {
-    const m = JSON.parse(e.data);
-    st.msgs.push(m);
-    if (m.t === "init") {
-      st.slot = m.slot;
-      for (const [x, y, a] of m.ore) st.ore.set(x + "," + y, a);
-    }
-    if (m.t === "snap") {
-      st.snaps.push(m);
-      for (const ev of m.events ?? [])
-        if (ev.e === "ore")
-          for (const [x, y, a] of ev.cells) a > 0 ? st.ore.set(x + "," + y, a) : st.ore.delete(x + "," + y);
-    }
-    if (m.t === "lobby") st.lobby = m;
-  };
-  ws.onopen = () => ws.send(JSON.stringify({ t: "join", name, token }));
+  const st = wsconn(URL, name, token, {
+    onmsg: (m, st) => {
+      if (m.t === "init") {
+        for (const [x, y, a] of m.ore) st.ore.set(x + "," + y, a);
+      }
+      if (m.t === "snap") {
+        for (const ev of m.events ?? [])
+          if (ev.e === "ore")
+            for (const [x, y, a] of ev.cells) a > 0 ? st.ore.set(x + "," + y, a) : st.ore.delete(x + "," + y);
+      }
+      if (m.t === "lobby") st.lobby = m;
+    },
+  });
+  st.ore = new Map();
   return st;
 }
 const send = (s, m) => s.ws.send(JSON.stringify(m));

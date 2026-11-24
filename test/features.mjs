@@ -1,25 +1,17 @@
 // Feature test: addbot, sell, repair, chat, resign, ready-gate.
+import { wsconn, send, lastSnap, sleep } from "./wsconn.mjs";
 const ROOM = "feat" + Date.now().toString(36);
 const URL = `ws://localhost:8787/parties/game-room/${ROOM}`;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
 const ok = (c, l) => { c ? (pass++, console.log("ok:", l)) : (fail++, console.log("FAIL:", l)); };
 
 function conn(name, token) {
-  const ws = new WebSocket(URL);
-  const st = { ws, msgs: [], slot: null, you: null, snaps: [], lobby: null };
-  ws.onmessage = (e) => {
-    const m = JSON.parse(e.data);
-    st.msgs.push(m);
-    if (m.t === "init") { st.you = m.you; st.slot = m.slot; }
-    if (m.t === "snap") st.snaps.push(m);
-    if (m.t === "lobby") st.lobby = m;
-  };
-  ws.onopen = () => ws.send(JSON.stringify({ t: "join", name, token }));
-  return st;
+  return wsconn(URL, name, token, {
+    onmsg: (m, st) => {
+      if (m.t === "lobby") st.lobby = m;
+    },
+  });
 }
-const send = (s, m) => s.ws.send(JSON.stringify(m));
-const lastSnap = (s) => s.snaps[s.snaps.length - 1];
 const me = (s) => lastSnap(s)?.players?.[s.slot];
 const denies = (s) => s.msgs.filter((m) => m.t === "deny").map((m) => m.msg);
 
@@ -103,6 +95,33 @@ send(a, { t: "resign" });
 await sleep(800);
 const endMsg = a.msgs.find((m) => m.t === "end");
 ok(me(a)?.eliminated === true || !!endMsg, `resign eliminated player (end=${endMsg?.reason ?? "pending"})`);
+
+// rematch → restart: the v2 stream must resync keyframe-first even though seq
+// continues monotonically (world-keyed diff baseline forces a fresh keyframe).
+// Fresh room with a single bot: resign ends the game instantly (bot wins).
+a.ws.close();
+const ROOM2 = ROOM + "r";
+const r = wsconn(`ws://localhost:8787/parties/game-room/${ROOM2}`, "Rex", "tok-R");
+await sleep(700);
+send(r, { t: "addbot" });
+await sleep(400);
+send(r, { t: "start" });
+await sleep(1200);
+ok((lastSnap(r)?.ents?.length ?? 0) > 0, "rematch-test game started");
+send(r, { t: "resign" });
+await sleep(1500);
+ok(r.msgs.some((m) => m.t === "end"), "game ended after resign");
+send(r, { t: "rematch" });
+await sleep(500);
+send(r, { t: "start" });
+await sleep(1800);
+const initIdxs = r.msgs.map((m, i) => (m.t === "init" ? i : -1)).filter((i) => i >= 0);
+const lastInitIdx = initIdxs[initIdxs.length - 1];
+const firstFrame = r.msgs.slice(lastInitIdx + 1).find((m) => m.t === "snap" || m.t === "snapd");
+ok(initIdxs.length >= 2 && firstFrame?.key === true, `rematch restart resyncs keyframe-first (inits=${initIdxs.length}, first=${firstFrame?.t} key=${firstFrame?.key})`);
+ok((lastSnap(r)?.ents?.length ?? 0) > 0, `rematch game live (${lastSnap(r)?.ents?.length} ents)`);
+ok(r.proto.droppedDelta === 0, `no dropped deltas across rematch (dropped=${r.proto.droppedDelta})`);
+r.ws.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

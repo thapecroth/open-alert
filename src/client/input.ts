@@ -16,7 +16,7 @@ export class Input {
   verb: "sell" | "repair" | "bridge" | null = null;
   swArmed = false;
   reconArmed = false;
-  wasdPan = localStorage.getItem("oa-wasd") === "1";
+  wasdPan = localStorage.getItem("oa-wasd") !== "0";
 
   onSelectionChange: (ids: Set<number>) => void = () => {};
   onGroupsChange: (groups: Map<number, Set<number>>) => void = () => {};

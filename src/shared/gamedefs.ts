@@ -1,5 +1,7 @@
 // Shared game constants & definitions (must stay lib-agnostic: no DOM, no workerd types)
 
+import type { OrderKind, WeaponFx } from "./protocol";
+
 export const MAP_W = 64; // default standard map width (individual maps may be 64, 96, or 128)
 export const MAP_H = 64; // default standard map height
 export const TICK_MS = 100; // sim runs at 10 Hz
@@ -82,6 +84,9 @@ export type UnitKind =
 export type EntKind = BuildingKind | UnitKind;
 export type UnitDomain = "land" | "air" | "sea";
 export type ProdCat = "barracks" | "factory" | "airfield" | "shipyard";
+
+// Runtime-valid order commands. "bridge" is an internal OrderKind with its own command message.
+export const ORDER_KINDS: readonly Exclude<OrderKind, "bridge">[] = ["move", "amove", "attack", "harvest", "patrol"];
 
 export type MapId =
   | "crossroads"
@@ -298,6 +303,14 @@ export const UPGRADE_PATHS: Record<string, UpgradePath> = {
   },
 };
 
+// Production MKII buildings satisfy their base building's prerequisites/queues.
+export const UPGRADED_OF: Partial<Record<BuildingKind, BuildingKind>> = {
+  barracks: "barracks2",
+  factory: "factory2",
+  airfield: "airfield2",
+  shipyard: "shipyard2",
+};
+
 export interface UnitDef {
   hp: number;
   speed: number; // tiles per tick
@@ -358,6 +371,140 @@ export const UNITS: Record<UnitKind, UnitDef> = {
   dreadnought: { hp: 1150, speed: 0.09, range: 13, dmg: 92, rof: 46, cost: 2400, buildTicks: 115, trainsAt: "shipyard", domain: "sea", requires: "shipyard2" },
   carrier: { hp: 1350, speed: 0.10, range: 12, dmg: 64, rof: 26, cost: 2700, buildTicks: 125, trainsAt: "shipyard", domain: "sea", canHitAir: true, vision: 13, requires: "shipyard2" },
 };
+
+// ---------- combat classification & weapon data ----------
+export type ArmorTargetClass = "air" | "infantry" | "heavyArmor" | "vehicle" | "building" | "seaShip" | "lightUnit";
+
+const INFANTRY_KINDS = new Set<UnitKind>(["infantry", "rocket", "engineer", "spy"]);
+const HEAVY_ARMOR_KINDS = new Set<UnitKind>(["tank", "heavy", "harvester", "railtank"]);
+const LIGHT_UNIT_KINDS = new Set<UnitKind>(["spider", "uav", "gunboat"]);
+// Separation keeps the pre-refactor footprint list exactly; the broader armor
+// "vehicle" class below is derived from land domain and intentionally includes spider/ballistic.
+const SEPARATION_VEHICLE_KINDS = new Set<UnitKind>(["tank", "heavy", "arty", "harvester", "supplytruck", "himars", "railtank"]);
+
+export const isInfantryKind = (k: EntKind): boolean => INFANTRY_KINDS.has(k as UnitKind);
+export const isHeavyArmorKind = (k: EntKind): boolean => HEAVY_ARMOR_KINDS.has(k as UnitKind);
+export const isVehicleKind = (k: EntKind): boolean =>
+  !(k in BUILDINGS) && UNITS[k as UnitKind].domain === "land" && !isInfantryKind(k);
+export const isSeaShipKind = (k: EntKind): boolean => !(k in BUILDINGS) && UNITS[k as UnitKind].domain === "sea";
+export const isLightUnitKind = (k: EntKind): boolean => isInfantryKind(k) || LIGHT_UNIT_KINDS.has(k as UnitKind);
+export const usesVehicleSeparation = (k: EntKind): boolean => SEPARATION_VEHICLE_KINDS.has(k as UnitKind);
+
+export function matchesArmorClass(cls: ArmorTargetClass, k: EntKind): boolean {
+  switch (cls) {
+    case "air":
+      return !(k in BUILDINGS) && UNITS[k as UnitKind].domain === "air";
+    case "infantry":
+      return isInfantryKind(k);
+    case "heavyArmor":
+      return isHeavyArmorKind(k);
+    case "vehicle":
+      return isVehicleKind(k);
+    case "building":
+      return k in BUILDINGS;
+    case "seaShip":
+      return isSeaShipKind(k);
+    case "lightUnit":
+      return isLightUnitKind(k);
+  }
+}
+
+export interface ArmorMultRule {
+  mult: number;
+  kinds?: readonly EntKind[];
+  classes?: readonly ArmorTargetClass[];
+}
+
+const ANTI_ARMOR_TARGETS: readonly EntKind[] = ["tank", "himars", "railtank", "harvester", "supplytruck", "heavy", "arty"];
+
+// First matching rule per attacker wins; omission means 1x damage.
+export const ARMOR_MULTS: Partial<Record<EntKind, readonly ArmorMultRule[]>> = {
+  infantry: [
+    { classes: ["air"], mult: 0.6 },
+    { classes: ["infantry"], mult: 1.35 },
+    { classes: ["heavyArmor"], mult: 0.7 },
+  ],
+  rocket: [
+    { classes: ["air"], mult: 1.35 },
+    { classes: ["vehicle"], mult: 1.4 },
+    { classes: ["infantry"], mult: 0.75 },
+  ],
+  arty: [{ classes: ["building"], mult: 1.35 }],
+  railtank: [{ classes: ["vehicle", "building"], mult: 1.35 }],
+  lasertower: [{ classes: ["vehicle", "seaShip"], mult: 1.4 }],
+  sam: [{ classes: ["air"], mult: 1.5 }],
+  thaad: [{ kinds: ["stealthbomber", "ac130", "hypersonic", "a10", "interceptor"], mult: 1.5 }],
+  uav: [{ classes: ["lightUnit"], mult: 1.25 }],
+  sub: [{ classes: ["seaShip"], mult: 1.45 }],
+  interceptor: [{ classes: ["air"], mult: 1.4 }],
+  bomber: [{ classes: ["building"], mult: 1.3 }],
+  stealthbomber: [{ classes: ["building"], mult: 1.3 }],
+  himars: [{ classes: ["building"], mult: 1.3 }],
+  zeppelin: [{ classes: ["building"], mult: 1.3 }],
+  dreadnought: [{ classes: ["building"], mult: 1.3 }],
+  hypersonic: [{ classes: ["building", "seaShip"], mult: 1.5 }],
+  ballistic: [{ classes: ["building", "seaShip"], mult: 1.4 }],
+  a10: [{ kinds: ANTI_ARMOR_TARGETS, mult: 1.5 }],
+  ac130: [{ classes: ["infantry", "vehicle", "building"], mult: 1.3 }],
+  gunboat: [{ classes: ["air"], mult: 1.35 }],
+  destroyer: [{ classes: ["air"], mult: 1.35 }],
+  fpvdrone: [{ kinds: ANTI_ARMOR_TARGETS, mult: 1.45 }],
+  shahed: [{ classes: ["building"], mult: 1.4 }],
+  usv: [{ kinds: ["destroyer", "dreadnought", "carrier", "gunboat", "sub", "shipyard", "shipyard2"], mult: 1.5 }],
+};
+
+export const WEAPON_FX_OF: Partial<Record<EntKind, WeaponFx>> = {
+  lasertower: "laser",
+  satlink: "laser",
+  railtank: "railgun",
+  a10: "brrrt",
+  tank: "cannon",
+  heavy: "cannon",
+  destroyer: "cannon",
+  rocket: "rocket",
+  interceptor: "rocket",
+  sam: "rocket",
+  irondome: "rocket",
+  uav: "rocket",
+  arty: "arty",
+  ac130: "arty",
+  arc: "arc",
+  spider: "melee",
+  dreadnought: "missile",
+  himars: "missile",
+  hypersonic: "missile",
+  carrier: "missile",
+  thaad: "missile",
+  ballistic: "missile",
+  sub: "torpedo",
+  bomber: "bomb",
+  stealthbomber: "bomb",
+  zeppelin: "bomb",
+};
+
+export const AMMO_COST_OF: Partial<Record<EntKind, number>> = {
+  a10: 2,
+  ac130: 6,
+  himars: 12,
+  arty: 12,
+  dreadnought: 12,
+  bomber: 12,
+  stealthbomber: 12,
+  zeppelin: 12,
+  ballistic: 12,
+  tank: 7,
+  heavy: 7,
+  railtank: 7,
+  destroyer: 7,
+  sub: 7,
+  carrier: 7,
+  chopper: 7,
+  interceptor: 7,
+};
+
+export const KAMIKAZE_FUEL_BURN = 0.18;
+export const FUEL_BURN_OF: Partial<Record<EntKind, number>> = { hypersonic: 0.04 };
+export const DOMAIN_FUEL_BURN: Record<UnitDomain, number> = { air: 0.55, sea: 0.25, land: 0.35 };
 
 export const TRAIN_ORDER: { unit: UnitKind; label: string; group: "land" | "air" | "sea" }[] = [
   // Modern Land Infantry, Field Drones, Armor & Logistics

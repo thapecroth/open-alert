@@ -4,17 +4,31 @@ import { MAP_W, MAP_H } from "../shared/gamedefs";
 // Returns a list of waypoints in tile coords (excluding start, including goal),
 // or null if unreachable. Units add their own separation steering on top.
 
-// Reused A* scratch — grown to the largest map seen; avoids 3×W·H allocs/search
+// Reused A* scratch — grown to the largest map seen; avoids 3×W·H allocs/search.
+// g/closed values are qualified by per-search stamps, so searches after the first
+// don't pay an O(W·H) clearing pass. parent[] is only followed through nodes
+// written by the current search and needs no stamp.
 let SC_G: Float32Array | null = null;
 let SC_PARENT: Int32Array | null = null;
-let SC_CLOSED: Uint8Array | null = null;
-function getScratch(n: number): { g: Float32Array; parent: Int32Array; closed: Uint8Array } {
+let SC_GSTAMP: Uint32Array | null = null;
+let SC_CLOSEDSTAMP: Uint32Array | null = null;
+let SC_SEARCH_ID = 0;
+function getScratch(n: number): { g: Float32Array; parent: Int32Array; gstamp: Uint32Array; cstamp: Uint32Array; stamp: number } {
   if (!SC_G || SC_G.length < n) {
     SC_G = new Float32Array(n);
     SC_PARENT = new Int32Array(n);
-    SC_CLOSED = new Uint8Array(n);
+    SC_GSTAMP = new Uint32Array(n);
+    SC_CLOSEDSTAMP = new Uint32Array(n);
+    SC_SEARCH_ID = 0;
   }
-  return { g: SC_G, parent: SC_PARENT!, closed: SC_CLOSED! };
+  SC_SEARCH_ID = (SC_SEARCH_ID + 1) >>> 0;
+  if (SC_SEARCH_ID === 0) {
+    // exceedingly rare wraparound: zero stamps once rather than colliding with them
+    SC_GSTAMP!.fill(0);
+    SC_CLOSEDSTAMP!.fill(0);
+    SC_SEARCH_ID = 1;
+  }
+  return { g: SC_G, parent: SC_PARENT!, gstamp: SC_GSTAMP!, cstamp: SC_CLOSEDSTAMP!, stamp: SC_SEARCH_ID };
 }
 
 const SQRT2 = Math.SQRT2;
@@ -48,11 +62,7 @@ export function findPath(
 
   // scratch buffers shared across calls — findPath is non-reentrant (single
   // synchronous A*), so module-level arrays kill the 3×W·H per-call allocation
-  const { g, parent, closed } = getScratch(W * H);
-  // bound the clears to the active region — scratch is sized for the largest map seen
-  g.fill(Infinity, 0, W * H);
-  closed.fill(0, 0, W * H); // required: closed[] is read for arbitrary neighbor indices
-  // parent[] needs no clear — it is only followed through nodes pushed this search
+  const { g, parent, gstamp, cstamp, stamp } = getScratch(W * H);
 
   // Simple binary heap of [f, idx]
   const heapF: number[] = [];
@@ -100,13 +110,14 @@ export function findPath(
 
   const sIdx = sy * W + sx;
   g[sIdx] = 0;
+  gstamp[sIdx] = stamp;
   push(h(sx, sy), sIdx);
   let expanded = 0;
 
   while (heapF.length && expanded++ < maxExpand) {
     const cur = pop();
-    if (closed[cur]) continue;
-    closed[cur] = 1;
+    if (cstamp[cur] === stamp) continue;
+    cstamp[cur] = stamp;
     const cx = cur % W,
       cy = (cur / W) | 0;
     if (cx === gx && cy === gy) {
@@ -127,10 +138,11 @@ export function findPath(
       // prevent diagonal corner cutting through blocked tiles
       if (dx !== 0 && dy !== 0 && (!passable(cx + dx, cy) || !passable(cx, cy + dy))) continue;
       const ni = ny * W + nx;
-      if (closed[ni]) continue;
+      if (cstamp[ni] === stamp) continue;
       const ng = g[cur] + cost;
-      if (ng < g[ni]) {
+      if (ng < (gstamp[ni] === stamp ? g[ni] : Infinity)) {
         g[ni] = ng;
+        gstamp[ni] = stamp;
         parent[ni] = cur;
         push(ng + h(nx, ny), ni);
       }

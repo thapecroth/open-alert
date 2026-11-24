@@ -6,9 +6,11 @@ import {
   extractGymObs,
   extractGymFeatureMaps,
   extractGymRgbFrame,
-  getGymActionSchema,
   bytesToBase64,
 } from "./server/gym";
+import { MCP_TOOLS, FEATURE_MAP_CHANNELS, buildGymSchemaResponse } from "./mcp-schema";
+import { applyGameCommand, validIds } from "./server/dispatch";
+import { diffSnaps } from "./shared/snapdelta";
 import type { C2S, S2C, LobbyPlayer, RoomSummary, OrderKind } from "./shared/protocol";
 import {
   MAX_PLAYERS,
@@ -57,6 +59,7 @@ const PERSIST_LIVE_MS = 3000; // checkpoint every ~3s while simulating
 const PERSIST_PAUSED_MS = 60_000; // slower heartbeat while solo-paused
 const PERSIST_ORE_MS = 30_000; // ore field drifts slowly; 30s is plenty
 const MATCH_STALE_MS = 10 * 60 * 1000; // older than 10min = abandoned, drop it
+const SNAP_KEYFRAME_EVERY = 20; // broadcast keyframe every N snapshots (~4s at 5 Hz) for drift safety
 
 interface PlayerRec {
   id: string;
@@ -75,14 +78,11 @@ interface PlayerRec {
 }
 
 const send = (conn: Connection, msg: S2C) => conn.send(JSON.stringify(msg));
-const ORDER_KINDS = new Set(["move", "amove", "attack", "harvest", "patrol"]);
 const VALID_MAPS = new Set<MapId>(MAP_LIST.map((m) => m.id));
 const VALID_DIFFS = new Set<BotDiff>(["easy", "normal", "brutal"]);
 const VALID_PROFILES = new Set<BotProfile>(["balanced", "rusher", "turtle", "tech"]);
 const VALID_CREDITS = new Set([3000, 5000, 10000, 20000]);
 const VALID_SPEEDS = new Set([0.75, 1, 1.5, 2]);
-const validIds = (v: unknown): number[] =>
-  Array.isArray(v) ? v.filter((n): n is number => Number.isFinite(n)) : [];
 const hasOwn = (o: object, k: unknown): boolean =>
   typeof k === "string" && Object.prototype.hasOwnProperty.call(o, k);
 const isQuotaError = (err: unknown): boolean => {
@@ -97,228 +97,6 @@ const MCP_CORS_HEADERS: Record<string, string> = {
   "access-control-allow-headers": "content-type, accept, mcp-session-id, mcp-protocol-version, authorization",
 };
 
-const ACTIVE_UNITS = (Object.keys(UNITS) as UnitKind[]).filter((k) => !UNITS[k].retired);
-
-const MCP_TOOLS = [
-  {
-    name: "list_live_games",
-    description: "List active and lobby Open Alert multiplayer rooms currently live on the server.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "join_game",
-    description:
-      "Create or join an Open Alert room as a player commander. Optionally pick map, add AI bot(s), and start the match immediately. Returns token, slot, watch_url (spectator link), and play_url.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        room: { type: "string", description: "Room slug (2-32 alphanumeric/hyphen chars). Auto-generated if omitted." },
-        name: { type: "string", description: "Commander callsign (max 16 chars)." },
-        map: { type: "string", enum: MAP_LIST.map((m) => m.id), description: "Map id (lobby only)." },
-        add_bot: {
-          oneOf: [{ type: "boolean" }, { type: "integer", minimum: 1, maximum: MAX_PLAYERS - 1 }],
-          description: `Add 1 (true) or up to ${MAX_PLAYERS - 1} AI bot opponents in lobby.`,
-        },
-        diff: { type: "string", enum: ["easy", "normal", "brutal"], description: "Bot difficulty." },
-        profile: { type: "string", enum: ["balanced", "rusher", "turtle", "tech"], description: "Bot strategy profile." },
-        start: { type: "boolean", description: "Start the match immediately if >= 2 players are in the room." },
-        token: { type: "string", description: "Optional existing player token to reconnect." },
-      },
-    },
-  },
-  {
-    name: "get_game_state",
-    description:
-      "Get full RL Gym parity state (`gym_obs`) plus concise tactical summary for your commander: tick, done, winner, watch_url, credits, power, awaiting placement, production queues, own buildings & units, visible enemies, neutral oil derricks, supply crates, and nearest ore. Optionally include 6x64x64 float32 `feature_maps` and/or 64x64x3 uint8 `rgb_frame`.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        room: { type: "string", description: "Room slug." },
-        token: { type: "string", description: "Your commander token returned by join_game or create_ai_arena." },
-        include_feature_maps: {
-          type: "boolean",
-          description: "If true, include base64-encoded 6x64x64 float32 feature planes (ore, own_units, own_buildings, foe_units, foe_buildings, all_hp).",
-        },
-        include_rgb_frame: {
-          type: "boolean",
-          description: "If true, include base64-encoded 64x64x3 uint8 RGB minimap frame.",
-        },
-      },
-      required: ["room", "token"],
-    },
-  },
-  {
-    name: "build_structure",
-    description:
-      "Start constructing a structure (power, coalplant, fusion, refinery, supplyhub, barracks, radar, factory, airfield, shipyard, depot, techlab, purifier, satlink, superweapon [Nuclear Silo]) or defense (turret, sam, arc, irondome, lasertower, thaad [anti-nuke & anti-hypersonic missile shield]) in your Construction Yard parallel queues (structures & defenses build simultaneously).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        room: { type: "string" },
-        token: { type: "string" },
-        kind: {
-          type: "string",
-          enum: Object.keys(BUILDINGS).filter((k) => !BUILDINGS[k as BuildingKind].noBuild && k !== "conyard"),
-        },
-      },
-      required: ["room", "token", "kind"],
-    },
-  },
-  {
-    name: "place_structure",
-    description:
-      "Place the finished structure or defense currently in `awaiting` / `awaitingDef`. Optional `cat` ('structure' | 'defense') selects which queue; if tx/ty are omitted, automatically scans for a legal valid placement tile near your base.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        room: { type: "string" },
-        token: { type: "string" },
-        tx: { type: "integer", minimum: 0, maximum: 127 },
-        ty: { type: "integer", minimum: 0, maximum: 127 },
-        cat: { type: "string", enum: ["structure", "defense"] },
-      },
-      required: ["room", "token"],
-    },
-  },
-  {
-    name: "train_unit",
-    description: `Queue 1 to 5 active modern units for training at your barracks, war factory, airfield, or naval shipyard. Active units: ${ACTIVE_UNITS.join(", ")}.`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        room: { type: "string" },
-        token: { type: "string" },
-        unit: {
-          type: "string",
-          enum: ACTIVE_UNITS,
-          description: `Active non-retired unit kind: ${ACTIVE_UNITS.join(", ")}.`,
-        },
-        count: { type: "integer", minimum: 1, maximum: 5, default: 1 },
-      },
-      required: ["room", "token", "unit"],
-    },
-  },
-  {
-    name: "command_units",
-    description:
-      "Issue tactical orders (move, amove, attack, patrol, harvest, stop, hold) to specific unit IDs or a named unit group (all_combat, infantry, tanks [tank/himars/railtank], air [fpvdrone/shahed/ewdrone/uav/interceptor/chopper/a10/ac130/stealthbomber/hypersonic], sea [usv/gunboat/destroyer/sub/dreadnought/carrier], harvesters).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        room: { type: "string" },
-        token: { type: "string" },
-        kind: { type: "string", enum: ["move", "amove", "attack", "patrol", "harvest", "stop", "hold"] },
-        x: { type: "number", minimum: 0, maximum: 128 },
-        y: { type: "number", minimum: 0, maximum: 128 },
-        target: { type: "integer", description: "Optional target entity ID for attack orders." },
-        ids: { type: "array", items: { type: "integer" }, description: "Specific unit entity IDs." },
-        group: {
-          type: "string",
-          enum: ["all_combat", "infantry", "tanks", "air", "sea", "harvesters"],
-          description:
-            "Select all your units matching this group if ids omitted (air includes fpvdrone/shahed/ewdrone/uav, sea includes usv, tanks includes himars/railtank).",
-        },
-      },
-      required: ["room", "token", "kind"],
-    },
-  },
-  {
-    name: "special_action",
-    description:
-      "Trigger special commander actions: superweapon (Nuclear Silo strike at x,y — interceptable by enemy THAAD Defense), recon (Radar Scan at x,y), upgrade (War Factory/Barracks/Air Command/Shipyard -> II), sell, repair, rally, chat, or resign.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        room: { type: "string" },
-        token: { type: "string" },
-        action: {
-          type: "string",
-          enum: ["superweapon", "recon", "upgrade", "sell", "repair", "rally", "chat", "resign"],
-        },
-        x: { type: "number" },
-        y: { type: "number" },
-        id: { type: "integer", description: "Target building entity ID (for upgrade/sell/repair/rally)." },
-        text: { type: "string", description: "Chat message text (for action=chat)." },
-      },
-      required: ["room", "token", "action"],
-    },
-  },
-  {
-    name: "create_ai_arena",
-    description:
-      "Create a live AI-vs-AI arena match with two external MCP agent seats (agent_a in slot 0, agent_b in slot 1). Registers live on the Spectator Dashboard (/?watch=1) so humans can watch models compete in 3D, and returns both tokens plus watch_url and dashboard_url.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        room: { type: "string", description: "Room slug (2-32 lowercase alphanumeric/hyphen chars). Auto-generated if omitted." },
-        map: { type: "string", enum: MAP_LIST.map((m) => m.id), description: "Map id (default 'crossroads')." },
-        agent_a: { type: "string", description: "Callsign for slot 0 agent (max 16 chars, default 'Agent-A')." },
-        agent_b: { type: "string", description: "Callsign for slot 1 agent (max 16 chars, default 'Agent-B')." },
-        start: { type: "boolean", description: "Start the match immediately (default true)." },
-        start_credits: { type: "integer", enum: [3000, 5000, 10000, 20000], description: "Starting credits per agent (default 5000)." },
-        game_speed: { type: "number", enum: [0.75, 1, 1.5, 2], description: "Simulation speed multiplier (default 1)." },
-      },
-    },
-  },
-  {
-    name: "get_gym_schema",
-    description:
-      "Return the exact RL Gym observation contract (gym_obs), float32 feature_maps contract ([6,map_h,map_w] — plane dims follow the room's live map), uint8 rgb_frame contract ([map_w,map_h,3]), and rts_action JSON schema shared 1:1 between src/server/gym.ts and live MCP matches for training & finetuning models.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      additionalProperties: false,
-    },
-  },
-] as const;
-
-const FEATURE_MAP_CHANNELS = ["ore", "own_units", "own_buildings", "foe_units", "foe_buildings", "all_hp"] as const;
-
-function buildGymSchemaResponse() {
-  return {
-    gym_obs_contract: {
-      description:
-        "Exact structured RL Gym observation contract shared 1:1 between src/server/gym.ts (GymEnv / extractGymObs) and MCP get_game_state.gym_obs.",
-      fields: {
-        tick: "integer — authoritative simulation tick (10 ticks = 1s at 1x speed)",
-        you: {
-          slot: "integer — your player slot index (0..7)",
-          credits: "integer — current floored credits",
-          pwrHave: "integer — total power generated",
-          pwrUse: "integer — total power consumed",
-          lowPower: "boolean — true when pwrUse > pwrHave (halves production & disables defenses)",
-          eliminated: "boolean — true if your faction has been eliminated",
-          bq: "{ kind: BuildingKind, left: number, total: number }[] — structure build queue (head builds, rest queued)",
-          awaiting: "BuildingKind[] — finished structures stacked for placement",
-          dq: "{ kind: BuildingKind, left: number, total: number }[] — parallel defense build queue",
-          awaitingDef: "BuildingKind[] — finished defenses stacked for placement",
-          queues: "Partial<Record<'barracks'|'factory'|'airfield'|'shipyard', { unit: UnitKind, left: number, total: number, count: number }>>",
-        },
-        ents: "Array<{ id: number, o: number, k: EntKind, x: number, y: number, hp: number, mhp: number, cargo?: number }>",
-        ore: "Array<[x: number, y: number, amount: number]>",
-      },
-    },
-    feature_maps_contract: {
-      shape: "[6, map_h, map_w] — plane dims follow the room's live map (96x96 standard, up to 128x128); each call's feature_maps.shape reports the exact size",
-      dtype: "float32",
-      channels: [...FEATURE_MAP_CHANNELS],
-      encoding: "base64 (little-endian IEEE-754 Float32Array, C-contiguous [channel, y, x])",
-    },
-    rgb_frame_contract: {
-      w: "map_w — live map width",
-      h: "map_h — live map height",
-      c: 3,
-      dtype: "uint8",
-      encoding: "base64 (row-major RGB Uint8Array of w*h*3 bytes)",
-    },
-    action_schema: getGymActionSchema(),
-  };
-}
-
 export class GameRoom extends Server<Env> {
   phase: "lobby" | "playing" | "ended" = "lobby";
   map: MapId = "crossroads";
@@ -327,6 +105,7 @@ export class GameRoom extends Server<Env> {
   connPlayer = new Map<string, string>(); // conn id -> player id
   world: World | null = null;
   alarmActive = false;
+  alarmTarget = 0; // ideal-timeline timestamp the alarm loop schedules against
   paused = false; // solo-vs-bots freeze: alarm keeps rescheduling, sim skips stepping
   resetTimer: ReturnType<typeof setTimeout> | null = null;
   lastTickAt = 0;
@@ -334,6 +113,16 @@ export class GameRoom extends Server<Env> {
   lastOrePersistAt = 0;
   endSent = false;
   bots = new Map<string, AIBot>(); // player id -> AI brain, ticked once per game tick
+  // ---- delta-compressed snapshot stream (v2) ----
+  // snapBase retains the last broadcast full state (immutable — snapshot()
+  // rebuilds it fresh every frame) as the diffing baseline AND the join-
+  // keyframe source. Keyed to the World instance so any new/reset/restored
+  // world automatically forces a fresh keyframe sequence.
+  snapSeq = 0;
+  snapBase: { world: World; tick: number; snap: ReturnType<World["snapshot"]> } | null = null;
+  private joinKeyJson: string | null = null;
+  private joinKeySeq = -1;
+  private connV2 = new Set<string>(); // conn ids that joined with v:2 (delta-stream capable)
   private dir = new Map<string, RoomSummary>(); // used only when this.name === "__directory"
 
   // ---------- match persistence: survive DO restarts/evictions ----------
@@ -427,6 +216,7 @@ export class GameRoom extends Server<Env> {
   onClose(conn: Connection, code?: number) {
     const pid = this.connPlayer.get(conn.id);
     this.connPlayer.delete(conn.id);
+    this.connV2.delete(conn.id);
     if (!pid) return;
     const p = this.players.get(pid);
     if (!p) return;
@@ -469,8 +259,10 @@ export class GameRoom extends Server<Env> {
     if (!m || typeof m !== "object" || typeof (m as { t?: unknown }).t !== "string") return;
     try {
       this.dispatch(conn, m);
-    } catch {
-      // never let a malformed command take down the connection or the room
+    } catch (err) {
+      // never let a malformed command take down the connection or the room —
+      // but log it: a throwing handler is a bug, silence hides regressions
+      console.error("dispatch error:", err);
     }
   }
 
@@ -489,7 +281,7 @@ export class GameRoom extends Server<Env> {
         }
         return;
       case "join":
-        return this.handleJoin(conn, m.name, m.token, m.spectate);
+        return this.handleJoin(conn, m.name, m.token, m.spectate, m.v);
       case "ready":
         if (me && this.phase === "lobby") {
           me.ready = !!m.ready;
@@ -626,146 +418,35 @@ export class GameRoom extends Server<Env> {
         return;
     }
 
-    // in-game commands
+    // in-game commands — validation + application shared with the local solo
+    // room via src/server/dispatch.ts so both transports enforce identical rules
     if (!me || me.spectator || !this.world || this.phase !== "playing") return;
     const slot = me.slot;
-    let err: string | null = null;
-    switch (m.t) {
-      case "order":
-        if (typeof m.kind !== "string" || !ORDER_KINDS.has(m.kind) || !Number.isFinite(m.x) || !Number.isFinite(m.y)) {
-          err = "bad order";
-          break;
-        }
-        err = this.world.cmdOrder(
-          slot,
-          validIds(m.ids),
-          m.kind,
-          m.x,
-          m.y,
-          Number.isFinite(m.target) ? m.target : undefined,
-          !!m.queue,
-        );
-        break;
-      case "stop":
-        this.world.cmdStop(slot, validIds(m.ids));
-        break;
-      case "hold":
-        this.world.cmdHold(slot, validIds(m.ids));
-        break;
-      case "drive":
-        if (
-          Number.isFinite(m.id) &&
-          Number.isFinite(m.fwd) &&
-          Number.isFinite(m.strafe) &&
-          Number.isFinite(m.yaw)
-        ) {
-          this.world.cmdDrive(
-            slot,
-            m.id,
-            m.fwd,
-            m.strafe,
-            m.yaw,
-            !!m.fire,
-            Number.isFinite(m.aimX) ? m.aimX : undefined,
-            Number.isFinite(m.aimY) ? m.aimY : undefined,
-            Number.isFinite(m.aimTarget) ? m.aimTarget : undefined,
-            Number.isFinite(m.alt) ? m.alt : undefined,
-            !!m.sprint,
-            Number.isFinite(m.wpn) ? m.wpn : undefined,
-            Number.isFinite(m.lock) ? m.lock : undefined,
-          );
-        }
-        break;
-      case "driveExit":
-        if (Number.isFinite(m.id)) this.world.cmdDriveExit(slot, m.id);
-        break;
-      case "recon":
-        err = Number.isFinite(m.x) && Number.isFinite(m.y) ? this.world.cmdRecon(slot, m.x, m.y) : "bad coords";
-        break;
-      case "build":
-        err = typeof m.kind === "string" ? this.world.cmdBuild(slot, m.kind) : "bad kind";
-        break;
-      case "buildCancel": {
-        const cat: BuildCategory | undefined = m.cat === "structure" || m.cat === "defense" ? m.cat : undefined;
-        this.world.cmdBuildCancel(
-          slot,
-          cat,
-          Number.isFinite(m.index) ? m.index : 0,
-          m.awaiting === true,
-          typeof m.kind === "string" ? (m.kind as BuildingKind) : undefined,
-        );
-        break;
+    const cmdErr = applyGameCommand(this.world, slot, m);
+    if (cmdErr !== undefined) {
+      if (cmdErr) send(conn, { t: "deny", msg: cmdErr });
+      return;
+    }
+    if (m.t === "pause") {
+      // Pause only works when the requester is the sole human — solo games vs bots
+      let humans = 0;
+      for (const [opid, p] of this.players) {
+        if (!p.spectator && !this.bots.has(opid)) humans++;
       }
-      case "place": {
-        const cat: BuildCategory | undefined = m.cat === "structure" || m.cat === "defense" ? m.cat : undefined;
-        const kind = typeof m.kind === "string" ? (m.kind as BuildingKind) : undefined;
-        err =
-          Number.isFinite(m.tx) && Number.isFinite(m.ty)
-            ? this.world.cmdPlace(slot, Math.floor(m.tx), Math.floor(m.ty), cat, kind)
-            : "bad coords";
-        break;
-      }
-      case "bridge": {
-        err =
-          Number.isFinite(m.id) && Number.isFinite(m.tx) && Number.isFinite(m.ty)
-            ? this.world.cmdBridge(slot, Math.floor(m.id), Math.floor(m.tx), Math.floor(m.ty))
-            : "bad bridge order";
-        break;
-      }
-      case "train":
-        err = typeof m.unit === "string" ? this.world.cmdTrain(slot, m.unit) : "bad unit";
-        break;
-      case "trainCancel":
-        this.world.cmdTrainCancel(
-          slot,
-          typeof m.unit === "string" ? m.unit : undefined,
-          m.cat === "barracks" || m.cat === "factory" || m.cat === "airfield" || m.cat === "shipyard" ? m.cat : undefined,
-          Number.isFinite(m.index) ? m.index : undefined,
-        );
-        break;
-      case "sell":
-        err = Number.isFinite(m.id) ? this.world.cmdSell(slot, m.id) : "bad id";
-        break;
-      case "repair":
-        err = Number.isFinite(m.id) ? this.world.cmdRepair(slot, m.id) : "bad id";
-        break;
-      case "upgrade":
-        err = Number.isFinite(m.id) ? this.world.cmdUpgrade(slot, m.id) : "bad id";
-        break;
-      case "rally":
-        err =
-          Number.isFinite(m.id) && Number.isFinite(m.x) && Number.isFinite(m.y)
-            ? this.world.cmdRally(slot, m.id, m.x, m.y)
-            : "bad coords";
-        break;
-      case "superweapon":
-        err =
-          Number.isFinite(m.x) && Number.isFinite(m.y)
-            ? this.world.cmdSuperweapon(slot, m.x, m.y)
-            : "bad coords";
-        break;
-      case "resign":
-        this.world.cmdResign(slot);
-        break;
-      case "pause": {
-        // Pause only works when the requester is the sole human — solo games vs bots
-        let humans = 0;
-        for (const [opid, p] of this.players) {
-          if (!p.spectator && !this.bots.has(opid)) humans++;
-        }
-        if (humans > 1) {
-          send(conn, { t: "deny", msg: "pause only works in solo games vs bots" });
-          return;
-        }
-        this.paused = !!m.paused;
-        this.broadcast(JSON.stringify({ t: "paused", paused: this.paused } satisfies S2C));
+      if (humans > 1) {
+        send(conn, { t: "deny", msg: "pause only works in solo games vs bots" });
         return;
       }
+      this.paused = !!m.paused;
+      this.broadcast(JSON.stringify({ t: "paused", paused: this.paused } satisfies S2C));
     }
-    if (err) send(conn, { t: "deny", msg: err });
   }
 
-  private handleJoin(conn: Connection, name: string, token?: string, spectate?: boolean) {
+  private handleJoin(conn: Connection, name: string, token?: string, spectate?: boolean, v?: number) {
+    // protocol v2 = delta-stream capable; absent/older means legacy full-snapshots-only
+    // (the MCP stdio bridge and older cached clients join without v and must not break)
+    if (v === 2) this.connV2.add(conn.id);
+    else this.connV2.delete(conn.id);
     const clean = String(name || "Commander").slice(0, 16).trim() || "Commander";
     const tok = typeof token === "string" && token.length > 0 && token.length <= 64 ? token : undefined;
 
@@ -969,6 +650,12 @@ export class GameRoom extends Server<Env> {
         .filter((x) => !x.spectator)
         .map((x) => ({ id: x.id, slot: x.slot, name: x.name, team: x.team })),
     });
+    // sync the delta stream immediately — the joiner must not wait for the next
+    // broadcast keyframe. Reliable+ordered delivery guarantees every frame after
+    // this one applies cleanly onto it. Legacy clients simply see one extra full
+    // snapshot, which is exactly their normal frame shape.
+    const key = this.joinKeyframeJson();
+    if (key) conn.send(key);
   }
 
   private addBot(diff: BotDiff = "normal", profile: BotProfile = "balanced"): boolean {
@@ -1038,7 +725,8 @@ export class GameRoom extends Server<Env> {
     // where cumulative setInterval CPU silently resets a DO isolate after ~2s of CPU.
     if (this.phase === "playing" && this.world) {
       this.alarmActive = true;
-      void this.ctx.storage.setAlarm(Date.now() + 50).catch(() => {});
+      this.alarmTarget = Date.now() + 50;
+      void this.ctx.storage.setAlarm(this.alarmTarget).catch(() => {});
     }
   }
 
@@ -1055,11 +743,86 @@ export class GameRoom extends Server<Env> {
       this.gameTick();
     }
     if (this.phase === "playing" && this.world) {
-      await this.ctx.storage.setAlarm(Date.now() + this.stepIntervalMs()).catch(() => {});
+      // Schedule against the ideal timeline (last target + interval), NOT
+      // now+interval — handler execution time must not stretch the cadence or
+      // the sim runs slow-motion under load. Clamp to now+20ms minimum so a
+      // hopelessly-behind timeline shifts forward instead of catch-up spiraling.
+      const interval = this.stepIntervalMs();
+      const now = Date.now();
+      let target = (this.alarmTarget || now) + interval;
+      if (target < now + 20) target = now + 20;
+      this.alarmTarget = target;
+      await this.ctx.storage.setAlarm(target).catch(() => {});
     } else {
       this.alarmActive = false;
       await this.ctx.storage.deleteAlarm().catch(() => {});
     }
+  }
+
+  // Delta-compressed snapshot fan-out. The wire is reliable+ordered, so one
+  // server-side delta stream works for every v2 connection: sparse per-ent
+  // partials most frames, a full keyframe every SNAP_KEYFRAME_EVERY for drift
+  // safety. Legacy connections (no v:2 join — MCP bridge, older cached clients)
+  // still receive a full snapshot every frame, encoded once per frame and only
+  // when such a connection exists.
+  private broadcastSnap(w: World) {
+    const snap = w.snapshot();
+    this.snapSeq++;
+    const seq = this.snapSeq;
+    const tick = w.tick;
+    const base = this.snapBase && this.snapBase.world === w ? this.snapBase : null;
+    const isKey = !base || seq % SNAP_KEYFRAME_EVERY === 0;
+    const keyJson = isKey ? JSON.stringify({ t: "snap", seq, key: true, tick, ...snap } satisfies S2C) : null;
+    let deltaJson: string | null = null;
+    let fullJson: string | null = null;
+    for (const conn of this.getConnections()) {
+      if (this.connV2.has(conn.id)) {
+        if (keyJson) {
+          conn.send(keyJson);
+        } else {
+          deltaJson ??= JSON.stringify({
+            t: "snapd",
+            seq,
+            tick,
+            ...diffSnaps(base!.snap, snap),
+            events: snap.events,
+          } satisfies S2C);
+          conn.send(deltaJson);
+        }
+      } else if (keyJson) {
+        // keyframe payloads ARE the legacy full-snapshot shape — one encoding serves both
+        conn.send(keyJson);
+      } else {
+        fullJson ??= JSON.stringify({ t: "snap", seq, tick, ...snap } satisfies S2C);
+        conn.send(fullJson);
+      }
+    }
+    this.snapBase = { world: w, tick, snap };
+  }
+
+  // Immediate keyframe for a (re)joining connection, built from the retained
+  // baseline — without it a mid-stream joiner would wait up to ~4s for the next
+  // broadcast keyframe with no state. Events are stripped: they were transient
+  // visual effects of a frame the joiner never saw, and state is what matters.
+  // Encoded lazily once per baseline (joins are rare, frames are not).
+  private joinKeyframeJson(): string | null {
+    const base = this.snapBase;
+    if (!base || (this.world && base.world !== this.world)) return null;
+    if (this.joinKeySeq !== this.snapSeq) {
+      this.joinKeyJson = JSON.stringify({
+        t: "snap",
+        seq: this.snapSeq,
+        key: true,
+        tick: base.tick,
+        ents: base.snap.ents,
+        crates: base.snap.crates,
+        bridges: base.snap.bridges,
+        players: base.snap.players,
+        events: [],
+      } satisfies S2C);
+      this.joinKeySeq = this.snapSeq;
+    }
+    return this.joinKeyJson;
   }
 
   private gameTick() {
@@ -1085,8 +848,7 @@ export class GameRoom extends Server<Env> {
       }
       w.step();
       if (w.tick % SNAP_EVERY === 0) {
-        const snap = w.snapshot();
-        this.broadcast(JSON.stringify({ t: "snap", tick: w.tick, ...snap } satisfies S2C));
+        this.broadcastSnap(w);
       }
       if (w.tick % 50 === 0) {
         this.reportDirectory();

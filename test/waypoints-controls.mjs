@@ -37,6 +37,8 @@ const browser = await puppeteer.launch({
 });
 
 const page = await browser.newPage();
+// Tests exercise Classic RTS hotkeys (A/S/X) — pin the mode explicitly since WASD-pan is now the default.
+await page.evaluateOnNewDocument(() => { try { localStorage.setItem("oa-wasd", "0"); } catch {} });
 const pageErrs = [];
 page.on("pageerror", (e) => {
   pageErrs.push(e.message);

@@ -2,6 +2,7 @@ import PartySocket from "partysocket";
 import type { MapId } from "../shared/gamedefs";
 import type { C2S, S2C } from "../shared/protocol";
 import { partyName } from "../shared/protocol";
+import { SnapReassembler } from "../shared/snapdelta";
 import { LocalRoom } from "./localnet";
 
 export class Net {
@@ -15,10 +16,18 @@ export class Net {
   private room: string;
   private local: LocalRoom | null = null;
   private hbTimer: ReturnType<typeof setInterval>;
+  private snaprx = new SnapReassembler();
   private everConnected = false;
   private failCount = 0;
   private joinName = "Commander";
   private joinToken = "";
+
+  private ingest(m: S2C): S2C | null {
+    if (m.t === "snap") return this.snaprx.keyframe(m);
+    if (m.t === "snapd") return this.snaprx.delta(m);
+    if (m.t === "init") this.snaprx.reset(); // new match/rejoin — ent ids restart, server resends a keyframe
+    return m;
+  }
 
   setIdentity(name: string, token: string) {
     this.joinName = name;
@@ -39,7 +48,8 @@ export class Net {
       this.failCount = 0;
       this.lastRecvAt = Date.now();
       try {
-        this.onMsg(JSON.parse(ev.data as string));
+        const m = this.ingest(JSON.parse(ev.data as string));
+        if (m) this.onMsg(m);
       } catch (err) {
         console.error("ws message handler error:", err);
       }
@@ -95,7 +105,8 @@ export class Net {
     this.local.onMsg = (m) => {
       this.lastRecvAt = Date.now();
       try {
-        this.onMsg(m);
+        const ingested = this.ingest(m);
+        if (ingested) this.onMsg(ingested);
       } catch (err) {
         console.error("local message handler error:", err);
       }
@@ -121,7 +132,8 @@ export class Net {
     this.local.onMsg = (m) => {
       this.lastRecvAt = Date.now();
       try {
-        this.onMsg(m);
+        const ingested = this.ingest(m);
+        if (ingested) this.onMsg(ingested);
       } catch (err) {
         console.error("local message handler error:", err);
       }
@@ -135,6 +147,7 @@ export class Net {
   }
 
   send(m: C2S) {
+    if (m.t === "join") m = { ...m, v: 2 };
     if (this.localMode && this.local) {
       this.local.send(m);
       return;

@@ -2,10 +2,19 @@
 /**
  * Open Alert — Standalone Stdio MCP Server for Claude Code & MCP Clients
  *
- * Zero external npm dependencies (requires Node.js >= 22 with built-in WebSocket & fetch).
- * Speaks MCP JSON-RPC 2.0 (protocol 2024-11-05) over line-delimited stdio.
- * Connects directly to any Open Alert server over PartyKit WebSocket so Claude Code
- * gets real-time snapshots and zero-latency RTS orders.
+ * Zero external npm dependencies at runtime (requires Node.js >= 22 with built-in
+ * WebSocket & fetch; Node >= 24 recommended). Speaks MCP JSON-RPC 2.0 (protocol
+ * 2024-11-05) over line-delimited stdio. Connects directly to any Open Alert
+ * server over PartyKit WebSocket so Claude Code gets real-time snapshots and
+ * zero-latency RTS orders.
+ *
+ * GAME DEFINITIONS ARE SINGLE-SOURCED: at startup the REAL defs are loaded straight
+ * from src/shared/gamedefs.ts — never mirrored by hand. Loader cascade:
+ *   1. native Node type-stripping import of the .ts file (Node >= 23.6, zero deps)
+ *   2. esbuild bundle at startup (transitive dep of vite/wrangler in node_modules)
+ *   3. typescript transpileModule fallback (typescript is a devDependency)
+ * If gamedefs.ts gains new units/buildings/maps/constants, this server picks them
+ * up on the next restart — no drift possible.
  *
  * Environment variables:
  *   OA_URL   Base HTTP(S) URL of the Open Alert server
@@ -17,89 +26,135 @@ import readline from "node:readline";
 import crypto from "node:crypto";
 
 const PROTOCOL_VERSION = "2024-11-05";
-const SERVER_INFO = { name: "open-alert-mcp", version: "1.0.0" };
+const SERVER_INFO = { name: "open-alert-mcp", version: "1.1.0" };
 const BASE_URL = (process.env.OA_URL || "https://open-alert.thapecroth.workers.dev").replace(/\/+$/, "");
 const WS_BASE_URL = BASE_URL.replace(/^https:/i, "wss:").replace(/^http:/i, "ws:");
 
-const MAP_W = 64;
-const MAP_H = 64;
-const TICK_MS = 100;
-const SHIPYARD_BUILD_DIST = 13;
 const PARTY_NAME = "game-room";
 
 const log = (...args) => {
   process.stderr.write(`[open-alert-mcp] ${args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ")}\n`);
 };
 
-// ---------- Game Definitions (mirrored from src/shared/gamedefs.ts) ----------
+// ---------- Game Definitions (single-sourced from src/shared/gamedefs.ts) ----------
 
-const BUILDINGS = {
-  conyard: { w: 3, h: 3, cost: 0, hp: 1000, power: 40, noBuild: true },
-  power: { w: 2, h: 2, cost: 300, hp: 400, power: 100 },
-  refinery: { w: 3, h: 2, cost: 600, hp: 700, power: -35 },
-  barracks: { w: 2, h: 2, cost: 500, hp: 500, power: -20 },
-  radar: { w: 2, h: 2, cost: 700, hp: 500, power: -45, requires: ["barracks"] },
-  factory: { w: 3, h: 3, cost: 1000, hp: 900, power: -30 },
-  factory2: { w: 3, h: 3, cost: 0, hp: 1300, power: -40, noBuild: true },
-  airfield: { w: 3, h: 2, cost: 1000, hp: 750, power: -40, requires: ["radar"] },
-  shipyard: { w: 3, h: 3, cost: 1000, hp: 950, power: -35, requires: ["power"], waterOnly: true },
-  techlab: { w: 3, h: 3, cost: 1800, hp: 800, power: -60, requires: ["radar", "factory"] },
-  turret: { w: 1, h: 1, cost: 500, hp: 400, power: -25 },
-  arc: { w: 1, h: 1, cost: 800, hp: 550, power: -40, requires: ["radar"] },
-  purifier: { w: 2, h: 2, cost: 900, hp: 500, power: -25, requires: ["techlab"] },
-  depot: { w: 3, h: 2, cost: 800, hp: 700, power: -30, requires: ["factory"] },
-  superweapon: { w: 3, h: 3, cost: 2500, hp: 1100, power: -100, requires: ["techlab"], limit: 1 },
-  derrick: { w: 2, h: 2, cost: 0, hp: 850, power: 0, noBuild: true },
-};
+async function loadGameDefs() {
+  const defsUrl = new URL("../src/shared/gamedefs.ts", import.meta.url);
+  const errors = [];
+  const valid = (mod) => mod && mod.BUILDINGS && mod.UNITS && mod.MAP_LIST && typeof mod.getMapLayout === "function";
+
+  // 1) Native type-stripping import (Node >= 23.6; zero dependencies — same
+  //    pattern the repo's own test/*.mjs files use). Handles additive changes
+  //    with zero startup cost. Fails fast on older Node or non-erasable TS
+  //    syntax (enums/namespaces), in which case we fall through.
+  try {
+    const mod = await import(defsUrl.href);
+    if (valid(mod)) return { mod, via: "native-strip-types" };
+    errors.push("native import: gamedefs module missing expected exports");
+  } catch (err) {
+    errors.push(`native import: ${err?.message || err}`);
+  }
+
+  // 2) esbuild bundle — handles ALL TypeScript syntax and any future internal
+  //    imports gamedefs.ts may gain. esbuild ships as a transitive dep of
+  //    vite/wrangler in this repo's node_modules.
+  try {
+    const esbuild = await import("esbuild");
+    const { fileURLToPath } = await import("node:url");
+    const result = esbuild.buildSync({
+      entryPoints: [fileURLToPath(defsUrl)],
+      bundle: true,
+      write: false,
+      format: "esm",
+      platform: "neutral",
+      target: "es2022",
+      logLevel: "silent",
+    });
+    const code = result.outputFiles[0].text;
+    const mod = await import(`data:text/javascript;charset=utf-8,${encodeURIComponent(code)}`);
+    if (valid(mod)) return { mod, via: "esbuild-bundle" };
+    errors.push("esbuild bundle: gamedefs module missing expected exports");
+  } catch (err) {
+    errors.push(`esbuild: ${err?.message || err}`);
+  }
+
+  // 3) typescript transpileModule — typescript is a direct devDependency.
+  try {
+    const tsMod = await import("typescript");
+    const ts = tsMod.default ?? tsMod;
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const src = readFileSync(fileURLToPath(defsUrl), "utf8");
+    const out = ts.transpileModule(src, {
+      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+    });
+    const mod = await import(`data:text/javascript;charset=utf-8,${encodeURIComponent(out.outputText)}`);
+    if (valid(mod)) return { mod, via: "typescript-transpile" };
+    errors.push("typescript transpile: gamedefs module missing expected exports");
+  } catch (err) {
+    errors.push(`typescript: ${err?.message || err}`);
+  }
+
+  throw new Error(
+    "Could not load game definitions from src/shared/gamedefs.ts.\n" +
+      errors.map((e) => `  - ${e}`).join("\n") +
+      "\nFix: use Node >= 24, or run `npm install` in the open-alert repo so esbuild/typescript are available.",
+  );
+}
+
+const { mod: gd, via: defsVia } = await loadGameDefs();
+
+const BUILDINGS = gd.BUILDINGS;
+const UNITS = gd.UNITS;
+const MAP_LIST = gd.MAP_LIST;
+const UPGRADE_PATHS = gd.UPGRADE_PATHS ?? {};
+const TICK_MS = gd.TICK_MS ?? 100;
+const SHIPYARD_BUILD_DIST = gd.SHIPYARD_BUILD_DIST ?? 13;
+const DEFAULT_MAP_W = gd.MAP_W ?? 64; // design-grid default — real per-map dims come from MAP_LIST / live init
+const DEFAULT_MAP_H = gd.MAP_H ?? 64;
 
 const BUILDABLE_KINDS = Object.entries(BUILDINGS)
   .filter(([, d]) => !d.noBuild)
   .map(([k]) => k);
 
-const UNITS = {
-  infantry: { cost: 100, dmg: 6, domain: "land", trainsAt: "barracks", group: "infantry" },
-  engineer: { cost: 500, dmg: 0, domain: "land", trainsAt: "barracks", group: "infantry" },
-  rocket: { cost: 300, dmg: 11, domain: "land", trainsAt: "barracks", requires: "radar", group: "infantry" },
-  tank: { cost: 700, dmg: 22, domain: "land", trainsAt: "factory", group: "tanks" },
-  arty: { cost: 1100, dmg: 42, domain: "land", trainsAt: "factory", requires: "radar", group: "tanks" },
-  heavy: { cost: 1100, dmg: 36, domain: "land", trainsAt: "factory", requires: "factory2", group: "tanks" },
-  spider: { cost: 500, dmg: 9, domain: "land", trainsAt: "factory", requires: "factory2", group: "tanks" },
-  harvester: { cost: 1400, dmg: 0, domain: "land", trainsAt: "factory", requires: "refinery", group: "harvesters" },
-  interceptor: { cost: 900, dmg: 26, domain: "air", trainsAt: "airfield", group: "air" },
-  chopper: { cost: 1100, dmg: 22, domain: "air", trainsAt: "airfield", group: "air" },
-  bomber: { cost: 1600, dmg: 80, domain: "air", trainsAt: "airfield", requires: "techlab", group: "air" },
-  zeppelin: { cost: 2200, dmg: 135, domain: "air", trainsAt: "airfield", requires: "techlab", group: "air" },
-  gunboat: { cost: 600, dmg: 16, domain: "sea", trainsAt: "shipyard", group: "sea" },
-  destroyer: { cost: 1100, dmg: 32, domain: "sea", trainsAt: "shipyard", group: "sea" },
-  sub: { cost: 1200, dmg: 52, domain: "sea", trainsAt: "shipyard", requires: "radar", group: "sea" },
-  dreadnought: { cost: 2200, dmg: 92, domain: "sea", trainsAt: "shipyard", requires: "techlab", group: "sea" },
-};
-
 const UNIT_KINDS = Object.keys(UNITS);
+const MAP_IDS = MAP_LIST.map((m) => m.id);
+const MAP_META = new Map(MAP_LIST.map((m) => [m.id, m]));
+const NAVAL_MAPS = MAP_LIST.filter((m) => m.naval).map((m) => m.id);
+// Largest dimension across all maps — used only as a loose upper bound in tool
+// schemas (the server validates authoritative per-map bounds).
+const MAX_MAP_DIM = Math.max(DEFAULT_MAP_W, ...MAP_LIST.map((m) => Math.max(m.w ?? 0, m.h ?? 0)));
+// Human-readable summary of actual map dimensions, e.g. "96x96/128x128" — generated
+// from MAP_LIST so it can never go stale when maps are added or resized.
+const MAP_DIM_SUMMARY = [...new Set(MAP_LIST.map((m) => `${m.w ?? DEFAULT_MAP_W}x${m.h ?? DEFAULT_MAP_H}`))].join("/") || `${DEFAULT_MAP_W}x${DEFAULT_MAP_H}`;
 
-const MAP_IDS = [
-  "crossroads",
-  "canyon",
-  "basin",
-  "tundra",
-  "fortress",
-  "jungle",
-  "islands",
-  "oasis",
-  "archipelago",
-  "coastline",
-  "atlantis",
-  "shipwreck",
-  "volcano",
-  "oilrig",
-  "cybergrid",
-];
+// Inverse upgrade map for tech-prerequisite satisfaction, mirroring world.ts
+// hasBuilding(): owning the upgraded (MKII) form of a prerequisite satisfies it.
+// Prefer the canonical table from gamedefs when present; otherwise derive it
+// single-step from UPGRADE_PATHS (same shape: base kind -> upgraded kind).
+const UPGRADED_OF =
+  gd.UPGRADED_OF && typeof gd.UPGRADED_OF === "object"
+    ? gd.UPGRADED_OF
+    : Object.fromEntries(Object.values(UPGRADE_PATHS).map((p) => [p.from, p.to]));
+
+function ownsOrUpgraded(ownedKinds, kind) {
+  if (ownedKinds.has(kind)) return true;
+  const up = UPGRADED_OF[kind];
+  if (up && ownedKinds.has(up)) return true;
+  // world.ts power-lineage rule: upgraded power plants (coal/fusion) count as a Power Plant
+  if (kind === "power" && (ownedKinds.has("coalplant") || ownedKinds.has("fusion"))) return true;
+  return false;
+}
 
 const isBuilding = (k) => Object.prototype.hasOwnProperty.call(BUILDINGS, k);
-const tileIdx = (x, y) => y * MAP_W + x;
 const r1 = (n) => Math.round(n * 10) / 10;
 
-// ---------- Terrain Geometry (for accurate placement hints) ----------
+function mapDims(mapId) {
+  const meta = MAP_META.get(mapId);
+  return { w: meta?.w ?? DEFAULT_MAP_W, h: meta?.h ?? DEFAULT_MAP_H };
+}
+
+// ---------- Terrain Geometry (exact server geometry via real getMapLayout) ----------
 
 const terrainCache = new Map();
 
@@ -107,132 +162,88 @@ function getTerrainSets(mapId = "crossroads") {
   const cached = terrainCache.get(mapId);
   if (cached) return cached;
 
-  const cliff = new Set();
-  const water = new Set();
-  const addRect = (set, x0, y0, w, h) => {
-    for (let y = y0; y < y0 + h; y++) {
-      for (let x = x0; x < x0 + w; x++) {
-        if (x >= 0 && y >= 0 && x < MAP_W && y < MAP_H) set.add(tileIdx(x, y));
-      }
-    }
-  };
-  const clearRect = (set, x0, y0, w, h) => {
-    for (let y = y0; y < y0 + h; y++) {
-      for (let x = x0; x < x0 + w; x++) {
-        if (x >= 0 && y >= 0 && x < MAP_W && y < MAP_H) set.delete(tileIdx(x, y));
-      }
-    }
-  };
-
-  if (mapId === "crossroads") {
-    addRect(cliff, 22, 16, 4, 3); addRect(cliff, 38, 16, 4, 3);
-    addRect(cliff, 22, 45, 4, 3); addRect(cliff, 38, 45, 4, 3);
-    addRect(cliff, 15, 29, 3, 6); addRect(cliff, 46, 29, 3, 6);
-  } else if (mapId === "canyon") {
-    addRect(cliff, 29, 10, 4, 15); addRect(cliff, 29, 39, 4, 15);
-    addRect(cliff, 18, 28, 3, 8); addRect(cliff, 43, 28, 3, 8);
-  } else if (mapId === "basin") {
-    addRect(cliff, 21, 20, 3, 3); addRect(cliff, 40, 20, 3, 3);
-    addRect(cliff, 21, 41, 3, 3); addRect(cliff, 40, 41, 3, 3);
-  } else if (mapId === "tundra") {
-    addRect(cliff, 17, 29, 10, 4); addRect(cliff, 37, 29, 10, 4);
-    addRect(cliff, 29, 14, 6, 4); addRect(cliff, 29, 46, 6, 4);
-  } else if (mapId === "fortress") {
-    addRect(cliff, 22, 22, 7, 2); addRect(cliff, 35, 22, 7, 2);
-    addRect(cliff, 22, 40, 7, 2); addRect(cliff, 35, 40, 7, 2);
-    addRect(cliff, 22, 24, 2, 5); addRect(cliff, 22, 35, 2, 5);
-    addRect(cliff, 40, 24, 2, 5); addRect(cliff, 40, 35, 2, 5);
-  } else if (mapId === "jungle") {
-    addRect(cliff, 18, 17, 6, 3); addRect(cliff, 22, 20, 4, 3);
-    addRect(cliff, 40, 44, 6, 3); addRect(cliff, 38, 41, 4, 3);
-    addRect(cliff, 40, 17, 6, 3); addRect(cliff, 38, 20, 4, 3);
-    addRect(cliff, 18, 44, 6, 3); addRect(cliff, 22, 41, 4, 3);
-  } else if (mapId === "islands") {
-    addRect(water, 26, 0, 12, 12); addRect(water, 26, 17, 12, 9);
-    addRect(water, 26, 38, 12, 9); addRect(water, 26, 52, 12, 12);
-    addRect(water, 0, 26, 12, 12); addRect(water, 17, 26, 9, 12);
-    addRect(water, 38, 26, 9, 12); addRect(water, 52, 26, 12, 12);
-    clearRect(water, 30, 17, 4, 9); clearRect(water, 30, 38, 4, 9);
-    clearRect(water, 17, 30, 9, 4); clearRect(water, 38, 30, 9, 4);
-    addRect(water, 13, 0, 13, 6); addRect(water, 38, 0, 13, 6);
-    addRect(water, 13, 58, 13, 6); addRect(water, 38, 58, 13, 6);
-  } else if (mapId === "archipelago") {
-    addRect(water, 0, 0, MAP_W, MAP_H);
-    clearRect(water, 0, 0, 18, 18); clearRect(water, 46, 0, 18, 18);
-    clearRect(water, 0, 46, 18, 18); clearRect(water, 46, 46, 18, 18);
-    clearRect(water, 25, 25, 14, 14);
-    clearRect(water, 30, 14, 4, 12); clearRect(water, 30, 38, 4, 12);
-    clearRect(water, 14, 30, 12, 4); clearRect(water, 38, 30, 12, 4);
-    clearRect(water, 13, 17, 4, 14); clearRect(water, 47, 17, 4, 14);
-    clearRect(water, 13, 33, 4, 14); clearRect(water, 47, 33, 4, 14);
-    clearRect(water, 29, 7, 6, 7); clearRect(water, 29, 50, 6, 7);
-    clearRect(water, 7, 29, 7, 6); clearRect(water, 50, 29, 7, 6);
-    addRect(cliff, 26, 26, 2, 2); addRect(cliff, 36, 26, 2, 2);
-    addRect(cliff, 26, 36, 2, 2); addRect(cliff, 36, 36, 2, 2);
-  } else if (mapId === "coastline") {
-    addRect(water, 23, 0, 18, MAP_H);
-    clearRect(water, 23, 12, 18, 5); clearRect(water, 23, 29, 18, 6);
-    clearRect(water, 23, 47, 18, 5);
-    addRect(water, 14, 0, 9, 8); addRect(water, 41, 0, 9, 8);
-    addRect(water, 14, 56, 9, 8); addRect(water, 41, 56, 9, 8);
-    addRect(cliff, 18, 22, 3, 5); addRect(cliff, 43, 22, 3, 5);
-    addRect(cliff, 18, 37, 3, 5); addRect(cliff, 43, 37, 3, 5);
-  } else if (mapId === "atlantis") {
-    addRect(water, 0, 0, MAP_W, MAP_H);
-    clearRect(water, 0, 0, 19, 19); clearRect(water, 45, 0, 19, 19);
-    clearRect(water, 0, 45, 19, 19); clearRect(water, 45, 45, 19, 19);
-    clearRect(water, 24, 24, 16, 16);
-    clearRect(water, 19, 29, 6, 6); clearRect(water, 39, 29, 6, 6);
-    clearRect(water, 29, 19, 6, 6); clearRect(water, 29, 39, 6, 6);
-    clearRect(water, 14, 19, 5, 12); clearRect(water, 45, 33, 5, 12);
-    clearRect(water, 45, 19, 5, 12); clearRect(water, 14, 33, 5, 12);
-    addRect(cliff, 25, 25, 2, 2); addRect(cliff, 37, 25, 2, 2);
-    addRect(cliff, 25, 37, 2, 2); addRect(cliff, 37, 37, 2, 2);
-  } else if (mapId === "shipwreck") {
-    addRect(water, 0, 0, MAP_W, MAP_H);
-    clearRect(water, 0, 0, 18, 18); clearRect(water, 46, 0, 18, 18);
-    clearRect(water, 0, 46, 18, 18); clearRect(water, 46, 46, 18, 18);
-    clearRect(water, 25, 25, 14, 14);
-    clearRect(water, 15, 29, 34, 6); clearRect(water, 29, 15, 6, 34);
-    clearRect(water, 14, 17, 4, 14); clearRect(water, 46, 17, 4, 14);
-    clearRect(water, 14, 33, 4, 14); clearRect(water, 46, 33, 4, 14);
-    addRect(cliff, 22, 20, 3, 2); addRect(cliff, 39, 42, 3, 2);
-    addRect(cliff, 39, 20, 3, 2); addRect(cliff, 22, 42, 3, 2);
-  } else if (mapId === "volcano") {
-    addRect(water, 0, 0, MAP_W, 5); addRect(water, 0, 59, MAP_W, 5);
-    addRect(water, 0, 0, 5, MAP_H); addRect(water, 59, 0, 5, MAP_H);
-    clearRect(water, 0, 0, 14, 14); clearRect(water, 50, 0, 14, 14);
-    clearRect(water, 0, 50, 14, 14); clearRect(water, 50, 50, 14, 14);
-    addRect(water, 15, 0, 14, 7); addRect(water, 35, 0, 14, 7);
-    addRect(water, 15, 57, 14, 7); addRect(water, 35, 57, 14, 7);
-    addRect(cliff, 24, 22, 6, 3); addRect(cliff, 34, 22, 6, 3);
-    addRect(cliff, 24, 39, 6, 3); addRect(cliff, 34, 39, 6, 3);
-    addRect(cliff, 22, 25, 3, 5); addRect(cliff, 22, 34, 3, 5);
-    addRect(cliff, 39, 25, 3, 5); addRect(cliff, 39, 34, 3, 5);
-  } else if (mapId === "oilrig") {
-    addRect(water, 0, 0, MAP_W, MAP_H);
-    clearRect(water, 0, 0, 17, 17); clearRect(water, 47, 0, 17, 17);
-    clearRect(water, 0, 47, 17, 17); clearRect(water, 47, 47, 17, 17);
-    clearRect(water, 23, 23, 18, 18);
-    clearRect(water, 16, 29, 8, 6); clearRect(water, 40, 29, 8, 6);
-    clearRect(water, 29, 16, 6, 8); clearRect(water, 29, 40, 6, 8);
-    clearRect(water, 12, 16, 5, 16); clearRect(water, 47, 16, 5, 16);
-    clearRect(water, 12, 32, 5, 16); clearRect(water, 47, 32, 5, 16);
-  } else if (mapId === "cybergrid") {
-    addRect(cliff, 20, 20, 4, 2); addRect(cliff, 40, 20, 4, 2);
-    addRect(cliff, 20, 42, 4, 2); addRect(cliff, 40, 42, 4, 2);
-    addRect(cliff, 30, 12, 4, 5); addRect(cliff, 30, 47, 4, 5);
-    addRect(cliff, 12, 30, 5, 4); addRect(cliff, 47, 30, 5, 4);
-  } else {
-    // oasis
-    addRect(cliff, 24, 15, 16, 2); addRect(cliff, 24, 47, 16, 2);
-    addRect(cliff, 15, 24, 2, 16); addRect(cliff, 47, 24, 2, 16);
+  let res;
+  try {
+    const layout = gd.getMapLayout(mapId);
+    const cliff = new Set();
+    const water = new Set();
+    for (const [x, y] of layout.cliffs) cliff.add(y * layout.w + x);
+    for (const [x, y] of layout.water) water.add(y * layout.w + x);
+    res = { cliff, water, w: layout.w, h: layout.h };
+  } catch {
+    // Unknown/newer map — degrade to empty terrain rather than wrong terrain.
+    const { w, h } = mapDims(mapId);
+    res = { cliff: new Set(), water: new Set(), w, h };
   }
-
-  for (const k of cliff) water.delete(k);
-  const res = { cliff, water };
   terrainCache.set(mapId, res);
   return res;
+}
+
+// ---------- Description generators (tool schemas stay accurate forever) ----------
+
+function fmtCost(def) {
+  return `$${def.cost}`;
+}
+
+function buildingBlurb(kind) {
+  const d = BUILDINGS[kind];
+  const parts = [`${kind} ${fmtCost(d)} ${d.w}x${d.h} ${d.power >= 0 ? "+" : ""}${d.power}pwr`];
+  if (d.requires?.length) parts.push(`req ${d.requires.join("+")}`);
+  if (d.waterOnly) parts.push("water-only");
+  if (d.forwardRange) parts.push(`forward-range ${d.forwardRange}`);
+  if (d.category === "defense") parts.push("defense-queue");
+  if (d.limit) parts.push(`limit ${d.limit}`);
+  if (d.range) parts.push(`rng ${d.range}`);
+  if (d.dmg) parts.push(`dmg ${d.dmg}`);
+  return parts.join(" ");
+}
+
+function unitBlurb(kind) {
+  const d = UNITS[kind];
+  const parts = [`${kind} ${fmtCost(d)}`];
+  if (d.dmg) parts.push(`dmg ${d.dmg}`);
+  if (d.range) parts.push(`rng ${d.range}`);
+  parts.push(d.domain);
+  if (d.requires) parts.push(`req ${d.requires}`);
+  if (d.kamikaze) parts.push("kamikaze");
+  if (d.stealth) parts.push("stealth");
+  if (d.retired) parts.push("RETIRED-legacy");
+  return parts.join(" ");
+}
+
+function buildingsDescription() {
+  return "Building types (cost size power prerequisites): " + BUILDABLE_KINDS.map(buildingBlurb).join("; ");
+}
+
+function unitsDescription() {
+  const byCat = {};
+  for (const k of UNIT_KINDS) {
+    const cat = UNITS[k].trainsAt;
+    (byCat[cat] ??= []).push(unitBlurb(k));
+  }
+  return (
+    "Unit types by production building: " +
+    Object.entries(byCat)
+      .map(([cat, list]) => `${cat}→ ${list.join(", ")}`)
+      .join(" | ")
+  );
+}
+
+function upgradeDescription() {
+  const paths = Object.values(UPGRADE_PATHS)
+    .map((p) => `${p.from}→${p.to} ${fmtCost(p)} req ${p.requires}`)
+    .join("; ");
+  return `upgrade a production/power building along its tech path (${paths}). Auto-selects your War Factory (or first upgradeable building) when 'id' omitted.`;
+}
+
+function placeRulesDescription() {
+  const maxForward = Math.max(2, ...Object.values(BUILDINGS).map((d) => d.forwardRange ?? 0));
+  return (
+    `Place a finished building currently waiting in 'awaiting' (structures) or 'awaitingDef' (defenses) at integer top-left tile coordinates. ` +
+    `Must be within 2 tiles of an existing own building (${SHIPYARD_BUILD_DIST} tiles on water for Naval Shipyard, up to ${maxForward} for a Forward Supply Hub) ` +
+    `and clear of cliffs, water (for land buildings), ore, and same-domain units. ` +
+    `Map dimensions vary per map (${MAP_DIM_SUMMARY}) — read map_size from get_game_state rather than assuming.`
+  );
 }
 
 // ---------- Helpers ----------
@@ -256,6 +267,13 @@ function roomUrls(room) {
   };
 }
 
+// Normalize the finished-placement piles across server versions: current servers
+// send awaiting/awaitingDef as BuildingKind[] arrays; older ones sent a scalar.
+function asKindList(v) {
+  if (Array.isArray(v)) return v.filter((k) => typeof k === "string");
+  return typeof v === "string" ? [v] : [];
+}
+
 // ---------- Live Room WebSocket Session Manager ----------
 
 class RoomSession {
@@ -275,8 +293,9 @@ class RoomSession {
     this.phase = "lobby";
     this.map = "crossroads";
     this.config = null;
-    this.w = MAP_W;
-    this.h = MAP_H;
+    const dims = mapDims(this.map);
+    this.w = dims.w;
+    this.h = dims.h;
 
     this.you = "";
     this.slot = -1;
@@ -289,13 +308,29 @@ class RoomSession {
     this.ents = new Map(); // id -> EntSnap
     this.crates = [];
     this.playerStates = {}; // slot -> PlayerState
-    this.ore = new Map(); // tileIdx -> amount
+    this.ore = new Map(); // tileIdx (keyed by this.w) -> amount
     this.recentEvents = []; // rolling log
     this.denies = []; // { at, tick, msg }
     this.endInfo = null;
     this.lastSnapAt = 0;
 
     this._waiters = []; // { pred, resolve, reject, timer }
+  }
+
+  // Tile index in the LIVE map dimensions — never a hardcoded constant.
+  idx(x, y) {
+    return y * this.w + x;
+  }
+
+  // Update w/h from the static map meta (lobby phase, before init arrives with
+  // the authoritative server-side dimensions).
+  noteMap(mapId) {
+    if (typeof mapId === "string" && mapId) {
+      this.map = mapId;
+      const dims = mapDims(mapId);
+      this.w = dims.w;
+      this.h = dims.h;
+    }
   }
 
   wsUrl() {
@@ -453,7 +488,7 @@ class RoomSession {
     if (m.t === "lobby") {
       this.lobbyPlayers = Array.isArray(m.players) ? m.players : [];
       this.you = m.you || this.you;
-      if (m.map) this.map = m.map;
+      if (m.map) this.noteMap(m.map);
       if (m.phase) this.phase = m.phase;
       if (m.config) this.config = m.config;
       const me = this.lobbyPlayers.find((p) => p.id === this.you);
@@ -473,14 +508,21 @@ class RoomSession {
       this.you = m.you || this.you;
       this.slot = typeof m.slot === "number" ? m.slot : this.slot;
       this.spectator = this.slot < 0;
-      this.w = m.w || MAP_W;
-      this.h = m.h || MAP_H;
-      this.map = m.map || this.map;
-      if (m.config) this.config = m.config;
+      // Authoritative live map dimensions from the server — correct for 64/96/128 maps.
+      if (typeof m.w === "number" && m.w > 0) this.w = m.w;
+      if (typeof m.h === "number" && m.h > 0) this.h = m.h;
+      if (m.map) {
+        this.map = m.map;
+        if (!m.w || !m.h) {
+          const dims = mapDims(m.map);
+          if (!m.w) this.w = dims.w;
+          if (!m.h) this.h = dims.h;
+        }
+      }
       this.ore.clear();
       if (Array.isArray(m.ore)) {
         for (const [x, y, amt] of m.ore) {
-          if (amt > 0) this.ore.set(tileIdx(x, y), amt);
+          if (amt > 0) this.ore.set(this.idx(x, y), amt);
         }
       }
       if (Array.isArray(m.players)) {
@@ -508,8 +550,8 @@ class RoomSession {
         for (const ev of m.events) {
           if (ev.e === "ore" && Array.isArray(ev.cells)) {
             for (const [x, y, amt] of ev.cells) {
-              if (amt <= 0) this.ore.delete(tileIdx(x, y));
-              else this.ore.set(tileIdx(x, y), amt);
+              if (amt <= 0) this.ore.delete(this.idx(x, y));
+              else this.ore.set(this.idx(x, y), amt);
             }
           } else if (
             ev.e === "alert" ||
@@ -583,11 +625,17 @@ class RoomSession {
   }
 
   /**
-   * Compute valid top-left placement tiles [tx, ty] for `kind`, mirroring world.ts canPlace().
+   * Compute valid top-left placement tiles [tx, ty] for `kind`, mirroring
+   * src/server/world.ts canPlace(): footprint clear of cliffs/ore/units, waterOnly
+   * hulls fully on water, adjacency gap <= 2 (SHIPYARD_BUILD_DIST on water,
+   * forwardRange for Forward Supply Hubs). Uses exact terrain geometry from the
+   * real getMapLayout() and the session's live map dimensions.
    */
   findValidBuildSpots(kind, limit = 6) {
     const def = BUILDINGS[kind];
     if (!def || this.slot < 0) return [];
+    const W = this.w;
+    const H = this.h;
     const ownBuildings = [];
     const occupied = new Set();
     const unitTiles = new Set();
@@ -600,26 +648,30 @@ class RoomSession {
         const by = Math.round(e.y - bd.h / 2);
         for (let y = by; y < by + bd.h; y++) {
           for (let x = bx; x < bx + bd.w; x++) {
-            if (x >= 0 && y >= 0 && x < MAP_W && y < MAP_H) occupied.add(tileIdx(x, y));
+            if (x >= 0 && y >= 0 && x < W && y < H) occupied.add(this.idx(x, y));
           }
         }
         if (e.o === this.slot) ownBuildings.push({ bx, by, w: bd.w, h: bd.h, cx: e.x, cy: e.y });
       } else {
         const ud = UNITS[e.k];
         if (ud && ud.domain === bDomain) {
-          unitTiles.add(tileIdx(Math.floor(e.x), Math.floor(e.y)));
+          unitTiles.add(this.idx(Math.floor(e.x), Math.floor(e.y)));
         }
       }
     }
     if (!ownBuildings.length) return [];
 
-    const { cliff, water } = getTerrainSets(this.map);
-    const maxGap = def.waterOnly ? SHIPYARD_BUILD_DIST : 2;
+    const terr = getTerrainSets(this.map);
+    // Terrain sets are keyed by the layout's own width — identical to the live
+    // session width whenever the defs and server agree on the map (always, in
+    // practice, since both read the same gamedefs).
+    const tIdx = (x, y) => y * terr.w + x;
+    const maxGap = def.waterOnly ? SHIPYARD_BUILD_DIST : (def.forwardRange ?? 2);
     const baseCx = ownBuildings[0].cx;
     const baseCy = ownBuildings[0].cy;
 
     // Bounding box around own buildings
-    let minX = MAP_W, minY = MAP_H, maxX = 0, maxY = 0;
+    let minX = W, minY = H, maxX = 0, maxY = 0;
     for (const b of ownBuildings) {
       minX = Math.min(minX, b.bx - maxGap - def.w);
       minY = Math.min(minY, b.by - maxGap - def.h);
@@ -628,8 +680,8 @@ class RoomSession {
     }
     minX = Math.max(0, minX);
     minY = Math.max(0, minY);
-    maxX = Math.min(MAP_W - def.w, maxX);
-    maxY = Math.min(MAP_H - def.h, maxY);
+    maxX = Math.min(W - def.w, maxX);
+    maxY = Math.min(H - def.h, maxY);
 
     const candidates = [];
     for (let ty = minY; ty <= maxY; ty++) {
@@ -649,13 +701,14 @@ class RoomSession {
         let ok = true;
         for (let y = ty; y < ty + def.h && ok; y++) {
           for (let x = tx; x < tx + def.w && ok; x++) {
-            const idx = tileIdx(x, y);
-            if (cliff.has(idx) || occupied.has(idx) || unitTiles.has(idx)) {
+            const idx = this.idx(x, y);
+            const t = tIdx(x, y);
+            if (terr.cliff.has(t) || occupied.has(idx) || unitTiles.has(idx)) {
               ok = false;
             } else if (def.waterOnly) {
-              if (!water.has(idx)) ok = false;
+              if (!terr.water.has(t)) ok = false;
             } else {
-              if (water.has(idx) || this.ore.has(idx)) ok = false;
+              if (terr.water.has(t) || this.ore.has(idx)) ok = false;
             }
           }
         }
@@ -683,8 +736,8 @@ class RoomSession {
     // Bucket ore tiles into 8x8 sectors so we return crisp cluster centroids
     const sectors = new Map();
     for (const [k, amt] of this.ore.entries()) {
-      const x = k % MAP_W;
-      const y = (k / MAP_W) | 0;
+      const x = k % this.w;
+      const y = (k / this.w) | 0;
       const sk = `${x >> 3},${y >> 3}`;
       let s = sectors.get(sk);
       if (!s) {
@@ -734,13 +787,14 @@ class RoomSession {
     const queues = {};
     if (me?.queues) {
       for (const cat of ["barracks", "factory", "airfield", "shipyard"]) {
-        if (me.queues[cat]) queues[cat] = { ...me.queues[cat] };
+        if (me.queues[cat]) queues[cat] = Array.isArray(me.queues[cat]) ? me.queues[cat].map((i) => ({ ...i })) : { ...me.queues[cat] };
       }
     }
     const ore = [];
     for (const [k, amt] of this.ore.entries()) {
-      if (amt > 0) ore.push([k % MAP_W, (k / MAP_W) | 0, amt]);
+      if (amt > 0) ore.push([k % this.w, (k / this.w) | 0, amt]);
     }
+    const copyQueue = (q) => (Array.isArray(q) ? q.map((i) => ({ ...i })) : q ?? []);
     return {
       tick: this.tick,
       you: {
@@ -750,8 +804,10 @@ class RoomSession {
         pwrUse: me ? me.pwrUse : 0,
         lowPower: me ? !!me.lowPower : false,
         eliminated: me ? !!me.eliminated : false,
-        bq: me?.bq ? { ...me.bq } : null,
-        awaiting: me?.awaiting ?? null,
+        bq: copyQueue(me?.bq),
+        awaiting: asKindList(me?.awaiting),
+        dq: copyQueue(me?.dq),
+        awaitingDef: asKindList(me?.awaitingDef),
         queues,
       },
       ents,
@@ -797,11 +853,14 @@ class RoomSession {
     const enemyUnits = [];
     const enemyByOwner = {};
     const neutralDerricks = [];
+    const neutralResources = [];
 
     for (const e of this.ents.values()) {
       if (e.o === -1) {
-        if (e.k === "derrick") {
-          neutralDerricks.push({ id: e.id, x: r1(e.x), y: r1(e.y), hp: e.hp, mhp: e.mhp });
+        if (isBuilding(e.k)) {
+          const rec = { id: e.id, kind: e.k, x: r1(e.x), y: r1(e.y), hp: e.hp, mhp: e.mhp };
+          neutralResources.push(rec);
+          if (e.k === "derrick") neutralDerricks.push(rec);
         }
         continue;
       }
@@ -859,32 +918,54 @@ class RoomSession {
       }
     }
 
-    // Determine buildable hints (prerequisites met + affordable)
-    const hasFactory = ownBuildingKinds.has("factory") || ownBuildingKinds.has("factory2");
+    // Determine buildable hints — prerequisites satisfied (owning the upgraded
+    // form of a prerequisite counts, mirroring world.ts hasBuilding) + affordable.
     const canBuildNow = [];
     if (me && !me.eliminated && ownBuildingKinds.has("conyard")) {
+      const awaitingAll = [...asKindList(me.awaiting), ...asKindList(me.awaitingDef)];
+      const queuedKinds = [...(Array.isArray(me.bq) ? me.bq : []), ...(Array.isArray(me.dq) ? me.dq : [])].map((i) => i?.kind);
       for (const kind of BUILDABLE_KINDS) {
         const def = BUILDINGS[kind];
-        if (def.limit && ownBuildings.filter((b) => b.kind === kind).length >= def.limit) continue;
-        const reqsOk = (def.requires || []).every((req) =>
-          req === "factory" ? hasFactory : ownBuildingKinds.has(req),
-        );
+        if (def.limit) {
+          const count =
+            ownBuildings.filter((b) => b.kind === kind).length +
+            awaitingAll.filter((k) => k === kind).length +
+            queuedKinds.filter((k) => k === kind).length;
+          if (count >= def.limit) continue;
+        }
+        const reqsOk = (def.requires || []).every((req) => ownsOrUpgraded(ownBuildingKinds, req));
         if (reqsOk && me.credits >= def.cost) {
-          canBuildNow.push({ kind, cost: def.cost, size: `${def.w}x${def.h}`, power: def.power });
+          canBuildNow.push({
+            kind,
+            cost: def.cost,
+            size: `${def.w}x${def.h}`,
+            power: def.power,
+            build_ticks: def.buildTicks,
+            ...(def.requires?.length ? { requires: def.requires } : {}),
+            ...(def.category === "defense" ? { category: "defense" } : {}),
+          });
         }
       }
     }
 
-    const anchor = ownBuildings.find((b) => b.kind === "conyard") || ownBuildings[0] || { x: 32, y: 32 };
+    const anchor = ownBuildings.find((b) => b.kind === "conyard") || ownBuildings[0] || { x: this.w / 2, y: this.h / 2 };
+    const awaitingStruct = asKindList(me?.awaiting);
+    const awaitingDef = asKindList(me?.awaitingDef);
+    // Mirror server cmdPlace default: structures pile first, then defenses.
+    const placeKind = awaitingStruct[0] ?? awaitingDef[0] ?? null;
     const buildHints = {
-      awaiting_placement: me?.awaiting ?? null,
-      valid_spots: me?.awaiting
-        ? this.findValidBuildSpots(me.awaiting, 6)
+      awaiting_placement: placeKind,
+      awaiting_structures: awaitingStruct,
+      awaiting_defenses: awaitingDef,
+      valid_spots: placeKind
+        ? this.findValidBuildSpots(placeKind, 6)
         : ownBuildings.length
           ? {
               "2x2_land": this.findValidBuildSpots("power", 4),
               "3x3_land": this.findValidBuildSpots("factory", 4),
-              ...(ownBuildingKinds.has("power") ? { "3x3_shipyard_water": this.findValidBuildSpots("shipyard", 3) } : {}),
+              ...(ownsOrUpgraded(ownBuildingKinds, "power")
+                ? { "3x3_shipyard_water": this.findValidBuildSpots("shipyard", 3) }
+                : {}),
             }
           : [],
       affordable_buildings_now: canBuildNow,
@@ -900,8 +981,10 @@ class RoomSession {
             low_power: me.lowPower,
           },
           eliminated: me.eliminated,
-          awaiting: me.awaiting,
+          awaiting: awaitingStruct,
+          awaiting_defenses: awaitingDef,
           building_queue: me.bq,
+          defense_queue: me.dq ?? null,
           unit_queues: me.queues,
           superweapon: me.swTotal
             ? { ready: !!me.swReady, left_ticks: me.swLeft ?? 0, total_ticks: me.swTotal }
@@ -943,6 +1026,7 @@ class RoomSession {
         units: enemyUnits,
       },
       neutral_derricks: neutralDerricks,
+      neutral_resources: neutralResources,
       crates: this.crates.map((c) => ({ id: c.id, kind: c.kind, x: r1(c.x), y: r1(c.y) })),
       nearest_ore: this.nearestOreHints(anchor.x, anchor.y, 3),
       recent_events: this.recentEvents.slice(-15),
@@ -1008,7 +1092,7 @@ const TOOLS = [
         map: {
           type: "string",
           enum: MAP_IDS,
-          description: "Optional map ID to set in lobby (when host). Naval maps: islands, archipelago, coastline, atlantis, shipwreck, volcano, oilrig.",
+          description: `Optional map ID to set in lobby (when host). Naval maps: ${NAVAL_MAPS.join(", ")}. Map dimensions vary (${MAP_DIM_SUMMARY}) — never assume a fixed grid.`,
         },
         add_bot: {
           type: "boolean",
@@ -1043,7 +1127,7 @@ const TOOLS = [
   {
     name: "get_game_state",
     description:
-      "Get full RL Gym parity state (`gym_obs`) plus a real-time LLM-optimized tactical summary of the match: tick, done, winner, credits, power, awaiting placement, production queues, own buildings & units, visible enemy buildings & units, neutral Oil Derricks, supply crates, nearest ore clusters, recent combat/alert events, and valid build placement coordinates.",
+      "Get full RL Gym parity state (`gym_obs`) plus a real-time LLM-optimized tactical summary of the match: tick, done, winner, credits, power, awaiting placement, production queues, own buildings & units, visible enemy buildings & units, neutral Oil Derricks & Coal Mines, supply crates, nearest ore clusters, recent combat/alert events, and valid build placement coordinates. Includes map_size — dimensions vary per map.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1055,7 +1139,8 @@ const TOOLS = [
   {
     name: "build_structure",
     description:
-      "Start constructing a building at your Construction Yard. Once construction completes, 'awaiting' appears in get_game_state — then call place_structure(room, tx, ty) to deploy it.",
+      "Start constructing a building at your Construction Yard. Structures and defenses build in PARALLEL queues. Once construction completes, the kind appears in 'awaiting'/'awaitingDef' in get_game_state — then call place_structure(room, tx, ty) to deploy it. " +
+      buildingsDescription(),
     inputSchema: {
       type: "object",
       properties: {
@@ -1063,8 +1148,7 @@ const TOOLS = [
         kind: {
           type: "string",
           enum: BUILDABLE_KINDS,
-          description:
-            "Building type: power ($300, +100 pwr), refinery ($600), barracks ($500), radar ($700, req barracks), factory ($1000), airfield ($1000, req radar), shipyard ($1000, req power, water-only), turret ($500), arc ($800, req radar), depot ($800, req factory), techlab ($1800, req radar+factory), purifier ($900, req techlab), superweapon ($2500, req techlab, limit 1).",
+          description: buildingsDescription(),
         },
       },
       required: ["room", "kind"],
@@ -1072,22 +1156,30 @@ const TOOLS = [
   },
   {
     name: "place_structure",
-    description:
-      "Place the finished building currently waiting in 'awaiting' at integer top-left tile coordinates (tx, ty) on the 64x64 map. Must be within 2 tiles of an existing own building (or 13 tiles on water for shipyard) and clear of cliffs, water (for land), ore, and units.",
+    description: placeRulesDescription(),
     inputSchema: {
       type: "object",
       properties: {
         room: { type: "string", description: "Room ID." },
-        tx: { type: "integer", minimum: 0, maximum: 63, description: "Top-left tile X coordinate (0..63)." },
-        ty: { type: "integer", minimum: 0, maximum: 63, description: "Top-left tile Y coordinate (0..63)." },
+        tx: { type: "integer", minimum: 0, maximum: MAX_MAP_DIM - 1, description: `Top-left tile X coordinate (0..map_width-1; maps are 96 or 128 wide, legacy 64).` },
+        ty: { type: "integer", minimum: 0, maximum: MAX_MAP_DIM - 1, description: `Top-left tile Y coordinate (0..map_height-1; maps are 96 or 128 tall, legacy 64).` },
+        cat: {
+          type: "string",
+          enum: ["structure", "defense"],
+          description: "Optional: which finished pile to place from. Defaults to structures first, then defenses (same as server).",
+        },
+        kind: {
+          type: "string",
+          enum: BUILDABLE_KINDS,
+          description: "Optional: place a specific finished kind from the awaiting piles (when several are ready).",
+        },
       },
       required: ["room", "tx", "ty"],
     },
   },
   {
     name: "train_unit",
-    description:
-      "Queue one or more units at your production buildings (barracks, war factory, airfield, or naval shipyard).",
+    description: "Queue one or more units at your production buildings (barracks, war factory, airfield, or naval shipyard). " + unitsDescription(),
     inputSchema: {
       type: "object",
       properties: {
@@ -1095,8 +1187,7 @@ const TOOLS = [
         unit: {
           type: "string",
           enum: UNIT_KINDS,
-          description:
-            "Unit type: Land infantry (infantry, engineer, rocket), Vehicles (tank, arty, heavy [req factory2], spider [req factory2], harvester), Air (interceptor, chopper, bomber [req techlab], zeppelin [req techlab]), Sea (gunboat, destroyer, sub [req radar], dreadnought [req techlab]).",
+          description: unitsDescription(),
         },
         count: {
           type: "integer",
@@ -1111,7 +1202,7 @@ const TOOLS = [
   {
     name: "command_units",
     description:
-      "Issue tactical orders to specific unit IDs or a unit group ('all_combat', 'infantry', 'tanks', 'air', 'sea', 'harvesters'). Supports move, amove (attack-move), attack, harvest, patrol, stop, and hold.",
+      `Issue tactical orders to specific unit IDs or a unit group ('all_combat', 'infantry', 'tanks', 'air', 'sea', 'harvesters'). Supports move, amove (attack-move), attack, harvest, patrol, stop, and hold. Coordinates are in tiles of the live map — read map_size from get_game_state (map dimensions vary: ${MAP_DIM_SUMMARY}).`,
     inputSchema: {
       type: "object",
       properties: {
@@ -1121,9 +1212,9 @@ const TOOLS = [
           enum: ["move", "amove", "attack", "harvest", "patrol", "stop", "hold"],
           description: "Order type. Use 'amove' for combat pushes, 'attack' with target ID for focus fire / engineer capture.",
         },
-        x: { type: "number", minimum: 0, maximum: 63.9, description: "Destination X coordinate (0..63). Optional if 'target' is given or kind is stop/hold." },
-        y: { type: "number", minimum: 0, maximum: 63.9, description: "Destination Y coordinate (0..63). Optional if 'target' is given or kind is stop/hold." },
-        target: { type: "integer", description: "Optional target entity ID (enemy unit/building, or neutral Oil Derrick for engineer capture)." },
+        x: { type: "number", minimum: 0, maximum: MAX_MAP_DIM - 0.1, description: "Destination X coordinate in tiles (0..map_width-1). Optional if 'target' is given or kind is stop/hold." },
+        y: { type: "number", minimum: 0, maximum: MAX_MAP_DIM - 0.1, description: "Destination Y coordinate in tiles (0..map_height-1). Optional if 'target' is given or kind is stop/hold." },
+        target: { type: "integer", description: "Optional target entity ID (enemy unit/building, or neutral Oil Derrick / Coal Mine for engineer capture)." },
         ids: {
           type: "array",
           items: { type: "integer" },
@@ -1141,7 +1232,7 @@ const TOOLS = [
   {
     name: "special_action",
     description:
-      "Execute special commander actions: fire Orbital Ion Cannon ('superweapon'), Radar Recon Scan ('recon'), upgrade War Factory to Tier 2 ('upgrade', costs $1500 & needs Tech Lab), 'sell' or 'repair' a building, set production 'rally' point, send 'chat', or 'resign'.",
+      `Execute special commander actions: fire Orbital Ion Cannon ('superweapon'), Radar Recon Scan ('recon'), ${upgradeDescription()}, 'sell' or 'repair' a building, set production 'rally' point, send 'chat', or 'resign'.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -1151,9 +1242,9 @@ const TOOLS = [
           enum: ["superweapon", "recon", "upgrade", "sell", "repair", "rally", "chat", "resign"],
           description: "Special action to execute.",
         },
-        x: { type: "number", minimum: 0, maximum: 63.9, description: "Target X coordinate (for superweapon, recon, rally)." },
-        y: { type: "number", minimum: 0, maximum: 63.9, description: "Target Y coordinate (for superweapon, recon, rally)." },
-        id: { type: "integer", description: "Target own building ID (for upgrade, sell, repair, rally). For 'upgrade', auto-selects your War Factory if omitted." },
+        x: { type: "number", minimum: 0, maximum: MAX_MAP_DIM - 0.1, description: "Target X coordinate in tiles of the live map (for superweapon, recon, rally)." },
+        y: { type: "number", minimum: 0, maximum: MAX_MAP_DIM - 0.1, description: "Target Y coordinate in tiles of the live map (for superweapon, recon, rally)." },
+        id: { type: "integer", description: "Target own building ID (for upgrade, sell, repair, rally). For 'upgrade', auto-selects your War Factory or first upgradeable building if omitted." },
         text: { type: "string", description: "Chat message text (for action='chat', max 120 chars)." },
       },
       required: ["room", "action"],
@@ -1203,7 +1294,7 @@ const TOOLS = [
   {
     name: "get_gym_schema",
     description:
-      "Return the exact RL Gym observation contract (gym_obs), 6x64x64 float32 feature_maps contract, 64x64x3 uint8 rgb_frame contract, and rts_action JSON schema shared 1:1 between src/server/gym.ts and live MCP matches for training & finetuning models.",
+      "Return the exact RL Gym observation contract (gym_obs), 6xHxW float32 feature_maps contract (H/W = live map dimensions), HxWx3 uint8 rgb_frame contract, and rts_action JSON schema shared 1:1 between src/server/gym.ts and live MCP matches for training & finetuning models.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -1328,6 +1419,7 @@ async function handleJoinGame(args) {
     room: session.room,
     phase: session.phase,
     map: session.map,
+    map_size: { w: session.w, h: session.h },
     you: session.you,
     name: session.name,
     slot: session.slot,
@@ -1369,7 +1461,9 @@ async function handleBuildStructure(args) {
     ...(denies.length ? { deny: denies[denies.length - 1] } : {}),
     credits: me?.credits ?? null,
     building_queue: me?.bq ?? null,
-    awaiting: me?.awaiting ?? null,
+    defense_queue: me?.dq ?? null,
+    awaiting: asKindList(me?.awaiting),
+    awaiting_defenses: asKindList(me?.awaitingDef),
   };
 }
 
@@ -1378,24 +1472,42 @@ async function handlePlaceStructure(args) {
   const tx = Math.floor(Number(args.tx));
   const ty = Math.floor(Number(args.ty));
   if (!Number.isFinite(tx) || !Number.isFinite(ty)) {
-    throw new Error("tx and ty must be finite integers (0..63).");
+    throw new Error(`tx and ty must be finite integers (0..map_size-1 — this map is ${session.w}x${session.h}).`);
   }
 
-  const wasAwaiting = session.myPlayerState()?.awaiting ?? null;
-  const denies = await sendAndCheckDeny(session, { t: "place", tx, ty }, 260);
+  const msg = { t: "place", tx, ty };
+  if (args.cat === "structure" || args.cat === "defense") msg.cat = args.cat;
+  if (typeof args.kind === "string" && BUILDABLE_KINDS.includes(args.kind)) msg.kind = args.kind;
+
+  // Predict which kind the server will pop, mirroring world.ts cmdPlace pile selection:
+  // explicit kind wins; else the requested cat pile head; else structures head, then defenses head.
+  const meBefore = session.myPlayerState();
+  const structsBefore = asKindList(meBefore?.awaiting);
+  const defsBefore = asKindList(meBefore?.awaitingDef);
+  const wasAwaiting =
+    typeof msg.kind === "string"
+      ? msg.kind
+      : msg.cat === "defense"
+        ? (defsBefore[0] ?? null)
+        : msg.cat === "structure"
+          ? (structsBefore[0] ?? null)
+          : (structsBefore[0] ?? defsBefore[0] ?? null);
+  const denies = await sendAndCheckDeny(session, msg, 260);
   await session.waitFor((m) => m.t === "snap", 450).catch(() => null);
   const me = session.myPlayerState();
   const res = {
     ok: denies.length === 0,
     room: session.room,
-    placed: denies.length === 0 ? wasAwaiting : null,
+    placed: denies.length === 0 ? (typeof msg.kind === "string" ? msg.kind : wasAwaiting) : null,
     tx,
     ty,
-    awaiting: me?.awaiting ?? null,
+    awaiting: asKindList(me?.awaiting),
+    awaiting_defenses: asKindList(me?.awaitingDef),
     ...(denies.length ? { deny: denies[denies.length - 1] } : {}),
   };
-  if (denies.length && me?.awaiting) {
-    res.valid_spots = session.findValidBuildSpots(me.awaiting, 6);
+  const remaining = asKindList(me?.awaiting)[0] ?? asKindList(me?.awaitingDef)[0] ?? null;
+  if (denies.length && remaining) {
+    res.valid_spots = session.findValidBuildSpots(remaining, 6);
   }
   return res;
 }
@@ -1445,9 +1557,11 @@ function resolveUnitIds(session, ids, group, kind) {
     if (effectiveGroup === "all_combat") {
       if (u.dmg > 0) matched.push(e.id);
     } else if (effectiveGroup === "infantry") {
-      if (u.group === "infantry") matched.push(e.id);
+      // Barracks-trained ground units (infantry/engineer/rocket/spy — future-proof)
+      if (u.domain === "land" && u.trainsAt === "barracks") matched.push(e.id);
     } else if (effectiveGroup === "tanks") {
-      if (u.group === "tanks") matched.push(e.id);
+      // Armed factory-trained vehicles (tank/himars/railtank/ballistic — excludes harvester & supply truck)
+      if (u.domain === "land" && u.trainsAt === "factory" && u.dmg > 0) matched.push(e.id);
     } else if (effectiveGroup === "air") {
       if (u.domain === "air") matched.push(e.id);
     } else if (effectiveGroup === "sea") {
@@ -1511,8 +1625,8 @@ async function handleCommandUnits(args) {
     t: "order",
     ids: unitIds,
     kind,
-    x: Math.max(0.5, Math.min(MAP_W - 0.5, x)),
-    y: Math.max(0.5, Math.min(MAP_H - 0.5, y)),
+    x: Math.max(0.5, Math.min(session.w - 0.5, x)),
+    y: Math.max(0.5, Math.min(session.h - 0.5, y)),
     ...(Number.isFinite(target) ? { target } : {}),
   };
   const denies = await sendAndCheckDeny(session, msg, 200);
@@ -1538,22 +1652,29 @@ async function handleSpecialAction(args) {
     const x = Number(args.x);
     const y = Number(args.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
-      throw new Error(`Action "${action}" requires finite x and y coordinates (0..63).`);
+      throw new Error(`Action "${action}" requires finite x and y coordinates in tiles of the live map (${session.w}x${session.h}).`);
     }
     msg = { t: action, x, y };
   } else if (action === "upgrade") {
     let id = Number(args.id);
     if (!Number.isFinite(id)) {
-      // Auto-select own War Factory if omitted
+      // Auto-select own War Factory first, then any building with an upgrade path
+      let fallbackId = NaN;
       for (const e of session.ents.values()) {
-        if (e.o === session.slot && e.k === "factory") {
+        if (e.o !== session.slot) continue;
+        if (e.k === "factory") {
           id = e.id;
           break;
         }
+        if (!Number.isFinite(fallbackId) && Object.prototype.hasOwnProperty.call(UPGRADE_PATHS, e.k)) {
+          fallbackId = e.id;
+        }
       }
+      if (!Number.isFinite(id)) id = fallbackId;
     }
     if (!Number.isFinite(id)) {
-      throw new Error("No own War Factory ('factory') found to upgrade. Build a War Factory + Tech Lab first, or pass 'id'.");
+      const upgradeable = Object.keys(UPGRADE_PATHS).join(", ");
+      throw new Error(`No own upgradeable building found (upgradeable kinds: ${upgradeable}). Build one plus its tech prerequisite first, or pass 'id'.`);
     }
     msg = { t: "upgrade", id };
   } else if (action === "sell" || action === "repair") {
@@ -1589,6 +1710,9 @@ async function handleSpecialAction(args) {
 }
 
 function handleGetGymSchema() {
+  const upgradePathsText = Object.values(UPGRADE_PATHS)
+    .map((p) => `${p.from}→${p.to} ($${p.cost}, needs ${p.requires})`)
+    .join("; ");
   return {
     gym_obs_contract: {
       description:
@@ -1596,33 +1720,36 @@ function handleGetGymSchema() {
       fields: {
         tick: "integer — authoritative simulation tick (10 ticks = 1s at 1x speed)",
         you: {
-          slot: "integer — your player slot index (0..3)",
+          slot: "integer — your player slot index (0..7)",
           credits: "integer — current floored credits",
           pwrHave: "integer — total power generated",
           pwrUse: "integer — total power consumed",
           lowPower: "boolean — true when pwrUse > pwrHave (halves production & disables defenses)",
           eliminated: "boolean — true if your faction has been eliminated",
-          bq: "{ kind: BuildingKind, left: number, total: number } | null — active building construction queue",
-          awaiting: "BuildingKind | null — finished building waiting to be placed",
+          bq: "Array<{ kind: BuildingKind, left: number, total: number }> — structure construction queue (head builds first)",
+          awaiting: "BuildingKind[] — finished structures stacked for placement",
+          dq: "Array<{ kind: BuildingKind, left: number, total: number }> — defense construction queue (parallel with structures!)",
+          awaitingDef: "BuildingKind[] — finished defenses waiting for placement",
           queues:
-            "Partial<Record<'barracks'|'factory'|'airfield'|'shipyard', { unit: UnitKind, left: number, total: number, count: number }>>",
+            "Partial<Record<'barracks'|'factory'|'airfield'|'shipyard', Array<{ unit: UnitKind, left: number, total: number }>>>",
         },
         ents: "Array<{ id: number, o: number, k: EntKind, x: number, y: number, hp: number, mhp: number, cargo?: number }>",
         ore: "Array<[x: number, y: number, amount: number]>",
       },
     },
     feature_maps_contract: {
-      shape: [6, MAP_H, MAP_W],
+      shape: [6, "H", "W"],
       dtype: "float32",
+      note: `W/H are the LIVE map dimensions (e.g. 96x96 standard theaters, 128x128 megacontinent, ${DEFAULT_MAP_W}x${DEFAULT_MAP_H} legacy) — never assume a fixed size.`,
       channels: ["ore", "own_units", "own_buildings", "foe_units", "foe_buildings", "all_hp"],
       encoding: "base64 (little-endian IEEE-754 Float32Array, C-contiguous [channel, y, x])",
     },
     rgb_frame_contract: {
-      w: MAP_W,
-      h: MAP_H,
+      w: "W (live map width)",
+      h: "H (live map height)",
       c: 3,
       dtype: "uint8",
-      encoding: "base64 (row-major RGB Uint8Array of w*h*3 bytes)",
+      encoding: "base64 (row-major RGB Uint8Array of w*h*3 bytes, `scale` pixels per tile, default 3)",
     },
     action_schema: {
       name: "rts_action",
@@ -1635,7 +1762,7 @@ function handleGetGymSchema() {
           build: {
             anyOf: [{ type: "string", enum: Object.keys(BUILDINGS) }, { type: "null" }],
             description:
-              "start constructing a building (needs conyard + credits); finish with `place` once `you.awaiting` is set",
+              "start constructing a building (needs conyard + credits); finish with `place` once it lands in `you.awaiting`/`you.awaitingDef`. Structures & defenses build in parallel queues.",
           },
           place: {
             anyOf: [
@@ -1643,12 +1770,17 @@ function handleGetGymSchema() {
                 type: "object",
                 additionalProperties: false,
                 required: ["tx", "ty"],
-                properties: { tx: { type: "integer" }, ty: { type: "integer" } },
+                properties: {
+                  tx: { type: "integer" },
+                  ty: { type: "integer" },
+                  cat: { type: ["string", "null"], enum: ["structure", "defense", null] },
+                  kind: { type: ["string", "null"], enum: [...Object.keys(BUILDINGS), null] },
+                },
               },
               { type: "null" },
             ],
             description:
-              "top-left tile for the awaiting building; must sit within 2 tiles of your buildings on clear non-ore ground",
+              `top-left tile for a finished building; must sit within 2 tiles of your buildings (${SHIPYARD_BUILD_DIST} on water for shipyards) on clear non-ore ground. Coordinates are in tiles of the live map (W×H).`,
           },
           train: {
             anyOf: [{ type: "string", enum: Object.keys(UNITS) }, { type: "null" }],
@@ -1686,7 +1818,7 @@ function handleGetGymSchema() {
           },
           upgrade: {
             anyOf: [{ type: "integer" }, { type: "null" }],
-            description: "upgrade your war factory ent id to MKII (needs techlab + $1500) — unlocks heavy/spider",
+            description: `upgrade a building ent id along its tech path (${upgradePathsText})`,
           },
           superweapon: {
             anyOf: [
@@ -1875,6 +2007,7 @@ async function handleRequest(req) {
           `Open Alert RTS Commander MCP server (connected target: ${BASE_URL}). ` +
           `Start with list_live_games or join_game(room, name, map, add_bot=true, start=true), ` +
           `then loop get_game_state -> build_structure/place_structure/train_unit/command_units/special_action. ` +
+          `Map dimensions vary per map — read map_size from get_game_state, never assume a fixed grid. ` +
           `Share watch_url with the user so they can spectate live in 3D!`,
       });
       return;
@@ -1958,4 +2091,4 @@ rl.on("close", async () => {
   cleanupAndExit(0);
 });
 
-log(`Ready on stdio (target=${BASE_URL})`);
+log(`Ready on stdio (target=${BASE_URL}, defs=${defsVia}, buildings=${Object.keys(BUILDINGS).length}, units=${UNIT_KINDS.length}, maps=${MAP_IDS.length})`);

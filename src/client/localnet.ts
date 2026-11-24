@@ -16,6 +16,7 @@ import {
 import type { C2S, LobbyPlayer, S2C } from "../shared/protocol";
 import { World } from "../server/world";
 import { RtsBot } from "../server/bot";
+import { applyGameCommand } from "../server/dispatch";
 
 const VALID_MAPS = new Set<MapId>(MAP_LIST.map((m) => m.id));
 const VALID_DIFFS = new Set<BotDiff>(["easy", "normal", "brutal"]);
@@ -306,77 +307,28 @@ export class LocalRoom {
     const w = this.world;
     if (!w || this.phase !== "playing") return;
     const slot = me.slot;
-    let err: string | null = null;
-    switch (m.t) {
-      case "order":
-        err = w.cmdOrder(slot, m.ids, m.kind, m.x, m.y, m.target, m.queue);
-        break;
-      case "stop":
-        w.cmdStop(slot, m.ids);
-        break;
-      case "hold":
-        w.cmdHold(slot, m.ids);
-        break;
-      case "drive":
-        w.cmdDrive(slot, m.id, m.fwd, m.strafe, m.yaw, m.fire, m.aimX, m.aimY, m.aimTarget, m.alt, m.sprint, m.wpn, m.lock);
-        break;
-      case "driveExit":
-        w.cmdDriveExit(slot, m.id);
-        break;
-      case "build":
-        err = w.cmdBuild(slot, m.kind);
-        break;
-      case "buildCancel":
-        w.cmdBuildCancel(slot, m.cat, m.index ?? 0, m.awaiting === true, m.kind);
-        break;
-      case "place":
-        err = w.cmdPlace(slot, m.tx, m.ty, m.cat, m.kind);
-        break;
-      case "bridge":
-        err = w.cmdBridge(slot, m.id, m.tx, m.ty);
-        break;
-      case "train":
-        err = w.cmdTrain(slot, m.unit);
-        break;
-      case "trainCancel":
-        w.cmdTrainCancel(slot, m.unit, m.cat, m.index);
-        break;
-      case "sell":
-        err = w.cmdSell(slot, m.id);
-        break;
-      case "repair":
-        err = w.cmdRepair(slot, m.id);
-        break;
-      case "upgrade":
-        err = w.cmdUpgrade(slot, m.id);
-        break;
-      case "rally":
-        err = w.cmdRally(slot, m.id, m.x, m.y);
-        break;
-      case "superweapon":
-        err = w.cmdSuperweapon(slot, m.x, m.y);
-        break;
-      case "pause":
-        this.paused = !!m.paused;
-        this.emit({ t: "paused", paused: this.paused });
-        break;
-      case "recon":
-        err = w.cmdRecon(slot, m.x, m.y);
-        break;
-      case "resign":
-        w.cmdResign(slot);
-        break;
-      case "chat":
-        this.emit({
-          t: "chat",
-          name: me.name,
-          color: PLAYER_COLORS[slot] ?? "#45d6ff",
-          text: String(m.text || "").slice(0, 200),
-        });
-        break;
-      case "ping":
-        this.emit({ t: "ping", x: m.x, y: m.y, slot });
-        break;
+    // validation + application shared with the authoritative worker — see src/server/dispatch.ts
+    let err = applyGameCommand(w, slot, m);
+    if (err === undefined) {
+      // not a world command — pause/chat/ping are local-transport side effects
+      err = null;
+      switch (m.t) {
+        case "pause":
+          this.paused = !!m.paused;
+          this.emit({ t: "paused", paused: this.paused });
+          break;
+        case "chat":
+          this.emit({
+            t: "chat",
+            name: me.name,
+            color: PLAYER_COLORS[slot] ?? "#45d6ff",
+            text: String(m.text || "").slice(0, 200),
+          });
+          break;
+        case "ping":
+          this.emit({ t: "ping", x: m.x, y: m.y, slot });
+          break;
+      }
     }
     if (err) this.emit({ t: "deny", msg: err });
   }

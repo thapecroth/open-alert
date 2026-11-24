@@ -18,20 +18,13 @@
 //   every 36-95 tks: economy/production/rally/assault decisions + ore rescan
 
 import type { Ent, P, World } from "./world";
-import { BUILDINGS, getSpawns, SHIPYARD_BUILD_DIST, UNITS, UPGRADE_PATHS } from "../shared/gamedefs";
+import { BUILDINGS, getSpawns, SHIPYARD_BUILD_DIST, UNITS, UPGRADE_PATHS, UPGRADED_OF } from "../shared/gamedefs";
 import type { BotDiff, BotProfile, BuildCategory, BuildingKind, EntKind, UnitKind } from "../shared/gamedefs";
 
 const isB = (k: EntKind): k is BuildingKind => k in BUILDINGS;
 const isSea = (k: EntKind) => !isB(k) && UNITS[k].domain === "sea";
 const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-const UPGRADED_OF: Partial<Record<BuildingKind, BuildingKind>> = {
-  barracks: "barracks2",
-  factory: "factory2",
-  airfield: "airfield2",
-  shipyard: "shipyard2",
-};
-
 const DEF_RADIUS = 15; // enemy this close to our stuff = threat
 const GUARD_RADIUS = 26; // only units this close to home get defensive orders
 const HOME_RADIUS = 30; // "away" = further than this from base center
@@ -40,6 +33,25 @@ const HOME_RADIUS = 30; // "away" = further than this from base center
 // factory yet (economy + scout). mid: factory online, expand + raid enemy eco.
 // late: sustained assault on their base with bigger, more frequent waves.
 type Phase = "early" | "mid" | "late";
+
+// One categorized view of the entity map per think(). All category arrays retain
+// the world Map's insertion order within that category, matching the filtered
+// full-map scans they replace. Entity objects are live references: order/hp/kind
+// mutations made by the bot remain visible, while entities created mid-think are
+// a documented snapshot boundary.
+interface BotScan {
+  mine: Ent[];
+  myBuildings: Ent[];
+  myUnits: Ent[];
+  enemyAll: Ent[];
+  enemyBuildings: Ent[];
+  landmarks: Ent[]; // derricks/coalmines of any owner
+  assetCells: Map<number, Ent[]>; // own buildings/harvesters in 8-tile buckets for exact threat nearest-distance queries
+  myBuildingCounts: Map<BuildingKind, number>;
+  myUnitCounts: Map<EntKind, number>;
+  myArmyCount: number; // owned non-buildings except harvesters/supply trucks
+  neutralLandmarks: number;
+}
 
 export interface RtsBotOpts {
   aggressive?: boolean; // earlier waves, bigger queues, extra turret
@@ -80,6 +92,13 @@ export class RtsBot {
   private tankCap: number;
   private turretCap: number;
   private armyCap: number;
+  private scanCache: BotScan | null = null;
+
+  // Lazily built at most once per think: cheap idle ticks stay O(1), while
+  // placement/defense/slow ticks share one fused pass instead of 8-12 scans.
+  private get scan(): BotScan {
+    return (this.scanCache ??= this.scanWorld());
+  }
 
   constructor(
     private world: World,
@@ -152,6 +171,7 @@ export class RtsBot {
     const me = w.players.get(this.slot);
     if (!me || me.eliminated) return;
     const t = w.tick;
+    this.scanCache = null;
 
     // Finished structures (`awaiting`) and defenses (`awaitingDef`) place in parallel —
     // paced to human APM: ~2-4s between placements with jitter, not metronomic ticks.
@@ -189,22 +209,68 @@ export class RtsBot {
     }
   }
 
+  private scanWorld(): BotScan {
+    const scan: BotScan = {
+      mine: [],
+      myBuildings: [],
+      myUnits: [],
+      enemyAll: [],
+      enemyBuildings: [],
+      landmarks: [],
+      assetCells: new Map(),
+      myBuildingCounts: new Map(),
+      myUnitCounts: new Map(),
+      myArmyCount: 0,
+      neutralLandmarks: 0,
+    };
+    for (const e of this.world.ents.values()) this.scanEnt(scan, e);
+    return scan;
+  }
+
+  private scanEnt(scan: BotScan, e: Ent) {
+    const bld = isB(e.k);
+    if (e.k === "derrick" || e.k === "coalmine") {
+      scan.landmarks.push(e);
+      if (e.o === -1) scan.neutralLandmarks++;
+    }
+    if (e.o === this.slot) {
+      scan.mine.push(e);
+      if (bld || e.k === "harvester") {
+        const cx = Math.floor(e.x) >> 3,
+          cy = Math.floor(e.y) >> 3;
+        const key = cy * 1024 + cx;
+        let cell = scan.assetCells.get(key);
+        if (!cell) scan.assetCells.set(key, (cell = []));
+        cell.push(e);
+      }
+      if (bld) {
+        scan.myBuildings.push(e);
+        scan.myBuildingCounts.set(e.k as BuildingKind, (scan.myBuildingCounts.get(e.k as BuildingKind) ?? 0) + 1);
+      } else {
+        scan.myUnits.push(e);
+        scan.myUnitCounts.set(e.k, (scan.myUnitCounts.get(e.k) ?? 0) + 1);
+        if (e.k !== "harvester" && e.k !== "supplytruck") scan.myArmyCount++;
+      }
+    } else if (e.o >= 0 && !this.world.isAlly(this.slot, e.o)) {
+      scan.enemyAll.push(e);
+      if (bld) scan.enemyBuildings.push(e);
+    }
+  }
+
   // ---------- shared scans ----------
 
   private baseCenter(): { x: number; y: number } | null {
     let sx = 0,
       sy = 0,
       n = 0;
-    for (const e of this.world.ents.values()) {
-      if (e.o !== this.slot || !isB(e.k)) continue;
+    for (const e of this.scan.myBuildings) {
       sx += e.x;
       sy += e.y;
       n++;
     }
     if (!n) {
       // no buildings left: the army is the base
-      for (const e of this.world.ents.values()) {
-        if (e.o !== this.slot) continue;
+      for (const e of this.scan.myUnits) {
         sx += e.x;
         sy += e.y;
         n++;
@@ -218,12 +284,7 @@ export class RtsBot {
   }
 
   private buildingCounts(): Map<BuildingKind, number> {
-    const m = new Map<BuildingKind, number>();
-    for (const e of this.world.ents.values()) {
-      if (e.o !== this.slot || !isB(e.k)) continue;
-      m.set(e.k, (m.get(e.k) ?? 0) + 1);
-    }
-    return m;
+    return this.scan.myBuildingCounts;
   }
 
   // Upgraded buildings (barracks2/factory2/airfield2/shipyard2) satisfy their base prereq.
@@ -236,8 +297,7 @@ export class RtsBot {
   private enemyBasePt(ref: { x: number; y: number }): { x: number; y: number } | null {
     let best: { x: number; y: number } | null = null,
       bd = Infinity;
-    for (const e of this.world.ents.values()) {
-      if (e.o < 0 || this.world.isAlly(this.slot, e.o) || !isB(e.k)) continue;
+    for (const e of this.scan.enemyBuildings) {
       if (this.world.players.get(e.o)?.eliminated) continue;
       const d = dist(ref.x, ref.y, e.x, e.y);
       if (d < bd) {
@@ -251,8 +311,7 @@ export class RtsBot {
   private nearestEnemyEnt(ref: { x: number; y: number }): { x: number; y: number } | null {
     let best: { x: number; y: number } | null = null,
       bd = Infinity;
-    for (const e of this.world.ents.values()) {
-      if (e.o < 0 || this.world.isAlly(this.slot, e.o)) continue;
+    for (const e of this.scan.enemyAll) {
       if (this.world.players.get(e.o)?.eliminated) continue;
       const d = dist(ref.x, ref.y, e.x, e.y);
       if (d < bd) {
@@ -347,9 +406,8 @@ export class RtsBot {
     const seen = new Set<number>();
     let best: { tx: number; ty: number } | null = null,
       bs = Infinity;
-    for (const b of w.ents.values()) {
-      if (b.o !== this.slot || !isB(b.k)) continue;
-      const bd = BUILDINGS[b.k];
+    for (const b of this.scan.myBuildings) {
+      const bd = BUILDINGS[b.k as BuildingKind];
       const bx = Math.round(b.x - bd.w / 2),
         by = Math.round(b.y - bd.h / 2);
       const y0 = Math.max(0, by - d.h - maxGap);
@@ -383,11 +441,17 @@ export class RtsBot {
       if (t - since > 400) this.world.cmdBuildCancel(this.slot, cat, 0, true);
       return;
     }
-    const err = this.world.cmdPlace(this.slot, spot.tx, spot.ty, cat);
+    const scan = this.scan;
+    const created: Ent[] = [];
+    const err = this.world.cmdPlace(this.slot, spot.tx, spot.ty, cat, undefined, created);
     if (err) {
       this.denies++;
       this.lastDeny = err;
       this.deniedTiles.add(`${kind}:${spot.tx},${spot.ty}`);
+    } else {
+      // Placement is the only bot command that creates entities mid-think; fold
+      // them into the existing snapshot instead of rescanning the world.
+      for (const e of created) this.scanEnt(scan, e);
     }
   }
 
@@ -526,64 +590,33 @@ export class RtsBot {
     const f2 = this.hasBuilding(bc, "factory2");
     const a2 = this.hasBuilding(bc, "airfield2");
     const s2 = this.hasBuilding(bc, "shipyard2");
-    let harv = 0,
-      supplytrucks = 0,
-      army = 0,
-      engi = 0,
-      spies = 0,
-      ballistics = 0,
-      fpvdrones = 0,
-      himars = 0,
-      railtanks = 0,
-      uavs = 0,
-      shaheds = 0,
-      ewdrones = 0,
-      interceptors = 0,
-      choppers = 0,
-      a10s = 0,
-      ac130s = 0,
-      stealthbombers = 0,
-      hypersonics = 0,
-      usvs = 0,
-      gunboats = 0,
-      destroyers = 0,
-      subs = 0,
-      dreadnoughts = 0,
-      carriers = 0,
-      neutralLandmarks = 0;
-    for (const e of w.ents.values()) {
-      if (e.o === -1 && (e.k === "derrick" || e.k === "coalmine")) {
-        neutralLandmarks++;
-        continue;
-      }
-      if (e.o !== this.slot) continue;
-      if (e.k === "harvester") harv++;
-      else if (e.k === "supplytruck") supplytrucks++;
-      else if (!isB(e.k)) {
-        army++;
-        if (e.k === "engineer") engi++;
-        else if (e.k === "fpvdrone") fpvdrones++;
-        else if (e.k === "himars") himars++;
-        else if (e.k === "ballistic") ballistics++;
-        else if (e.k === "spy") spies++;
-        else if (e.k === "railtank") railtanks++;
-        else if (e.k === "uav") uavs++;
-        else if (e.k === "shahed") shaheds++;
-        else if (e.k === "ewdrone") ewdrones++;
-        else if (e.k === "interceptor") interceptors++;
-        else if (e.k === "chopper") choppers++;
-        else if (e.k === "a10") a10s++;
-        else if (e.k === "ac130") ac130s++;
-        else if (e.k === "stealthbomber") stealthbombers++;
-        else if (e.k === "hypersonic") hypersonics++;
-        else if (e.k === "usv") usvs++;
-        else if (e.k === "gunboat") gunboats++;
-        else if (e.k === "destroyer") destroyers++;
-        else if (e.k === "sub") subs++;
-        else if (e.k === "dreadnought") dreadnoughts++;
-        else if (e.k === "carrier") carriers++;
-      }
-    }
+    const unitCounts = this.scan.myUnitCounts;
+    const count = (k: UnitKind) => unitCounts.get(k) ?? 0;
+    const harv = count("harvester"),
+      supplytrucks = count("supplytruck"),
+      engi = count("engineer"),
+      spies = count("spy"),
+      ballistics = count("ballistic"),
+      fpvdrones = count("fpvdrone"),
+      himars = count("himars"),
+      railtanks = count("railtank"),
+      uavs = count("uav"),
+      shaheds = count("shahed"),
+      ewdrones = count("ewdrone"),
+      interceptors = count("interceptor"),
+      choppers = count("chopper"),
+      a10s = count("a10"),
+      ac130s = count("ac130"),
+      stealthbombers = count("stealthbomber"),
+      hypersonics = count("hypersonic"),
+      usvs = count("usv"),
+      gunboats = count("gunboat"),
+      destroyers = count("destroyer"),
+      subs = count("sub"),
+      dreadnoughts = count("dreadnought"),
+      carriers = count("carrier");
+    const army = this.scan.myArmyCount,
+      neutralLandmarks = this.scan.neutralLandmarks;
 
     // barracks: infantry, FPV suicide drones, AT/MANPADS rockets once radar is up,
     // and an engineer for neutral Oil Derricks / Coal Mines / late pushes (Normal/Brutal)
@@ -819,13 +852,12 @@ export class RtsBot {
     let worst: Ent | null = null,
       worstK: BuildingKind = "conyard",
       worstPct = this.diff === "easy" ? 0.45 : this.diff === "brutal" ? 0.65 : 0.55; // ignore cosmetic damage
-    for (const e of w.ents.values()) {
-      if (e.o !== this.slot || !isB(e.k)) continue;
+    for (const e of this.scan.myBuildings) {
       const pct = e.hp / e.mhp;
       if (pct < worstPct) {
         worstPct = pct;
         worst = e;
-        worstK = e.k;
+        worstK = e.k as BuildingKind;
       }
     }
     if (!worst) return;
@@ -855,8 +887,8 @@ export class RtsBot {
         const path = UPGRADE_PATHS[from];
         if (!path || (bc.get(from) ?? 0) === 0 || !this.hasBuilding(bc, path.requires)) continue;
         if (me.credits < path.cost + (needPower ? 100 : 600)) continue;
-        for (const e of this.world.ents.values()) {
-          if (e.o === this.slot && e.k === from) {
+        for (const e of this.scan.myBuildings) {
+          if (e.k === from) {
             this.trycmd(() => this.world.cmdUpgrade(this.slot, e.id));
             return;
           }
@@ -872,8 +904,8 @@ export class RtsBot {
       if (!this.hasBuilding(bc, path.requires)) continue;
       if (this.phase !== "late" && from !== "barracks" && this.profile !== "tech") continue;
       if (me.credits <= path.cost + 750) continue;
-      for (const e of this.world.ents.values()) {
-        if (e.o === this.slot && e.k === from) {
+      for (const e of this.scan.myBuildings) {
+        if (e.k === from) {
           this.trycmd(() => this.world.cmdUpgrade(this.slot, e.id));
           return;
         }
@@ -886,8 +918,8 @@ export class RtsBot {
   private wakeHarvesters() {
     if (!this.oreCache.length) return;
     const w = this.world;
-    for (const e of w.ents.values()) {
-      if (e.o !== this.slot || e.k !== "harvester" || e.order || e.hstate) continue;
+    for (const e of this.scan.myUnits) {
+      if (e.k !== "harvester" || e.order || e.hstate) continue;
       const o = this.oreNear(e);
       if (o) this.trycmd(() => w.cmdOrder(this.slot, [e.id], "harvest", o.x, o.y));
     }
@@ -903,8 +935,8 @@ export class RtsBot {
     const base = this.baseCenter();
     if (!base) return;
     let scout: Ent | null = null;
-    for (const e of w.ents.values()) {
-      if (e.o !== this.slot || e.k !== "infantry" || e.order) continue;
+    for (const e of this.scan.myUnits) {
+      if (e.k !== "infantry" || e.order) continue;
       scout = e;
       break;
     }
@@ -922,8 +954,7 @@ export class RtsBot {
   private ecoRaidTarget(base: { x: number; y: number }): { x: number; y: number } | null {
     let best: { x: number; y: number } | null = null,
       bd = Infinity;
-    for (const e of this.world.ents.values()) {
-      if (e.o < 0 || this.world.isAlly(this.slot, e.o)) continue;
+    for (const e of this.scan.enemyAll) {
       if (this.world.players.get(e.o)?.eliminated) continue;
       if (e.k !== "harvester" && e.k !== "refinery") continue;
       const d = dist(base.x, base.y, e.x, e.y);
@@ -943,8 +974,7 @@ export class RtsBot {
     if (!base) return;
     const maxDist = this.diff === "brutal" ? 999 : Math.max(42, Math.floor(w.w * 0.65));
     const targets: Ent[] = [];
-    for (const e of w.ents.values()) {
-      if (e.k !== "derrick" && e.k !== "coalmine") continue;
+    for (const e of this.scan.landmarks) {
       if (e.o === -1 || (this.diff === "brutal" && !w.isAlly(this.slot, e.o))) {
         if (dist(base.x, base.y, e.x, e.y) <= maxDist) targets.push(e);
       }
@@ -955,8 +985,8 @@ export class RtsBot {
       if ((a.o === -1) !== (b.o === -1)) return a.o === -1 ? -1 : 1;
       return dist(base.x, base.y, a.x, a.y) - dist(base.x, base.y, b.x, b.y);
     });
-    for (const e of w.ents.values()) {
-      if (e.o !== this.slot || e.k !== "engineer" || e.order) continue;
+    for (const e of this.scan.myUnits) {
+      if (e.k !== "engineer" || e.order) continue;
       const d = targets[0];
       this.trycmd(() => w.cmdOrder(this.slot, [e.id], "attack", d.x, d.y, d.id));
       return;
@@ -972,8 +1002,8 @@ export class RtsBot {
     for (const crate of w.crates.values()) {
       let best: Ent | null = null,
         bd = maxRange;
-      for (const u of w.ents.values()) {
-        if (u.o !== this.slot || isB(u.k) || u.k === "harvester" || u.k === "supplytruck" || u.k === "engineer" || isSea(u.k)) continue;
+      for (const u of this.scan.myUnits) {
+        if (u.k === "harvester" || u.k === "supplytruck" || u.k === "engineer" || isSea(u.k)) continue;
         if (u.order || assigned.has(u.id)) continue;
         const d = dist(u.x, u.y, crate.x, crate.y);
         if (d < bd) {
@@ -1017,8 +1047,7 @@ export class RtsBot {
     };
     let best: Ent | null = null,
       bestScore = -1;
-    for (const e of w.ents.values()) {
-      if (e.o < 0 || w.isAlly(this.slot, e.o)) continue;
+    for (const e of this.scan.enemyAll) {
       if (w.players.get(e.o)?.eliminated) continue;
       const score = (priority[e.k] ?? (isB(e.k) ? 40 : 10)) + e.hp * 0.01;
       if (score > bestScore) {
@@ -1047,8 +1076,8 @@ export class RtsBot {
     const mx = clamp(base.x + (dx / l) * musterD, 1, w.w - 2),
       my = clamp(base.y + (dy / l) * musterD, 1, w.h - 2);
     const ids: number[] = [];
-    for (const e of w.ents.values()) {
-      if (e.o !== this.slot || isB(e.k) || e.k === "harvester" || e.k === "supplytruck" || isSea(e.k) || e.order) continue;
+    for (const e of this.scan.myUnits) {
+      if (e.k === "harvester" || e.k === "supplytruck" || isSea(e.k) || e.order) continue;
       if (dist(e.x, e.y, base.x, base.y) > HOME_RADIUS) continue;
       if (dist(e.x, e.y, mx, my) <= 4.5) continue;
       ids.push(e.id);
@@ -1064,8 +1093,7 @@ export class RtsBot {
     const trucks: Ent[] = [];
     const landArmy: Ent[] = [];
     const refillPts: Ent[] = [];
-    for (const e of w.ents.values()) {
-      if (e.o !== this.slot) continue;
+    for (const e of this.scan.mine) {
       if (e.k === "supplytruck") trucks.push(e);
       else if (e.k === "supplyhub" || e.k === "refinery" || e.k === "conyard") refillPts.push(e);
       else if (!isB(e.k) && e.k !== "harvester" && e.k !== "engineer" && UNITS[e.k].domain === "land") {
@@ -1104,30 +1132,44 @@ export class RtsBot {
     }
   }
 
+  // Exact nearest own building/harvester distance within DEF_RADIUS, using the
+  // snapshot asset buckets instead of enemy × asset nested scans.
+  private assetDist2(e: Ent): number {
+    let best = DEF_RADIUS * DEF_RADIUS;
+    const x0 = Math.floor((e.x - DEF_RADIUS) / 8),
+      x1 = Math.floor((e.x + DEF_RADIUS) / 8);
+    const y0 = Math.floor((e.y - DEF_RADIUS) / 8),
+      y1 = Math.floor((e.y + DEF_RADIUS) / 8);
+    for (let cy = y0; cy <= y1; cy++) {
+      for (let cx = x0; cx <= x1; cx++) {
+        const cell = this.scan.assetCells.get(cy * 1024 + cx);
+        if (!cell) continue;
+        for (const m of cell) {
+          const d2 = (e.x - m.x) * (e.x - m.x) + (e.y - m.y) * (e.y - m.y);
+          if (d2 < best) best = d2;
+        }
+      }
+    }
+    return best;
+  }
+
   // cheap loop (~8 ticks): enemies near our buildings/harvesters get a
   // response from home-guard units. Far-away wave troops are NOT recalled.
   private defend(t: number) {
     const w = this.world;
     const base = this.baseCenter();
     if (!base) return;
-    const mine: Ent[] = [];
-    for (const m of w.ents.values()) {
-      if (m.o === this.slot && (isB(m.k) || m.k === "harvester")) mine.push(m);
-    }
     // nearest visible enemy ent to any of our buildings or harvesters
     let threat: Ent | null = null,
       bd = DEF_RADIUS * DEF_RADIUS;
-    for (const e of w.ents.values()) {
-      if (e.o < 0 || w.isAlly(this.slot, e.o)) continue;
+    for (const e of this.scan.enemyAll) {
       const p = w.players.get(e.o);
       if (p && p.eliminated) continue;
       if (w.isStealthed(e) && !w.isStealthDetected(e, this.slot)) continue;
-      for (const m of mine) {
-        const d2 = (e.x - m.x) * (e.x - m.x) + (e.y - m.y) * (e.y - m.y);
-        if (d2 < bd) {
-          bd = d2;
-          threat = e;
-        }
+      const d2 = this.assetDist2(e);
+      if (d2 < bd) {
+        bd = d2;
+        threat = e;
       }
     }
     if (!threat) return;
@@ -1137,8 +1179,8 @@ export class RtsBot {
     this.lastDefend = t;
     const ids: number[] = [];
     const isDroneThreat = threat.k === "fpvdrone" || threat.k === "shahed" || threat.k === "usv" || threat.k === "uav";
-    for (const e of w.ents.values()) {
-      if (e.o !== this.slot || isB(e.k) || e.k === "harvester" || e.k === "engineer" || e.k === "supplytruck") continue;
+    for (const e of this.scan.myUnits) {
+      if (e.k === "harvester" || e.k === "engineer" || e.k === "supplytruck") continue;
       if (!w.canAttack(e, threat) && !(e.k === "ewdrone" && isDroneThreat)) continue;
       if (dist(e.x, e.y, base.x, base.y) > GUARD_RADIUS) continue;
       ids.push(e.id);
@@ -1150,8 +1192,7 @@ export class RtsBot {
   private navalTarget(ref: { x: number; y: number }): { x: number; y: number } | null {
     let best: { x: number; y: number } | null = null,
       bd = Infinity;
-    for (const e of this.world.ents.values()) {
-      if (e.o < 0 || this.world.isAlly(this.slot, e.o)) continue;
+    for (const e of this.scan.enemyAll) {
       if (this.world.players.get(e.o)?.eliminated) continue;
       if (this.world.isStealthed(e) && !this.world.isStealthDetected(e, this.slot)) continue;
       if (e.k !== "shipyard" && e.k !== "shipyard2" && !isSea(e.k)) continue;
@@ -1173,8 +1214,8 @@ export class RtsBot {
     const army: Ent[] = [],
       awayLandAir: Ent[] = [],
       awaySea: Ent[] = [];
-    for (const e of w.ents.values()) {
-      if (e.o !== this.slot || isB(e.k) || e.k === "harvester" || e.k === "supplytruck") continue;
+    for (const e of this.scan.myUnits) {
+      if (e.k === "harvester" || e.k === "supplytruck") continue;
       army.push(e);
       if (!e.order && dist(e.x, e.y, base.x, base.y) > HOME_RADIUS) {
         if (isSea(e.k)) awaySea.push(e);
@@ -1269,8 +1310,8 @@ export class RtsBot {
       if (!sent) return;
       // Escort the assault wave with any loaded Supply Convoys
       const convoyIds: number[] = [];
-      for (const e of w.ents.values()) {
-        if (e.o === this.slot && e.k === "supplytruck" && e.cargo >= 100) convoyIds.push(e.id);
+      for (const e of this.scan.myUnits) {
+        if (e.k === "supplytruck" && e.cargo >= 100) convoyIds.push(e.id);
       }
       if (convoyIds.length && landAirIds.length) {
         const cx = clamp(base.x + (goal.x - base.x) * 0.78, 1, w.w - 2);
@@ -1301,10 +1342,7 @@ export class RtsBot {
       this.oreAt = t;
     }
     const bc = this.buildingCounts();
-    let army = 0;
-    for (const e of w.ents.values()) {
-      if (e.o === this.slot && !isB(e.k) && e.k !== "harvester" && e.k !== "supplytruck") army++;
-    }
+    const army = this.scan.myArmyCount;
     this.phase = this.phaseOf(me, bc, army, t);
     const want = this.wantBuilding(me, bc);
     if (want && !me.bq.length && !me.awaiting.length && me.credits >= BUILDINGS[want].cost) {

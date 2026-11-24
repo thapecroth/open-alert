@@ -43,6 +43,8 @@ const browser = await puppeteer.launch({
   defaultViewport: { width: VW, height: VH },
 });
 const page = await browser.newPage();
+// Tests exercise Classic RTS hotkeys (A/S/X) — pin the mode explicitly since WASD-pan is now the default.
+await page.evaluateOnNewDocument(() => { try { localStorage.setItem("oa-wasd", "0"); } catch {} });
 const pageErrs = [];
 page.on("pageerror", (e) => {
   pageErrs.push(e.message);
@@ -1061,8 +1063,9 @@ try {
         await click(mm.x + mm.w * fx, mm.y + mm.h * fy);
         await sleep(300);
         const t1 = await gs();
-        const exX = fx * 64,
-          exZ = fy * 64;
+        const dims = await ev(() => ({ w: window.__oa.gs.mapW, h: window.__oa.gs.mapH }));
+        const exX = fx * dims.w,
+          exZ = fy * dims.h;
         const ok = Math.abs(t1.camX - exX) < 3 && Math.abs(t1.camZ - exZ) < 3 && Math.hypot(t1.camX - t0.camX, t1.camZ - t0.camZ) > 3;
         rec(name, ok, `click @(${exX.toFixed(1)},${exZ.toFixed(1)}) map → camTarget (${t0.camX.toFixed(1)},${t0.camZ.toFixed(1)})→(${t1.camX.toFixed(1)},${t1.camZ.toFixed(1)})`);
       }

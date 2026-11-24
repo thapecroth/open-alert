@@ -5,6 +5,7 @@
 //
 // Run: node test/orderfuzz.mjs   (expects `wrangler dev` on :8787)
 //
+import { wsconn } from "./wsconn.mjs";
 // Semantics relied on (src/server/world.ts):
 //  - cmdOrder: denies "off map" (x,y floor-checked even for attack),
 //    "bad order" (unknown kind), "nothing to order" (all ids skipped:
@@ -37,22 +38,20 @@ const notes = [];
 const note = (s) => { notes.push(s); console.log(`note: ${s}`); };
 
 function conn(name, token) {
-  const ws = new WebSocket(URL);
-  const st = { ws, msgs: [], slot: null, snaps: [], events: [], deadIds: new Set(), prevIds: new Set() };
-  ws.onmessage = (e) => {
-    const m = JSON.parse(e.data);
-    st.msgs.push(m);
-    if (m.t === "init") st.slot = m.slot;
-    if (m.t === "snap") {
-      st.snaps.push(m);
-      st.events.push(...(m.events ?? []));
-      const cur = new Set(m.ents.map((x) => x.id));
-      for (const id of st.prevIds) if (!cur.has(id)) st.deadIds.add(id);
-      st.prevIds = cur;
-      if (st.snaps.length > 400) st.snaps.shift();
-    }
-  };
-  ws.onopen = () => ws.send(JSON.stringify({ t: "join", name, token }));
+  const st = wsconn(URL, name, token, {
+    onmsg: (m, st) => {
+      if (m.t === "snap") {
+        st.events.push(...(m.events ?? []));
+        const cur = new Set(m.ents.map((x) => x.id));
+        for (const id of st.prevIds) if (!cur.has(id)) st.deadIds.add(id);
+        st.prevIds = cur;
+        if (st.snaps.length > 400) st.snaps.shift();
+      }
+    },
+  });
+  st.events = [];
+  st.deadIds = new Set();
+  st.prevIds = new Set();
   return st;
 }
 const send = (s, m) => s.ws.send(JSON.stringify(m));

@@ -923,7 +923,7 @@ net.onMsg = (m: S2C) => {
             // toast only for a genuinely NEW ready item — a cancel/place shrink must not chime
             const prevList = prevAwaiting ? prevAwaiting.split(",") : [];
             const rest = [...prevList];
-            let fresh: string | undefined;
+            let fresh: BuildingKind | undefined;
             for (const k of awaiting) {
               const i = rest.indexOf(k);
               if (i >= 0) rest.splice(i, 1);
@@ -941,7 +941,7 @@ net.onMsg = (m: S2C) => {
           if (awaitingDef?.length) {
             const prevList = prevAwaitingDef ? prevAwaitingDef.split(",") : [];
             const rest = [...prevList];
-            let fresh: string | undefined;
+            let fresh: BuildingKind | undefined;
             for (const k of awaitingDef) {
               const i = rest.indexOf(k);
               if (i >= 0) rest.splice(i, 1);

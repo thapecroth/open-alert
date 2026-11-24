@@ -52,6 +52,17 @@ import {
   CRATE_MAX,
   CRATE_CASH,
   SPLASH_RADIUS,
+  UPGRADED_OF,
+  ARMOR_MULTS,
+  matchesArmorClass,
+  isInfantryKind,
+  isSeaShipKind,
+  usesVehicleSeparation,
+  WEAPON_FX_OF,
+  AMMO_COST_OF,
+  KAMIKAZE_FUEL_BURN,
+  FUEL_BURN_OF,
+  DOMAIN_FUEL_BURN,
   getSpawns,
   getMapLayout,
 } from "../shared/gamedefs";
@@ -188,12 +199,6 @@ const DIRS4: readonly [number, number][] = [
   [0, -1],
 ];
 const PROD_CATS: readonly ProdCat[] = ["barracks", "factory", "airfield", "shipyard"];
-const UPGRADED_OF: Partial<Record<BuildingKind, BuildingKind>> = {
-  barracks: "barracks2",
-  factory: "factory2",
-  airfield: "airfield2",
-  shipyard: "shipyard2",
-};
 const INTERCEPTABLE = new Set<EntKind>([
   "arty",
   "himars",
@@ -234,172 +239,31 @@ const canHitGroundOf = (k: EntKind): boolean =>
   isBuilding(k)
     ? (BUILDINGS[k].dmg ?? 0) > 0 && BUILDINGS[k].canHitGround !== false
     : UNITS[k].canHitGround !== false && UNITS[k].dmg > 0;
-const isInfantry = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer" || k === "spy";
 const usesFuel = (k: EntKind): boolean =>
-  !isBuilding(k) && !isInfantry(k) && k !== "supplytruck" && k !== "harvester";
-const fuelBurnOf = (k: EntKind, dom: UnitDomain): number => {
-  if (k === "hypersonic") return 0.04;
-  if (isKamikaze(k)) return 0.18;
-  return dom === "air" ? 0.55 : dom === "sea" ? 0.25 : 0.35;
-};
-const ammoCostOf = (k: EntKind): number => {
-  if (isKamikaze(k)) return 0;
-  if (k === "a10") return 2;
-  if (k === "ac130") return 6;
-  if (
-    k === "himars" ||
-    k === "arty" ||
-    k === "dreadnought" ||
-    k === "bomber" ||
-    k === "stealthbomber" ||
-    k === "zeppelin" ||
-    k === "ballistic"
-  ) {
-    return 12;
-  }
-  if (
-    k === "tank" ||
-    k === "heavy" ||
-    k === "railtank" ||
-    k === "destroyer" ||
-    k === "sub" ||
-    k === "carrier" ||
-    k === "chopper" ||
-    k === "interceptor"
-  ) {
-    return 7;
-  }
-  return 4;
-};
-const isHeavyArmor = (k: EntKind) => k === "tank" || k === "heavy" || k === "harvester" || k === "railtank";
-const isVehicle = (k: EntKind) =>
-  k === "tank" ||
-  k === "heavy" ||
-  k === "arty" ||
-  k === "harvester" ||
-  k === "supplytruck" ||
-  k === "spider" ||
-  k === "himars" ||
-  k === "railtank" ||
-  k === "ballistic";
-const isLightUnit = (k: EntKind) =>
-  isInfantry(k) || k === "spider" || k === "uav" || k === "gunboat";
-const isSeaShip = (k: EntKind) => !isBuilding(k) && UNITS[k].domain === "sea";
+  !isBuilding(k) && !isInfantryKind(k) && k !== "supplytruck" && k !== "harvester";
+const fuelBurnOf = (k: EntKind, dom: UnitDomain): number =>
+  FUEL_BURN_OF[k] ?? (isKamikaze(k) ? KAMIKAZE_FUEL_BURN : DOMAIN_FUEL_BURN[dom]);
+const ammoCostOf = (k: EntKind): number => (isKamikaze(k) ? 0 : AMMO_COST_OF[k] ?? 4);
 
 const armorMult = (attacker: EntKind, target: EntKind): number => {
-  const tDom = domainOf(target);
-  if (attacker === "infantry") {
-    if (tDom === "air") return 0.6;
-    if (isInfantry(target)) return 1.35;
-    if (isHeavyArmor(target)) return 0.7;
-  } else if (attacker === "rocket") {
-    if (tDom === "air") return 1.35;
-    if (isVehicle(target)) return 1.4;
-    if (isInfantry(target)) return 0.75;
-  } else if (attacker === "arty") {
-    if (isBuilding(target)) return 1.35;
-  } else if (attacker === "railtank") {
-    if (isVehicle(target) || isBuilding(target)) return 1.35;
-  } else if (attacker === "lasertower") {
-    if (isVehicle(target) || isSeaShip(target)) return 1.4;
-  } else if (attacker === "sam") {
-    if (tDom === "air") return 1.5;
-  } else if (attacker === "thaad") {
-    if (
-      target === "stealthbomber" ||
-      target === "ac130" ||
-      target === "hypersonic" ||
-      target === "a10" ||
-      target === "interceptor"
-    ) {
-      return 1.5;
-    }
-  } else if (attacker === "uav") {
-    if (isLightUnit(target)) return 1.25;
-  } else if (attacker === "sub") {
-    if (isSeaShip(target)) return 1.45;
-  } else if (attacker === "interceptor") {
-    if (tDom === "air") return 1.4;
-  } else if (
-    attacker === "bomber" ||
-    attacker === "stealthbomber" ||
-    attacker === "himars" ||
-    attacker === "zeppelin" ||
-    attacker === "dreadnought"
-  ) {
-    if (isBuilding(target)) return 1.3;
-  } else if (attacker === "hypersonic") {
-    if (isBuilding(target) || isSeaShip(target)) return 1.5;
-  } else if (attacker === "ballistic") {
-    if (isBuilding(target) || isSeaShip(target)) return 1.4;
-  } else if (attacker === "a10") {
-    if (
-      target === "tank" ||
-      target === "himars" ||
-      target === "railtank" ||
-      target === "harvester" ||
-      target === "supplytruck" ||
-      target === "heavy" ||
-      target === "arty"
-    ) {
-      return 1.5;
-    }
-  } else if (attacker === "ac130") {
-    if (isInfantry(target) || isVehicle(target) || isBuilding(target)) return 1.3;
-  } else if (attacker === "gunboat" || attacker === "destroyer") {
-    if (tDom === "air") return 1.35;
-  } else if (attacker === "fpvdrone") {
-    if (
-      target === "tank" ||
-      target === "himars" ||
-      target === "railtank" ||
-      target === "harvester" ||
-      target === "supplytruck" ||
-      target === "heavy" ||
-      target === "arty"
-    ) {
-      return 1.45;
-    }
-  } else if (attacker === "shahed") {
-    if (isBuilding(target)) return 1.4;
-  } else if (attacker === "usv") {
-    if (
-      target === "destroyer" ||
-      target === "dreadnought" ||
-      target === "carrier" ||
-      target === "gunboat" ||
-      target === "sub" ||
-      target === "shipyard" ||
-      target === "shipyard2"
-    ) {
-      return 1.5;
-    }
+  for (const rule of ARMOR_MULTS[attacker] ?? []) {
+    if (rule.kinds?.includes(target) || rule.classes?.some((cls) => matchesArmorClass(cls, target))) return rule.mult;
   }
   return 1;
 };
 
-const entityDist = (a: Ent, b: Ent) => {
-  if (!isBuilding(b.k)) return dist(a.x, a.y, b.x, b.y);
-  const bd = BUILDINGS[b.k];
+const pointDistToEnt = (px: number, py: number, t: Ent) => {
+  if (!isBuilding(t.k)) return dist(px, py, t.x, t.y);
+  const bd = BUILDINGS[t.k];
   return Math.hypot(
-    Math.max(0, Math.abs(a.x - b.x) - bd.w / 2),
-    Math.max(0, Math.abs(a.y - b.y) - bd.h / 2),
+    Math.max(0, Math.abs(px - t.x) - bd.w / 2),
+    Math.max(0, Math.abs(py - t.y) - bd.h / 2),
   );
 };
-const weaponFxOf = (k: EntKind): WeaponFx => {
-  if (k === "lasertower" || k === "satlink") return "laser";
-  if (k === "railtank") return "railgun";
-  if (k === "a10") return "brrrt";
-  if (k === "tank" || k === "heavy" || k === "destroyer") return "cannon";
-  if (k === "rocket" || k === "interceptor" || k === "sam" || k === "irondome" || k === "uav") return "rocket";
-  if (k === "arty" || k === "ac130") return "arty";
-  if (k === "arc") return "arc";
-  if (k === "spider") return "melee";
-  if (k === "dreadnought" || k === "himars" || k === "hypersonic" || k === "carrier" || k === "thaad" || k === "ballistic") return "missile";
-  if (k === "sub") return "torpedo";
-  if (k === "bomber" || k === "stealthbomber" || k === "zeppelin") return "bomb";
-  return "bullet";
-};
+const entityDist = (a: Ent, b: Ent) => pointDistToEnt(a.x, a.y, b);
+const weaponFxOf = (k: EntKind): WeaponFx => WEAPON_FX_OF[k] ?? "bullet";
+const MAX_BUILDING_EDGE_PAD = Math.max(...Object.values(BUILDINGS).map((d) => Math.hypot(d.w / 2, d.h / 2)));
+const GRID_POS_PAD = 4;
 // weapon stats are pure functions of kind — cache to keep the per-ent-per-tick path alloc-free
 const wpnCache = new Map<string, { range: number; dmg: number; rof: number }>();
 const weaponOf = (e: Ent) => {
@@ -421,35 +285,64 @@ const AC130_GUNS: readonly { name: string; dmg: number; rof: number; splash: num
   { name: "25MM", dmg: 7, rof: 4, splash: 0.35, fx: "brrrt" },
 ];
 
+const copyOrder = (o: Order): Order => ({
+  ...o,
+  patrolFrom: o.patrolFrom ? [o.patrolFrom[0], o.patrolFrom[1]] : o.patrolFrom,
+});
+const copyEnt = (e: Ent): Ent => ({
+  ...e,
+  order: e.order ? copyOrder(e.order) : null,
+  orderQueue: e.orderQueue.map(copyOrder),
+  path: e.path ? e.path.map((p) => ({ ...p })) : null,
+  bTiles: e.bTiles ? [...e.bTiles] : e.bTiles,
+  rally: e.rally ? [e.rally[0], e.rally[1]] : e.rally,
+  direct: e.direct ? { ...e.direct } : e.direct,
+});
+const copyPlayer = (p: P): P => {
+  const queues: P["queues"] = {};
+  for (const cat of PROD_CATS) {
+    const q = p.queues[cat];
+    if (q) queues[cat] = q.map((item) => ({ ...item }));
+  }
+  return {
+    ...p,
+    awaiting: [...p.awaiting],
+    bq: p.bq.map((item) => ({ ...item })),
+    awaitingDef: [...p.awaitingDef],
+    dq: p.dq.map((item) => ({ ...item })),
+    queues,
+  };
+};
+
 export class World {
   readonly w: number;
   readonly h: number;
-  tick = 0;
+  tick!: number;
   map: MapId;
   config: GameConfig;
-  winner: number | null = null;
-  winnerTeam: number | null = null;
-  ents = new Map<number, Ent>();
-  players = new Map<number, P>(); // keyed by slot
-  crates = new Map<number, CrateSnap>();
-  events: GameEvent[] = [];
+  winner!: number | null;
+  winnerTeam!: number | null;
+  ents!: Map<number, Ent>;
+  players!: Map<number, P>; // keyed by slot
+  crates!: Map<number, CrateSnap>;
+  events!: GameEvent[];
 
-  private block: Uint8Array; // 1 = building footprint
-  private cliff: Uint8Array; // 1 = impassable rocky cliff
-  private water: Uint8Array; // 1 = navigable water
-  bridges = new Set<number>(); // pontoon-bridge tiles — land+sea passable, still water underneath
-  private waterCount = 0;
-  private bld: Int32Array; // ent id per tile
-  private ore: Int16Array; // remaining per tile
-  private nextId = 1;
-  private nextCrateId = 1;
-  private astarBudget = 12; // per-tick A* path budget to prevent Durable Object CPU exhaustion
-  private lastAlert = new Map<number, number>(); // slot -> tick of last under-attack alert
-  private gridCols: number;
-  private gridRows: number;
-  private grid: Ent[][]; // dynamic 8x8 tile spatial buckets
-  private subDetMask = new Map<number, number>(); // sub ent id -> bitmask of slots that detect it this tick
-  private gridTick = -1;
+  private block!: Uint8Array; // 1 = building footprint
+  private cliff!: Uint8Array; // 1 = impassable rocky cliff
+  private water!: Uint8Array; // 1 = navigable water
+  bridges!: Set<number>; // pontoon-bridge tiles — land+sea passable, still water underneath
+  private waterCount!: number;
+  private bld!: Int32Array; // ent id per tile
+  private ore!: Int16Array; // remaining per tile
+  private nextId!: number;
+  private nextCrateId!: number;
+  private astarBudget!: number; // per-tick A* path budget to prevent Durable Object CPU exhaustion
+  private lastAlert!: Map<number, number>; // slot -> tick of last under-attack alert
+  private gridCols!: number;
+  private gridRows!: number;
+  private grid!: Ent[][]; // dynamic 8x8 tile spatial buckets
+  private subDetMask!: Map<number, number>; // sub ent id -> bitmask of slots that detect it this tick
+  private gridTick!: number;
   private names: Record<number, string>;
 
   private idx(x: number, y: number): number {
@@ -460,13 +353,41 @@ export class World {
     return x >= 0 && y >= 0 && x < this.w && y < this.h;
   }
 
-  constructor(slots: number[], opts?: WorldOpts) {
-    this.map = opts?.map ?? "crossroads";
-    this.config = { ...DEFAULT_CONFIG, ...(opts?.config ?? {}) };
-    this.names = opts?.names ? { ...opts.names } : {};
-    const layout = getMapLayout(this.map);
-    this.w = layout.w;
-    this.h = layout.h;
+  private initRuntimeState() {
+    this.tick = 0;
+    this.winner = null;
+    this.winnerTeam = null;
+    this.ents = new Map();
+    this.players = new Map();
+    this.crates = new Map();
+    this.events = [];
+    this.bridges = new Set();
+    this.nextId = 1;
+    this.nextCrateId = 1;
+    this.astarBudget = 12;
+    this.lastAlert = new Map();
+    this.subDetMask = new Map();
+    this.gridTick = -1;
+    this.teamArr = new Int8Array(16);
+    this.teamSize = -1;
+    this.slotCnt = new Int16Array(16);
+    this.oreTakenMap = null;
+    this.oreTiles = null;
+    this.bldIdx = new Map();
+    this.bldAll = [];
+    this.domeIdx = [];
+    this.ecoIdx = [];
+    this.bldDirty = true;
+    this.passable = (x: number, y: number) =>
+      this.inBounds(x, y) &&
+      this.block[this.idx(x, y)] === 0 &&
+      this.cliff[this.idx(x, y)] === 0 &&
+      (this.water[this.idx(x, y)] === 0 || this.bridges.has(this.idx(x, y)));
+    this.passableSea = (x: number, y: number) =>
+      this.inBounds(x, y) && this.block[this.idx(x, y)] === 0 && this.cliff[this.idx(x, y)] === 0 && this.water[this.idx(x, y)] === 1;
+  }
+
+  private initMapState(layout: ReturnType<typeof getMapLayout>): number {
     const area = this.w * this.h;
     this.block = new Uint8Array(area);
     this.cliff = new Uint8Array(area);
@@ -476,7 +397,7 @@ export class World {
     this.gridCols = Math.ceil(this.w / 8);
     this.gridRows = Math.ceil(this.h / 8);
     this.grid = Array.from({ length: this.gridCols * this.gridRows }, () => []);
-
+    this.waterCount = 0;
     for (const [cx, cy] of layout.cliffs) {
       if (this.inBounds(cx, cy)) this.cliff[this.idx(cx, cy)] = 1;
     }
@@ -489,6 +410,18 @@ export class World {
         }
       }
     }
+    return area;
+  }
+
+  constructor(slots: number[], opts?: WorldOpts) {
+    this.map = opts?.map ?? "crossroads";
+    this.config = { ...DEFAULT_CONFIG, ...(opts?.config ?? {}) };
+    this.names = opts?.names ? { ...opts.names } : {};
+    const layout = getMapLayout(this.map);
+    this.w = layout.w;
+    this.h = layout.h;
+    this.initRuntimeState();
+    this.initMapState(layout);
 
     this.genOre(slots);
 
@@ -563,19 +496,19 @@ export class World {
     return {
       v: 1,
       map: this.map,
-      config: this.config,
+      config: { ...this.config },
       tick: this.tick,
       winner: this.winner,
       winnerTeam: this.winnerTeam,
       nextId: this.nextId,
       nextCrateId: this.nextCrateId,
       names: { ...this.names },
-      ents: [...this.ents.values()],
-      players: [...this.players.values()],
-      crates: [...this.crates.values()],
-      ore: this.ore,
+      ents: [...this.ents.values()].map(copyEnt),
+      players: [...this.players.values()].map(copyPlayer),
+      crates: [...this.crates.values()].map((c) => ({ ...c })),
+      ore: this.ore.slice(),
       bridges: [...this.bridges],
-      lastAlert: [...this.lastAlert.entries()],
+      lastAlert: [...this.lastAlert.entries()].map(([slot, tick]): [number, number] => [slot, tick]),
     };
   }
 
@@ -586,33 +519,11 @@ export class World {
     w.config = { ...DEFAULT_CONFIG, ...d.config };
     (w as { w: number }).w = layout.w;
     (w as { h: number }).h = layout.h;
-    const area = w.w * w.h;
-    w.block = new Uint8Array(area);
-    w.cliff = new Uint8Array(area);
-    w.water = new Uint8Array(area);
+    w.initRuntimeState();
+    const area = w.initMapState(layout);
     w.bridges = new Set(d.bridges ?? []);
-    w.bld = new Int32Array(area).fill(-1);
-    w.gridCols = Math.ceil(w.w / 8);
-    w.gridRows = Math.ceil(w.h / 8);
-    w.grid = Array.from({ length: w.gridCols * w.gridRows }, () => []);
-    w.waterCount = 0;
-    for (const [cx, cy] of layout.cliffs) {
-      if (w.inBounds(cx, cy)) w.cliff[w.idx(cx, cy)] = 1;
-    }
-    for (const [wx, wy] of layout.water) {
-      if (w.inBounds(wx, wy)) {
-        const i = w.idx(wx, wy);
-        if (!w.cliff[i] && !w.water[i]) {
-          w.water[i] = 1;
-          w.waterCount++;
-        }
-      }
-    }
-    if (d.ore && d.ore.length === area) w.ore = d.ore;
-    else {
-      w.ore = new Int16Array(area);
-      w.genOre((d.players ?? []).map((p) => p.slot));
-    }
+    if (d.ore && d.ore.length === area) w.ore = new Int16Array(d.ore);
+    else w.genOre((d.players ?? []).map((p) => p.slot));
     w.tick = d.tick;
     w.winner = d.winner;
     w.winnerTeam = d.winnerTeam;
@@ -653,20 +564,7 @@ export class World {
     }
     w.players = new Map((d.players ?? []).map((p) => [p.slot, p]));
     w.crates = new Map((d.crates ?? []).map((c) => [c.id, c]));
-    w.events = [];
     w.lastAlert = new Map(d.lastAlert ?? []);
-    w.subDetMask = new Map();
-    w.gridTick = -1;
-    w.astarBudget = 12;
-    w.oreTakenMap = null;
-    w.oreTiles = null;
-    w.bldIdx = new Map();
-    w.domeIdx = [];
-    w.ecoIdx = [];
-    w.bldDirty = true;
-    w.teamArr = new Int8Array(16);
-    w.teamSize = -1;
-    w.slotCnt = new Int16Array(16);
     for (const e of w.ents.values()) if (e.o >= 0) w.slotCnt[e.o]++;
     let maxId = 0;
     for (const e of w.ents.values()) {
@@ -687,22 +585,14 @@ export class World {
       }
     }
     w.nextId = Math.max(d.nextId, maxId + 1);
-    // arrow-function fields aren't prototype members — rebind them
-    w.passable = (x: number, y: number) =>
-      w.inBounds(x, y) &&
-      w.block[w.idx(x, y)] === 0 &&
-      w.cliff[w.idx(x, y)] === 0 &&
-      (w.water[w.idx(x, y)] === 0 || w.bridges.has(w.idx(x, y)));
-    w.passableSea = (x: number, y: number) =>
-      w.inBounds(x, y) && w.block[w.idx(x, y)] === 0 && w.cliff[w.idx(x, y)] === 0 && w.water[w.idx(x, y)] === 1;
     return w;
   }
 
   // flat slot→team lookup for isAlly — rebuilt when players change (rare)
-  private teamArr = new Int8Array(16);
-  private teamSize = -1;
+  private teamArr!: Int8Array;
+  private teamSize!: number;
   // per-slot live entity counts for O(1) elimination checks
-  private slotCnt = new Int16Array(16);
+  private slotCnt!: Int16Array;
   isAlly(slotA: number, slotB: number): boolean {
     if (slotA < 0 || slotB < 0) return false; // neutral is nobody's ally, not even neutral's
     if (slotA === slotB) return true;
@@ -809,7 +699,7 @@ export class World {
       return STEALTH_AIR_DETECTORS.has(detectorKind) ? 12 : 0;
     }
     if (targetKind === "usv") {
-      return isSeaShip(detectorKind) || detectorKind === "radar" || detectorKind === "uav" ? 9 : 5.5;
+      return isSeaShipKind(detectorKind) || detectorKind === "radar" || detectorKind === "uav" ? 9 : 5.5;
     }
     if (targetKind === "spy") {
       // Disguised spy only blown by powered, unscrambled Radar-tier sensors
@@ -828,9 +718,7 @@ export class World {
     const stealthed: Ent[] = [];
     const spies: Ent[] = [];
     for (const e of this.ents.values()) {
-      const gx = Math.max(0, Math.min(this.gridCols - 1, (e.x | 0) >> 3));
-      const gy = Math.max(0, Math.min(this.gridRows - 1, (e.y | 0) >> 3));
-      this.grid[gy * this.gridCols + gx].push(e);
+      this.gridInsert(e);
       if (this.isStealthed(e)) stealthed.push(e);
       if (e.k === "spy" && this.tick >= e.spottedUntil) spies.push(e);
     }
@@ -940,17 +828,8 @@ export class World {
     return true;
   }
 
-  passable = (x: number, y: number) =>
-    this.inBounds(x, y) &&
-    this.block[this.idx(x, y)] === 0 &&
-    this.cliff[this.idx(x, y)] === 0 &&
-    (this.water[this.idx(x, y)] === 0 || this.bridges.has(this.idx(x, y)));
-
-  passableSea = (x: number, y: number) =>
-    this.inBounds(x, y) &&
-    this.block[this.idx(x, y)] === 0 &&
-    this.cliff[this.idx(x, y)] === 0 &&
-    this.water[this.idx(x, y)] === 1;
+  passable!: (x: number, y: number) => boolean;
+  passableSea!: (x: number, y: number) => boolean;
 
   footprint(kind: BuildingKind, tx: number, ty: number) {
     const d = BUILDINGS[kind];
@@ -994,6 +873,7 @@ export class World {
       sabUntil: 0,
     };
     this.ents.set(e.id, e);
+    this.gridInsert(e);
     this.bldDirty = true;
     if (e.o >= 0) this.slotCnt[e.o]++;
     for (let y = ty; y < ty + d.h; y++)
@@ -1037,6 +917,7 @@ export class World {
       sabUntil: 0,
     };
     this.ents.set(e.id, e);
+    this.gridInsert(e);
     if (e.o >= 0) this.slotCnt[e.o]++;
     this.events.push({ e: "spawn", id: e.id });
     return e;
@@ -1669,7 +1550,7 @@ export class World {
         return null;
       }
     }
-    for (const e of [...this.ents.values()]) {
+    for (const e of this.entsInRange(x, y, SW_RADIUS + MAX_BUILDING_EDGE_PAD + GRID_POS_PAD)) {
       if (!this.ents.has(e.id)) continue;
       if (this.isAlly(slot, e.o)) continue;
       const d = dist(x, y, e.x, e.y);
@@ -1706,7 +1587,7 @@ export class World {
     // checkEnd picks up the elimination next tick
   }
 
-  cmdPlace(slot: number, tx: number, ty: number, cat?: BuildCategory, kind?: BuildingKind): string | null {
+  cmdPlace(slot: number, tx: number, ty: number, cat?: BuildCategory, kind?: BuildingKind, created?: Ent[]): string | null {
     const p = this.players.get(slot);
     if (!p || p.eliminated) return "nothing to place";
     const list =
@@ -1729,8 +1610,13 @@ export class World {
     list.splice(i, 1);
     const b = this.placeBuilding(slot, k, tx, ty);
     this.recomputePower(slot);
+    created?.push(b);
     if (k === "refinery") {
-      if (this.spawnNearBuilding(slot, "harvester", b)) p.unitsBuilt++;
+      const spawned = this.spawnNearBuilding(slot, "harvester", b);
+      if (spawned) {
+        p.unitsBuilt++;
+        created?.push(spawned);
+      }
     } else if (k === "superweapon" && p.swLeft < 0) {
       p.swLeft = SW_CHARGE_TICKS;
     } else if (k === "radar" && p.reconLeft < 0) {
@@ -1900,17 +1786,20 @@ export class World {
   }
 
   // per-slot building index — invalidated on spawn/capture/destroy; saves O(n) Map scans
-  private bldIdx = new Map<number, Ent[]>();
-  private domeIdx: Ent[] = []; // thaad + irondome (intercept scans)
-  private ecoIdx: Ent[] = []; // derrick + coalmine (income ticks)
-  private bldDirty = true;
+  private bldIdx!: Map<number, Ent[]>;
+  private bldAll!: Ent[];
+  private domeIdx!: Ent[]; // thaad + irondome (intercept scans)
+  private ecoIdx!: Ent[]; // derrick + coalmine (income ticks)
+  private bldDirty!: boolean;
   private bldsOf(slot: number): Ent[] {
     if (this.bldDirty) {
       this.bldIdx.clear();
+      this.bldAll.length = 0;
       this.domeIdx.length = 0;
       this.ecoIdx.length = 0;
       for (const e of this.ents.values()) {
         if (!isBuilding(e.k)) continue;
+        this.bldAll.push(e);
         let l = this.bldIdx.get(e.o);
         if (!l) this.bldIdx.set(e.o, (l = []));
         l.push(e);
@@ -1933,6 +1822,23 @@ export class World {
         const cell = this.grid[gy * this.gridCols + gx];
         for (let i = 0; i < cell.length; i++) cb(cell[i]);
       }
+  }
+
+  private gridInsert(e: Ent) {
+    const gx = Math.max(0, Math.min(this.gridCols - 1, (e.x | 0) >> 3));
+    const gy = Math.max(0, Math.min(this.gridRows - 1, (e.y | 0) >> 3));
+    this.grid[gy * this.gridCols + gx].push(e);
+  }
+
+  // Candidates in insertion order (id order), with live positions on the ent references.
+  private entsInRange(x: number, y: number, r: number): Ent[] {
+    if (this.gridTick !== this.tick) return [...this.ents.values()];
+    const out: Ent[] = [];
+    this.forEachInRange(x, y, r, (e) => {
+      if (this.ents.has(e.id)) out.push(e);
+    });
+    out.sort((a, b) => a.id - b.id);
+    return out;
   }
 
   private hasBuilding(slot: number, kind: BuildingKind) {
@@ -2207,7 +2113,7 @@ export class World {
     // Collection check
     for (const [cid, crate] of [...this.crates.entries()]) {
       let collector: Ent | null = null;
-      for (const u of this.ents.values()) {
+      for (const u of this.entsInRange(crate.x, crate.y, 1.2 + GRID_POS_PAD)) {
         if (isBuilding(u.k) || u.o < 0) continue;
         if (dist(u.x, u.y, crate.x, crate.y) <= 1.2) {
           collector = u;
@@ -2237,7 +2143,7 @@ export class World {
         }
       } else if (crate.kind === "heal") {
         collector.hp = collector.mhp;
-        for (const u of this.ents.values()) {
+        for (const u of this.entsInRange(collector.x, collector.y, 8 + GRID_POS_PAD)) {
           if (!isBuilding(u.k) && this.isAlly(collector.o, u.o) && dist(collector.x, collector.y, u.x, u.y) <= 8) {
             u.hp = u.mhp;
           }
@@ -2636,8 +2542,9 @@ export class World {
     // Sapper (engineer) & Spy FPV Capture / Sabotage
     if (e.k === "engineer" || e.k === "spy") {
       const capRange = dir.fire ? CAPTURE_RANGE + 0.5 : CAPTURE_RANGE;
-      for (const b of [...this.ents.values()]) {
-        if (!isBuilding(b.k) || this.isAlly(e.o, b.o)) continue;
+      if (this.bldDirty) this.bldsOf(-1);
+      for (const b of this.bldAll) {
+        if (this.isAlly(e.o, b.o)) continue;
         const done = e.k === "spy" ? this.trySabotage(e, b, capRange) : this.tryCapture(e, b, capRange);
         if (done) return;
       }
@@ -2684,15 +2591,6 @@ export class World {
     const gun = e.k === "ac130" ? AC130_GUNS[dir.wpn ?? 0] : null;
     const w = gun ? { ...wb, dmg: gun.dmg, rof: gun.rof } : wb;
 
-    const pointDistToEnt = (px: number, py: number, t: Ent) => {
-      if (!isBuilding(t.k)) return dist(px, py, t.x, t.y);
-      const bd = BUILDINGS[t.k];
-      return Math.hypot(
-        Math.max(0, Math.abs(px - t.x) - bd.w / 2),
-        Math.max(0, Math.abs(py - t.y) - bd.h / 2),
-      );
-    };
-
     // Priority 1: Explicit aimTarget / persistent lock-on (dir.lock sticks across drive msgs;
     // locked guided weapons track with a slightly wider slack)
     const lockId = dir.lock ?? dir.aimTarget;
@@ -2712,7 +2610,7 @@ export class World {
     // Priority 2: Closest non-ally attackable entity within 1.8 tiles of (aimX, aimY) and in weapon range
     let best: Ent | null = null;
     let bestD = 1.8;
-    for (const t of this.ents.values()) {
+    for (const t of this.entsInRange(dir.aimX, dir.aimY, 1.8 + MAX_BUILDING_EDGE_PAD + GRID_POS_PAD)) {
       if (this.isAlly(e.o, t.o)) continue;
       if (!this.canAttack(e, t)) continue;
       if (entityDist(e, t) > w.range + 1.5) continue;
@@ -2773,7 +2671,7 @@ export class World {
     if (splashR) {
       const baseDmg = w.dmg * VET_DMG[e.vet];
       const hitAir = canHitAirOf(e.k);
-      for (const other of [...this.ents.values()]) {
+      for (const other of this.entsInRange(tx, ty, splashR + MAX_BUILDING_EDGE_PAD + GRID_POS_PAD)) {
         if (!this.ents.has(other.id)) continue;
         if (this.isAlly(e.o, other.o)) continue;
         if (!hitAir && domainOf(other.k) === "air") continue;
@@ -3006,7 +2904,7 @@ export class World {
   // oreIdx -> harvester id working that tile — rebuilt lazily once per tick.
   // Claims are soft: held for the whole toOre→mining→toRef cycle so a hauler
   // keeps its spot, and freed automatically on death/retask/hold.
-  private oreTakenMap: Map<number, number> | null = null;
+  private oreTakenMap!: Map<number, number> | null;
   private oreTaken(t: number, selfId: number): boolean {
     if (!this.oreTakenMap) {
       const m = new Map<number, number>();
@@ -3020,7 +2918,7 @@ export class World {
   }
 
   // ore tile list — rebuilt lazily once per step (ore mutates only via mining)
-  private oreTiles: number[] | null = null;
+  private oreTiles!: number[] | null;
   private nearestOre(x: number, y: number, maxR = 999, self?: Ent) {
     if (!this.oreTiles) {
       const list: number[] = [];
@@ -3248,7 +3146,7 @@ export class World {
     const splashR = gun ? gun.splash : SPLASH_RADIUS[e.k];
     if (splashR) {
       const hitAir = canHitAirOf(e.k);
-      for (const other of [...this.ents.values()]) {
+      for (const other of this.entsInRange(tx, ty, splashR + GRID_POS_PAD)) {
         if (other.id === tgt.id || other.id === e.id || !this.ents.has(other.id)) continue;
         if (this.isAlly(e.o, other.o)) continue;
         if (!hitAir && domainOf(other.k) === "air") continue;
@@ -3429,14 +3327,6 @@ export class World {
 
   private separate() {
     // soft separation between units in the SAME domain (spatial 3x3 cell neighborhood); tanks crush enemy infantry
-    const isVeh = (k: EntKind) =>
-      k === "tank" ||
-      k === "heavy" ||
-      k === "arty" ||
-      k === "harvester" ||
-      k === "supplytruck" ||
-      k === "himars" ||
-      k === "railtank";
     const isCrusher = (k: EntKind) => k === "tank" || k === "heavy" || k === "railtank";
     const crushable = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer";
     for (let cy = 0; cy < this.gridRows; cy++) {
@@ -3477,7 +3367,12 @@ export class World {
                 } else if (aDom === "air") {
                   minSep = a.k === "zeppelin" || b.k === "zeppelin" ? 1.25 : 0.9;
                 } else {
-                  minSep = isVeh(a.k) && isVeh(b.k) ? 1.05 : isVeh(a.k) || isVeh(b.k) ? 0.85 : 0.72;
+                  minSep =
+                    usesVehicleSeparation(a.k) && usesVehicleSeparation(b.k)
+                      ? 1.05
+                      : usesVehicleSeparation(a.k) || usesVehicleSeparation(b.k)
+                        ? 0.85
+                        : 0.72;
                 }
                 if (d2 > minSep * minSep) continue;
                 if (aDom === "land") {

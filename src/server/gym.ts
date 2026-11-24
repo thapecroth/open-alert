@@ -11,7 +11,7 @@
 //   const pixels = env.rgbFrame(3);                           // 192x192x3 RGB image
 
 import { World } from "./world";
-import { BUILDINGS, UNITS, ORE_CELL_MAX, PLAYER_COLORS, SHIPYARD_BUILD_DIST } from "../shared/gamedefs";
+import { BUILDINGS, UNITS, ORE_CELL_MAX, ORDER_KINDS, PLAYER_COLORS, SHIPYARD_BUILD_DIST, UPGRADED_OF } from "../shared/gamedefs";
 import type { BuildingKind, BuildCategory, UnitKind, EntKind, ProdCat } from "../shared/gamedefs";
 import type { OrderKind, PlayerState, ProdItem } from "../shared/protocol";
 
@@ -19,14 +19,7 @@ const hasOwn = (o: object, k: unknown): boolean =>
   typeof k === "string" && Object.prototype.hasOwnProperty.call(o, k);
 const isB = (k: EntKind): k is BuildingKind => k in BUILDINGS;
 const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
-// Mirrors worker.ts ORDER_KINDS.
-const ORDER_KINDS = new Set<string>(["move", "amove", "attack", "harvest", "patrol"]);
-const UPGRADED_OF: Partial<Record<BuildingKind, BuildingKind>> = {
-  barracks: "barracks2",
-  factory: "factory2",
-  airfield: "airfield2",
-  shipyard: "shipyard2",
-};
+const ORDER_KIND_SET: ReadonlySet<string> = new Set(ORDER_KINDS);
 
 export interface GymObs {
   tick: number;
@@ -535,7 +528,7 @@ export class GymEnv {
     if (a.order != null) {
       const o = a.order;
       if (!o || typeof o !== "object") return { ok: false, reason: "bad order" };
-      if (typeof o.kind !== "string" || !ORDER_KINDS.has(o.kind)) return { ok: false, reason: "bad order kind" };
+      if (typeof o.kind !== "string" || !ORDER_KIND_SET.has(o.kind)) return { ok: false, reason: "bad order kind" };
       if (!num(o.x) || !num(o.y)) return { ok: false, reason: "bad order coords" };
       if (o.target != null && !num(o.target)) return { ok: false, reason: "bad order target" };
     }

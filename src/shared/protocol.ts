@@ -2,7 +2,7 @@ import type { BuildingKind, BuildCategory, UnitKind, EntKind, MapId, BotDiff, Bo
 
 // ---------- client -> server ----------
 export type C2S =
-  | { t: "join"; name: string; token?: string; spectate?: boolean }
+  | { t: "join"; name: string; token?: string; spectate?: boolean; v?: number } // v: 2 = delta-stream capable
   | { t: "ready"; ready: boolean }
   | { t: "start" }
   | { t: "order"; ids: number[]; kind: OrderKind; x: number; y: number; target?: number; queue?: boolean }
@@ -124,6 +124,13 @@ export interface CrateSnap {
   kind: CrateKind;
 }
 
+// Sparse per-entity delta: id always present, changed fields carry their new
+// value, and null means "this optional field is no longer present" (JSON has
+// no undefined, so deletion needs an explicit sentinel).
+export type EntDelta = { id: number } & {
+  [K in keyof Omit<EntSnap, "id">]?: EntSnap[K] | null;
+};
+
 export interface ProdItem {
   unit: UnitKind;
   left: number;
@@ -199,12 +206,27 @@ export type S2C =
     }
   | {
       t: "snap";
+      // seq/key are present on delta-stream (v2) keyframes; absent from legacy/in-process snapshots.
+      // A "snap" message always carries FULL state — it is both the legacy frame and the v2 keyframe.
+      seq?: number;
+      key?: true;
       tick: number;
       ents: EntSnap[];
       crates?: CrateSnap[];
       bridges?: number[]; // pontoon-bridge tile indices (land+sea passable)
       players: Record<number, PlayerState>; // keyed by slot
       events: GameEvent[];
+    }
+  | {
+      t: "snapd"; // v2 delta frame — apply onto the state of the preceding seq (see src/shared/snapdelta.ts)
+      seq: number;
+      tick: number;
+      ents: EntDelta[]; // sparse per-ent partials (only changed fields; null deletes an optional field)
+      gone?: number[]; // removed entity ids
+      crates?: CrateSnap[]; // present only when changed (full replacement)
+      bridges?: number[]; // present only when changed (full replacement)
+      players?: Record<number, PlayerState>; // only slots whose state changed (full per-slot replacement)
+      events: GameEvent[]; // transient — always complete for this frame
     }
   | {
       t: "end";

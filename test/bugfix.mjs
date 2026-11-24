@@ -1,26 +1,18 @@
 // Regression for bug-hunt report #ec86fd41: amove resume, harvester hold,
 // bot lifecycle, sell-power, place-on-units, spawn stacking.
+import { wsconn, send, lastSnap, sleep } from "./wsconn.mjs";
 const ROOM = "bf" + Date.now().toString(36);
 const URL = `ws://localhost:8787/parties/game-room/${ROOM}`;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
 const ok = (c, l) => { c ? (pass++, console.log("ok:", l)) : (fail++, console.log("FAIL:", l)); };
 
 function conn(name, token, room = ROOM) {
-  const ws = new WebSocket(`ws://localhost:8787/parties/game-room/${room}`);
-  const st = { ws, msgs: [], slot: null, snaps: [], lobby: null };
-  ws.onmessage = (e) => {
-    const m = JSON.parse(e.data);
-    st.msgs.push(m);
-    if (m.t === "init") st.slot = m.slot;
-    if (m.t === "snap") st.snaps.push(m);
-    if (m.t === "lobby") st.lobby = m;
-  };
-  ws.onopen = () => ws.send(JSON.stringify({ t: "join", name, token }));
-  return st;
+  return wsconn(`ws://localhost:8787/parties/game-room/${room}`, name, token, {
+    onmsg: (m, st) => {
+      if (m.t === "lobby") st.lobby = m;
+    },
+  });
 }
-const send = (s, m) => s.ws.send(JSON.stringify(m));
-const lastSnap = (s) => s.snaps[s.snaps.length - 1];
 const ent = (s, id) => lastSnap(s).ents.find((e) => e.id === id);
 const mine = (s, k) => lastSnap(s).ents.filter((e) => e.o === s.slot && (!k || e.k === k));
 
