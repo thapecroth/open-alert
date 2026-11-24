@@ -291,10 +291,10 @@ function buildGymSchemaResponse() {
           pwrUse: "integer — total power consumed",
           lowPower: "boolean — true when pwrUse > pwrHave (halves production & disables defenses)",
           eliminated: "boolean — true if your faction has been eliminated",
-          bq: "{ kind: BuildingKind, left: number, total: number } | null — active structure construction queue",
-          awaiting: "BuildingKind | null — finished structure waiting to be placed",
-          dq: "{ kind: BuildingKind, left: number, total: number } | null — active parallel defense construction queue",
-          awaitingDef: "BuildingKind | null — finished defense waiting to be placed",
+          bq: "{ kind: BuildingKind, left: number, total: number }[] — structure build queue (head builds, rest queued)",
+          awaiting: "BuildingKind[] — finished structures stacked for placement",
+          dq: "{ kind: BuildingKind, left: number, total: number }[] — parallel defense build queue",
+          awaitingDef: "BuildingKind[] — finished defenses stacked for placement",
           queues: "Partial<Record<'barracks'|'factory'|'airfield'|'shipyard', { unit: UnitKind, left: number, total: number, count: number }>>",
         },
         ents: "Array<{ id: number, o: number, k: EntKind, x: number, y: number, hp: number, mhp: number, cargo?: number }>",
@@ -681,15 +681,29 @@ export class GameRoom extends Server<Env> {
         break;
       case "buildCancel": {
         const cat: BuildCategory | undefined = m.cat === "structure" || m.cat === "defense" ? m.cat : undefined;
-        this.world.cmdBuildCancel(slot, cat);
+        this.world.cmdBuildCancel(
+          slot,
+          cat,
+          Number.isFinite(m.index) ? m.index : 0,
+          m.awaiting === true,
+          typeof m.kind === "string" ? (m.kind as BuildingKind) : undefined,
+        );
         break;
       }
       case "place": {
         const cat: BuildCategory | undefined = m.cat === "structure" || m.cat === "defense" ? m.cat : undefined;
+        const kind = typeof m.kind === "string" ? (m.kind as BuildingKind) : undefined;
         err =
           Number.isFinite(m.tx) && Number.isFinite(m.ty)
-            ? this.world.cmdPlace(slot, Math.floor(m.tx), Math.floor(m.ty), cat)
+            ? this.world.cmdPlace(slot, Math.floor(m.tx), Math.floor(m.ty), cat, kind)
             : "bad coords";
+        break;
+      }
+      case "bridge": {
+        err =
+          Number.isFinite(m.id) && Number.isFinite(m.tx) && Number.isFinite(m.ty)
+            ? this.world.cmdBridge(slot, Math.floor(m.id), Math.floor(m.tx), Math.floor(m.ty))
+            : "bad bridge order";
         break;
       }
       case "train":
@@ -1588,7 +1602,12 @@ export class GameRoom extends Server<Env> {
       const wp = w.players.get(p.slot);
       const cat: BuildCategory | undefined =
         args.cat === "structure" || args.cat === "defense" ? args.cat : undefined;
-      const kind = cat === "defense" ? wp?.awaitingDef : cat === "structure" ? wp?.awaiting : wp?.awaiting ?? wp?.awaitingDef;
+      const kind =
+        cat === "defense"
+          ? wp?.awaitingDef[0]
+          : cat === "structure"
+            ? wp?.awaiting[0]
+            : (wp?.awaiting[0] ?? wp?.awaitingDef[0]);
       if (!kind) return { ok: false, error: "nothing to place" };
       let tx: number;
       let ty: number;

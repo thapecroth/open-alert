@@ -95,11 +95,11 @@ function findSpot(obs, slot, kind) {
 
 // Drive a building chain via real actions; returns the obs after each step.
 function tryBuild(env, obs, kind) {
-  if (obs.you.bq || obs.you.awaiting) return obs; // busy
+  if (obs.you.bq?.length || obs.you.awaiting?.length) return obs; // busy
   if (obs.you.credits < BUILDINGS[kind].cost) return obs;
   let r = env.step({ build: kind }, 10);
   obs = r.obs;
-  if (obs.you.awaiting === kind) {
+  if (obs.you.awaiting?.[0] === kind) {
     const spot = findSpot(obs, obs.you.slot, kind);
     if (spot) r = env.step({ place: spot }, 10);
     else r = env.step({ place: { tx: 6, ty: 6 } }, 10);
@@ -154,7 +154,7 @@ r = env.step({ upgrade: 99999 }, 1);
 ok(r.info.invalid !== true, "schema-valid upgrade id is not 'invalid'");
 ok(Array.isArray(r.info.denied) && r.info.denied.some((d) => d.startsWith("upgrade")), "bogus upgrade id denied in-sim", JSON.stringify(r.info.denied));
 r = env.step({ build: "power" }, 1);
-ok(r.info.invalid !== true && r.obs.you.bq?.kind === "power", "build action accepted → queue started", JSON.stringify(r.info.denied ?? []));
+ok(r.info.invalid !== true && r.obs.you.bq?.[0]?.kind === "power", "build action accepted → queue started", JSON.stringify(r.info.denied ?? []));
 
 // ---------- 4. feature maps ----------
 console.log("--- featureMaps ---");
@@ -197,8 +197,8 @@ const CHAIN = ["power", "refinery", "barracks", "radar", "factory", "techlab"];
 let guard = 0;
 const mine = (k) => o2.ents.some((e) => e.o === 0 && e.k === k);
 while (guard++ < 1200) {
-  if (o2.you.awaiting) {
-    const spot = findSpot(o2, 0, o2.you.awaiting);
+  if (o2.you.awaiting?.length) {
+    const spot = findSpot(o2, 0, o2.you.awaiting[0]);
     const s = env2.step({ place: spot ?? { tx: 6, ty: 6 } }, 25);
     o2 = s.obs;
     if (s.done) break;
@@ -212,7 +212,7 @@ while (guard++ < 1200) {
   if (s.done) break;
 }
 // drain: make sure nothing is still building/awaiting before asserting
-for (let i = 0; i < 200 && (o2.you.bq || o2.you.awaiting); i++) o2 = env2.step({}, 25).obs;
+for (let i = 0; i < 200 && (o2.you.bq?.length || o2.you.awaiting?.length); i++) o2 = env2.step({}, 25).obs;
 const builtAll = CHAIN.every(mine);
 ok(builtAll, "full tech chain built via actions", `missing=${CHAIN.filter((k) => !mine(k))} credits=${o2.you.credits} t=${o2.tick}`);
 const fac = o2.ents.find((e) => e.o === 0 && e.k === "factory");
@@ -249,9 +249,9 @@ while (!done && steps++ < 1200) {
   const foes = o3.ents.filter((e) => e.o >= 0 && e.o !== slot);
   const has = (k) => mineE.some((e) => e.k === k);
   const act = {};
-  if (me.awaiting) act.place = findSpot(o3, slot, me.awaiting) ?? { tx: 6, ty: 6 };
+  if (me.awaiting?.length) act.place = findSpot(o3, slot, me.awaiting[0]) ?? { tx: 6, ty: 6 };
   else {
-    if (!me.bq) {
+    if (!me.bq?.length) {
       let want = null;
       if (!has("power")) want = "power";
       else if (!has("refinery")) want = "refinery";

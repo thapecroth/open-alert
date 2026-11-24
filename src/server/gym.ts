@@ -38,9 +38,9 @@ export interface GymObs {
     lowPower: boolean;
     eliminated: boolean;
     bq: PlayerState["bq"];
-    awaiting: BuildingKind | null;
+    awaiting: BuildingKind[];
     dq?: PlayerState["dq"];
-    awaitingDef?: BuildingKind | null;
+    awaitingDef?: BuildingKind[];
     queues: PlayerState["queues"];
   };
   ents: {
@@ -208,10 +208,10 @@ export function extractGymObs(w: World, slot: number): GymObs {
       pwrUse: p ? p.pwrUse : 0,
       lowPower: p ? p.lowPower : false,
       eliminated: p ? p.eliminated : true,
-      bq: p?.bq ? { ...p.bq } : null,
-      awaiting: p ? p.awaiting : null,
-      dq: p?.dq ? { ...p.dq } : null,
-      awaitingDef: p ? p.awaitingDef : null,
+      bq: p ? p.bq.map((i) => ({ ...i })) : [],
+      awaiting: p ? [...p.awaiting] : [],
+      dq: p ? p.dq.map((i) => ({ ...i })) : [],
+      awaitingDef: p ? [...p.awaitingDef] : [],
       queues,
     },
     ents,
@@ -599,16 +599,16 @@ export class GymEnv {
     const p = w.players.get(s);
     if (!p || p.eliminated) return;
 
-    if (p.awaitingDef) {
-      const spot = this.findSpot(s, p.awaitingDef);
+    if (p.awaitingDef.length) {
+      const spot = this.findSpot(s, p.awaitingDef[0]);
       if (spot) w.cmdPlace(s, spot.tx, spot.ty, "defense");
     }
-    if (p.awaiting) {
-      const spot = this.findSpot(s, p.awaiting);
+    if (p.awaiting.length) {
+      const spot = this.findSpot(s, p.awaiting[0]);
       if (spot) w.cmdPlace(s, spot.tx, spot.ty, "structure");
       return;
     }
-    if (!p.bq) {
+    if (!p.bq.length) {
       let want: BuildingKind | null = null;
       if (!this.has(s, "power")) want = "power";
       else if (!this.has(s, "refinery")) want = "refinery";
@@ -661,7 +661,8 @@ export class GymEnv {
     if (a.cancelTrain != null) w.cmdTrainCancel(s, a.cancelTrain as UnitKind);
     if (a.place != null) {
       const cat = a.place.cat;
-      const kind = cat === "defense" ? p.awaitingDef : cat === "structure" ? p.awaiting : p.awaiting ?? p.awaitingDef;
+      const kind =
+        cat === "defense" ? p.awaitingDef?.[0] : cat === "structure" ? p.awaiting[0] : (p.awaiting[0] ?? p.awaitingDef?.[0]);
       if (kind) {
         const spot = this.findSpot(s, kind);
         if (spot) w.cmdPlace(s, spot.tx, spot.ty, cat);
@@ -684,12 +685,12 @@ export class GymEnv {
       s = this.opp;
     const p = w.players.get(s);
     if (!p || p.eliminated || w.tick % 4 !== 0) return;
-    if (p.awaiting) {
-      const spot = this.findSpot(s, p.awaiting);
+    if (p.awaiting.length) {
+      const spot = this.findSpot(s, p.awaiting[0]);
       if (spot) w.cmdPlace(s, spot.tx, spot.ty, "structure");
     }
-    if (p.awaitingDef) {
-      const spot = this.findSpot(s, p.awaitingDef);
+    if (p.awaitingDef?.length) {
+      const spot = this.findSpot(s, p.awaitingDef[0]);
       if (spot) w.cmdPlace(s, spot.tx, spot.ty, "defense");
     }
   }
