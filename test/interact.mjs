@@ -115,7 +115,7 @@ try {
         phase: oa.phase,
         credits: oa.state?.credits,
         awaiting: oa.state?.awaiting ?? null,
-        bq: oa.state?.bq?.kind ?? null,
+        bq: oa.state?.bq?.[0]?.kind ?? null,
         camH: oa.gs.camHeight,
         camX: oa.gs.camTarget.x,
         camZ: oa.gs.camTarget.z,
@@ -536,8 +536,8 @@ try {
       } else {
         await click(b0.x, b0.y);
         const sentBuild = (await sentAfter(m0)).some((m) => m.t === "build" && m.kind === "power");
-        const bqOk = await until(() => window.__oa.state?.bq?.kind === "power", 4000);
-        const awaitingOk = await until(() => window.__oa.state?.awaiting === "power", 18000);
+        const bqOk = await until(() => window.__oa.state?.bq?.[0]?.kind === "power", 4000);
+        const awaitingOk = await until(() => window.__oa.state?.awaiting?.includes("power"), 18000);
         // Classic RA2 non-interruptive flow: finishing a structure must NOT hijack cursor; player clicks READY!
         await sleep(250);
         const noAutoHijack = (await gs()).placing === null;
@@ -572,7 +572,7 @@ try {
             for (const t of oa.renderer.tracked.values()) if (t.last.o === oa.slot && t.last.k === "power") return true;
             return false;
           }, 5000);
-          cleared = await until(() => window.__oa.state?.awaiting == null, 3000);
+          cleared = await until(() => !(window.__oa.state?.awaiting?.length), 3000);
         }
         rec(
           name,
@@ -584,7 +584,7 @@ try {
         // --- second plant: ESC during placement = stow (keeps READY), right-click sidebar = cancel & refund!
         const b1 = await buildBtn();
         await click(b1.x, b1.y);
-        const awaiting2 = await until(() => window.__oa.state?.awaiting === "power", 18000);
+        const awaiting2 = await until(() => window.__oa.state?.awaiting?.includes("power"), 18000);
         const b1Ready = await buildBtn();
         if (b1Ready) await click(b1Ready.x, b1Ready.y);
         const placing2 = await until(() => window.__oa.input.placing === "power", 3000);
@@ -592,13 +592,13 @@ try {
         await page.keyboard.press("Escape");
         await sleep(300);
         const esc = await gs();
-        const stowedOk = esc.placing === null && esc.awaiting === "power";
+        const stowedOk = esc.placing === null && esc.awaiting?.includes("power");
         // Right-clicking READY button in sidebar refunds & unblocks queue
         const m2 = await mark();
         const b1Refund = await buildBtn();
         if (b1Refund) await rightClick(b1Refund.x, b1Refund.y);
         const bcSent = (await sentAfter(m2)).some((m) => m.t === "buildCancel");
-        const awGone = await until(() => window.__oa.state?.awaiting == null, 4000);
+        const awGone = await until(() => !(window.__oa.state?.awaiting?.length), 4000);
         await sleep(350);
         const cr1 = (await gs()).credits;
         const refundOk = bcSent && awGone && cr1 - cr0 === 300;
@@ -606,14 +606,14 @@ try {
         const b4 = await buildBtn();
         await click(b4.x, b4.y);
         const rebuild = await until(
-          () => window.__oa.state?.bq?.kind === "power" || window.__oa.state?.awaiting === "power",
+          () => window.__oa.state?.bq?.[0]?.kind === "power" || window.__oa.state?.awaiting?.includes("power"),
           8000,
         );
         // clean up the fresh build so later checks start from a clear queue
         const b5 = await buildBtn();
         if (b5) {
           await rightClick(b5.x, b5.y); // contextmenu → buildCancel
-          await until(() => window.__oa.state?.awaiting == null && window.__oa.state?.bq == null, 5000);
+          await until(() => !(window.__oa.state?.awaiting?.length) && !(window.__oa.state?.bq?.length), 5000);
         }
         rec(
           "5b ESC stows placement (stays READY) + sidebar right-click refunds",
@@ -790,7 +790,7 @@ try {
       const mB = await mark();
       if (b && !b.disabled) await click(b.x, b.y);
       const buildMsg8 = (await sentAfter(mB)).some((m) => m.t === "build");
-      const awaiting = await until(() => window.__oa.state?.awaiting === "power", 18000);
+      const awaiting = await until(() => window.__oa.state?.awaiting?.includes("power"), 18000);
       const bR = await buildBtn();
       if (bR) await click(bR.x, bR.y);
       const placing = await until(() => window.__oa.input.placing === "power", 3000);
@@ -902,7 +902,7 @@ try {
           g,
           placeSent: sentE.some((m) => m.t === "place"),
           sentE: sentE.map((m) => m.t).join("+") || "none",
-          awaitingKept: st.awaiting === "power",
+          awaitingKept: st.awaiting?.includes("power"),
           stillPlacing: st.placing === "power",
           inside,
         });
@@ -929,7 +929,7 @@ try {
           const oa = window.__oa;
           let n = 0;
           for (const t of oa.renderer.tracked.values()) if (t.last.o === oa.slot && t.last.k === "power") n++;
-          return n >= 1 && oa.state?.awaiting == null;
+          return n >= 1 && !(oa.state?.awaiting?.length);
         }, 5000);
       }
       const redOk = attempts.some((a) => a.g.ok === false && a.inside >= 1 && !a.placeSent && a.awaitingKept);

@@ -145,8 +145,8 @@ function think() {
   const me = S.me;
 
   // placement
-  if (me.awaiting) {
-    const spot = findSpot(me.awaiting);
+  if (me.awaiting?.length) {
+    const spot = findSpot(me.awaiting?.[0]);
     if (spot) send({ t: "place", tx: spot.tx, ty: spot.ty });
     return;
   }
@@ -166,12 +166,12 @@ function think() {
   // production
   if (has("barracks")) {
     const q = S.me.queues.barracks;
-    const n = q?.count ?? 0;
+    const n = q?.length ?? 0;
     if (n < (aggressive ? 6 : 3) && me.credits > 400) send({ t: "train", unit: "infantry" });
   }
   if (has("factory")) {
     const q = S.me.queues.factory;
-    const n = q?.count ?? 0;
+    const n = q?.length ?? 0;
     const harvCount = myEnts().filter((e) => e.k === "harvester").length;
     if (harvCount < 2 && !n && me.credits > 1600) send({ t: "train", unit: "harvester" });
     else if (n < (aggressive ? 6 : 3) && me.credits > 900) send({ t: "train", unit: "tank" });

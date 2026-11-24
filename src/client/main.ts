@@ -22,6 +22,7 @@ import {
   DEFAULT_CONFIG,
   SHIPYARD_BUILD_DIST,
   buildCategoryOf,
+  UNITS,
   BuildingKind,
   EntKind,
   UnitKind,
@@ -274,6 +275,12 @@ if (gfx) hud.bindGraphics(gfx);
 
 // ---------- placement validity (exact client parity with server canPlace) ----------
 
+// building footprints + occupied unit tiles, rebuilt per snap — placeReason runs
+// per pointer-move while placing, so keep its scan tiny
+let bldRects: { bx: number; by: number; w: number; h: number; o: number }[] = [];
+let landTiles = new Set<number>();
+let seaTiles = new Set<number>();
+
 function placeReason(tx: number, ty: number, w: number, h: number, kind?: BuildingKind): string | null {
   if (tx < 0 || ty < 0 || tx + w > gs.mapW || ty + h > gs.mapH) return "off map";
   const bdef = kind ? BUILDINGS[kind] : undefined;
@@ -287,23 +294,15 @@ function placeReason(tx: number, ty: number, w: number, h: number, kind?: Buildi
         if (gs.isWater(x, y)) return "can't build on water";
       }
       if (oreCells.has(y * gs.mapW + x)) return "can't build on ore";
+      if ((waterOnly ? seaTiles : landTiles).has(y * gs.mapW + x)) return "units in the way";
     }
   const maxGap = bdef?.forwardRange ?? (waterOnly ? SHIPYARD_BUILD_DIST : 2);
   let adj = false;
-  for (const t of renderer.tracked.values()) {
-    if (!isBuildingKind(t.last.k)) {
-      const ux = Math.floor(t.last.x),
-        uy = Math.floor(t.last.y);
-      if (ux >= tx && ux < tx + w && uy >= ty && uy < ty + h) return "units in the way";
-      continue;
-    }
-    const d = BUILDINGS[t.last.k];
-    const bx = Math.round(t.last.x - d.w / 2),
-      by = Math.round(t.last.y - d.h / 2);
-    if (tx < bx + d.w && tx + w > bx && ty < by + d.h && ty + h > by) return "blocked by structure";
-    if (t.last.o === mySlot) {
-      const gapX = Math.max(bx - (tx + w), tx - (bx + d.w));
-      const gapY = Math.max(by - (ty + h), ty - (by + d.h));
+  for (const b of bldRects) {
+    if (tx < b.bx + b.w && tx + w > b.bx && ty < b.by + b.h && ty + h > b.by) return "blocked by structure";
+    if (b.o === mySlot) {
+      const gapX = Math.max(b.bx - (tx + w), tx - (b.bx + b.w));
+      const gapY = Math.max(b.by - (ty + h), ty - (b.by + b.h));
       if (Math.max(gapX, gapY) <= maxGap) adj = true;
     }
   }
@@ -419,20 +418,31 @@ const UPGRADED_ALIAS: Partial<Record<string, string>> = {
   shipyard: "shipyard2",
 };
 
+// per-snap memoized own-entity kind counts — has()/countOf() are called ~100x per
+// sidebar refresh, so scan `tracked` once instead of once per call
+let ownKindCounts: Map<string, number> | null = null;
+function ownCounts() {
+  if (!ownKindCounts) {
+    ownKindCounts = new Map<string, number>();
+    for (const t of renderer.tracked.values()) {
+      if (t.last.o !== mySlot) continue;
+      ownKindCounts.set(t.last.k, (ownKindCounts.get(t.last.k) ?? 0) + 1);
+    }
+  }
+  return ownKindCounts;
+}
+
 function has(kind: string) {
   const mk2 = UPGRADED_ALIAS[kind];
-  for (const t of renderer.tracked.values()) {
-    if (t.last.o !== mySlot) continue;
-    if (t.last.k === kind || (mk2 !== undefined && t.last.k === mk2)) return true;
-    if (kind === "power" && (t.last.k === "coalplant" || t.last.k === "fusion")) return true;
-  }
+  const c = ownCounts();
+  if ((c.get(kind) ?? 0) > 0) return true;
+  if (mk2 !== undefined && (c.get(mk2) ?? 0) > 0) return true;
+  if (kind === "power" && ((c.get("coalplant") ?? 0) > 0 || (c.get("fusion") ?? 0) > 0)) return true;
   return false;
 }
 
 function countOf(kind: BuildingKind) {
-  let n = 0;
-  for (const t of renderer.tracked.values()) if (t.last.o === mySlot && t.last.k === kind) n++;
-  return n;
+  return ownCounts().get(kind) ?? 0;
 }
 
 // ---------- hud wiring ----------
@@ -733,6 +743,20 @@ net.onMsg = (m: S2C) => {
     }
     case "snap": {
       if (phase !== "playing") break;
+      ownKindCounts = null; // entity set changed — rebuild the sidebar kind cache
+      bldRects = [];
+      landTiles = new Set();
+      seaTiles = new Set();
+      for (const e of m.ents) {
+        if (isBuildingKind(e.k)) {
+          const d = BUILDINGS[e.k];
+          bldRects.push({ bx: Math.round(e.x - d.w / 2), by: Math.round(e.y - d.h / 2), w: d.w, h: d.h, o: e.o });
+        } else {
+          const dom = UNITS[e.k as UnitKind].domain;
+          if (dom === "sea") seaTiles.add(Math.floor(e.y) * gs.mapW + Math.floor(e.x));
+          else if (dom === "land") landTiles.add(Math.floor(e.y) * gs.mapW + Math.floor(e.x));
+        }
+      }
       renderer.pushSnap(m.ents, m.crates);
       renderer.setBridges(m.bridges);
       hud.setBridges(m.bridges);
@@ -896,20 +920,37 @@ net.onMsg = (m: S2C) => {
           input.placingCancelled = false;
           if (!input.placing || buildCategoryOf(input.placing) === "structure") input.clearPlacePending();
           if (awaiting?.length) {
-            const prevSet = new Set(prevAwaiting ? prevAwaiting.split(",") : []);
-            const fresh = awaiting.find((k) => !prevSet.has(k)) ?? awaiting[0];
-            audio.playUi("buildDone");
-            hud.toast(`${BUILDING_NAMES[fresh]} READY — click in sidebar or press B to place`, true);
+            // toast only for a genuinely NEW ready item — a cancel/place shrink must not chime
+            const prevList = prevAwaiting ? prevAwaiting.split(",") : [];
+            const rest = [...prevList];
+            let fresh: string | undefined;
+            for (const k of awaiting) {
+              const i = rest.indexOf(k);
+              if (i >= 0) rest.splice(i, 1);
+              else fresh ??= k;
+            }
+            if (fresh) {
+              audio.playUi("buildDone");
+              hud.toast(`${BUILDING_NAMES[fresh]} READY — click in sidebar or press B to place`, true);
+            }
           }
         }
         if (dKey !== prevAwaitingDef) {
           input.placingCancelled = false;
           if (!input.placing || buildCategoryOf(input.placing) === "defense") input.clearPlacePending();
           if (awaitingDef?.length) {
-            const prevSet = new Set(prevAwaitingDef ? prevAwaitingDef.split(",") : []);
-            const fresh = awaitingDef.find((k) => !prevSet.has(k)) ?? awaitingDef[0];
-            audio.playUi("buildDone");
-            hud.toast(`${BUILDING_NAMES[fresh]} READY — click in sidebar or press B to place`, true);
+            const prevList = prevAwaitingDef ? prevAwaitingDef.split(",") : [];
+            const rest = [...prevList];
+            let fresh: string | undefined;
+            for (const k of awaitingDef) {
+              const i = rest.indexOf(k);
+              if (i >= 0) rest.splice(i, 1);
+              else fresh ??= k;
+            }
+            if (fresh) {
+              audio.playUi("buildDone");
+              hud.toast(`${BUILDING_NAMES[fresh]} READY — click in sidebar or press B to place`, true);
+            }
           }
         }
         prevAwaiting = aKey;

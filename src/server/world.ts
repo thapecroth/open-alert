@@ -101,6 +101,7 @@ export interface Ent {
   oreIdx: number;
   bTiles?: number[]; // engineer: pending pontoon-bridge tiles to lay (ordered near→far)
   bT?: number; // ticks until next bridge tile completes
+  bFail?: number; // consecutive failed pathfinds to the bridge approach
   repath: number;
   agro: number | null; // enemy id an amove unit is currently chasing (for resume-after-kill)
   hold: boolean; // unit holding position (fires in range, will not chase)
@@ -399,10 +400,18 @@ const weaponFxOf = (k: EntKind): WeaponFx => {
   if (k === "bomber" || k === "stealthbomber" || k === "zeppelin") return "bomb";
   return "bullet";
 };
-const weaponOf = (e: Ent) =>
-  isBuilding(e.k)
-    ? { range: BUILDINGS[e.k].range ?? 0, dmg: BUILDINGS[e.k].dmg ?? 0, rof: BUILDINGS[e.k].rof ?? 0 }
-    : { range: UNITS[e.k as UnitKind].range, dmg: UNITS[e.k as UnitKind].dmg, rof: UNITS[e.k as UnitKind].rof };
+// weapon stats are pure functions of kind — cache to keep the per-ent-per-tick path alloc-free
+const wpnCache = new Map<string, { range: number; dmg: number; rof: number }>();
+const weaponOf = (e: Ent) => {
+  let w = wpnCache.get(e.k);
+  if (!w) {
+    w = isBuilding(e.k)
+      ? { range: BUILDINGS[e.k].range ?? 0, dmg: BUILDINGS[e.k].dmg ?? 0, rof: BUILDINGS[e.k].rof ?? 0 }
+      : { range: UNITS[e.k as UnitKind].range, dmg: UNITS[e.k as UnitKind].dmg, rof: UNITS[e.k as UnitKind].rof };
+    wpnCache.set(e.k, w);
+  }
+  return w;
+};
 
 // AC-130 gunship selectable guns — chosen by drive msg `wpn` slot while player-driven only.
 // The UNITS.ac130 base def stays the AI/auto-attack profile; ammo cost unchanged (ammoCostOf).
@@ -574,7 +583,7 @@ export class World {
     const w = Object.create(World.prototype) as World;
     const layout = getMapLayout(d.map);
     w.map = d.map;
-    w.config = d.config;
+    w.config = { ...DEFAULT_CONFIG, ...d.config };
     (w as { w: number }).w = layout.w;
     (w as { h: number }).h = layout.h;
     const area = w.w * w.h;
@@ -599,23 +608,39 @@ export class World {
         }
       }
     }
-    if (d.ore) w.ore = d.ore;
+    if (d.ore && d.ore.length === area) w.ore = d.ore;
     else {
       w.ore = new Int16Array(area);
-      w.genOre(d.players.map((p) => p.slot));
+      w.genOre((d.players ?? []).map((p) => p.slot));
     }
     w.tick = d.tick;
     w.winner = d.winner;
     w.winnerTeam = d.winnerTeam;
     w.nextCrateId = d.nextCrateId;
     w.names = { ...d.names };
-    w.ents = new Map(d.ents.map((e) => [e.id, e]));
+    // fill fields older saves may lack — a missing field otherwise produces
+    // NaN-propagation or a per-tick crash (the zombie-match failure mode)
+    const ENT_DEFAULTS: Partial<Ent> = {
+      order: null, orderQueue: [], path: null, cd: 0, cargo: 0, fuel: 100, ammo: 100,
+      hstate: null, oreIdx: -1, repath: 0, agro: null, hold: false, holdUntil: 0,
+      xp: 0, vet: 0, subSurfaceUntil: 0, interceptCd: 0, spottedUntil: 0, sabUntil: 0,
+    };
+    w.ents = new Map(
+      (d.ents ?? []).map((e) => {
+        const r = e as unknown as Record<string, unknown>;
+        for (const k in ENT_DEFAULTS) if (r[k] === undefined) r[k] = (ENT_DEFAULTS as Record<string, unknown>)[k];
+        return [e.id, e];
+      }),
+    );
     // normalize pre-queue saves: singletons → arrays
-    for (const p of d.players) {
+    for (const p of d.players ?? []) {
       if (!Array.isArray(p.awaiting)) p.awaiting = p.awaiting ? [p.awaiting] : [];
       if (!Array.isArray(p.bq)) p.bq = p.bq ? [p.bq] : [];
       if (!Array.isArray(p.awaitingDef)) p.awaitingDef = p.awaitingDef ? [p.awaitingDef] : [];
       if (!Array.isArray(p.dq)) p.dq = p.dq ? [p.dq] : [];
+      p.queues ??= {};
+      p.swLeft ??= -1;
+      p.reconLeft ??= -1;
       // pre-FIFO saves: {unit,left,total,count} → expanded array
       for (const c of PROD_CATS) {
         const q = p.queues?.[c] as unknown;
@@ -626,10 +651,10 @@ export class World {
         }
       }
     }
-    w.players = new Map(d.players.map((p) => [p.slot, p]));
-    w.crates = new Map(d.crates.map((c) => [c.id, c]));
+    w.players = new Map((d.players ?? []).map((p) => [p.slot, p]));
+    w.crates = new Map((d.crates ?? []).map((c) => [c.id, c]));
     w.events = [];
-    w.lastAlert = new Map(d.lastAlert);
+    w.lastAlert = new Map(d.lastAlert ?? []);
     w.subDetMask = new Map();
     w.gridTick = -1;
     w.astarBudget = 12;
@@ -679,8 +704,8 @@ export class World {
   // per-slot live entity counts for O(1) elimination checks
   private slotCnt = new Int16Array(16);
   isAlly(slotA: number, slotB: number): boolean {
+    if (slotA < 0 || slotB < 0) return false; // neutral is nobody's ally, not even neutral's
     if (slotA === slotB) return true;
-    if (slotA < 0 || slotB < 0) return false;
     if (this.teamSize !== this.players.size) {
       this.teamArr.fill(0);
       for (const p of this.players.values()) this.teamArr[p.slot] = p.team;
@@ -972,10 +997,11 @@ export class World {
     this.bldDirty = true;
     if (e.o >= 0) this.slotCnt[e.o]++;
     for (let y = ty; y < ty + d.h; y++)
-      for (let x = tx; x < tx + d.w; x++) {
-        this.block[this.idx(x, y)] = 1;
-        this.bld[this.idx(x, y)] = e.id;
-      }
+      for (let x = tx; x < tx + d.w; x++)
+        if (this.inBounds(x, y)) {
+          this.block[this.idx(x, y)] = 1;
+          this.bld[this.idx(x, y)] = e.id;
+        }
     return e;
   }
 
@@ -1016,65 +1042,92 @@ export class World {
     return e;
   }
 
+  // Bounded flood of the passable region containing a seed point. Returns null when
+  // the region is unbounded (cap hit) — connectivity checks only matter on islands/ponds.
+  private regionAround(x0: number, y0: number, pass: (x: number, y: number) => boolean, cap = 2048): Set<number> | null {
+    const start = nearestPassable(x0, y0, pass, 10, this.w, this.h);
+    if (!start) return new Set();
+    const s0 = this.idx(start.x, start.y);
+    const seen = new Set<number>([s0]);
+    const q = [s0];
+    for (let qi = 0; qi < q.length && seen.size < cap; qi++) {
+      const t = q[qi];
+      const lx = t % this.w,
+        ly = (t / this.w) | 0;
+      for (const [dx, dy] of DIRS4) {
+        const nx = lx + dx,
+          ny = ly + dy;
+        if (!this.inBounds(nx, ny)) continue;
+        const n = this.idx(nx, ny);
+        if (!seen.has(n) && pass(nx, ny)) {
+          seen.add(n);
+          q.push(n);
+        }
+      }
+    }
+    return seen.size >= cap ? null : seen;
+  }
+
   private spawnNearBuilding(slot: number, kind: UnitKind, b: Ent) {
     const def = BUILDINGS[b.k as BuildingKind];
     const bx = b.x - def.w / 2,
       by = b.y - def.h / 2;
     const uDomain = UNITS[kind].domain;
-    const occupied = (x: number, y: number) => {
-      for (const u of this.ents.values())
-        if (!isBuilding(u.k) && domainOf(u.k) === uDomain && Math.floor(u.x) === x && Math.floor(u.y) === y) return true;
-      return false;
-    };
+    // occupied tiles of the same domain, gathered once — avoids O(candidates × ents)
+    const occ = new Set<number>();
+    for (const u of this.ents.values())
+      if (!isBuilding(u.k) && domainOf(u.k) === uDomain) occ.add(this.idx(Math.floor(u.x), Math.floor(u.y)));
     if (uDomain === "air") {
       // Air units spawn right over or around the airfield (ignoring buildings/cliffs/water)
       const cx = Math.floor(b.x),
         cy = Math.floor(b.y);
-      for (let r = 0; r <= 6; r++) {
+      if (this.inBounds(cx, cy) && !occ.has(this.idx(cx, cy))) return this.spawnUnit(slot, kind, cx, cy);
+      for (let r = 1; r <= 6; r++) {
         for (let dy = -r; dy <= r; dy++)
           for (let dx = -r; dx <= r; dx++) {
             if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
             const x = cx + dx,
               y = cy + dy;
-            if (this.inBounds(x, y) && !occupied(x, y)) return this.spawnUnit(slot, kind, x, y);
+            if (this.inBounds(x, y) && !occ.has(this.idx(x, y))) return this.spawnUnit(slot, kind, x, y);
           }
       }
       return this.spawnUnit(slot, kind, Math.max(0, Math.min(this.w - 1, cx)), Math.max(0, Math.min(this.h - 1, cy)));
     }
     if (uDomain === "sea") {
-      // Sea units spawn on the nearest navigable water tile around the shipyard
+      // Sea units spawn on navigable water CONNECTED to the shipyard's channel —
+      // otherwise a ship can materialize in an enclosed pond and be stranded forever
       const cx = Math.floor(b.x),
         cy = Math.floor(b.y);
+      const reach = this.regionAround(cx, cy, this.passableSea);
+      const seaOk = (x: number, y: number) =>
+        this.passableSea(x, y) && !occ.has(this.idx(x, y)) && (!reach || reach.has(this.idx(x, y)));
       for (let r = 1; r <= 8; r++) {
         for (let dy = -r; dy <= r; dy++)
           for (let dx = -r; dx <= r; dx++) {
             if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
             const x = cx + dx,
               y = cy + dy;
-            if (this.passableSea(x, y) && !occupied(x, y)) return this.spawnUnit(slot, kind, x, y);
+            if (seaOk(x, y)) return this.spawnUnit(slot, kind, x, y);
           }
       }
-      const spot = nearestPassable(cx, cy, (x, y) => this.passableSea(x, y) && !occupied(x, y), 14, this.w, this.h);
+      const spot = nearestPassable(cx, cy, seaOk, 14, this.w, this.h);
       if (spot) return this.spawnUnit(slot, kind, spot.x, spot.y);
       return null;
     }
-    // Land: first empty passable tile on an expanding ring below the building
+    // Land: first empty passable tile on an expanding ring below the building,
+    // restricted to the building's own landmass (no stranded spawns across water)
+    const reach = this.regionAround(bx + (def.w >> 1), by + def.h, this.passable);
+    const landOk = (x: number, y: number) =>
+      this.passable(x, y) && !occ.has(this.idx(x, y)) && (!reach || reach.has(this.idx(x, y)));
     for (let r = 1; r <= 6; r++) {
       for (let dy = -1; dy <= r; dy++)
         for (let dx = -r; dx <= r; dx++) {
           const x = bx + (def.w >> 1) + dx,
             y = by + def.h + dy;
-          if (this.passable(x, y) && !occupied(x, y)) return this.spawnUnit(slot, kind, x, y);
+          if (landOk(x, y)) return this.spawnUnit(slot, kind, x, y);
         }
     }
-    const spot = nearestPassable(
-      bx + (def.w >> 1),
-      by + def.h + 1,
-      (x, y) => this.passable(x, y) && !occupied(x, y),
-      12,
-      this.w,
-      this.h,
-    );
+    const spot = nearestPassable(bx + (def.w >> 1), by + def.h + 1, landOk, 12, this.w, this.h);
     if (spot) return this.spawnUnit(slot, kind, spot.x, spot.y);
     return null;
   }
@@ -1207,6 +1260,8 @@ export class World {
     const e = this.ents.get(id);
     if (!e || e.o !== slot || e.k !== "engineer") return "need an engineer";
     const maxSpan = Math.max(16, Math.round(this.w / 4));
+    tx |= 0;
+    ty |= 0;
     if (!this.inBounds(tx, ty)) return "off map";
     const x0 = Math.floor(e.x),
       y0 = Math.floor(e.y);
@@ -1269,8 +1324,8 @@ export class World {
     const prev = new Map<number, number>([[entry, -1]]);
     const q = [entry];
     let goal = -1;
-    while (q.length) {
-      const t = q.shift()!;
+    for (let qi = 0; qi < q.length; qi++) {
+      const t = q[qi];
       const lx = t % this.w,
         ly = (t / this.w) | 0;
       // count water-steps so far
@@ -1306,6 +1361,12 @@ export class World {
     tiles.reverse();
     if (!tiles.length) return "already bridged";
     if (tiles.length > maxSpan) return `span too long (max ${maxSpan} tiles)`;
+    // verify the engineer can actually reach the approach — otherwise the order stalls forever
+    if (
+      (Math.floor(e.x) !== ax || Math.floor(e.y) !== ay) &&
+      !findPath(Math.floor(e.x), Math.floor(e.y), ax, ay, this.passable, this.w >= 96 ? 4500 : 2400, this.w, this.h)
+    )
+      return "can't reach the shore";
     e.bTiles = tiles;
     e.bT = 0;
     e.hold = false;
@@ -1647,7 +1708,7 @@ export class World {
 
   cmdPlace(slot: number, tx: number, ty: number, cat?: BuildCategory, kind?: BuildingKind): string | null {
     const p = this.players.get(slot);
-    if (!p) return "nothing to place";
+    if (!p || p.eliminated) return "nothing to place";
     const list =
       kind != null
         ? buildCategoryOf(kind) === "defense"
@@ -1727,6 +1788,7 @@ export class World {
     if (edgeDist > maxRange) return false;
     const prev = tgt.o;
     tgt.o = e.o;
+    delete tgt.rally; // don't send our fresh units to the old owner's rally point
     this.bldDirty = true;
     if (prev >= 0) this.slotCnt[prev]--;
     if (e.o >= 0) this.slotCnt[e.o]++;
@@ -1806,10 +1868,16 @@ export class World {
       case "airfield2":
       case "shipyard":
       case "shipyard2":
-        // Corrupt the production line — wipe active build queues
+        // Corrupt the production line — wipe the infiltrated building's unit queue (refunded)
         if (vp) {
-          vp.bq.length = 0;
-          vp.dq.length = 0;
+          const cat: ProdCat = tgt.k === "barracks" || tgt.k === "barracks2" ? "barracks"
+            : tgt.k === "factory" || tgt.k === "factory2" ? "factory"
+            : tgt.k === "airfield" || tgt.k === "airfield2" ? "airfield" : "shipyard";
+          const arr = vp.queues[cat];
+          if (arr?.length) {
+            for (const it of arr) vp.credits += UNITS[it.unit].cost;
+            delete vp.queues[cat];
+          }
         }
         break;
       case "refinery":
@@ -2236,7 +2304,7 @@ export class World {
           }
           continue;
         }
-        if (this.bld[t] >= 0 || !this.passable(x, y)) continue;
+        if (this.bld[t] >= 0 || !this.passable(x, y) || this.water[t]) continue;
         let adj = 0;
         if (x + 1 < this.w && this.ore[t + 1] > 0) adj++;
         if (x > 0 && this.ore[t - 1] > 0) adj++;
@@ -2253,6 +2321,12 @@ export class World {
 
   private tickProduction() {
     for (const p of this.players.values()) {
+      if (p.eliminated) continue;
+      // Unlatch spy power-cut once it expires — recomputePower is event-driven only
+      if (p.powerCutUntil && this.tick >= p.powerCutUntil) {
+        p.powerCutUntil = 0;
+        this.recomputePower(p.slot);
+      }
       const rate = p.lowPower ? 0.5 : 1;
       const bh = p.bq[0];
       if (bh) {
@@ -2354,6 +2428,16 @@ export class World {
               const maxExpand = this.w >= 96 ? 4500 : 2400;
               e.path =
                 findPath(Math.floor(e.x), Math.floor(e.y), Math.floor(o.x), Math.floor(o.y), this.passable, maxExpand, this.w, this.h) ?? [];
+              // unreachable approach — don't burn an A* every 12 ticks forever
+              if (!e.path.length) {
+                if ((e.bFail = (e.bFail ?? 0) + 1) >= 3) {
+                  e.bTiles = undefined;
+                  e.bFail = 0;
+                  this.advanceOrder(e);
+                }
+              } else {
+                e.bFail = 0;
+              }
             } else {
               e.repath = 1;
             }
@@ -2361,11 +2445,21 @@ export class World {
           this.stepAlong(e);
         } else {
           e.path = null;
+          e.bFail = 0;
           const t = e.bTiles[0];
           const p = this.players.get(e.o);
           this.face(e, (t % this.w) + 0.5, ((t / this.w) | 0) + 0.5);
           if ((e.bT = (e.bT ?? 0) - 1) <= 0) {
-            if (!p || p.credits < 40) {
+            if (this.bridges.has(t)) {
+              // another engineer already laid this tile — free skip
+              e.bTiles.shift();
+              e.bT = 18;
+              if (!e.bTiles.length) this.advanceOrder(e);
+            } else if (this.block[t]) {
+              // something built on the span mid-lay — a gap breaks the bridge, stop here
+              e.bTiles = undefined;
+              this.advanceOrder(e);
+            } else if (!p || p.credits < 40) {
               e.bTiles = undefined;
               this.advanceOrder(e);
             } else {
@@ -2583,15 +2677,12 @@ export class World {
     }
 
     // Direct-Aim Firing
-    const w = weaponOf(e);
-    if (!dir.fire || e.cd > 0 || w.range <= 0) return;
+    const wb = weaponOf(e);
+    if (!dir.fire || e.cd > 0 || wb.range <= 0) return;
 
     // AC-130 gunship weapon select — wpn slot overrides the gun only while player-driven
     const gun = e.k === "ac130" ? AC130_GUNS[dir.wpn ?? 0] : null;
-    if (gun) {
-      w.dmg = gun.dmg;
-      w.rof = gun.rof;
-    }
+    const w = gun ? { ...wb, dmg: gun.dmg, rof: gun.rof } : wb;
 
     const pointDistToEnt = (px: number, py: number, t: Ent) => {
       if (!isBuilding(t.k)) return dist(px, py, t.x, t.y);
@@ -2759,18 +2850,23 @@ export class World {
           e.order = null;
           // resume at last ore tile — unless another harvester claimed it meanwhile
           if (e.oreIdx >= 0 && this.ore[e.oreIdx] > 0 && !this.oreTaken(e.oreIdx, e.id)) {
-            const maxExpand = this.w >= 96 ? 4500 : 2400;
-            e.path = findPath(
-              e.x | 0,
-              e.y | 0,
-              e.oreIdx % this.w,
-              (e.oreIdx / this.w) | 0,
-              this.passable,
-              maxExpand,
-              this.w,
-              this.h,
-            );
             e.order = { kind: "harvest", x: e.oreIdx % this.w, y: (e.oreIdx / this.w) | 0 };
+            if (this.astarBudget > 0) {
+              this.astarBudget--;
+              const maxExpand = this.w >= 96 ? 4500 : 2400;
+              e.path = findPath(
+                e.x | 0,
+                e.y | 0,
+                e.oreIdx % this.w,
+                (e.oreIdx / this.w) | 0,
+                this.passable,
+                maxExpand,
+                this.w,
+                this.h,
+              );
+            } else {
+              e.repath = 1; // budgeted retry next tick
+            }
           }
         }
       }
@@ -2800,7 +2896,10 @@ export class World {
               e.hstate = "toOre";
               e.order = { kind: "harvest", x: next % this.w, y: (next / this.w) | 0 };
               e.path = null;
-            } else e.hstate = e.cargo > 0 ? "toRef" : null;
+            } else {
+              e.hstate = e.cargo > 0 ? "toRef" : null;
+              if (!e.hstate) e.order = null; // stale "harvest" order would wedge the unit
+            }
           }
           if (e.cargo >= cap) {
             e.hstate = "toRef";
@@ -2816,7 +2915,10 @@ export class World {
           e.hstate = "toOre";
           e.order = { kind: "harvest", x: next % this.w, y: (next / this.w) | 0 };
           e.path = null;
-        } else e.hstate = e.cargo > 0 ? "toRef" : null;
+        } else {
+          e.hstate = e.cargo > 0 ? "toRef" : null;
+          if (!e.hstate) e.order = null;
+        }
       }
       return;
     }
@@ -2933,6 +3035,7 @@ export class World {
     const w = this.w;
     for (let k = 0; k < this.oreTiles.length; k++) {
       const i = this.oreTiles[k];
+      if (this.ore[i] <= 0) continue; // mined out mid-step — list rebuilds next step
       const dx = (i % w) - x,
         dy = ((i / w) | 0) - y;
       const d = dx * dx + dy * dy;
@@ -2949,8 +3052,9 @@ export class World {
       }
     }
     const pick = best >= 0 ? best : bestT;
-    // commit immediately so a second harvester picking this same tick sees it
-    if (self && pick >= 0) {
+    // commit immediately so a second harvester picking this same tick sees it —
+    // but only for free tiles: claiming a taken fallback would steal the live claim
+    if (self && best >= 0) {
       if (!this.oreTakenMap) this.oreTakenMap = new Map();
       this.oreTakenMap.set(pick, self.id);
     }
@@ -3099,18 +3203,15 @@ export class World {
 
   private tryFire(e: Ent, tgt: Ent, gun: (typeof AC130_GUNS)[number] | null = null) {
     if (e.cd > 0) return;
-    const w = weaponOf(e);
-    if (w.range <= 0) return;
+    const wb = weaponOf(e);
+    if (wb.range <= 0) return;
     if (isBuilding(e.k) && this.players.get(e.o)?.lowPower) return; // powered defenses offline
     if (this.tick < e.sabUntil) return; // defense battery disabled by spy sabotage
     if (!this.canAttack(e, tgt)) return;
     const kamikaze = isKamikaze(e.k);
     const unitShooter = !isBuilding(e.k); // kill-confirm credit goes to unit shooters only
-    if (gun) {
-      // 1P-driven AC-130 selected gun — overrides dmg/rof; ammo cost unchanged
-      w.dmg = gun.dmg;
-      w.rof = gun.rof;
-    }
+    // 1P-driven AC-130 selected gun — overrides dmg/rof; ammo cost unchanged
+    const w = gun ? { ...wb, dmg: gun.dmg, rof: gun.rof } : wb;
     if (this.config.logistics !== false && unitShooter && !kamikaze) {
       e.ammo = Math.max(0, e.ammo - ammoCostOf(e.k));
       e.cd = e.ammo <= 0 ? Math.round(w.rof * 3.0) : w.rof;
@@ -3195,10 +3296,11 @@ export class World {
       const bx = Math.round(e.x - d.w / 2),
         by = Math.round(e.y - d.h / 2);
       for (let y = by; y < by + d.h; y++)
-        for (let x = bx; x < bx + d.w; x++) {
-          this.block[this.idx(x, y)] = 0;
-          this.bld[this.idx(x, y)] = -1;
-        }
+        for (let x = bx; x < bx + d.w; x++)
+          if (this.inBounds(x, y)) {
+            this.block[this.idx(x, y)] = 0;
+            this.bld[this.idx(x, y)] = -1;
+          }
     }
     this.ents.delete(e.id);
     if (e.o >= 0) this.slotCnt[e.o]--;
@@ -3236,7 +3338,9 @@ export class World {
     this.astarBudget--;
     const maxExpand = this.w >= 96 ? 4500 : 2400;
     e.path = findPath(e.x | 0, e.y | 0, spot.x, spot.y, pass, maxExpand, this.w, this.h);
-    if (!e.path?.length && r > 0) e.path = [];
+    // null path = "needs compute" → stepAlong would immediately run a SECOND budgeted
+    // search at the stale order coords. Mark hard failure as gave-up instead.
+    if (!e.path?.length) e.path = [];
   }
 
   // advance along path; returns true when arrived (within `arriveR` of final goal).
@@ -3306,7 +3410,8 @@ export class World {
     if (!pass(wp.x, wp.y)) {
       // path invalidated by new construction — repath once (budgeted like first-run paths)
       const o = e.order;
-      if (!o || this.astarBudget <= 0) return true;
+      if (!o) return true;
+      if (this.astarBudget <= 0) return false; // out of budget — retry next tick instead of dropping the order
       this.astarBudget--;
       const goal = nearestPassable(Math.floor(o.x), Math.floor(o.y), pass, searchR, this.w, this.h);
       e.path = goal ? (findPath(e.x | 0, e.y | 0, goal.x, goal.y, pass, maxExpand, this.w, this.h) ?? []) : [];
@@ -3434,7 +3539,11 @@ export class World {
       }
     }
     const alivePlayers = [...this.players.values()].filter((p) => !p.eliminated);
-    if (alivePlayers.length === 0) return;
+    if (alivePlayers.length === 0) {
+      // mutual annihilation — end as a draw (worker maps unknown winner slot → "draw")
+      this.winner = -1;
+      return;
+    }
     if (alivePlayers.length === 1) {
       this.winner = alivePlayers[0].slot;
       this.winnerTeam = alivePlayers[0].team > 0 ? alivePlayers[0].team : null;

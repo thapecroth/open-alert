@@ -102,10 +102,12 @@ export class Input {
       { passive: false },
     );
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    canvas.addEventListener("pointercancel", () => this.cancelDrag());
     window.addEventListener("blur", () => {
       this.keys.clear();
       this.middleDrag = null;
       this.yawDrag = null;
+      this.cancelDrag();
     });
     window.addEventListener("keydown", (e) => this.onKeyDown(e));
     window.addEventListener("keyup", (e) => this.keys.delete(e.code));
@@ -291,15 +293,17 @@ export class Input {
     // All command/toggle hotkeys below must ignore OS key auto-repeat so holding a key never flickers state or spams server
     if (e.repeat) return;
 
-    // Control groups: Ctrl+1..9 assign, 1..9 recall (double-tap centers), Shift+4 ($) = Sell
+    // Control groups: Alt+1..9 assign, 1..9 recall (double-tap centers), Shift+N adds group N
+    // (Ctrl+1..9 is a browser tab-switch accelerator that preventDefault cannot override)
     if (/^Digit[1-9]$/.test(e.code)) {
       const n = Number(e.code.slice(5));
-      if (e.shiftKey && n === 4 && !e.ctrlKey && !e.metaKey) {
-        this.armVerb("sell");
+      if (e.altKey || ((e.ctrlKey || e.metaKey) && e.shiftKey)) {
+        e.preventDefault();
+        this.assignGroup(n);
         return;
       }
       if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
+        // browser will switch tabs anyway — still assign so nothing silently breaks
         this.assignGroup(n);
         return;
       }
@@ -616,8 +620,19 @@ export class Input {
 
   // ---------- Pointer interactions ----------
 
+  // abort an in-progress selection drag — pointercancel, blur, a second finger
+  private cancelDrag() {
+    this.dragStart = null;
+    this.downArmed = false;
+    if (this.selBox) {
+      this.selBox.remove();
+      this.selBox = null;
+    }
+  }
+
   private onDown(e: PointerEvent) {
     if (!this._enabled) return;
+    if (e.pointerType === "touch" && !e.isPrimary) return; // second finger would corrupt the drag session
     this.px = e.clientX;
     this.py = e.clientY;
     this.gs.syncPointer(e.clientX, e.clientY);
@@ -636,6 +651,11 @@ export class Input {
       // Always record the potential drag first. Armed modes (nuke/recon/place/
       // verb/attack-move) now fire on CLICK in onUp — a real drag (>6px) always
       // wins as a box-select, so an armed mode can never silently eat drags.
+      try {
+        this.gs.canvas.setPointerCapture(e.pointerId);
+      } catch {
+        /* pointer already released */
+      }
       this.dragStart = { x: e.clientX, y: e.clientY, shift: e.shiftKey };
       this.downArmed =
         this.swArmed ||
@@ -646,6 +666,12 @@ export class Input {
       return;
     }
     if (e.button === 2) {
+      // right-click while a left-drag is live cancels the drag instead of
+      // issuing an order to the stale selection
+      if (this.dragStart) {
+        this.cancelDrag();
+        return;
+      }
       if (this.swArmed) {
         this.disarmSuperweapon();
         return;
@@ -843,6 +869,11 @@ export class Input {
     this.dragStart = null;
     const slot = this.getSlot();
 
+    if (this.selBox && Math.hypot(e.clientX - a.x, e.clientY - a.y) <= 6) {
+      // dragged out then back to the start point — treat as a click, not a 0-area deselect
+      this.selBox.remove();
+      this.selBox = null;
+    }
     if (this.selBox) {
       const x1 = Math.min(a.x, e.clientX),
         x2 = Math.max(a.x, e.clientX);
@@ -865,7 +896,10 @@ export class Input {
         this.exitPlacing();
       }
       this.setSelection(sel);
-    } else if (this.downArmed) {
+    } else if (
+      this.downArmed &&
+      (this.swArmed || this.reconArmed || this.placing || this.verb || this.amoveNext || this.patrolNext)
+    ) {
       this.fireArmedClick(e);
     } else {
       const id = this.gs.pickEntity();
@@ -904,6 +938,27 @@ export class Input {
   }
 
   issueMinimapOrder(x: number, y: number, queue = false): boolean {
+    // armed modes take priority — a minimap click targets the weapon/scan, not a move
+    if (this.swArmed) {
+      this.net.send({ t: "superweapon", x, y });
+      this.disarmSuperweapon();
+      this.flashLabel("☢ NUCLEAR MISSILE LAUNCHED!", 1600);
+      this.onUiSound("attack");
+      return true;
+    }
+    if (this.reconArmed) {
+      this.net.send({ t: "recon", x, y });
+      this.disarmRecon();
+      this.flashLabel("RECON SCAN DEPLOYED", 1300);
+      this.onUiSound("recon");
+      return true;
+    }
+    if (this.placing || this.verb) {
+      // minimap can't aim those — disarm so the click isn't a confusing no-op
+      this.exitPlacing();
+      this.armVerb(null);
+      return false;
+    }
     const ids = this.myUnits();
     if (!ids.length) return false;
     let kind: OrderKind = "move";

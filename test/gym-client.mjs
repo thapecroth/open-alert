@@ -106,8 +106,8 @@ function policy(obs) {
   const has = (k) => mine.some((e) => e.k === k);
   const act = {};
 
-  if (me.awaiting) {
-    act.place = findSpot(obs, slot, me.awaiting) ?? { tx: 6, ty: 6 };
+  if (me.awaiting?.length) {
+    act.place = findSpot(obs, slot, me.awaiting?.[0]) ?? { tx: 6, ty: 6 };
     return act;
   }
   if (!me.bq) {
@@ -122,13 +122,13 @@ function policy(obs) {
   }
   if (has("barracks")) {
     const q = me.queues?.barracks;
-    if ((q?.count ?? 0) < 4 && me.credits > 400) act.train = "infantry";
+    if ((q?.length ?? 0) < 4 && me.credits > 400) act.train = "infantry";
   }
   if (has("factory")) {
     const q = me.queues?.factory;
     const harv = mine.filter((e) => e.k === "harvester").length;
-    if (harv < 2 && !(q?.count ?? 0) && me.credits > 1600) act.train = "harvester";
-    else if ((q?.count ?? 0) < 4 && me.credits > 900) act.train = "tank";
+    if (harv < 2 && !(q?.length ?? 0) && me.credits > 1600) act.train = "harvester";
+    else if ((q?.length ?? 0) < 4 && me.credits > 900) act.train = "tank";
   }
   const army = mine.filter((e) => !isB(e.k) && e.k !== "harvester");
   const tgt = foes.find((e) => isB(e.k)) ?? foes[0];
@@ -144,8 +144,8 @@ function randomPolicy(obs) {
   const mine = obs.ents.filter((e) => e.o === me.slot && !isB(e.k));
   const act = {};
   if (Math.random() < 0.1) act.build = Object.keys(BUILDINGS)[(Math.random() * 6) | 0];
-  if (me.awaiting && Math.random() < 0.8) {
-    const spot = findSpot(obs, me.slot, me.awaiting);
+  if (me.awaiting?.length && Math.random() < 0.8) {
+    const spot = findSpot(obs, me.slot, me.awaiting?.[0]);
     if (spot) act.place = spot;
     else act.place = { tx: (Math.random() * MAP_W) | 0, ty: (Math.random() * MAP_H) | 0 };
   }
@@ -193,7 +193,7 @@ while (!done && steps < maxTicks) {
     const rw = r.info.rew ?? {};
     console.log(
       `[gym] t=${obs.tick} cr=${me.credits} pw=${me.pwrHave - me.pwrUse}${me.lowPower ? "LOW" : ""} ` +
-        `own=${own} foe=${foe} await=${me.awaiting ?? "-"} bq=${me.bq?.kind ?? "-"} ` +
+        `own=${own} foe=${foe} await=${me.awaiting?.[0] ?? "-"} bq=${me.bq?.[0]?.kind ?? "-"} ` +
         `r=${r.reward >= 0 ? "+" : ""}${r.reward.toFixed(3)} ` +
         `(cr${rw.dCredits >= 0 ? "+" : ""}${rw.dCredits} k${rw.kills} l${rw.losses} T${rw.terminal}) ` +
         `tot=${total.toFixed(3)}${r.info.denied ? " denied=" + r.info.denied.join(";") : ""}`,

@@ -49,8 +49,10 @@ export function findPath(
   // scratch buffers shared across calls — findPath is non-reentrant (single
   // synchronous A*), so module-level arrays kill the 3×W·H per-call allocation
   const { g, parent, closed } = getScratch(W * H);
-  g.fill(Infinity);
-  closed.fill(0); // parent/closed are only read for pushed nodes — no fill needed
+  // bound the clears to the active region — scratch is sized for the largest map seen
+  g.fill(Infinity, 0, W * H);
+  closed.fill(0, 0, W * H); // required: closed[] is read for arbitrary neighbor indices
+  // parent[] needs no clear — it is only followed through nodes pushed this search
 
   // Simple binary heap of [f, idx]
   const heapF: number[] = [];

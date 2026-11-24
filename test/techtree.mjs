@@ -23,8 +23,9 @@ const BLD = {
 const UNITK = new Set(["infantry", "engineer", "rocket", "tank", "arty", "heavy", "spider", "harvester"]);
 // defense-category builds run on the parallel queue: progress in p.dq, pending placement in p.awaitingDef
 const DEFK = new Set(["turret", "sam", "arc", "irondome", "lasertower", "thaad"]);
-const awaitingOf = (p, kind) => (DEFK.has(kind) ? p?.awaitingDef : p?.awaiting);
-const queueBusy = (p, kind) => (DEFK.has(kind) ? p?.dq || p?.awaitingDef : p?.bq || p?.awaiting);
+const awaitingOf = (p, kind) => ((DEFK.has(kind) ? p?.awaitingDef : p?.awaiting)?.includes(kind) ? kind : null);
+const queueBusy = (p, kind) =>
+  DEFK.has(kind) ? (p?.dq?.length ?? 0) + (p?.awaitingDef?.length ?? 0) : (p?.bq?.length ?? 0) + (p?.awaiting?.length ?? 0);
 
 function conn(name, token) {
   const ws = new WebSocket(URL);
@@ -103,7 +104,7 @@ function legalSpots(s, kind, anchor) {
         const gapX = Math.max(b.tx - (tx + fw), tx - (b.tx + b.w));
         const gapY = Math.max(b.ty - (ty + fh), ty - (b.ty + b.h));
         if (Math.max(gapX, gapY) > 2) continue; // só guarda tile já adjacente a ESTE prédio
-        if (tx < 0 || ty < 0 || tx + fw > 64 || ty + fh > 64) continue;
+        if (tx < 0 || ty < 0 || tx + fw > 128 || ty + fh > 128) continue;
         let bad = false;
         for (let y = ty; y < ty + fh && !bad; y++)
           for (let x = tx; x < tx + fw && !bad; x++)
@@ -157,7 +158,7 @@ async function buildAndPlace(s, kind, anchor, ms = 120000) {
     }
     await sleep(700);
   }
-  return { err: `timeout (bq=${me(s)?.bq?.kind ?? "-"} awaiting=${me(s)?.awaiting ?? "-"} cr=${me(s)?.credits})` };
+  return { err: `timeout (bq=${me(s)?.bq?.[0]?.kind ?? "-"} awaiting=${me(s)?.awaiting ?? "-"} cr=${me(s)?.credits})` };
 }
 
 async function trainUnit(s, unit, ms = 90000) {
@@ -262,7 +263,7 @@ ok(d && /can't upgrade/i.test(d), "segundo upgrade negado", d);
 
 await waitFor(() => me(b)?.credits >= 1200, 90000);
 const th = await trainUnit(b, "heavy");
-ok(th === null && me(b)?.queues?.factory?.unit === "heavy", "heavy aceito na fila pós-upgrade", th ?? me(b)?.queues?.factory?.unit);
+ok(th === null && me(b)?.queues?.factory?.some((i) => i.unit === "heavy"), "heavy aceito na fila pós-upgrade", th ?? JSON.stringify(me(b)?.queues?.factory));
 ok(await waitFor(() => mine(b, "heavy")[0], 30000), "heavy spawnou");
 
 // ---------- 4) purifier: depósito paga 1.25x ----------

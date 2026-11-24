@@ -383,6 +383,19 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
     powerGlow: powerGlow && powerGlow.length ? powerGlow : undefined,
   };
 
+  // Sub-detail parts (wheels, antennae, tips) can't cast a readable shadow — disabling
+  // them trims ~40-60% of the shadow-pass draw calls per unit for free.
+  {
+    root.updateMatrixWorld(true);
+    const ws = new THREE.Vector3();
+    body.traverse((o) => {
+      if (!(o instanceof THREE.Mesh) || !o.castShadow || !o.geometry.boundingSphere) return;
+      o.getWorldScale(ws);
+      if (o.geometry.boundingSphere.radius * Math.max(Math.abs(ws.x), Math.abs(ws.y), Math.abs(ws.z)) < 0.2)
+        o.castShadow = false;
+    });
+  }
+
   return {
     root,
     turret,

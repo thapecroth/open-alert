@@ -471,6 +471,9 @@ export class Hud {
   private mmLast = 0;
   private mmW = MAP_W;
   private mmH = MAP_H;
+  // static terrain layer cache — water/cliff/ore/bridge only re-raster when content changes
+  private mmStatic: HTMLCanvasElement | null = null;
+  private mmStaticSig = "";
   private pinged: { x: number; y: number; t: number } | null = null;
   private chatLines: string[] = [];
   private selSig = "";
@@ -3236,31 +3239,46 @@ export class Hud {
     const pal = MAP_PREVIEW_PALETTES[mapId] ?? MAP_PREVIEW_PALETTES.crossroads;
     const cw = Math.max(1, Math.ceil(sx));
     const ch = Math.max(1, Math.ceil(sy));
-    // Navigable ocean / river water channels
-    if (layout.water.length) {
-      ctx.fillStyle = pal.water ?? "#19587a";
-      for (let i = 0; i < layout.water.length; i++) {
-        ctx.fillRect(layout.water[i][0] * sx, layout.water[i][1] * sy, cw, ch);
+    // Static terrain layers raster once into an offscreen canvas — ore/bridge
+    // content hashes invalidate it. Saves ~3-6k fillRects every 160ms tick.
+    let oreHash = 0;
+    for (const k of oreCells) oreHash = (oreHash * 31 + k) | 0;
+    let bridgeHash = this.bridgeSet.size;
+    for (const k of this.bridgeSet) bridgeHash = (bridgeHash * 31 + k) | 0;
+    const sig = `${mapId}|${mw}x${mh}|${this.minimap.width}|${oreHash}|${bridgeHash}`;
+    if (!this.mmStatic || this.mmStaticSig !== sig) {
+      if (!this.mmStatic) this.mmStatic = document.createElement("canvas");
+      this.mmStatic.width = this.minimap.width;
+      this.mmStatic.height = this.minimap.height;
+      const sctx = this.mmStatic.getContext("2d")!;
+      // Navigable ocean / river water channels
+      if (layout.water.length) {
+        sctx.fillStyle = pal.water ?? "#19587a";
+        for (let i = 0; i < layout.water.length; i++) {
+          sctx.fillRect(layout.water[i][0] * sx, layout.water[i][1] * sy, cw, ch);
+        }
       }
-    }
-    // Impassable rocky cliff plateaus
-    const cliffs = layout.cliffs;
-    ctx.fillStyle = mapId === "volcano" ? "#6b2b18" : mapId === "cybergrid" ? "#1d354a" : "#2a343d";
-    for (let i = 0; i < cliffs.length; i++) {
-      ctx.fillRect(cliffs[i][0] * sx, cliffs[i][1] * sy, cw, ch);
-    }
-    // Ore veins
-    ctx.fillStyle = "#b58b2e";
-    for (const key of oreCells.keys()) {
-      ctx.fillRect((key % mw) * sx, ((key / mw) | 0) * sy, Math.max(1.4, sx), Math.max(1.4, sy));
-    }
-    // Pontoon bridges (tan planks over water)
-    if (this.bridgeSet.size) {
-      ctx.fillStyle = "#c8a05e";
-      for (const key of this.bridgeSet) {
-        ctx.fillRect((key % mw) * sx, ((key / mw) | 0) * sy, cw, ch);
+      // Impassable rocky cliff plateaus
+      const cliffs = layout.cliffs;
+      sctx.fillStyle = mapId === "volcano" ? "#6b2b18" : mapId === "cybergrid" ? "#1d354a" : "#2a343d";
+      for (let i = 0; i < cliffs.length; i++) {
+        sctx.fillRect(cliffs[i][0] * sx, cliffs[i][1] * sy, cw, ch);
       }
+      // Ore veins
+      sctx.fillStyle = "#b58b2e";
+      for (const key of oreCells.keys()) {
+        sctx.fillRect((key % mw) * sx, ((key / mw) | 0) * sy, Math.max(1.4, sx), Math.max(1.4, sy));
+      }
+      // Pontoon bridges (tan planks over water)
+      if (this.bridgeSet.size) {
+        sctx.fillStyle = "#c8a05e";
+        for (const key of this.bridgeSet) {
+          sctx.fillRect((key % mw) * sx, ((key / mw) | 0) * sy, cw, ch);
+        }
+      }
+      this.mmStaticSig = sig;
     }
+    ctx.drawImage(this.mmStatic, 0, 0);
     // Supply crates (pulsing bright white/gold dots)
     if (r.crates && r.crates.size) {
       const pulse = 0.5 + 0.5 * Math.sin(now * 0.008);
