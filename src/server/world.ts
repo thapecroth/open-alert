@@ -172,7 +172,7 @@ export interface WorldSave {
   ents: Ent[];
   players: P[];
   crates: CrateSnap[];
-  ore: Int16Array;
+  ore?: Int16Array; // stored under a separate DO key at a slower cadence
   lastAlert: [number, number][];
 }
 
@@ -570,7 +570,6 @@ export class World {
     w.cliff = new Uint8Array(area);
     w.water = new Uint8Array(area);
     w.bld = new Int32Array(area).fill(-1);
-    w.ore = d.ore;
     w.gridCols = Math.ceil(w.w / 8);
     w.gridRows = Math.ceil(w.h / 8);
     w.grid = Array.from({ length: w.gridCols * w.gridRows }, () => []);
@@ -586,6 +585,11 @@ export class World {
           w.waterCount++;
         }
       }
+    }
+    if (d.ore) w.ore = d.ore;
+    else {
+      w.ore = new Int16Array(area);
+      w.genOre(d.players.map((p) => p.slot));
     }
     w.tick = d.tick;
     w.winner = d.winner;
