@@ -33,16 +33,28 @@ interface Env {
 }
 
 interface PersistedMatch {
+  savedAt: number;
+  // gzip(JSON.stringify({ phase, map, config, players, world-sans-ore })) —
+  // repetitive Ent field names compress ~4-6x, keeping DO write units low
+  gz: ArrayBuffer;
+}
+
+interface PersistedOre {
+  at: number;
+  ore: ArrayBuffer; // Int16Array buffer — changes slowly (mining), written rarely
+}
+
+interface PersistedCore {
   phase: "playing";
   map: MapId;
   config: GameConfig;
   players: PlayerRec[];
-  world: ReturnType<World["serialize"]>;
-  savedAt: number;
+  world: Omit<ReturnType<World["serialize"]>, "ore">;
 }
 
 const PERSIST_LIVE_MS = 3000; // checkpoint every ~3s while simulating
 const PERSIST_PAUSED_MS = 60_000; // slower heartbeat while solo-paused
+const PERSIST_ORE_MS = 30_000; // ore field drifts slowly; 30s is plenty
 const MATCH_STALE_MS = 10 * 60 * 1000; // older than 10min = abandoned, drop it
 
 interface PlayerRec {
@@ -318,6 +330,7 @@ export class GameRoom extends Server<Env> {
   resetTimer: ReturnType<typeof setTimeout> | null = null;
   lastTickAt = 0;
   lastPersistAt = 0;
+  lastOrePersistAt = 0;
   endSent = false;
   bots = new Map<string, AIBot>(); // player id -> AI brain, ticked once per game tick
   private dir = new Map<string, RoomSummary>(); // used only when this.name === "__directory"
@@ -332,22 +345,32 @@ export class GameRoom extends Server<Env> {
     return this.ctx.blockConcurrencyWhile(async () => {
       try {
         const saved = await this.ctx.storage.get<PersistedMatch>("match");
-        if (!saved || saved.phase !== "playing" || !saved.world) return;
+        if (!saved || !(saved.gz instanceof ArrayBuffer)) return;
         if (Date.now() - saved.savedAt > MATCH_STALE_MS) {
-          await this.ctx.storage.delete("match").catch(() => {});
+          await this.ctx.storage.delete(["match", "matchOre"]).catch(() => {});
           return;
         }
-        this.world = World.deserialize(saved.world);
+        const json = await new Response(
+          new Blob([saved.gz]).stream().pipeThrough(new DecompressionStream("gzip")),
+        ).text();
+        const rec = JSON.parse(json) as PersistedCore;
+        if (rec.phase !== "playing" || !rec.world) return;
+        const oreRec = await this.ctx.storage.get<PersistedOre>("matchOre");
+        const world = {
+          ...rec.world,
+          ore: oreRec?.ore ? new Int16Array(oreRec.ore) : undefined,
+        };
+        this.world = World.deserialize(world);
         this.phase = "playing";
-        this.map = saved.map;
-        this.config = saved.config;
+        this.map = rec.map;
+        this.config = rec.config;
         this.paused = false;
         this.endSent = false;
-        for (const p of saved.players) {
+        for (const p of rec.players) {
           // nobody is actually connected yet — sockets rejoin via token
-          const rec: PlayerRec = { ...p, connId: null, connected: false };
-          this.players.set(rec.id, rec);
-          if (rec.bot) this.bots.set(rec.id, new AIBot(rec.id, { diff: rec.diff, profile: rec.profile }));
+          const prec: PlayerRec = { ...p, connId: null, connected: false };
+          this.players.set(prec.id, prec);
+          if (prec.bot) this.bots.set(prec.id, new AIBot(prec.id, { diff: prec.diff, profile: prec.profile }));
         }
         this.alarmActive = true;
         this.lastTickAt = Date.now();
@@ -361,20 +384,38 @@ export class GameRoom extends Server<Env> {
 
   private persist() {
     if (this.name === "__directory" || this.phase !== "playing" || !this.world) return;
-    this.lastPersistAt = Date.now();
-    const saved: PersistedMatch = {
-      phase: this.phase,
+    const now = Date.now();
+    this.lastPersistAt = now;
+    const { ore, ...worldCore } = this.world.serialize();
+    const core: PersistedCore = {
+      phase: "playing",
       map: this.map,
       config: this.config,
       players: [...this.players.values()],
-      world: this.world.serialize(),
-      savedAt: this.lastPersistAt,
+      world: worldCore,
     };
-    void this.ctx.storage.put("match", saved).catch(() => {});
+    const writeOre = !!ore && now - this.lastOrePersistAt >= PERSIST_ORE_MS;
+    if (writeOre) this.lastOrePersistAt = now;
+    void (async () => {
+      try {
+        const gz = await new Response(
+          new Blob([JSON.stringify(core)]).stream().pipeThrough(new CompressionStream("gzip")),
+        ).arrayBuffer();
+        const puts: Promise<unknown>[] = [
+          this.ctx.storage.put("match", { savedAt: now, gz } satisfies PersistedMatch),
+        ];
+        if (writeOre && ore) {
+          puts.push(this.ctx.storage.put("matchOre", { at: now, ore: ore.slice().buffer } satisfies PersistedOre));
+        }
+        await Promise.all(puts);
+      } catch {
+        /* checkpoint is best-effort */
+      }
+    })();
   }
 
   private clearPersist() {
-    void this.ctx.storage.delete("match").catch(() => {});
+    void this.ctx.storage.delete(["match", "matchOre"]).catch(() => {});
   }
 
   onClose(conn: Connection, code?: number) {
