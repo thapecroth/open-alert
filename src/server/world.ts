@@ -716,11 +716,30 @@ export class World {
           }
         }
     };
+    // Starter ore must land on a real tile: the blob center always paints (d = 0),
+    // so snap it to the nearest ore-able tile ≤10 from the spawn. Island/naval
+    // spawns can otherwise put the fixed offset into the sea and start ore-starved.
+    const oreable = (x: number, y: number) => {
+      if (!this.inBounds(x, y)) return false;
+      const i = this.idx(x, y);
+      return !this.cliff[i] && !this.block[i] && !this.water[i];
+    };
     for (const slot of slots) {
       const s = spawns[slot];
       if (!s) continue;
-      const cx = s.x < this.w / 2 ? s.x + 8 : s.x - 6;
-      const cy = s.y < this.h / 2 ? s.y + 9 : s.y - 7;
+      let cx = s.x < this.w / 2 ? s.x + 8 : s.x - 6;
+      let cy = s.y < this.h / 2 ? s.y + 9 : s.y - 7;
+      if (!oreable(cx, cy)) {
+        const cheb = (x: number, y: number) => Math.max(Math.abs(x - s.x), Math.abs(y - s.y));
+        const p =
+          nearestPassable(cx, cy, (x, y) => oreable(x, y) && cheb(x, y) <= 10, 14, this.w, this.h) ??
+          nearestPassable(s.x, s.y, (x, y) => oreable(x, y) && cheb(x, y) >= 4, 10, this.w, this.h) ??
+          nearestPassable(s.x, s.y, oreable, 10, this.w, this.h);
+        if (p) {
+          cx = p.x;
+          cy = p.y;
+        }
+      }
       blob(cx, cy, 3);
     }
     blob(Math.floor(this.w / 2), Math.floor(this.h / 2), 4); // contested center field
@@ -1177,11 +1196,14 @@ export class World {
   }
 
   // Engineer lays a pontoon bridge: walks to the shore approach, then converts water tiles
-  // near→far along a water path to a DIFFERENT landmass ($40 & 18 ticks per tile, max 16).
+  // near→far along a water path to a DIFFERENT landmass ($40 & 18 ticks per tile).
+  // Max span scales with map width: 16@64, 24@96, 32@128 — the limit exists to keep
+  // rivers channel-crossable, and wider maps simply have wider channels.
   // Bridges stay water — ships pass under, land units cross on top.
   cmdBridge(slot: number, id: number, tx: number, ty: number): string | null {
     const e = this.ents.get(id);
     if (!e || e.o !== slot || e.k !== "engineer") return "need an engineer";
+    const maxSpan = Math.max(16, Math.round(this.w / 4));
     if (!this.inBounds(tx, ty)) return "off map";
     const x0 = Math.floor(e.x),
       y0 = Math.floor(e.y);
@@ -1224,7 +1246,7 @@ export class World {
     const landSet = new Set<number>([approach]);
     {
       const q = [approach];
-      while (q.length && landSet.size < 9000) {
+      while (q.length && landSet.size < this.w * this.h) {
         const t = q.pop()!;
         const lx = t % this.w,
           ly = (t / this.w) | 0;
@@ -1251,7 +1273,7 @@ export class World {
       // count water-steps so far
       let depth = 0;
       for (let p2 = prev.get(t)!; p2 !== -1; p2 = prev.get(p2)!) depth++;
-      if (depth > 16) continue;
+      if (depth > maxSpan) continue;
       let goalHit = false;
       for (const [dx, dy] of DIRS4) {
         const nx = lx + dx,
@@ -1272,7 +1294,7 @@ export class World {
         break;
       }
     }
-    if (goal < 0) return "no far shore within 16 tiles";
+    if (goal < 0) return `no far shore within ${maxSpan} tiles`;
     // backtrack → ordered tile list near→far (exclude goal-adjacent land; include all water steps)
     const tiles: number[] = [];
     for (let t = goal; t !== -1; t = prev.get(t)!) {
@@ -1280,7 +1302,7 @@ export class World {
     }
     tiles.reverse();
     if (!tiles.length) return "already bridged";
-    if (tiles.length > 16) return "span too long (max 16 tiles)";
+    if (tiles.length > maxSpan) return `span too long (max ${maxSpan} tiles)`;
     e.bTiles = tiles;
     e.bT = 0;
     e.hold = false;
@@ -2326,7 +2348,9 @@ export class World {
             e.repath = 12;
             if (this.astarBudget > 0) {
               this.astarBudget--;
-              e.path = findPath(Math.floor(e.x), Math.floor(e.y), Math.floor(o.x), Math.floor(o.y), this.passable) ?? [];
+              const maxExpand = this.w >= 96 ? 4500 : 2400;
+              e.path =
+                findPath(Math.floor(e.x), Math.floor(e.y), Math.floor(o.x), Math.floor(o.y), this.passable, maxExpand, this.w, this.h) ?? [];
             } else {
               e.repath = 1;
             }

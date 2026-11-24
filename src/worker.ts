@@ -266,7 +266,7 @@ const MCP_TOOLS = [
   {
     name: "get_gym_schema",
     description:
-      "Return the exact RL Gym observation contract (gym_obs), 6x64x64 float32 feature_maps contract, 64x64x3 uint8 rgb_frame contract, and rts_action JSON schema shared 1:1 between src/server/gym.ts and live MCP matches for training & finetuning models.",
+      "Return the exact RL Gym observation contract (gym_obs), float32 feature_maps contract ([6,map_h,map_w] — plane dims follow the room's live map), uint8 rgb_frame contract ([map_w,map_h,3]), and rts_action JSON schema shared 1:1 between src/server/gym.ts and live MCP matches for training & finetuning models.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -302,14 +302,14 @@ function buildGymSchemaResponse() {
       },
     },
     feature_maps_contract: {
-      shape: [6, MAP_H, MAP_W],
+      shape: "[6, map_h, map_w] — plane dims follow the room's live map (96x96 standard, up to 128x128); each call's feature_maps.shape reports the exact size",
       dtype: "float32",
       channels: [...FEATURE_MAP_CHANNELS],
       encoding: "base64 (little-endian IEEE-754 Float32Array, C-contiguous [channel, y, x])",
     },
     rgb_frame_contract: {
-      w: MAP_W,
-      h: MAP_H,
+      w: "map_w — live map width",
+      h: "map_h — live map height",
       c: 3,
       dtype: "uint8",
       encoding: "base64 (row-major RGB Uint8Array of w*h*3 bytes)",
