@@ -4,6 +4,19 @@ import { MAP_W, MAP_H } from "../shared/gamedefs";
 // Returns a list of waypoints in tile coords (excluding start, including goal),
 // or null if unreachable. Units add their own separation steering on top.
 
+// Reused A* scratch — grown to the largest map seen; avoids 3×W·H allocs/search
+let SC_G: Float32Array | null = null;
+let SC_PARENT: Int32Array | null = null;
+let SC_CLOSED: Uint8Array | null = null;
+function getScratch(n: number): { g: Float32Array; parent: Int32Array; closed: Uint8Array } {
+  if (!SC_G || SC_G.length < n) {
+    SC_G = new Float32Array(n);
+    SC_PARENT = new Int32Array(n);
+    SC_CLOSED = new Uint8Array(n);
+  }
+  return { g: SC_G, parent: SC_PARENT!, closed: SC_CLOSED! };
+}
+
 const SQRT2 = Math.SQRT2;
 const DIRS: [number, number, number][] = [
   [1, 0, 1],
@@ -33,9 +46,11 @@ export function findPath(
   if (sx === gx && sy === gy) return [];
   if (sx < 0 || sy < 0 || sx >= W || sy >= H || gx < 0 || gy < 0 || gx >= W || gy >= H) return null;
 
-  const g = new Float32Array(W * H).fill(Infinity);
-  const parent = new Int32Array(W * H).fill(-1);
-  const closed = new Uint8Array(W * H);
+  // scratch buffers shared across calls — findPath is non-reentrant (single
+  // synchronous A*), so module-level arrays kill the 3×W·H per-call allocation
+  const { g, parent, closed } = getScratch(W * H);
+  g.fill(Infinity);
+  closed.fill(0); // parent/closed are only read for pushed nodes — no fill needed
 
   // Simple binary heap of [f, idx]
   const heapF: number[] = [];

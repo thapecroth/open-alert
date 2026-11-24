@@ -179,6 +179,7 @@ export interface WorldSave {
   lastAlert: [number, number][];
 }
 
+const EMPTY_ENTS: Ent[] = [];
 const DIRS4: readonly [number, number][] = [
   [1, 0],
   [-1, 0],
@@ -633,6 +634,12 @@ export class World {
     w.gridTick = -1;
     w.astarBudget = 12;
     w.oreTakenMap = null;
+    w.oreTiles = null;
+    w.bldDirty = true;
+    w.teamArr = new Int8Array(16);
+    w.teamSize = -1;
+    w.slotCnt = new Int16Array(16);
+    for (const e of w.ents.values()) if (e.o >= 0) w.slotCnt[e.o]++;
     let maxId = 0;
     for (const e of w.ents.values()) {
       if (e.id > maxId) maxId = e.id;
@@ -663,12 +670,20 @@ export class World {
     return w;
   }
 
+  // flat slot→team lookup for isAlly — rebuilt when players change (rare)
+  private teamArr = new Int8Array(16);
+  private teamSize = -1;
+  // per-slot live entity counts for O(1) elimination checks
+  private slotCnt = new Int16Array(16);
   isAlly(slotA: number, slotB: number): boolean {
     if (slotA === slotB) return true;
     if (slotA < 0 || slotB < 0) return false;
-    const a = this.players.get(slotA);
-    const b = this.players.get(slotB);
-    return !!(a && b && a.team > 0 && a.team === b.team);
+    if (this.teamSize !== this.players.size) {
+      this.teamArr.fill(0);
+      for (const p of this.players.values()) this.teamArr[p.slot] = p.team;
+      this.teamSize = this.players.size;
+    }
+    return this.teamArr[slotA] > 0 && this.teamArr[slotA] === this.teamArr[slotB];
   }
 
   getStats(names: Record<number, string> = {}): MatchStats[] {
@@ -932,6 +947,8 @@ export class World {
       sabUntil: 0,
     };
     this.ents.set(e.id, e);
+    this.bldDirty = true;
+    this.slotCnt[e.o]++;
     for (let y = ty; y < ty + d.h; y++)
       for (let x = tx; x < tx + d.w; x++) {
         this.block[this.idx(x, y)] = 1;
@@ -972,6 +989,7 @@ export class World {
       sabUntil: 0,
     };
     this.ents.set(e.id, e);
+    this.slotCnt[e.o]++;
     this.events.push({ e: "spawn", id: e.id });
     return e;
   }
@@ -1068,9 +1086,8 @@ export class World {
     }
     // adjacency: own building within gap <= 2 (or SHIPYARD_BUILD_DIST for waterOnly, or forwardRange for Forward Supply Hubs)
     const maxGap = d.waterOnly ? SHIPYARD_BUILD_DIST : (d.forwardRange ?? 2);
-    for (const b of this.ents.values()) {
-      if (b.o !== slot || !isBuilding(b.k)) continue;
-      const bd = BUILDINGS[b.k];
+    for (const b of this.bldsOf(slot)) {
+      const bd = BUILDINGS[b.k as BuildingKind];
       const bx = b.x - bd.w / 2,
         by = b.y - bd.h / 2;
       const gapX = Math.max(bx - (tx + d.w), tx - (bx + bd.w));
@@ -1418,7 +1435,7 @@ export class World {
     if (d.requires) for (const r of d.requires) if (!this.hasBuilding(slot, r)) return `need a ${r}`;
     if (d.limit != null) {
       let count = 0;
-      for (const e of this.ents.values()) if (e.o === slot && e.k === kind) count++;
+      for (const e of this.bldsOf(slot)) if (e.k === kind) count++;
       for (const k2 of p.awaiting) if (k2 === kind) count++;
       for (const k2 of p.awaitingDef) if (k2 === kind) count++;
       for (const i of p.bq) if (i.kind === kind) count++;
@@ -1548,7 +1565,8 @@ export class World {
     p.swLeft = SW_CHARGE_TICKS;
     // Exo-atmospheric THAAD Nuclear ICBM interception scan (80% stop chance per ready THAAD in range!)
     const readyThaads: { ent: Ent; d: number }[] = [];
-    for (const e of this.ents.values()) {
+    if (this.bldDirty) this.bldsOf(-1);
+    for (const e of this.domeIdx) {
       if (e.k !== "thaad" || e.o < 0 || e.hp <= 0 || e.interceptCd > 0) continue;
       if (this.isAlly(slot, e.o)) continue;
       const owner = this.players.get(e.o);
@@ -1684,6 +1702,9 @@ export class World {
     if (edgeDist > maxRange) return false;
     const prev = tgt.o;
     tgt.o = e.o;
+    this.bldDirty = true;
+    if (prev >= 0) this.slotCnt[prev]--;
+    this.slotCnt[e.o]++;
     this.recomputePower(prev);
     this.recomputePower(e.o);
     if (tgt.k === "derrick") {
@@ -1785,10 +1806,45 @@ export class World {
     return true;
   }
 
+  // per-slot building index — invalidated on spawn/capture/destroy; saves O(n) Map scans
+  private bldIdx = new Map<number, Ent[]>();
+  private domeIdx: Ent[] = []; // thaad + irondome (intercept scans)
+  private ecoIdx: Ent[] = []; // derrick + coalmine (income ticks)
+  private bldDirty = true;
+  private bldsOf(slot: number): Ent[] {
+    if (this.bldDirty) {
+      this.bldIdx.clear();
+      this.domeIdx.length = 0;
+      this.ecoIdx.length = 0;
+      for (const e of this.ents.values()) {
+        if (!isBuilding(e.k)) continue;
+        let l = this.bldIdx.get(e.o);
+        if (!l) this.bldIdx.set(e.o, (l = []));
+        l.push(e);
+        if (e.k === "thaad" || e.k === "irondome") this.domeIdx.push(e);
+        else if (e.k === "derrick" || e.k === "coalmine") this.ecoIdx.push(e);
+      }
+      this.bldDirty = false;
+    }
+    return this.bldIdx.get(slot) ?? EMPTY_ENTS;
+  }
+
+  // spatial-grid range query over the start-of-tick grid
+  private forEachInRange(x: number, y: number, r: number, cb: (e: Ent) => void) {
+    const x0 = Math.max(0, ((x - r) | 0) >> 3),
+      x1 = Math.min(this.gridCols - 1, ((x + r) | 0) >> 3);
+    const y0 = Math.max(0, ((y - r) | 0) >> 3),
+      y1 = Math.min(this.gridRows - 1, ((y + r) | 0) >> 3);
+    for (let gy = y0; gy <= y1; gy++)
+      for (let gx = x0; gx <= x1; gx++) {
+        const cell = this.grid[gy * this.gridCols + gx];
+        for (let i = 0; i < cell.length; i++) cb(cell[i]);
+      }
+  }
+
   private hasBuilding(slot: number, kind: BuildingKind) {
     const upg = UPGRADED_OF[kind];
-    for (const e of this.ents.values()) {
-      if (e.o !== slot) continue;
+    for (const e of this.bldsOf(slot)) {
       if (e.k === kind || (upg !== undefined && e.k === upg)) return true;
       if (kind === "power" && (e.k === "coalplant" || e.k === "fusion")) return true;
     }
@@ -1798,8 +1854,8 @@ export class World {
   private buildingsOf(slot: number, kind: BuildingKind) {
     const upg = UPGRADED_OF[kind];
     const out: Ent[] = [];
-    for (const e of this.ents.values())
-      if (e.o === slot && (e.k === kind || (upg !== undefined && e.k === upg))) out.push(e);
+    for (const e of this.bldsOf(slot))
+      if (e.k === kind || (upg !== undefined && e.k === upg)) out.push(e);
     return out;
   }
 
@@ -1813,9 +1869,8 @@ export class World {
     if (!p) return;
     let have = 0,
       use = 0;
-    for (const e of this.ents.values()) {
-      if (e.o !== slot || !isBuilding(e.k)) continue;
-      const pw = BUILDINGS[e.k].power;
+    for (const e of this.bldsOf(slot)) {
+      const pw = BUILDINGS[e.k as BuildingKind].power;
       if (pw > 0) {
         have += e.hp < e.mhp ? Math.round(pw * (0.35 + 0.65 * Math.max(0, e.hp / e.mhp))) : pw;
       } else {
@@ -1834,12 +1889,13 @@ export class World {
     this.tick++;
     this.astarBudget = 12;
     this.oreTakenMap = null;
+    this.oreTiles = null;
     this.tickProduction();
     this.rebuildSpatialGrid();
     for (const e of [...this.ents.values()]) {
       if (this.ents.has(e.id)) this.tickEnt(e);
     }
-    this.rebuildSpatialGrid();
+    // one grid rebuild per step — separate() works on start-of-tick positions (sub-tile error)
     this.separate();
     if (this.tick % 5 === 0) this.tickEwJamming();
     this.tickCrates();
@@ -1985,19 +2041,26 @@ export class World {
   }
 
   private tickDepots() {
-    for (const d of this.ents.values()) {
-      if (d.k !== "depot" || d.o < 0) continue;
-      if (this.players.get(d.o)?.lowPower) continue;
-      for (const e of this.ents.values())
-        if (this.isAlly(d.o, e.o) && !isBuilding(e.k) && e.hp < e.mhp && dist(e.x, e.y, d.x, d.y) <= DEPOT_RANGE)
-          e.hp = Math.min(e.mhp, e.hp + DEPOT_HEAL);
-    }
+    if (this.bldDirty) this.bldsOf(-1); // force index build
+    for (const list of this.bldIdx.values())
+      for (const d of list) {
+        if (d.k !== "depot" || d.o < 0) continue;
+        if (this.players.get(d.o)?.lowPower) continue;
+        const r2 = DEPOT_RANGE * DEPOT_RANGE;
+        this.forEachInRange(d.x, d.y, DEPOT_RANGE + 1, (e) => {
+          const dx = e.x - d.x,
+            dy = e.y - d.y;
+          if (this.isAlly(d.o, e.o) && !isBuilding(e.k) && e.hp < e.mhp && dx * dx + dy * dy <= r2)
+            e.hp = Math.min(e.mhp, e.hp + DEPOT_HEAL);
+        });
+      }
   }
 
   private tickDerricks() {
     const emitPopup = this.tick % 40 === 0;
-    for (const d of this.ents.values()) {
-      if ((d.k !== "derrick" && d.k !== "coalmine") || d.o < 0) continue;
+    if (this.bldDirty) this.bldsOf(-1); // force index build
+    for (const d of this.ecoIdx) {
+      if (d.o < 0) continue;
       const p = this.players.get(d.o);
       if (!p || p.eliminated) continue;
       const inc = d.k === "coalmine" ? COALMINE_INCOME : DERRICK_INCOME;
@@ -2800,8 +2863,8 @@ export class World {
   private nearestRefinery(e: Ent) {
     let best: Ent | null = null,
       bd = Infinity;
-    for (const b of this.ents.values()) {
-      if (b.o !== e.o || b.k !== "refinery") continue;
+    for (const b of this.bldsOf(e.o)) {
+      if (b.k !== "refinery") continue;
       const d = dist(e.x, e.y, b.x, b.y);
       if (d < bd) {
         bd = d;
@@ -2827,47 +2890,39 @@ export class World {
     return h !== undefined && h !== selfId;
   }
 
+  // ore tile list — rebuilt lazily once per step (ore mutates only via mining)
+  private oreTiles: number[] | null = null;
   private nearestOre(x: number, y: number, maxR = 999, self?: Ent) {
+    if (!this.oreTiles) {
+      const list: number[] = [];
+      for (let i = 0; i < this.ore.length; i++) if (this.ore[i] > 0) list.push(i);
+      this.oreTiles = list;
+    }
     let best = -1,
       bd = Infinity,
       bestT = -1,
-      bdT = Infinity,
-      seenOre = false,
-      oreRings = 0;
-    // scan outward rings — cheaper than full scan. Free tiles win immediately in
-    // ring order; taken tiles are kept as fallback (sharing beats idling).
-    for (let r = 0; r < Math.min(maxR, Math.max(this.w, this.h)); r++) {
-      for (let dy = -r; dy <= r; dy++)
-        for (let dx = -r; dx <= r; dx++) {
-          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
-          const nx = x + dx,
-            ny = y + dy;
-          if (!this.inBounds(nx, ny)) continue;
-          const i = this.idx(nx, ny);
-          if (this.ore[i] <= 0) continue;
-          const d = dx * dx + dy * dy;
-          if (self && this.oreTaken(i, self.id)) {
-            if (d < bdT) {
-              bdT = d;
-              bestT = i;
-            }
-          } else if (d < bd) {
-            bd = d;
-            best = i;
-          }
-          seenOre = true;
+      bdT = Infinity;
+    const r2 = maxR * maxR;
+    const w = this.w;
+    for (let k = 0; k < this.oreTiles.length; k++) {
+      const i = this.oreTiles[k];
+      const dx = (i % w) - x,
+        dy = ((i / w) | 0) - y;
+      const d = dx * dx + dy * dy;
+      if (d > r2) continue;
+      // free tiles win; taken tiles are kept as fallback (sharing beats idling)
+      if (self && this.oreTaken(i, self.id)) {
+        if (d < bdT) {
+          bdT = d;
+          bestT = i;
         }
-      if (best >= 0) {
-        // commit immediately so a second harvester picking this same tick sees it
-        if (self) {
-          if (!this.oreTakenMap) this.oreTakenMap = new Map();
-          this.oreTakenMap.set(best, self.id);
-        }
-        return best;
+      } else if (d < bd) {
+        bd = d;
+        best = i;
       }
-      if (seenOre && ++oreRings > 18) break; // don't wander the whole map for a free tile
     }
     const pick = best >= 0 ? best : bestT;
+    // commit immediately so a second harvester picking this same tick sees it
     if (self && pick >= 0) {
       if (!this.oreTakenMap) this.oreTakenMap = new Map();
       this.oreTakenMap.set(pick, self.id);
@@ -2932,7 +2987,8 @@ export class World {
     // Ballistic Missile TEL SRBM: ONLY Anti-Nuke (THAAD) batteries can attempt interception — 80% each within 18 tiles
     if (attacker.k === "ballistic") {
       const batteries: { ent: Ent; d: number }[] = [];
-      for (const dome of this.ents.values()) {
+      if (this.bldDirty) this.bldsOf(-1);
+      for (const dome of this.domeIdx) {
         if (dome.k !== "thaad" || dome.o < 0 || dome.interceptCd > 0) continue;
         if (this.tick < dome.sabUntil) continue;
         if (this.players.get(dome.o)?.lowPower) continue;
@@ -2958,7 +3014,8 @@ export class World {
     // Mach-9 Kamikaze hypersonic glide missile: THAAD stops at 80% (16 tiles), Iron Dome at 33% (9.5 tiles)!
     if (attacker.k === "hypersonic") {
       const candidates: { ent: Ent; d: number; chance: number; priority: number }[] = [];
-      for (const dome of this.ents.values()) {
+      if (this.bldDirty) this.bldsOf(-1);
+      for (const dome of this.domeIdx) {
         const isThaad = dome.k === "thaad";
         const isDome = dome.k === "irondome";
         if ((!isThaad && !isDome) || dome.o < 0 || dome.interceptCd > 0) continue;
@@ -2987,7 +3044,8 @@ export class World {
     const thaadCanIntercept = attacker.k === "dreadnought";
     let bestDome: Ent | null = null;
     let bestD = Infinity;
-    for (const dome of this.ents.values()) {
+    if (this.bldDirty) this.bldsOf(-1);
+    for (const dome of this.domeIdx) {
       const isDome = dome.k === "irondome";
       const isThaad = thaadCanIntercept && dome.k === "thaad";
       if ((!isDome && !isThaad) || dome.o < 0 || dome.interceptCd > 0) continue;
@@ -3116,7 +3174,9 @@ export class World {
         }
     }
     this.ents.delete(e.id);
+    if (e.o >= 0) this.slotCnt[e.o]--;
     if (wasBuilding) {
+      this.bldDirty = true;
       this.recomputePower(e.o); // after removal so the corpse doesn't count
       if (killerSlot != null && killerSlot >= 0 && !this.isAlly(killerSlot, e.o)) {
         const kp = this.players.get(killerSlot);
@@ -3217,9 +3277,10 @@ export class World {
       return e.path.length === 0;
     }
     if (!pass(wp.x, wp.y)) {
-      // path invalidated by new construction — repath once
+      // path invalidated by new construction — repath once (budgeted like first-run paths)
       const o = e.order;
-      if (!o) return true;
+      if (!o || this.astarBudget <= 0) return true;
+      this.astarBudget--;
       const goal = nearestPassable(Math.floor(o.x), Math.floor(o.y), pass, searchR, this.w, this.h);
       e.path = goal ? (findPath(e.x | 0, e.y | 0, goal.x, goal.y, pass, maxExpand, this.w, this.h) ?? []) : [];
       return e.path.length === 0;
@@ -3340,13 +3401,7 @@ export class World {
     if (this.players.size < 2) return; // solo games run until a rematch
     for (const p of this.players.values()) {
       if (p.eliminated) continue;
-      let alive = false;
-      for (const e of this.ents.values())
-        if (e.o === p.slot) {
-          alive = true;
-          break;
-        }
-      if (!alive) {
+      if (this.slotCnt[p.slot] <= 0) {
         p.eliminated = true;
         this.events.push({ e: "elim", slot: p.slot });
       }
