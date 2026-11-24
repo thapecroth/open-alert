@@ -339,7 +339,7 @@ export class LocalRoom {
         err = w.cmdTrain(slot, m.unit);
         break;
       case "trainCancel":
-        w.cmdTrainCancel(slot, m.unit);
+        w.cmdTrainCancel(slot, m.unit, m.cat, m.index);
         break;
       case "sell":
         err = w.cmdSell(slot, m.id);

@@ -464,11 +464,11 @@ hud.onBuild = (kind) => {
   net.send({ t: "build", kind });
   audio.playUi("buildStart");
 };
-hud.onBuildCancel = (cat, kind, awaiting) => {
+hud.onBuildCancel = (cat, kind, awaiting, index) => {
   if (input.placing && (!cat || buildCategoryOf(input.placing) === cat)) {
     input.exitPlacing();
   }
-  net.send({ t: "buildCancel", cat, kind, awaiting });
+  net.send({ t: "buildCancel", cat, kind, awaiting, index });
   audio.playUi("select");
   hud.toast(cat === "defense" ? "Defense cancelled & refunded" : "Construction cancelled & refunded", true);
 };
@@ -489,8 +489,8 @@ hud.onTrain = (u) => {
     audio.playUi("buildStart");
   }
 };
-hud.onTrainCancel = (u) => {
-  net.send({ t: "trainCancel", unit: u });
+hud.onTrainCancel = (u, cat, index) => {
+  net.send({ t: "trainCancel", unit: u, cat, index });
   audio.playUi("select");
 };
 hud.onFilterSelection = (kind) => {

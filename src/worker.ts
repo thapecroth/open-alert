@@ -710,7 +710,12 @@ export class GameRoom extends Server<Env> {
         err = typeof m.unit === "string" ? this.world.cmdTrain(slot, m.unit) : "bad unit";
         break;
       case "trainCancel":
-        if (typeof m.unit === "string") this.world.cmdTrainCancel(slot, m.unit);
+        this.world.cmdTrainCancel(
+          slot,
+          typeof m.unit === "string" ? m.unit : undefined,
+          m.cat === "barracks" || m.cat === "factory" || m.cat === "airfield" || m.cat === "shipyard" ? m.cat : undefined,
+          Number.isFinite(m.index) ? m.index : undefined,
+        );
         break;
       case "sell":
         err = Number.isFinite(m.id) ? this.world.cmdSell(slot, m.id) : "bad id";
