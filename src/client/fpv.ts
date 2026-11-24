@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
-import { TICK_MS, UNITS, EntKind, UnitKind, UnitDomain } from "../shared/gamedefs";
+import { TICK_MS, UNITS, BUILDINGS, EntKind, UnitKind, UnitDomain } from "../shared/gamedefs";
 import type { GameEvent } from "../shared/protocol";
 import { GameScene } from "./scene";
 import { Renderer } from "./render";
@@ -2023,6 +2023,8 @@ export class FirstPersonController {
   private raycaster = new THREE.Raycaster();
   private camPos = new THREE.Vector3();
   private groundHit = new THREE.Vector3();
+  private _fpvRayCands: THREE.Object3D[] = [];
+  private _fpvTmpV = new THREE.Vector3();
   private lastTelemetry: FpvTelemetry | null = null;
 
   // Bound event listeners (stored for clean disposal)
@@ -2632,10 +2634,23 @@ export class FirstPersonController {
   } {
     const { w: mapW, h: mapH } = this.getMapBounds();
     this.raycaster.setFromCamera(CENTER_NDC, this.gs.camera);
-    const visibleRoots = this.gs.pickables.filter(
-      (r) => r.visible && r.userData?.entityId !== this.entId,
-    );
-    const hits = this.raycaster.intersectObjects(visibleRoots, true);
+    // pre-filter: only ents near the center ray can be under the reticle — skips
+    // a full recursive raycast of every pickable subtree each frame
+    const ray = this.raycaster.ray;
+    const rayCands: THREE.Object3D[] = this._fpvRayCands;
+    rayCands.length = 0;
+    for (const t of this.renderer.tracked.values()) {
+      if (t.last.id === this.entId) continue;
+      const root = t.inst ? t.inst.proxy : t.vis.root;
+      if (!root.visible) continue;
+      const cy = !isBuildingKind(t.last.k) && UNITS[t.last.k as UnitKind].domain === "air" ? 3.0 : 0.6;
+      this._fpvTmpV.set(t.last.x, cy, t.last.y);
+      const r = isBuildingKind(t.last.k)
+        ? Math.max(BUILDINGS[t.last.k].w, BUILDINGS[t.last.k].h) * 0.8 + 1.0
+        : 2.0;
+      if (ray.distanceSqToPoint(this._fpvTmpV) < r * r) rayCands.push(root);
+    }
+    const hits = this.raycaster.intersectObjects(rayCands, true);
     const mySlot = this.getSlot();
 
     for (const h of hits) {

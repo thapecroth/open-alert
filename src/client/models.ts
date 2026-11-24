@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import type { CrateKind } from "../shared/gamedefs";
 import { BUILDINGS, EntKind, isBuildingKind } from "./util";
@@ -77,6 +78,126 @@ function getAirShadowMat(): THREE.MeshBasicMaterial {
     });
   }
   return airShadowMat;
+}
+
+// ---------- Static-Geometry Merge (draw-call collapse) ----------
+//
+// Unit bodies ship as dozens of tiny meshes (wheels, antennae, armor plates).
+// Anything not inside an animated rig subtree never moves independently, so we
+// bake those meshes into one geometry per (material × shadow flags × attribute
+// signature) — ~55 draw calls per unit collapse to ~6-10 with identical pixels.
+
+function mergeStaticBody(body: THREE.Group, rig: AnimRig): void {
+  const keepRoots = new Set<THREE.Object3D>();
+  const keep = (n?: THREE.Object3D | THREE.Object3D[] | null) => {
+    if (!n) return;
+    if (Array.isArray(n)) for (const x of n) x && keepRoots.add(x);
+    else keepRoots.add(n);
+  };
+  keep(rig.turret); keep(rig.recoil); keep(rig.spiderLegs);
+  keep(rig.spin); keep(rig.spin2); keep(rig.crane);
+  keep(rig.legL); keep(rig.legR); keep(rig.armL); keep(rig.armR);
+  keep(rig.head); keep(rig.flag); keep(rig.bin);
+  keep(rig.pulse); keep(rig.powerGlow); keep(rig.shadow);
+
+  const insideKeep = (o: THREE.Object3D): boolean => {
+    for (let p: THREE.Object3D | null = o; p && p !== body; p = p.parent)
+      if (keepRoots.has(p)) return true;
+    return false;
+  };
+
+  const subMats = new Set(rig.subMats ?? []);
+
+  // Color-bake path: same-shading standard materials merge into one vertex-colored
+  // mesh (the real collapse — part colors differ but shading params cluster).
+  const stdMergeMats = new Map<string, THREE.MeshStandardMaterial>();
+  const stdBucketKey = (m: THREE.MeshStandardMaterial): string | null => {
+    if (m.map || m.emissiveMap || m.normalMap || m.roughnessMap || m.metalnessMap || m.vertexColors) return null;
+    return `std|${m.roughness}|${m.metalness}|${m.emissive.getHexString()}|${m.emissiveIntensity}|${m.transparent}|${m.opacity}|${m.side}`;
+  };
+  const stdMatFor = (key: string): THREE.MeshStandardMaterial => {
+    let m = stdMergeMats.get(key);
+    if (!m) {
+      const p = key.split("|");
+      m = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        vertexColors: true,
+        roughness: +p[2],
+        metalness: +p[3],
+        emissive: new THREE.Color(`#${p[4]}`),
+        emissiveIntensity: +p[5],
+        transparent: p[6] === "true",
+        opacity: +p[7],
+        side: +p[8] as THREE.Side,
+      });
+      stdMergeMats.set(key, m);
+    }
+    return m;
+  };
+  const bakeColor = (g: THREE.BufferGeometry, c: THREE.Color): THREE.BufferGeometry => {
+    const n = g.attributes.position.count;
+    const col = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
+    g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    return g;
+  };
+
+  interface Bucket {
+    mat: THREE.Material;
+    castShadow: boolean;
+    receiveShadow: boolean;
+    renderOrder: number;
+    geos: THREE.BufferGeometry[];
+    owners: THREE.Mesh[];
+  }
+  const buckets = new Map<string, Bucket>();
+
+  body.updateMatrixWorld(true);
+  const bodyInv = new THREE.Matrix4().copy(body.matrixWorld).invert();
+  const rel = new THREE.Matrix4();
+
+  body.traverse((o) => {
+    if (!(o instanceof THREE.Mesh) || o instanceof THREE.SkinnedMesh) return;
+    if (!o.visible || o.userData.isBar) return;
+    if (insideKeep(o)) return;
+    const g = o.geometry;
+    if (!g || (g.morphAttributes && Object.keys(g.morphAttributes).length > 0)) return;
+    if (Array.isArray(o.material) || subMats.has(o.material)) return;
+    let mat = o.material;
+    let g2 = g.clone();
+    if (mat instanceof THREE.MeshStandardMaterial) {
+      const bkey = stdBucketKey(mat);
+      if (bkey) {
+        g2 = bakeColor(g2, mat.color);
+        mat = stdMatFor(bkey);
+      }
+    }
+    const sig =
+      `${mat.uuid}|${o.castShadow}|${o.receiveShadow}|${o.renderOrder}|` +
+      `${g2.index ? 1 : 0}|${Object.keys(g2.attributes).sort().join(",")}`;
+    let b = buckets.get(sig);
+    if (!b) {
+      b = { mat, castShadow: o.castShadow, receiveShadow: o.receiveShadow, renderOrder: o.renderOrder, geos: [], owners: [] };
+      buckets.set(sig, b);
+    }
+    rel.multiplyMatrices(bodyInv, o.matrixWorld);
+    b.geos.push(g2.applyMatrix4(rel));
+    b.owners.push(o);
+  });
+
+  for (const b of buckets.values()) {
+    const geo = b.geos.length >= 2 ? mergeGeometries(b.geos, false) : null;
+    for (const g of b.geos) g.dispose();
+    if (!geo) continue;
+    geo.computeBoundingSphere();
+    geo.computeBoundingBox();
+    const m = new THREE.Mesh(geo, b.mat);
+    m.castShadow = b.castShadow;
+    m.receiveShadow = b.receiveShadow;
+    m.renderOrder = b.renderOrder;
+    body.add(m);
+    for (const o of b.owners) o.parent?.remove(o);
+  }
 }
 
 export function isAir(kind: EntKind): boolean {
@@ -247,18 +368,32 @@ export function setGroupTag(vis: EntVis, n: number): void {
 
 // ---------- Main Entity Visual Orchestrator ----------
 
-export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene): EntVis {
+// topY for instanced-swarm kinds — harvested from the authored models so the
+// lite EntVis (no body meshes, only HUD overlays) places bars identically
+const LITE_TOP_Y: Partial<Record<EntKind, number>> = {
+  fpvdrone: 2.99,
+  shahed: 3.63,
+  usv: 0.62,
+  infantry: 1.0,
+  engineer: 0.94,
+  rocket: 1.08,
+};
+
+export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene, lite = false): EntVis {
   const root = new THREE.Group();
   const body = new THREE.Group();
   root.add(body);
 
-  const built: BuiltModel =
-    buildAirSeaModel(kind, colorHex, body) ??
-    buildLandModel(kind, colorHex, body) ?? {
-      topY: 1.0,
-      turret: null,
-      rig: {},
-    };
+  // lite: instanced kinds render through the InstancedMesh pool — their body's
+  // full mesh rig is never added to the scene, so skip building it entirely
+  const built: BuiltModel = lite
+    ? { topY: LITE_TOP_Y[kind] ?? 1.0, turret: null, rig: {} }
+    : buildAirSeaModel(kind, colorHex, body) ??
+      buildLandModel(kind, colorHex, body) ?? {
+        topY: 1.0,
+        turret: null,
+        rig: {},
+      };
 
   const { topY, turret } = built;
   const partialRig = built.rig;
@@ -269,7 +404,7 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
 
   // Clickable soft air-shadow disc on ground directly beneath hovering aircraft
   let shadow = partialRig.shadow;
-  if (airUnit && !shadow) {
+  if (airUnit && !shadow && !lite) {
     const [rx, rz] = AIR_SHADOW_SIZE[kind] ?? [0.95, 1.05];
     const sh = new THREE.Mesh(geoAirShadow, getAirShadowMat());
     sh.scale.set(rx, 1, rz);
@@ -395,6 +530,8 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
         o.castShadow = false;
     });
   }
+
+  if (!lite) mergeStaticBody(body, rig);
 
   return {
     root,
