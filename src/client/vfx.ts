@@ -72,15 +72,17 @@ const ORDER_COLORS: Record<OrderKind, number> = {
   attack: 0xff3030,
   harvest: 0xffc436,
   patrol: 0x4ad8ff,
+  bridge: 0xd8a04a,
 };
 
-const ORDER_KINDS: readonly OrderKind[] = ["move", "amove", "attack", "harvest", "patrol"];
+const ORDER_KINDS: readonly OrderKind[] = ["move", "amove", "attack", "harvest", "patrol", "bridge"];
 const ORDER_KIND_INDEX: Record<OrderKind, number> = {
   move: 0,
   amove: 1,
   attack: 2,
   harvest: 3,
   patrol: 4,
+  bridge: 5,
 };
 const ORDER_COLOR_OBJS: Record<OrderKind, THREE.Color> = {
   move: new THREE.Color(ORDER_COLORS.move),
@@ -88,6 +90,7 @@ const ORDER_COLOR_OBJS: Record<OrderKind, THREE.Color> = {
   attack: new THREE.Color(ORDER_COLORS.attack),
   harvest: new THREE.Color(ORDER_COLORS.harvest),
   patrol: new THREE.Color(ORDER_COLORS.patrol),
+  bridge: new THREE.Color(ORDER_COLORS.bridge),
 };
 
 const WHITE_COL = new THREE.Color(0xffffff);
@@ -2672,7 +2675,7 @@ export class WaypointOverlay {
   constructor(private scene: THREE.Scene) {
     this.group.renderOrder = 15;
 
-    // 5 pre-allocated reusable LineSegments pools (one per OrderKind)
+    // Pre-allocated reusable LineSegments pools (one per OrderKind)
     this.wpLines = ORDER_KINDS.map((kind) => {
       const lp = makeLinePool(ORDER_COLORS[kind], 0.78, MAX_WP_SEGS_PER_KIND);
       this.group.add(lp.lines);

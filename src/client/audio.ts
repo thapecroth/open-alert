@@ -36,6 +36,7 @@ const LOOKAHEAD_SEC = 0.12;
 // D minor industrial-RTS palette (Hz)
 const N = {
   D1: 36.71,
+  A1: 55.0,
   Bb1: 58.27,
   C2: 65.41,
   D2: 73.42,
@@ -92,6 +93,30 @@ const STAB_SEQ: readonly number[] = [
   N.D3, 0, 0, N.D3, 0, 0, N.F3, 0, 0, 0, N.G3, 0, 0, 0, N.F3, 0,
   // Bar 4
   N.Bb2, 0, 0, 0, N.C3, 0, 0, 0, N.A2, 0, N.A2, 0, N.A2, 0, N.G2, 0,
+];
+
+// Pad roots per bar of the 4-bar loop (matches BASS_SEQ's implied progression)
+const PAD_ROOTS: readonly number[] = [N.D2, N.Bb1, N.G2, N.C2];
+
+// Sparse dark-minor lead motif for low-intensity play — [step, freq, durSteps].
+// Two alternate phrases cycled by loop parity so successive loops differ.
+const MOTIF_A: readonly (readonly [number, number, number])[] = [
+  [24, N.D4, 2],
+  [26, N.F4, 1],
+  [27, N.E4, 2],
+  [30, N.C4, 3],
+  [56, N.Bb3, 2],
+  [58, N.A3, 2],
+  [60, N.D4, 4],
+];
+const MOTIF_B: readonly (readonly [number, number, number])[] = [
+  [24, N.A3, 2],
+  [26, N.C4, 1],
+  [27, N.D4, 2],
+  [30, N.F4, 3],
+  [56, N.E4, 2],
+  [58, N.F4, 2],
+  [60, N.G4, 4],
 ];
 
 // High-intensity combat 16th-note urgent arp (64 steps)
@@ -214,6 +239,8 @@ export class AudioEngine {
   private stepIndex = 0;
   private nextStepTime = 0;
   private musicDuckUntil = 0;
+  // Incremented each time the 64-step sequence wraps — drives A/B loop variation
+  private cycleCount = 0;
 
   constructor() {
     this.muted = readStorage(MUTE_KEY) === "1";
@@ -263,6 +290,10 @@ export class AudioEngine {
         this.softDrive = makeDriveCurve(2.4);
         this.hardDrive = makeDriveCurve(6.5);
         this.nextStepTime = ctx.currentTime + 0.05;
+
+        // Continuous ambient drone bed beneath the step sequencer. Routes
+        // through musicBus so it obeys the music toggle, mute and ducking.
+        this.startDrone(ctx, musicBus);
       }
 
       if (this.ctx.state === "suspended") {
@@ -346,6 +377,7 @@ export class AudioEngine {
       this.scheduleMusicStep(ctx, this.musicBus, this.stepIndex, this.nextStepTime, this.combatBlend);
       this.nextStepTime += STEP_SEC;
       this.stepIndex = (this.stepIndex + 1) & 63;
+      if (this.stepIndex === 0) this.cycleCount++;
     }
   }
 
@@ -524,6 +556,46 @@ export class AudioEngine {
         cg.connect(bus);
         crackle.start(now);
         crackle.stop(now + crackleDur + 0.02);
+      }
+
+      // 5. Pressure-wave shock snap at the very onset
+      if (this.whiteNoise) {
+        const snap = this.makeNoiseSource(ctx, this.whiteNoise);
+        const sbp = ctx.createBiquadFilter();
+        sbp.type = "bandpass";
+        sbp.Q.value = 0.9;
+        sbp.frequency.setValueAtTime(3300, now);
+        sbp.frequency.exponentialRampToValueAtTime(1500, now + 0.045);
+        const sg = ctx.createGain();
+        sg.gain.setValueAtTime(0.0001, now);
+        sg.gain.linearRampToValueAtTime(0.2 + scale * 0.18, now + 0.002);
+        sg.gain.exponentialRampToValueAtTime(0.0001, now + 0.05);
+        snap.connect(sbp);
+        sbp.connect(sg);
+        sg.connect(bus);
+        snap.start(now, Math.random() * 1.2);
+        snap.stop(now + 0.06);
+      }
+
+      // 6. Rolling secondary rumble — big explosions keep moving air
+      if (scale > 0.5 && this.pinkNoise) {
+        const rumbleAt = now + 0.12;
+        const rumbleDur = 0.9 + scale * 0.5;
+        const rumble = this.makeNoiseSource(ctx, this.pinkNoise);
+        const lp = ctx.createBiquadFilter();
+        lp.type = "lowpass";
+        lp.Q.value = 0.8;
+        lp.frequency.setValueAtTime(270, rumbleAt);
+        lp.frequency.exponentialRampToValueAtTime(55, rumbleAt + rumbleDur);
+        const rg = ctx.createGain();
+        rg.gain.setValueAtTime(0.0001, rumbleAt);
+        rg.gain.linearRampToValueAtTime(0.24 * scale, rumbleAt + 0.09);
+        rg.gain.exponentialRampToValueAtTime(0.0001, rumbleAt + rumbleDur);
+        rumble.connect(lp);
+        lp.connect(rg);
+        rg.connect(bus);
+        rumble.start(rumbleAt, Math.random() * 1.2);
+        rumble.stop(rumbleAt + rumbleDur + 0.02);
       }
     } catch {
       // Ignore transient Web Audio errors
@@ -1207,6 +1279,29 @@ export class AudioEngine {
       g.connect(bus);
       src.start(now, Math.random() * 1.2);
       src.stop(now + 0.06);
+
+      // Supersonic snap — the high "crack" that makes a shot feel fast
+      const snap = this.makeNoiseSource(ctx, this.whiteNoise);
+      const hp = ctx.createBiquadFilter();
+      hp.type = "highpass";
+      hp.frequency.setValueAtTime(4200 * jitter, now);
+      hp.frequency.exponentialRampToValueAtTime(2600, now + 0.022);
+      const sg = ctx.createGain();
+      sg.gain.setValueAtTime(0.0001, now);
+      sg.gain.linearRampToValueAtTime(heroic ? 0.17 : 0.13, now + 0.0015);
+      sg.gain.exponentialRampToValueAtTime(0.0001, now + 0.024);
+      snap.connect(hp);
+      hp.connect(sg);
+      sg.connect(bus);
+      snap.start(now, Math.random() * 1.2);
+      snap.stop(now + 0.03);
+    }
+
+    // Occasional spent-casing tink bouncing off the ground (~35%)
+    if (Math.random() < 0.35) {
+      const t = now + 0.055 + Math.random() * 0.09;
+      const f = 3050 + Math.random() * 900;
+      this.playTone(ctx, bus, "sine", f, f * 0.96, t, 0.045, 0.045, 0.002);
     }
   }
 
@@ -1251,6 +1346,40 @@ export class AudioEngine {
       g.connect(bus);
       src.start(now, Math.random() * 1.2);
       src.stop(now + 0.16);
+
+      // Faster supersonic crack on top — sharp attack sells the muzzle blast
+      const crack = this.makeNoiseSource(ctx, this.whiteNoise);
+      const chp = ctx.createBiquadFilter();
+      chp.type = "highpass";
+      chp.frequency.setValueAtTime(2900, now);
+      chp.frequency.exponentialRampToValueAtTime(1500, now + 0.035);
+      const cg = ctx.createGain();
+      cg.gain.setValueAtTime(0.0001, now);
+      cg.gain.linearRampToValueAtTime(0.26, now + 0.002);
+      cg.gain.exponentialRampToValueAtTime(0.0001, now + 0.038);
+      crack.connect(chp);
+      chp.connect(cg);
+      cg.connect(bus);
+      crack.start(now, Math.random() * 1.2);
+      crack.stop(now + 0.045);
+    }
+
+    // Rolling low rumble tail — cannon shots should linger in the chest
+    if (this.pinkNoise) {
+      const rumble = this.makeNoiseSource(ctx, this.pinkNoise);
+      const lp = ctx.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.frequency.setValueAtTime(230, now + 0.03);
+      lp.frequency.exponentialRampToValueAtTime(70, now + 0.34);
+      const rg = ctx.createGain();
+      rg.gain.setValueAtTime(0.0001, now + 0.03);
+      rg.gain.linearRampToValueAtTime(heroic ? 0.17 : 0.13, now + 0.07);
+      rg.gain.exponentialRampToValueAtTime(0.0001, now + 0.36);
+      rumble.connect(lp);
+      lp.connect(rg);
+      rg.connect(bus);
+      rumble.start(now + 0.03, Math.random() * 1.2);
+      rumble.stop(now + 0.38);
     }
   }
 
@@ -1893,6 +2022,23 @@ export class AudioEngine {
     // Crisp futuristic radio chirp + click
     this.playTone(ctx, bus, "sine", 860, 1180, now, 0.048, 0.16, 0.003);
     this.playTone(ctx, bus, "triangle", 1720, 1480, now, 0.025, 0.07, 0.002);
+
+    // Tactile switch-click under the chirp — selection feels physical
+    if (this.whiteNoise) {
+      const click = this.makeNoiseSource(ctx, this.whiteNoise);
+      const hp = ctx.createBiquadFilter();
+      hp.type = "highpass";
+      hp.frequency.value = 3100;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.linearRampToValueAtTime(0.075, now + 0.0015);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.014);
+      click.connect(hp);
+      hp.connect(g);
+      g.connect(bus);
+      click.start(now, 0.4);
+      click.stop(now + 0.02);
+    }
   }
 
   private uiMove(ctx: AudioContext, bus: AudioNode, now: number): void {
@@ -2349,12 +2495,36 @@ export class AudioEngine {
       }
     }
 
-    // 7. Brooding base-building industrial pad pulse (bars 1 & 3)
-    if (step === 0 || step === 32) {
-      const padLevel = 0.22 * (1 - combat * 0.55);
+    // 7. Brooding base-building pad — one slow chord swell per bar so the bed
+    // stays continuous; recedes as combat layers take over.
+    if (barStep === 0) {
+      const padLevel = 0.24 * (1 - combat * 0.5);
       if (padLevel > 0.03) {
-        this.musicPad(ctx, bus, step === 0 ? N.D2 : N.Bb1, time, padLevel);
+        this.musicPad(ctx, bus, PAD_ROOTS[step >> 4], time, padLevel);
       }
+    }
+
+    // 8. Sparse haunting lead motif while things are calm — alternate phrases
+    // on successive loops; hands off to stabs/arp as combat rises.
+    if (combat < 0.7) {
+      const motif = (this.cycleCount & 1) === 0 ? MOTIF_A : MOTIF_B;
+      for (const [s, f, durSteps] of motif) {
+        if (s === step) {
+          this.musicMotif(ctx, bus, f, time, durSteps, 1 - combat / 0.7);
+        }
+      }
+    }
+
+    // 9. Crash splash marking the loop head during heavy combat
+    if (step === 0 && combat > 0.55) {
+      this.musicCrash(ctx, bus, time, clamp((combat - 0.55) / 0.45, 0, 1));
+    }
+
+    // 10. Low tom fill closing bar 4 on odd loops — keeps the cycle from
+    // sounding like a verbatim repeat.
+    if ((this.cycleCount & 1) === 1 && combat > 0.12) {
+      if (barStep === 12) this.musicTom(ctx, bus, 168, time, 0.5 + combat * 0.3);
+      if (barStep === 14) this.musicTom(ctx, bus, 118, time, 0.55 + combat * 0.3);
     }
   }
 
@@ -2422,6 +2592,23 @@ export class AudioEngine {
     g.connect(bus);
     osc.start(time);
     osc.stop(time + 0.17);
+
+    // Beater click transient — gives the kick audible attack on small speakers
+    if (this.whiteNoise) {
+      const click = this.makeNoiseSource(ctx, this.whiteNoise);
+      const hp = ctx.createBiquadFilter();
+      hp.type = "highpass";
+      hp.frequency.value = 3400;
+      const cg = ctx.createGain();
+      cg.gain.setValueAtTime(0.0001, time);
+      cg.gain.linearRampToValueAtTime(0.16 * level, time + 0.0015);
+      cg.gain.exponentialRampToValueAtTime(0.0001, time + 0.018);
+      click.connect(hp);
+      hp.connect(cg);
+      cg.connect(bus);
+      click.start(time, (time * 5.1) % 1.0);
+      click.stop(time + 0.025);
+    }
   }
 
   private musicHat(
@@ -2472,6 +2659,26 @@ export class AudioEngine {
       g.connect(bus);
       src.start(time, (time * 2.3) % 1.0);
       src.stop(time + 0.145);
+    }
+
+    // Snare-wire body tail — fills the gap between the crack and the next hit
+    if (this.pinkNoise) {
+      const tail = this.makeNoiseSource(ctx, this.pinkNoise);
+      const lp = ctx.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.frequency.setValueAtTime(1050, time);
+      lp.frequency.exponentialRampToValueAtTime(320, time + 0.2);
+
+      const tg = ctx.createGain();
+      tg.gain.setValueAtTime(0.0001, time + 0.008);
+      tg.gain.linearRampToValueAtTime(0.13 * level, time + 0.02);
+      tg.gain.exponentialRampToValueAtTime(0.0001, time + 0.21);
+
+      tail.connect(lp);
+      lp.connect(tg);
+      tg.connect(bus);
+      tail.start(time + 0.008, (time * 2.9) % 1.0);
+      tail.stop(time + 0.23);
     }
   }
 
@@ -2549,28 +2756,237 @@ export class AudioEngine {
     time: number,
     level: number,
   ): void {
-    const dur = STEP_SEC * 28;
+    // ~1.9 bars so consecutive bar-swels overlap into a continuous bed
+    const dur = STEP_SEC * 30;
     const lp = ctx.createBiquadFilter();
     lp.type = "lowpass";
-    lp.frequency.setValueAtTime(280, time);
-    lp.frequency.linearRampToValueAtTime(460, time + dur * 0.45);
-    lp.frequency.exponentialRampToValueAtTime(210, time + dur);
+    lp.Q.value = 0.9;
+    lp.frequency.setValueAtTime(240, time);
+    lp.frequency.linearRampToValueAtTime(540, time + dur * 0.45);
+    lp.frequency.exponentialRampToValueAtTime(190, time + dur);
 
     const g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, time);
-    g.gain.linearRampToValueAtTime(level, time + 0.35);
+    g.gain.linearRampToValueAtTime(level, time + 0.5);
+    g.gain.linearRampToValueAtTime(level * 0.82, time + dur * 0.75);
     g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
 
     lp.connect(g);
     g.connect(bus);
 
-    for (const ratio of [1, 1.5]) {
+    // Detuned saw stack (root/fifth/octave) — the classic dark RTS pad body.
+    // ±7 cent pairs beat slowly against each other for movement.
+    for (const [ratio, detune] of [
+      [1, -7],
+      [1, 7],
+      [1.498, -5],
+      [1.498, 5],
+      [2, 0],
+    ] as [number, number][]) {
       const osc = ctx.createOscillator();
-      osc.type = "triangle";
+      osc.type = "sawtooth";
       osc.frequency.setValueAtTime(root * ratio, time);
-      osc.connect(lp);
+      osc.detune.value = detune;
+      const og = ctx.createGain();
+      og.gain.value = ratio === 2 ? 0.4 : 0.5;
+      osc.connect(og);
+      og.connect(lp);
       osc.start(time);
       osc.stop(time + dur + 0.05);
+    }
+
+    // Faint airy breath riding the swell so the pad doesn't feel sterile
+    if (this.pinkNoise) {
+      const breath = this.makeNoiseSource(ctx, this.pinkNoise);
+      const bp = ctx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.Q.value = 0.7;
+      bp.frequency.setValueAtTime(620, time);
+      bp.frequency.linearRampToValueAtTime(940, time + dur * 0.5);
+      bp.frequency.exponentialRampToValueAtTime(430, time + dur);
+
+      const bg = ctx.createGain();
+      bg.gain.setValueAtTime(0.0001, time);
+      bg.gain.linearRampToValueAtTime(level * 0.16, time + 0.6);
+      bg.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+
+      breath.connect(bp);
+      bp.connect(bg);
+      bg.connect(bus);
+      breath.start(time, (time * 1.3) % 1.0);
+      breath.stop(time + dur + 0.02);
+    }
+  }
+
+  /** Sparse lead voice for the low-intensity motif phrases. */
+  private musicMotif(
+    ctx: AudioContext,
+    bus: AudioNode,
+    freq: number,
+    time: number,
+    durSteps: number,
+    level: number,
+  ): void {
+    const dur = STEP_SEC * durSteps * 1.05;
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.Q.value = 1.1;
+    bp.frequency.setValueAtTime(freq * 3.1, time);
+    bp.frequency.exponentialRampToValueAtTime(freq * 1.6, time + dur);
+
+    const g = ctx.createGain();
+    const vol = 0.16 * level;
+    g.gain.setValueAtTime(0.0001, time);
+    g.gain.linearRampToValueAtTime(vol, time + Math.min(0.03, dur * 0.2));
+    g.gain.setValueAtTime(vol, time + dur * 0.7);
+    g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+
+    bp.connect(g);
+    g.connect(bus);
+
+    // Sine core + triangle octave double — cold, lonely lead timbre
+    for (const [ratio, type, mix] of [
+      [1, "sine", 1],
+      [2, "triangle", 0.4],
+    ] as [number, OscillatorType, number][]) {
+      const osc = ctx.createOscillator();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq * ratio, time);
+      const og = ctx.createGain();
+      og.gain.value = mix;
+      osc.connect(og);
+      og.connect(bp);
+      osc.start(time);
+      osc.stop(time + dur + 0.02);
+    }
+  }
+
+  /** Metallic cymbal-ish splash used to mark loop heads during heavy combat. */
+  private musicCrash(ctx: AudioContext, bus: AudioNode, time: number, level: number): void {
+    if (!this.whiteNoise) return;
+    const src = this.makeNoiseSource(ctx, this.whiteNoise);
+    const hp = ctx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.setValueAtTime(4300, time);
+    hp.frequency.exponentialRampToValueAtTime(2600, time + 0.6);
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, time);
+    g.gain.linearRampToValueAtTime(0.22 * level, time + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, time + 0.68);
+
+    src.connect(hp);
+    hp.connect(g);
+    g.connect(bus);
+    src.start(time, (time * 4.3) % 1.0);
+    src.stop(time + 0.72);
+  }
+
+  /** Pitch-bent low tom for bar-4 fills. */
+  private musicTom(
+    ctx: AudioContext,
+    bus: AudioNode,
+    freq: number,
+    time: number,
+    level: number,
+  ): void {
+    const dur = 0.3;
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, time);
+    osc.frequency.exponentialRampToValueAtTime(freq * 0.45, time + dur);
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, time);
+    g.gain.linearRampToValueAtTime(0.3 * level, time + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+
+    osc.connect(g);
+    g.connect(bus);
+    osc.start(time);
+    osc.stop(time + dur + 0.02);
+
+    // Skin noise on the attack
+    if (this.whiteNoise) {
+      const src = this.makeNoiseSource(ctx, this.whiteNoise);
+      const bp = ctx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.Q.value = 1.6;
+      bp.frequency.setValueAtTime(freq * 4, time);
+      const ng = ctx.createGain();
+      ng.gain.setValueAtTime(0.0001, time);
+      ng.gain.linearRampToValueAtTime(0.12 * level, time + 0.003);
+      ng.gain.exponentialRampToValueAtTime(0.0001, time + 0.07);
+      src.connect(bp);
+      bp.connect(ng);
+      ng.connect(bus);
+      src.start(time, (time * 3.1) % 1.0);
+      src.stop(time + 0.09);
+    }
+  }
+
+  /**
+   * Continuous low drone bed — sub sine + detuned saw pair through a slowly
+   * breathing lowpass, plus a whisper of filtered noise. Runs once for the
+   * life of the context; loudness is governed entirely by musicBus.
+   */
+  private startDrone(ctx: AudioContext, bus: AudioNode): void {
+    try {
+      const lp = ctx.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.Q.value = 1.2;
+      lp.frequency.value = 150;
+
+      // Slow breathing on the filter cutoff (period ~37s)
+      const lfo = ctx.createOscillator();
+      lfo.type = "sine";
+      lfo.frequency.value = 0.027;
+      const lfoDepth = ctx.createGain();
+      lfoDepth.gain.value = 62;
+      lfo.connect(lfoDepth);
+      lfoDepth.connect(lp.frequency);
+
+      const droneGain = ctx.createGain();
+      droneGain.gain.value = 0.34;
+
+      lp.connect(droneGain);
+      droneGain.connect(bus);
+
+      // Sub-root D1 sine + D2 detuned saw pair + A1 fifth for width
+      for (const [freq, type, detune, mix] of [
+        [N.D1, "sine", 0, 0.9],
+        [N.D2, "sawtooth", -6, 0.32],
+        [N.D2, "sawtooth", 6, 0.32],
+        [N.A1, "triangle", 0, 0.22],
+      ] as [number, OscillatorType, number, number][]) {
+        const osc = ctx.createOscillator();
+        osc.type = type;
+        osc.frequency.value = freq;
+        osc.detune.value = detune;
+        const og = ctx.createGain();
+        og.gain.value = mix;
+        osc.connect(og);
+        og.connect(lp);
+        osc.start();
+      }
+
+      // High air shimmer — barely audible dust on top of the drone
+      if (this.pinkNoise) {
+        const shimmer = this.makeNoiseSource(ctx, this.pinkNoise);
+        const bp = ctx.createBiquadFilter();
+        bp.type = "bandpass";
+        bp.Q.value = 2.2;
+        bp.frequency.value = 1150;
+        const sg = ctx.createGain();
+        sg.gain.value = 0.012;
+        shimmer.connect(bp);
+        bp.connect(sg);
+        sg.connect(bus);
+        shimmer.start();
+      }
+      lfo.start();
+    } catch {
+      // Drone is decorative — never let it break unlock()
     }
   }
 }
