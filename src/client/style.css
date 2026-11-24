@@ -529,6 +529,12 @@ button.on { background: #1d4459; border-color: var(--acc); color: #eef8ff; }
   margin-bottom: 12px; font-size: 14px; color: var(--acc); letter-spacing: 2.5px; font-weight: 700;
 }
 .room-row button { font-size: 11px; letter-spacing: 0.8px; }
+.room-row a.guide-btn {
+  font-size: 11px; letter-spacing: 0.8px; text-decoration: none;
+  padding: 6px 10px; border: 1px solid var(--line, #2e5f8a); border-radius: 4px;
+  color: var(--acc); font-weight: 700; cursor: pointer;
+}
+.room-row a.guide-btn:hover { background: #16233a; }
 .quota-banner {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   margin: 0 0 10px; padding: 9px 12px; border-radius: 6px; text-align: left;
