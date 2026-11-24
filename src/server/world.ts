@@ -1553,6 +1553,7 @@ export class World {
   step() {
     this.tick++;
     this.astarBudget = 12;
+    this.oreTakenMap = null;
     this.tickProduction();
     this.rebuildSpatialGrid();
     for (const e of [...this.ents.values()]) {
@@ -2321,7 +2322,10 @@ export class World {
     }
     if (o?.kind === "harvest" && e.hstate) {
       if (e.hstate === "toOre") {
-        const arrived = this.stepAlong(e, 0.45); // land on the ore tile itself
+        // adjacent reach counts as "at" the tile — a strict arriveR is
+        // unreachable when another unit hugs the ore face (perma-jam)
+        const ox = e.oreIdx % this.w, oy = (e.oreIdx / this.w) | 0;
+        const arrived = this.stepAlong(e, 0.45) || dist(e.x, e.y, ox + 0.5, oy + 0.5) <= 0.85;
         if (arrived) e.hstate = "mining";
       } else if (e.hstate === "toRef") {
         const ref = this.nearestRefinery(e);
@@ -2343,8 +2347,8 @@ export class World {
           e.cargo = 0;
           e.hstate = "toOre";
           e.order = null;
-          // resume at last ore tile
-          if (e.oreIdx >= 0 && this.ore[e.oreIdx] > 0) {
+          // resume at last ore tile — unless another harvester claimed it meanwhile
+          if (e.oreIdx >= 0 && this.ore[e.oreIdx] > 0 && !this.oreTaken(e.oreIdx, e.id)) {
             const maxExpand = this.w >= 96 ? 4500 : 2400;
             e.path = findPath(
               e.x | 0,
@@ -2366,8 +2370,8 @@ export class World {
       const ox = e.oreIdx % this.w,
         oy = (e.oreIdx / this.w) | 0;
       const cap = UNITS.harvester.capacity!;
-      if (Math.floor(e.x) !== ox || Math.floor(e.y) !== oy) {
-        // drifted off the ore tile — drive back onto it
+      if (Math.abs(e.x - (ox + 0.5)) > 1.0 || Math.abs(e.y - (oy + 0.5)) > 1.0) {
+        // drifted off the ore face — drive back to it
         e.hstate = "toOre";
         e.order = { kind: "harvest", x: ox, y: oy };
         e.path = null;
@@ -2380,7 +2384,7 @@ export class World {
           e.cargo++;
           this.events.push({ e: "ore", cells: [[ox, oy, this.ore[t]]] });
           if (this.ore[t] === 0) {
-            const next = this.nearestOre(e.x | 0, e.y | 0);
+            const next = this.nearestOre(e.x | 0, e.y | 0, 999, e);
             if (next >= 0) {
               e.oreIdx = next;
               e.hstate = "toOre";
@@ -2396,7 +2400,7 @@ export class World {
       } else if (e.cargo >= cap) {
         e.hstate = "toRef";
       } else {
-        const next = this.nearestOre(e.x | 0, e.y | 0);
+        const next = this.nearestOre(e.x | 0, e.y | 0, 999, e);
         if (next >= 0) {
           e.oreIdx = next;
           e.hstate = "toOre";
@@ -2409,9 +2413,12 @@ export class World {
 
     // toOre without a path yet
     if (e.hstate === "toOre" && !e.path?.length) {
-      const goal = this.ore[e.oreIdx] > 0 ? { x: e.oreIdx % this.w, y: (e.oreIdx / this.w) | 0 } : null;
+      const goal =
+        e.oreIdx >= 0 && this.ore[e.oreIdx] > 0 && !this.oreTaken(e.oreIdx, e.id)
+          ? { x: e.oreIdx % this.w, y: (e.oreIdx / this.w) | 0 }
+          : null;
       if (!goal) {
-        const n = this.nearestOre(e.x | 0, e.y | 0);
+        const n = this.nearestOre(e.x | 0, e.y | 0, 999, e);
         if (n < 0) {
           e.hstate = e.cargo > 0 ? "toRef" : null;
           e.order = null;
@@ -2460,7 +2467,7 @@ export class World {
       if (e.cargo > 0) {
         if (this.nearestRefinery(e)) e.hstate = "toRef"; // no refinery → wait with cargo
       } else {
-        const n = this.nearestOre(e.x | 0, e.y | 0);
+        const n = this.nearestOre(e.x | 0, e.y | 0, 999, e);
         if (n >= 0) {
           e.oreIdx = n;
           e.hstate = "toOre";
@@ -2484,12 +2491,32 @@ export class World {
     return best;
   }
 
-  private nearestOre(x: number, y: number, maxR = 999) {
+  // oreIdx -> harvester id working that tile — rebuilt lazily once per tick.
+  // Claims are soft: held for the whole toOre→mining→toRef cycle so a hauler
+  // keeps its spot, and freed automatically on death/retask/hold.
+  private oreTakenMap: Map<number, number> | null = null;
+  private oreTaken(t: number, selfId: number): boolean {
+    if (!this.oreTakenMap) {
+      const m = new Map<number, number>();
+      for (const e of this.ents.values())
+        if (e.k === "harvester" && e.oreIdx >= 0 && e.hstate !== null)
+          m.set(e.oreIdx, e.id);
+      this.oreTakenMap = m;
+    }
+    const h = this.oreTakenMap.get(t);
+    return h !== undefined && h !== selfId;
+  }
+
+  private nearestOre(x: number, y: number, maxR = 999, self?: Ent) {
     let best = -1,
-      bd = Infinity;
-    // scan outward rings — cheaper than full scan
+      bd = Infinity,
+      bestT = -1,
+      bdT = Infinity,
+      seenOre = false,
+      oreRings = 0;
+    // scan outward rings — cheaper than full scan. Free tiles win immediately in
+    // ring order; taken tiles are kept as fallback (sharing beats idling).
     for (let r = 0; r < Math.min(maxR, Math.max(this.w, this.h)); r++) {
-      let found = false;
       for (let dy = -r; dy <= r; dy++)
         for (let dx = -r; dx <= r; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
@@ -2497,18 +2524,35 @@ export class World {
             ny = y + dy;
           if (!this.inBounds(nx, ny)) continue;
           const i = this.idx(nx, ny);
-          if (this.ore[i] > 0) {
-            const d = dx * dx + dy * dy;
-            if (d < bd) {
-              bd = d;
-              best = i;
+          if (this.ore[i] <= 0) continue;
+          const d = dx * dx + dy * dy;
+          if (self && this.oreTaken(i, self.id)) {
+            if (d < bdT) {
+              bdT = d;
+              bestT = i;
             }
-            found = true;
+          } else if (d < bd) {
+            bd = d;
+            best = i;
           }
+          seenOre = true;
         }
-      if (found) return best;
+      if (best >= 0) {
+        // commit immediately so a second harvester picking this same tick sees it
+        if (self) {
+          if (!this.oreTakenMap) this.oreTakenMap = new Map();
+          this.oreTakenMap.set(best, self.id);
+        }
+        return best;
+      }
+      if (seenOre && ++oreRings > 18) break; // don't wander the whole map for a free tile
     }
-    return best;
+    const pick = best >= 0 ? best : bestT;
+    if (self && pick >= 0) {
+      if (!this.oreTakenMap) this.oreTakenMap = new Map();
+      this.oreTakenMap.set(pick, self.id);
+    }
+    return pick;
   }
 
   private nearestEnemy(e: Ent, range: number) {
@@ -2942,8 +2986,11 @@ export class World {
                 const push = ((minSep - d) / d) * 0.5 * 0.35;
                 const px = dx * push,
                   py = dy * push;
-                const aMult = a.hold ? 0.15 : 1;
-                const bMult = b.hold ? 0.15 : 1;
+                // anchored units resist being shoved — held ground & mining harvesters
+                // (a bounced miner otherwise re-approaches forever = visible pileup)
+                const anchored = (u: Ent) => u.hold || (u.k === "harvester" && u.hstate === "mining");
+                const aMult = anchored(a) ? 0.15 : 1;
+                const bMult = anchored(b) ? 0.15 : 1;
                 if (aDom === "air") {
                   a.x = Math.max(0.5, Math.min(this.w - 0.5, a.x - px * aMult));
                   a.y = Math.max(0.5, Math.min(this.h - 0.5, a.y - py * aMult));
