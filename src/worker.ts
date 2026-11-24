@@ -38,7 +38,12 @@ interface PersistedMatch {
   config: GameConfig;
   players: PlayerRec[];
   world: ReturnType<World["serialize"]>;
+  savedAt: number;
 }
+
+const PERSIST_LIVE_MS = 3000; // checkpoint every ~3s while simulating
+const PERSIST_PAUSED_MS = 60_000; // slower heartbeat while solo-paused
+const MATCH_STALE_MS = 10 * 60 * 1000; // older than 10min = abandoned, drop it
 
 interface PlayerRec {
   id: string;
@@ -312,6 +317,7 @@ export class GameRoom extends Server<Env> {
   paused = false; // solo-vs-bots freeze: alarm keeps rescheduling, sim skips stepping
   resetTimer: ReturnType<typeof setTimeout> | null = null;
   lastTickAt = 0;
+  lastPersistAt = 0;
   endSent = false;
   bots = new Map<string, AIBot>(); // player id -> AI brain, ticked once per game tick
   private dir = new Map<string, RoomSummary>(); // used only when this.name === "__directory"
@@ -319,7 +325,7 @@ export class GameRoom extends Server<Env> {
   // ---------- match persistence: survive DO restarts/evictions ----------
   // A live match's state lives in memory; when the DO restarts (deploy, host
   // migration, eviction) it used to vanish and dump players into a reset lobby.
-  // Now we checkpoint to DO storage every ~15s + on start, and restore onStart.
+  // Now we checkpoint to DO storage every ~3s + on start, and restore onStart.
 
   onStart(): void | Promise<void> {
     if (this.name === "__directory") return;
@@ -327,6 +333,10 @@ export class GameRoom extends Server<Env> {
       try {
         const saved = await this.ctx.storage.get<PersistedMatch>("match");
         if (!saved || saved.phase !== "playing" || !saved.world) return;
+        if (Date.now() - saved.savedAt > MATCH_STALE_MS) {
+          await this.ctx.storage.delete("match").catch(() => {});
+          return;
+        }
         this.world = World.deserialize(saved.world);
         this.phase = "playing";
         this.map = saved.map;
@@ -351,12 +361,14 @@ export class GameRoom extends Server<Env> {
 
   private persist() {
     if (this.name === "__directory" || this.phase !== "playing" || !this.world) return;
+    this.lastPersistAt = Date.now();
     const saved: PersistedMatch = {
       phase: this.phase,
       map: this.map,
       config: this.config,
       players: [...this.players.values()],
       world: this.world.serialize(),
+      savedAt: this.lastPersistAt,
     };
     void this.ctx.storage.put("match", saved).catch(() => {});
   }
@@ -987,7 +999,12 @@ export class GameRoom extends Server<Env> {
     const w = this.world;
     if (!w) return;
     this.lastTickAt = Date.now();
-    if (this.paused) return; // sim frozen — keep the alarm alive, skip stepping
+    if (this.paused) {
+      // sim frozen — keep the alarm alive, skip stepping; heartbeat the save
+      // so a paused match never ages into "stale" while the room still lives
+      if (Date.now() - this.lastPersistAt >= PERSIST_PAUSED_MS) this.persist();
+      return;
+    }
     try {
       for (const [pid, bot] of this.bots) {
         const p = this.players.get(pid);
@@ -1007,7 +1024,7 @@ export class GameRoom extends Server<Env> {
       if (w.tick % 50 === 0) {
         this.reportDirectory();
       }
-      if (w.tick % 150 === 0) {
+      if (Date.now() - this.lastPersistAt >= PERSIST_LIVE_MS) {
         this.persist();
       }
       if (w.winner !== null && !this.endSent) {
