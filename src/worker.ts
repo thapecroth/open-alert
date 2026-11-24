@@ -32,6 +32,14 @@ interface Env {
   ASSETS: Fetcher;
 }
 
+interface PersistedMatch {
+  phase: "playing";
+  map: MapId;
+  config: GameConfig;
+  players: PlayerRec[];
+  world: ReturnType<World["serialize"]>;
+}
+
 interface PlayerRec {
   id: string;
   connId: string | null;
@@ -307,6 +315,55 @@ export class GameRoom extends Server<Env> {
   endSent = false;
   bots = new Map<string, AIBot>(); // player id -> AI brain, ticked once per game tick
   private dir = new Map<string, RoomSummary>(); // used only when this.name === "__directory"
+
+  // ---------- match persistence: survive DO restarts/evictions ----------
+  // A live match's state lives in memory; when the DO restarts (deploy, host
+  // migration, eviction) it used to vanish and dump players into a reset lobby.
+  // Now we checkpoint to DO storage every ~15s + on start, and restore onStart.
+
+  onStart(): void | Promise<void> {
+    if (this.name === "__directory") return;
+    return this.ctx.blockConcurrencyWhile(async () => {
+      try {
+        const saved = await this.ctx.storage.get<PersistedMatch>("match");
+        if (!saved || saved.phase !== "playing" || !saved.world) return;
+        this.world = World.deserialize(saved.world);
+        this.phase = "playing";
+        this.map = saved.map;
+        this.config = saved.config;
+        this.paused = false;
+        this.endSent = false;
+        for (const p of saved.players) {
+          // nobody is actually connected yet — sockets rejoin via token
+          const rec: PlayerRec = { ...p, connId: null, connected: false };
+          this.players.set(rec.id, rec);
+          if (rec.bot) this.bots.set(rec.id, new AIBot(rec.id, { diff: rec.diff, profile: rec.profile }));
+        }
+        this.alarmActive = true;
+        this.lastTickAt = Date.now();
+        this.ensureLoop();
+        this.reportDirectory();
+      } catch (err) {
+        console.error("match restore failed:", err);
+      }
+    });
+  }
+
+  private persist() {
+    if (this.name === "__directory" || this.phase !== "playing" || !this.world) return;
+    const saved: PersistedMatch = {
+      phase: this.phase,
+      map: this.map,
+      config: this.config,
+      players: [...this.players.values()],
+      world: this.world.serialize(),
+    };
+    void this.ctx.storage.put("match", saved).catch(() => {});
+  }
+
+  private clearPersist() {
+    void this.ctx.storage.delete("match").catch(() => {});
+  }
 
   onClose(conn: Connection, code?: number) {
     const pid = this.connPlayer.get(conn.id);
@@ -889,6 +946,7 @@ export class GameRoom extends Server<Env> {
       this.lastTickAt = Date.now();
       this.ensureLoop();
     }
+    this.persist();
     this.reportDirectory();
   }
 
@@ -949,6 +1007,9 @@ export class GameRoom extends Server<Env> {
       if (w.tick % 50 === 0) {
         this.reportDirectory();
       }
+      if (w.tick % 150 === 0) {
+        this.persist();
+      }
       if (w.winner !== null && !this.endSent) {
         this.endSent = true;
         const names: Record<number, string> = {};
@@ -973,6 +1034,7 @@ export class GameRoom extends Server<Env> {
         this.alarmActive = false;
         this.phase = "ended";
         void this.ctx.storage.deleteAlarm().catch(() => {});
+        this.clearPersist();
         this.reportDirectory();
       }
     } catch (err) {
@@ -996,6 +1058,7 @@ export class GameRoom extends Server<Env> {
     this.endSent = false;
     this.players.clear();
     this.bots.clear();
+    this.clearPersist();
     this.reportDirectory(true);
   }
 

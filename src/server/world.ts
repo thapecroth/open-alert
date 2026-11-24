@@ -157,6 +157,25 @@ export interface WorldOpts {
   config?: Partial<GameConfig>;
 }
 
+// Serializable form of a live match for Durable Object storage — everything
+// not re-derivable from the map layout. Structured-clone safe.
+export interface WorldSave {
+  v: 1;
+  map: MapId;
+  config: GameConfig;
+  tick: number;
+  winner: number | null;
+  winnerTeam: number | null;
+  nextId: number;
+  nextCrateId: number;
+  names: Record<number, string>;
+  ents: Ent[];
+  players: P[];
+  crates: CrateSnap[];
+  ore: Int16Array;
+  lastAlert: [number, number][];
+}
+
 const PROD_CATS: readonly ProdCat[] = ["barracks", "factory", "airfield", "shipyard"];
 const UPGRADED_OF: Partial<Record<BuildingKind, BuildingKind>> = {
   barracks: "barracks2",
@@ -514,6 +533,99 @@ export class World {
         this.placeBuilding(-1, "coalmine", cx, cy);
       }
     }
+  }
+
+  // ---------- persistence (DO restart survival) ----------
+
+  // Plain structured-clone DTO of everything that can't be re-derived from the
+  // map layout — ents/players are pure-data interfaces, ore is a typed array.
+  serialize(): WorldSave {
+    return {
+      v: 1,
+      map: this.map,
+      config: this.config,
+      tick: this.tick,
+      winner: this.winner,
+      winnerTeam: this.winnerTeam,
+      nextId: this.nextId,
+      nextCrateId: this.nextCrateId,
+      names: { ...this.names },
+      ents: [...this.ents.values()],
+      players: [...this.players.values()],
+      crates: [...this.crates.values()],
+      ore: this.ore,
+      lastAlert: [...this.lastAlert.entries()],
+    };
+  }
+
+  static deserialize(d: WorldSave): World {
+    const w = Object.create(World.prototype) as World;
+    const layout = getMapLayout(d.map);
+    w.map = d.map;
+    w.config = d.config;
+    (w as { w: number }).w = layout.w;
+    (w as { h: number }).h = layout.h;
+    const area = w.w * w.h;
+    w.block = new Uint8Array(area);
+    w.cliff = new Uint8Array(area);
+    w.water = new Uint8Array(area);
+    w.bld = new Int32Array(area).fill(-1);
+    w.ore = d.ore;
+    w.gridCols = Math.ceil(w.w / 8);
+    w.gridRows = Math.ceil(w.h / 8);
+    w.grid = Array.from({ length: w.gridCols * w.gridRows }, () => []);
+    w.waterCount = 0;
+    for (const [cx, cy] of layout.cliffs) {
+      if (w.inBounds(cx, cy)) w.cliff[w.idx(cx, cy)] = 1;
+    }
+    for (const [wx, wy] of layout.water) {
+      if (w.inBounds(wx, wy)) {
+        const i = w.idx(wx, wy);
+        if (!w.cliff[i] && !w.water[i]) {
+          w.water[i] = 1;
+          w.waterCount++;
+        }
+      }
+    }
+    w.tick = d.tick;
+    w.winner = d.winner;
+    w.winnerTeam = d.winnerTeam;
+    w.nextCrateId = d.nextCrateId;
+    w.names = { ...d.names };
+    w.ents = new Map(d.ents.map((e) => [e.id, e]));
+    w.players = new Map(d.players.map((p) => [p.slot, p]));
+    w.crates = new Map(d.crates.map((c) => [c.id, c]));
+    w.events = [];
+    w.lastAlert = new Map(d.lastAlert);
+    w.subDetMask = new Map();
+    w.gridTick = -1;
+    w.astarBudget = 12;
+    w.oreTakenMap = null;
+    let maxId = 0;
+    for (const e of w.ents.values()) {
+      if (e.id > maxId) maxId = e.id;
+      // re-mark building footprints (block/bld) from live entities —
+      // building e.x/e.y stores the footprint CENTER, so invert it
+      if (isBuilding(e.k)) {
+        const bd = BUILDINGS[e.k];
+        const tx = Math.round(e.x - bd.w / 2),
+          ty = Math.round(e.y - bd.h / 2);
+        for (let y = ty; y < ty + bd.h; y++)
+          for (let x = tx; x < tx + bd.w; x++)
+            if (w.inBounds(x, y)) {
+              const i = w.idx(x, y);
+              w.block[i] = 1;
+              w.bld[i] = e.id;
+            }
+      }
+    }
+    w.nextId = Math.max(d.nextId, maxId + 1);
+    // arrow-function fields aren't prototype members — rebind them
+    w.passable = (x: number, y: number) =>
+      w.inBounds(x, y) && w.block[w.idx(x, y)] === 0 && w.cliff[w.idx(x, y)] === 0 && w.water[w.idx(x, y)] === 0;
+    w.passableSea = (x: number, y: number) =>
+      w.inBounds(x, y) && w.block[w.idx(x, y)] === 0 && w.cliff[w.idx(x, y)] === 0 && w.water[w.idx(x, y)] === 1;
+    return w;
   }
 
   isAlly(slotA: number, slotB: number): boolean {

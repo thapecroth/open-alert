@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Field Manual — Open Alert</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Rajdhani:wght@500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a0e14;
+      color: #cfd8e3;
+      font-family: "Rajdhani", sans-serif;
+      font-size: 17px;
+      line-height: 1.55;
+      min-height: 100vh;
+    }
+    .wrap { max-width: 860px; margin: 0 auto; padding: 32px 20px 80px; }
+    h1 {
+      font-family: "Orbitron", sans-serif;
+      font-size: 34px;
+      letter-spacing: 3px;
+      color: #ffd34d;
+      margin-bottom: 4px;
+    }
+    .sub { color: #7f8ca0; margin-bottom: 32px; font-size: 15px; }
+    h2 {
+      font-family: "Orbitron", sans-serif;
+      font-size: 17px;
+      letter-spacing: 2px;
+      color: #6ec1ff;
+      border-left: 4px solid #2e5f8a;
+      padding-left: 10px;
+      margin: 40px 0 14px;
+    }
+    h3 { color: #ffd34d; font-size: 17px; margin: 22px 0 6px; }
+    p, li { color: #cfd8e3; }
+    ul, ol { padding-left: 22px; margin: 8px 0; }
+    li { margin: 4px 0; }
+    .card {
+      background: #111826;
+      border: 1px solid #223147;
+      border-radius: 8px;
+      padding: 16px 18px;
+      margin: 12px 0;
+    }
+    .step { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-bottom: 1px dashed #223147; }
+    .step:last-child { border-bottom: none; }
+    .num {
+      font-family: "Orbitron", sans-serif;
+      color: #0a0e14;
+      background: #ffd34d;
+      min-width: 26px; height: 26px;
+      border-radius: 4px;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 14px; font-weight: 800;
+    }
+    .cost { color: #7de07d; font-weight: 700; white-space: nowrap; }
+    .req { color: #8fa3bd; font-size: 14px; }
+    .warn { color: #ff9c6b; }
+    .tip {
+      border-left: 3px solid #ffd34d;
+      background: #161d2b;
+      padding: 10px 14px;
+      margin: 10px 0;
+      border-radius: 0 6px 6px 0;
+    }
+    .tip b { color: #ffd34d; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 15px; }
+    th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #223147; }
+    th { color: #6ec1ff; font-family: "Orbitron", sans-serif; font-size: 12px; letter-spacing: 1px; }
+    td:first-child { color: #ffd34d; font-weight: 600; white-space: nowrap; }
+    kbd {
+      background: #223147; border-radius: 4px; padding: 1px 6px;
+      font-family: inherit; font-size: 14px; color: #ffd34d;
+    }
+    .back {
+      display: inline-block; margin-top: 40px; padding: 10px 22px;
+      border: 1px solid #2e5f8a; border-radius: 6px; color: #6ec1ff;
+      text-decoration: none; font-family: "Orbitron", sans-serif; font-size: 13px; letter-spacing: 1px;
+    }
+    .back:hover { background: #16233a; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
+    @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>FIELD MANUAL</h1>
+    <p class="sub">OPEN ALERT — new commander orientation. Read this once, stop losing to easy bots.</p>
+
+    <h2>THE GOLDEN RULES</h2>
+    <div class="card">
+      <ul>
+        <li><b>Economy beats everything.</b> Whoever harvests more ore wins the late game. Build harvesters early, expand to new ore patches, protect them.</li>
+        <li><b>Power is life.</b> Low power disables your defenses, radar and superweapon. Watch the power meter — if it goes red, build a Reactor Plant <span class="warn">immediately</span>.</li>
+        <li><b>Structures and defenses build in PARALLEL.</b> You have two construction queues — a turret never blocks your factory.</li>
+        <li><b>Scout or die.</b> Fog of war hides everything. A $45 FPV drone or a cheap infantry squad buys you the information that wins fights.</li>
+      </ul>
+    </div>
+
+    <h2>OPENING BUILD ORDER — LAND MAPS</h2>
+    <div class="card">
+      <div class="step"><span class="num">1</span><div><b>Reactor Plant</b> <span class="cost">$300</span> — power first, always. Without it nothing works.</div></div>
+      <div class="step"><span class="num">2</span><div><b>Refinery</b> <span class="cost">$600</span> — place it near the ore field. Then queue <b>2 harvesters</b> right away.</div></div>
+      <div class="step"><span class="num">3</span><div><b>Barracks</b> <span class="cost">$500</span> — a few infantry to scout and hold ground.</div></div>
+      <div class="step"><span class="num">4</span><div><b>Radar Tower</b> <span class="cost">$550</span> — unlocks the Airfield and advanced defenses (Anti-Air, Arc Tower).</div></div>
+      <div class="step"><span class="num">5</span><div><b>Factory</b> <span class="cost">$1000</span> — tanks start rolling. This is your mid-game engine.</div></div>
+      <div class="step"><span class="num">6</span><div><b>Depot</b> <span class="cost">$800</span> — supply trucks auto-repair and rearm your army — huge force multiplier.</div></div>
+      <div class="step"><span class="num">7</span><div><b>Tech Lab</b> <span class="cost">$1800</span> — unlocks the top tier: Iron Dome, Laser Tower, Purifier, Satlink.</div></div>
+      <div class="step"><span class="num">8</span><div><b>Satlink</b> <span class="cost">$2000</span> → <b>Nuclear Silo</b> <span class="cost">$2500</span> — the endgame threat. Charge it, aim it, end the argument.</div></div>
+    </div>
+    <div class="tip"><b>While that builds:</b> put 2–3 Turrets + an Arc Tower on the lane the enemy will come from. Defenses run on their own queue — use it constantly.</div>
+
+    <h2>OPENING BUILD ORDER — NAVAL / WATER MAPS</h2>
+    <div class="card">
+      <div class="step"><span class="num">1</span><div><b>Reactor Plant</b> <span class="cost">$300</span> → <b>Refinery</b> <span class="cost">$600</span> + harvesters — same economy start.</div></div>
+      <div class="step"><span class="num">2</span><div><b>Naval Shipyard</b> <span class="cost">$1000</span> — must touch water within range of your base. The sea is a second front — own it or lose it.</div></div>
+      <div class="step"><span class="num">3</span><div><b>Gunboats first</b> <span class="cost">$600</span> — cheap scouts that clear the way.</div></div>
+      <div class="step"><span class="num">4</span><div><b>USV swarms</b> <span class="cost">$240</span> — six of them kill a destroyer for a fraction of its price. The great equalizer.</div></div>
+      <div class="step"><span class="num">5</span><div><b>Submarine</b> <span class="cost">$950</span> — invisible until detected; torpedoes wreck capital ships.</div></div>
+      <div class="step"><span class="num">6</span><div><b>Dreadnought</b> <span class="cost">$2400</span> / <b>Carrier</b> <span class="cost">$2700</span> — late-game sea dominance; bombard shores from safety.</div></div>
+    </div>
+    <div class="tip"><b>Water map truth:</b> ships can't cross land — if your shipyard's sea is boxed in by bridges, canals or ice, reposition before you invest.</div>
+
+    <h2>ADAPT TO YOUR MAP</h2>
+    <div class="card">
+      <h3>Chokepoint maps — Crossroads, Canyon, Fortress</h3>
+      <p>One or two lanes decide the game. Wall the choke: turrets + arc towers + a squad of rocket infantry behind them. Then siege with Artillery and HIMARS — never run tanks into a defended lane head-on.</p>
+      <h3>Open maps — Basin, Tundra, Jungle, Oasis, Cybergrid</h3>
+      <p>No safe lane = attack can come from anywhere. Stay mobile: tank groups + supply trucks, radar coverage, interceptors on standby. Speed and flanking beat turtling here.</p>
+      <h3>Huge 8-player theaters — Pacific Theatre, Megacontinent, Arctic Front, Europa, Bering</h3>
+      <p>You can't defend every border — pick a neighbor to pressure and a border to fortify. Expand to secondary ore fields early; long games are won by whoever controls 3+ ore patches.</p>
+      <h3>Strait maps — Hormuz, Bering</h3>
+      <p>The water channel IS the map. Navy controls it, shore artillery contests it, and whoever owns the strait strangles the other side's expansion.</p>
+    </div>
+
+    <h2>WHAT BEATS WHAT</h2>
+    <div class="card">
+      <table>
+        <tr><th>THREAT</th><th>ANSWER</th><th>NOTES</th></tr>
+        <tr><td>Tank / armor push</td><td>Rocket infantry, Artillery, Mines</td><td>Never fight armor with rifle infantry — they get crushed.</td></tr>
+        <tr><td>Aircraft</td><td>Anti-Air Turret, Arc Tower, Interceptors</td><td>Radar-powered AA is mandatory past minute 5.</td></tr>
+        <tr><td>Drone swarms (FPV, Shahed)</td><td>AA + spread out</td><td>Cheap drones trade horribly vs clumped expensive units.</td></tr>
+        <tr><td>Navy / ships</td><td>USV swarms, Submarines, shore Artillery</td><td>Subs are stealth — the silent killer of dreadnoughts.</td></tr>
+        <tr><td>Ballistic missiles</td><td>Anti-Nuke (THAAD) only</td><td>~80% intercept each shot — bait their magazine with TEL volleys before the nuke.</td></tr>
+        <tr><td>Nuke</td><td>Anti-Nuke + Spy sabotage</td><td>A spy in their Nuclear Silo resets the whole charge.</td></tr>
+        <tr><td>Turtled-up base</td><td>Artillery, HIMARS, B-21 bomber</td><td>Siege range beats defense range. Bombard, don't charge.</td></tr>
+        <tr><td>Spy</td><td>Powered Radar + manual targeting</td><td>Radar blows their cover for 15s — then click-attack them.</td></tr>
+      </table>
+    </div>
+
+    <h2>ECONOMY DEEP DIVE</h2>
+    <div class="card">
+      <ul>
+        <li><b>2–3 harvesters per refinery</b> is the sweet spot — they claim separate ore tiles and never jam.</li>
+        <li><b>Engineers capture Oil Derricks</b> (income) and <b>Coal Mines</b> (+200 power). Neutral structures on the map are free money — grab them before the enemy does.</li>
+        <li><b>Supply Hub</b> <span class="cost">$650</span> extends your build radius far forward — how you siege and expand.</li>
+        <li><b>Supply Trucks</b> keep an army in the field: auto-repair damaged vehicles and rearm empty magazines mid-fight.</li>
+        <li><b>Ore runs out.</b> When your patch depletes, send harvesters to the next field early — idle harvesters are lost games.</li>
+      </ul>
+    </div>
+
+    <h2>CONTROLS & GADGETS</h2>
+    <div class="card grid2">
+      <ul>
+        <li><kbd>A</kbd> attack-move — the one order that wins fights</li>
+        <li><kbd>S</kbd> stop · <kbd>G</kbd> hold position · <kbd>P</kbd> patrol</li>
+        <li><kbd>B</kbd> place finished structure · <kbd>Q</kbd> sell · <kbd>R</kbd> repair</li>
+        <li>Double-tap a unit: enter <b>first-person mode</b> — drive tanks, fly jets, gun from the AC-130</li>
+      </ul>
+      <ul>
+        <li><b>PAUSE button</b> (solo vs bots): freeze the sim, plan your next move, resume</li>
+        <li>Click any defense: see its <b>range ring</b> — place for overlapping coverage</li>
+        <li>Radar powers your minimap &amp; recon scan — losing it blinds you</li>
+        <li><kbd>Shift</kbd> in 1P = sprint/boost · <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> = weapon select</li>
+      </ul>
+    </div>
+
+    <h2>THE 10-MINUTE GAME PLAN</h2>
+    <div class="card">
+      <div class="step"><span class="num">0</span><div><b>0:00–1:30</b> Power → Refinery → 2 harvesters → Barracks → scout with infantry.</div></div>
+      <div class="step"><span class="num">1</span><div><b>1:30–4:00</b> Radar → Factory → first tank squad → turret + arc on your approach.</div></div>
+      <div class="step"><span class="num">2</span><div><b>4:00–7:00</b> Depot + supply trucks → pressure their ore line — kill harvesters, not buildings.</div></div>
+      <div class="step"><span class="num">3</span><div><b>7:00–10:00</b> Tech Lab → expand to a second ore field → Iron Dome / Laser up.</div></div>
+      <div class="step"><span class="num">4</span><div><b>10:00+</b> Satlink → Nuclear Silo. Threaten the nuke while tanks take the map.</div></div>
+    </div>
+    <div class="tip"><b>Losing early?</b> Sell forward buildings for 50% back, turtle with defenses, rebuild economy. Comebacks are very real in this game.</div>
+
+    <a class="back" href="/">◄ BACK TO BASE</a>
+  </div>
+</body>
+</html>
