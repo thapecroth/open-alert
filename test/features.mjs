@@ -63,7 +63,7 @@ ok(botEnts.length >= 7, `bots produced buildings/units (${botEnts.length} ents)`
 send(a, { t: "build", kind: "power" });
 await sleep(5600); // power buildTicks ~50*... wait for awaiting
 const awaiting = me(a)?.awaiting;
-ok(awaiting === "power", `power plant ready to place (${awaiting})`);
+ok(awaiting?.includes("power"), `power plant ready to place (${awaiting})`);
 // find a legal spot next to our conyard (conyard is 3x3 at spawn)
 const cy = lastSnap(a).ents.find((e) => e.o === a.slot && e.k === "conyard");
 let pw = null;

@@ -241,7 +241,7 @@ async function attempt(k) {
 
     const fundsOk = (c) => {
       const s = window.__oa.state;
-      return window.__qa.alive() && s && !s.bq && !s.awaiting && s.credits >= c && !s.eliminated;
+      return window.__qa.alive() && s && !s.bq?.length && !s.awaiting?.length && s.credits >= c && !s.eliminated;
     };
     const buildAndPlace = async (kind, cost) => {
       // state.credits lags the server's ledger by a snap or two — a send that
@@ -257,11 +257,11 @@ async function attempt(k) {
         await page.evaluate((k) => window.__oa.net.send({ t: "build", kind: k }), kind);
         sent = await waitFor((k) => {
           const s = window.__oa.state;
-          return window.__qa.alive() && (s?.awaiting === k || s?.bq?.kind === k);
+          return window.__qa.alive() && (s?.awaiting?.includes(k) || s?.bq?.[0]?.kind === k);
         }, kind, 20000);
         if (!sent) log("build", kind, "not accepted (stale funds?), denies:", JSON.stringify(await page.evaluate(() => window.__qaDenies)));
       }
-      const okAwait = await waitFor((k) => window.__qa.alive() && window.__oa.state?.awaiting === k, kind, 90000);
+      const okAwait = await waitFor((k) => window.__qa.alive() && window.__oa.state?.awaiting?.includes(k), kind, 90000);
       if (!okAwait) {
         await assertAlive();
         log("TIMEOUT awaiting", kind, "denies:", JSON.stringify(await page.evaluate(() => window.__qaDenies)));
@@ -271,7 +271,7 @@ async function attempt(k) {
         const r = await page.evaluate((k) => {
           const oa = window.__oa, qa = window.__qa;
           if (!qa.alive()) return "dead";
-          if (oa.state?.awaiting !== k) return "done";
+          if (!oa.state?.awaiting?.includes(k)) return "done";
           const s = qa.findSpot(k);
           if (!s) return "nospot";
           qa.tried.add(s.tx + "," + s.ty);
@@ -337,7 +337,7 @@ async function attempt(k) {
       await sleep(700); // let a snap land so the credits read isn't stale
       await page.evaluate((u) => window.__oa.net.send({ t: "train", unit: u }), unit);
       const ok = await waitFor(
-        (c) => window.__qa.alive() && window.__oa.state?.queues?.[c]?.unit != null,
+        (c) => window.__qa.alive() && (window.__oa.state?.queues?.[c]?.length ?? 0) > 0,
         cat,
         15000,
       );
@@ -346,8 +346,8 @@ async function attempt(k) {
       return ok;
     };
     await trainUnit("engineer", 500, "barracks");
-    // barracks only takes one unit kind at a time — wait for it to drain
-    await waitFor(() => window.__qa.alive() && !window.__oa.state?.queues?.barracks, null, 40000);
+    // wait for the barracks queue to drain before the next train check
+    await waitFor(() => window.__qa.alive() && !(window.__oa.state?.queues?.barracks?.length ?? 0), null, 40000);
     await trainUnit("rocket", 300, "barracks");
     await trainUnit("arty", 1100, "factory");
 

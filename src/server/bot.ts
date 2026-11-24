@@ -379,8 +379,8 @@ export class RtsBot {
     const spot = this.findSpot(kind);
     const since = cat === "defense" ? this.awaitingDefSince : this.awaitingSince;
     if (!spot) {
-      // boxed in — refund rather than stall the queue forever
-      if (t - since > 400) this.world.cmdBuildCancel(this.slot, cat);
+      // boxed in — refund the stuck READY item (awaiting pile), not the building head
+      if (t - since > 400) this.world.cmdBuildCancel(this.slot, cat, 0, true);
       return;
     }
     const err = this.world.cmdPlace(this.slot, spot.tx, spot.ty, cat);

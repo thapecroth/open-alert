@@ -204,8 +204,10 @@ function buildObs() {
     credits: me.credits,
     power: `${me.pwrHave - me.pwrUse}${me.lowPower ? " LOW" : ""}`,
     awaiting: me.awaiting,
-    building: me.bq ? `${me.bq.kind} ${Math.round(me.bq.left)}/${me.bq.total}` : null,
-    queues: Object.fromEntries(Object.entries(me.queues ?? {}).map(([k, q]) => [k, `${q.unit}x${q.count}`])),
+    building: me.bq?.[0] ? `${me.bq[0].kind} ${Math.round(me.bq[0].left)}/${me.bq[0].total}` : null,
+    queues: Object.fromEntries(
+      Object.entries(me.queues ?? {}).map(([k, q]) => [k, (q ?? []).map((i) => i.unit).join(">") || null]),
+    ),
     myBldgs: myB.map((e) => ({ k: e.k, tl: tl(e), hp: e.hp })),
     myUnits: units, // {kind: [[id,x,y],...]}
     foeBldgs: foeB,
@@ -213,7 +215,7 @@ function buildObs() {
     oreNear: oreNear.slice(0, 8).map(([, x, y]) => [x, y]),
     hint: {},
   };
-  const want = me.awaiting ?? nextBuild(me, myB);
+  const want = me.awaiting?.[0] ?? nextBuild(me, myB);
   if (want) {
     const spot = findSpot(want);
     if (spot) obs.hint.place = { kind: want, ...spot };

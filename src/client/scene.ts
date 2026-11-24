@@ -640,7 +640,11 @@ export class GameScene {
   public mapW = MAP_W;
   public mapH = MAP_H;
   ground!: THREE.Group; // chunked 16x16-tile terrain meshes — frustum culling drops off-screen chunks
-  raycaster = new THREE.Raycaster();
+  raycaster = (() => {
+    const r = new THREE.Raycaster();
+    r.layers.enableAll(); // pick-hit boxes live on layer 1 (render-invisible)
+    return r;
+  })();
   pickables: THREE.Object3D[] = []; // entity roots — raycast for pickEntity
   pointerX = 0;
   pointerY = 0;
@@ -2452,6 +2456,7 @@ export class GameScene {
       const rOut = s.r + 1.15;
       const rIn = Math.max(0.5, s.r - 1.5);
       const span = Math.max(0.1, rOut - rIn);
+      const rOut2 = rOut * rOut;
       const x0 = Math.max(0, Math.floor(s.x - rOut));
       const x1 = Math.min(W - 1, Math.ceil(s.x + rOut));
       const y0 = Math.max(0, Math.floor(s.y - rOut));
@@ -2461,8 +2466,9 @@ export class GameScene {
         const rowOff = ty * W;
         for (let tx = x0; tx <= x1; tx++) {
           const dx = tx + 0.5 - s.x;
-          const dist = Math.hypot(dx, dy);
-          if (dist < rOut) {
+          const d2 = dx * dx + dy * dy;
+          if (d2 < rOut2) {
+            const dist = Math.sqrt(d2);
             const idx = rowOff + tx;
             if (dist <= s.r + 0.2) exp[idx] = 1;
             let f = dist <= rIn ? 1 : 1 - (dist - rIn) / span;

@@ -181,7 +181,7 @@ export interface BuildingDef {
 
 export const BUILDINGS: Record<BuildingKind, BuildingDef> = {
   // Core & Economy Structures
-  conyard: { w: 3, h: 3, cost: 0, hp: 1000, power: 40, buildTicks: 0 },
+  conyard: { w: 3, h: 3, cost: 0, hp: 1000, power: 40, buildTicks: 0, noBuild: true },
   power: { w: 2, h: 2, cost: 300, hp: 400, power: 100, buildTicks: 50 },
   coalplant: { w: 2, h: 2, cost: 0, hp: 580, power: 200, buildTicks: 0, noBuild: true },
   fusion: { w: 2, h: 2, cost: 0, hp: 900, power: 420, buildTicks: 0, noBuild: true },

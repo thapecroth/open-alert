@@ -67,7 +67,7 @@ await act(() => {
 await sleep(800);
 await shot(page, "v-05-base-built");
 const st = await page.evaluate(() => window.__oa?.state);
-console.log("state:", JSON.stringify({ cr: st?.credits, awaiting: st?.awaiting, bq: st?.bq?.kind }));
+console.log("state:", JSON.stringify({ cr: st?.credits, awaiting: st?.awaiting, bq: st?.bq?.[0]?.kind }));
 
 // produce an army
 await act(() => {

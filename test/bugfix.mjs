@@ -53,13 +53,13 @@ ok(lastSnap(b)?.ents?.length > 0, "game with 2 humans started");
 // --- #9: place building on a unit must be denied ---
 send(b, { t: "build", kind: "power" });
 await sleep(5600);
-ok(lastSnap(b).players[b.slot]?.awaiting === "power", "power awaiting");
+ok(lastSnap(b).players[b.slot]?.awaiting?.includes("power"), "power awaiting");
 const tank = mine(b, "tank")[0];
 send(b, { t: "place", tx: Math.floor(tank.x), ty: Math.floor(tank.y) });
 await sleep(400);
 const denied = b.msgs.filter((m) => m.t === "deny").map((m) => m.msg);
 ok(denied.some((d) => /units in the way/i.test(d)), `place on unit denied (${denied.at(-1)})`);
-ok(lastSnap(b).players[b.slot]?.awaiting === "power", "awaiting preserved after deny");
+ok(lastSnap(b).players[b.slot]?.awaiting?.includes("power"), "awaiting preserved after deny");
 // place legally next to conyard
 const cy = mine(b, "conyard")[0];
 send(b, { t: "place", tx: Math.round(cy.x + 3), ty: Math.round(cy.y - 1) });
@@ -80,7 +80,7 @@ if (pw) {
 async function waitAwaiting(st, kind, ms = 15000) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
-    if (lastSnap(st)?.players?.[st.slot]?.awaiting === kind) return true;
+    if (lastSnap(st)?.players?.[st.slot]?.awaiting?.includes(kind)) return true;
     await sleep(250);
   }
   return false;

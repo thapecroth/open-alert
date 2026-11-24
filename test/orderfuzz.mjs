@@ -83,7 +83,7 @@ async function denyProbe(s, f, ms = 800) {
   await waitFor(() => s.msgs.slice(n0).some((m) => m.t === "deny"), ms, 60);
   return deniesSince(s, n0)[0] ?? null;
 }
-const waitAwaiting = (st, kind, ms = 25000) => waitFor(() => lastSnap(st)?.players?.[st.slot]?.awaiting === kind, ms);
+const waitAwaiting = (st, kind, ms = 25000) => waitFor(() => lastSnap(st)?.players?.[st.slot]?.awaiting?.includes(kind), ms);
 // ring of candidate placements until `kind` ent exists for st's slot
 async function placeNear(st, kind, cx, cy) {
   for (const [tx, ty] of [[cx + 4, cy - 1], [cx - 5, cy + 1], [cx + 4, cy + 3], [cx - 1, cy - 5], [cx - 5, cy - 2], [cx + 1, cy + 5], [cx - 5, cy - 4], [cx + 5, cy - 3]])
@@ -197,7 +197,7 @@ note(`battle: tankA(${tankA.id})→enemyInf(${enemyInf0.id}) d0=${dA0.toFixed(1)
 
   // (b) off-map orders denied outright
   const dOff1 = await denyProbe(A, () => send(A, { t: "order", ids: [inf1.id], kind: "move", x: -3, y: 50 }));
-  const dOff2 = await denyProbe(A, () => send(A, { t: "order", ids: [inf1.id], kind: "move", x: 64, y: 10 }));
+  const dOff2 = await denyProbe(A, () => send(A, { t: "order", ids: [inf1.id], kind: "move", x: 999, y: 10 }));
   check("1b off-map move orders denied", dOff1 === "off map" && dOff2 === "off map", `denies=${JSON.stringify([dOff1, dOff2])}`);
 
   // (c) onto another building (enemy conyard tile is also unreachable-ish, but
@@ -293,9 +293,13 @@ let refA = null, refB = null;
   const okAwaitB = await waitAwaiting(B, "refinery", 30000);
   check("10b both refineries finished construction", okAwaitA && okAwaitB, `A=${okAwaitA} B=${okAwaitB}`);
 
-  // while placement pending: build must be denied, orders must still work
+  // while placement pending: a second build now QUEUES (parallel FIFO), orders still work
   const dBld = await denyProbe(A, () => send(A, { t: "build", kind: "barracks" }));
-  check("10c second build denied while placement pending", /construction in progress/.test(dBld ?? ""), `deny=${dBld}`);
+  const bqHasBarracks = await waitFor(
+    () => lastSnap(A)?.players?.[A.slot]?.bq?.some((i) => i.kind === "barracks") ?? false, 6000);
+  check("10c second build queues while placement pending", dBld == null && bqHasBarracks, `deny=${dBld} bq=${JSON.stringify(lastSnap(A)?.players?.[A.slot]?.bq)}`);
+  // cancel it so the queue drains for the consistency check below
+  send(A, { t: "buildCancel", cat: "structure", index: 0 });
   const p1 = { x: inf3.x, y: inf3.y };
   send(A, { t: "order", ids: [inf3.id], kind: "move", x: inf3.x + 2, y: inf3.y - 2 });
   await sleep(1200);
@@ -308,7 +312,7 @@ let refA = null, refB = null;
 
   const sane = (s) => {
     const p = lastSnap(s)?.players?.[s.slot];
-    return p && Number.isFinite(p.credits) && p.credits >= 0 && p.awaiting === null && p.bq === null;
+    return p && Number.isFinite(p.credits) && p.credits >= 0 && !p.awaiting?.length && !p.bq?.length;
   };
   check("10f player state consistent after build+place cycle", sane(A) && sane(B),
     `A.credits=${lastSnap(A)?.players?.[A.slot]?.credits} B.credits=${lastSnap(B)?.players?.[B.slot]?.credits}`);

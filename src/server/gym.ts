@@ -617,7 +617,7 @@ export class GymEnv {
       else if (p.lowPower) want = "power";
       if (want && p.credits >= BUILDINGS[want].cost) w.cmdBuild(s, want);
     }
-    if (!p.dq && !p.awaitingDef && this.has(s, "factory") && !this.has(s, "turret") && p.credits > 2500) {
+    if (!p.dq.length && !p.awaitingDef.length && this.has(s, "factory") && !this.has(s, "turret") && p.credits > 2500) {
       w.cmdBuild(s, "turret");
     }
     if (this.has(s, "barracks")) {

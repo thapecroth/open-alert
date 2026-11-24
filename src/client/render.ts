@@ -59,6 +59,11 @@ interface InstSlot {
   idx: number;
   proxy: THREE.Group;
   ring: THREE.Mesh;
+  // last-written transform — skip the per-part matrix pass + buffer upload when unchanged
+  lx: number;
+  ly: number;
+  lyaw: number;
+  lvis: boolean;
 }
 const MAX_EXTRAP_T = 1.38;
 const EXTRAP_DAMP = 0.72;
@@ -581,6 +586,7 @@ export class Renderer {
     const pick = new THREE.Mesh(instPickGeo, instPickMat);
     pick.position.y = 0.45;
     pick.scale.setScalar(1.15);
+    pick.layers.set(1); // raycast-only layer — the camera never draws it
     const ring = new THREE.Mesh(instSelGeo, instSelMat);
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = 0.055;
@@ -588,7 +594,7 @@ export class Renderer {
     proxy.add(pick, ring);
     tagEntity(proxy, e.id);
     pool.owners[idx] = e.id;
-    return { pool, idx, proxy, ring };
+    return { pool, idx, proxy, ring, lx: NaN, ly: NaN, lyaw: NaN, lvis: false };
   }
 
   private freeInstance(slot: InstSlot) {
@@ -618,6 +624,14 @@ export class Renderer {
   private writeInstance(t: Tracked) {
     const inst = t.inst!;
     const visible = t.vis.root.visible && t.last.id !== this.hiddenEntityId;
+    if (inst.lx === t.visX && inst.ly === t.visY && inst.lyaw === t.visYaw && inst.lvis === visible) {
+      inst.proxy.visible = t.vis.root.visible;
+      return; // nothing changed — skip ~40 matrix writes + the full-buffer upload
+    }
+    inst.lx = t.visX;
+    inst.ly = t.visY;
+    inst.lyaw = t.visYaw;
+    inst.lvis = visible;
     _instPos.set(t.visX, 0, t.visY);
     _instQ.setFromAxisAngle(_instUp, Math.PI / 2 - t.visYaw);
     _instM.compose(_instPos, _instQ, visible ? _instOne : _instZero);
@@ -629,6 +643,9 @@ export class Renderer {
     inst.proxy.position.set(t.visX, 0, t.visY);
     inst.proxy.rotation.y = Math.PI / 2 - t.visYaw;
     inst.proxy.visible = t.vis.root.visible;
+    // vis.root isn't in the scene for instanced kinds but its position is the
+    // canonical entity position for entScreenPos/badges — keep it live
+    t.vis.root.position.set(t.visX, 0, t.visY);
   }
 
   private disposeVis(vis: EntVis) {

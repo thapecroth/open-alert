@@ -267,13 +267,13 @@ while (!done && steps++ < 1200) {
     }
     if (has("barracks")) {
       const q = me.queues?.barracks;
-      if ((q?.count ?? 0) < 4 && me.credits > 400) act.train = "infantry";
+      if ((q?.length ?? 0) < 4 && me.credits > 400) act.train = "infantry";
     }
     if (has("factory")) {
       const q = me.queues?.factory;
       const harv = mineE.filter((e) => e.k === "harvester").length;
-      if (harv < 2 && !(q?.count ?? 0) && me.credits > 1600) act.train = "harvester";
-      else if ((q?.count ?? 0) < 4 && me.credits > 900) act.train = "tank";
+      if (harv < 2 && !(q?.length ?? 0) && me.credits > 1600) act.train = "harvester";
+      else if ((q?.length ?? 0) < 4 && me.credits > 900) act.train = "tank";
     }
     const army = mineE.filter((e) => !isB(e.k) && e.k !== "harvester");
     const tgt = foes.find((e) => isB(e.k)) ?? foes[0];

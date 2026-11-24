@@ -147,7 +147,7 @@ const bqStarted = await ev(A, () => {
   return true;
 });
 await sleep(500);
-const building = await ev(A, () => window.__oa.state?.bq?.kind);
+const building = await ev(A, () => window.__oa.state?.bq?.[0]?.kind);
 assert(building === "power", `power plant in queue (${building})`);
 // wait for it to finish (buildTicks 50 @10Hz = 5s) then placement mode auto-enters
 await sleep(6000);
@@ -187,7 +187,7 @@ const powerNow = await ev(A, () => {
   const st = window.__oa.state;
   return { awaiting: st?.awaiting, pwr: (st?.pwrHave ?? 0) - (st?.pwrUse ?? 0), kinds: [...window.__oa.renderer.tracked.values()].filter((t) => t.last.o === window.__oa.slot).map((t) => t.last.k) };
 });
-assert(powerNow.awaiting === null || powerNow.awaiting === undefined, "placement consumed");
+assert(!powerNow.awaiting?.length, "placement consumed");
 assert(powerNow.kinds.includes("power"), `power plant exists (${powerNow.kinds.join(",")})`);
 await shot(A, "06-power-placed");
 

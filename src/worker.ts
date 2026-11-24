@@ -41,6 +41,7 @@ interface PersistedMatch {
 
 interface PersistedOre {
   at: number;
+  map?: MapId; // paired game — an ore blob from a DIFFERENT match must not restore
   ore: ArrayBuffer; // Int16Array buffer — changes slowly (mining), written rarely
 }
 
@@ -358,7 +359,7 @@ export class GameRoom extends Server<Env> {
         const oreRec = await this.ctx.storage.get<PersistedOre>("matchOre");
         const world = {
           ...rec.world,
-          ore: oreRec?.ore ? new Int16Array(oreRec.ore) : undefined,
+          ore: oreRec?.ore && (!oreRec.map || oreRec.map === rec.map) ? new Int16Array(oreRec.ore) : undefined,
         };
         this.world = World.deserialize(world);
         this.phase = "playing";
@@ -401,11 +402,16 @@ export class GameRoom extends Server<Env> {
         const gz = await new Response(
           new Blob([JSON.stringify(core)]).stream().pipeThrough(new CompressionStream("gzip")),
         ).arrayBuffer();
+        // the match may have ended/reset while we were compressing — writing now
+        // would resurrect a ghost match that re-persists itself forever
+        if (this.phase !== "playing" || !this.world) return;
         const puts: Promise<unknown>[] = [
           this.ctx.storage.put("match", { savedAt: now, gz } satisfies PersistedMatch),
         ];
         if (writeOre && ore) {
-          puts.push(this.ctx.storage.put("matchOre", { at: now, ore: ore.slice().buffer } satisfies PersistedOre));
+          puts.push(
+            this.ctx.storage.put("matchOre", { at: now, map: this.map, ore: ore.slice().buffer } satisfies PersistedOre),
+          );
         }
         await Promise.all(puts);
       } catch {
@@ -1006,6 +1012,7 @@ export class GameRoom extends Server<Env> {
     }
     this.world = new World(slots, { map: this.map, teams, names, config: this.config });
     this.phase = "playing";
+    this.lastOrePersistAt = 0; // force a fresh ore checkpoint for the new match
     this.paused = false;
     this.endSent = false;
     for (const conn of this.getConnections()) {
@@ -1101,7 +1108,7 @@ export class GameRoom extends Server<Env> {
         this.broadcast(
           JSON.stringify({
             t: "end",
-            winner: w.winner,
+            winner: w.winner >= 0 ? w.winner : null,
             winnerTeam: w.winnerTeam,
             reason,
             durationSec: Math.round((w.tick * TICK_MS) / 1000),
