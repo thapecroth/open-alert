@@ -119,6 +119,7 @@ export class Input {
     if (!v) {
       this.keys.clear();
       this.dragStart = null;
+      this.downArmed = false;
       this.middleDrag = null;
       this.yawDrag = null;
       this.panVx = 0;
@@ -154,6 +155,7 @@ export class Input {
     this.disarmOrders();
     this.armVerb(null);
     this.dragStart = null;
+    this.downArmed = false;
     this.middleDrag = null;
     this.yawDrag = null;
     this.panVx = 0;

@@ -967,7 +967,7 @@ export class World {
     };
     this.ents.set(e.id, e);
     this.bldDirty = true;
-    this.slotCnt[e.o]++;
+    if (e.o >= 0) this.slotCnt[e.o]++;
     for (let y = ty; y < ty + d.h; y++)
       for (let x = tx; x < tx + d.w; x++) {
         this.block[this.idx(x, y)] = 1;
@@ -1008,7 +1008,7 @@ export class World {
       sabUntil: 0,
     };
     this.ents.set(e.id, e);
-    this.slotCnt[e.o]++;
+    if (e.o >= 0) this.slotCnt[e.o]++;
     this.events.push({ e: "spawn", id: e.id });
     return e;
   }
@@ -1726,7 +1726,7 @@ export class World {
     tgt.o = e.o;
     this.bldDirty = true;
     if (prev >= 0) this.slotCnt[prev]--;
-    this.slotCnt[e.o]++;
+    if (e.o >= 0) this.slotCnt[e.o]++;
     this.recomputePower(prev);
     this.recomputePower(e.o);
     if (tgt.k === "derrick") {
