@@ -745,22 +745,6 @@ export class Hud {
       el(`verb-${v}`)?.addEventListener("click", () => this.onVerb(v));
     }
 
-    // queue strip: right-click a chip cancels that exact item
-    el("queue-strip")?.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      const chip = (e.target as HTMLElement).closest<HTMLElement>("[data-cat],[data-ready]");
-      if (!chip) return;
-      const readyCat = chip.dataset.ready as BuildCategory | undefined;
-      if (readyCat) {
-        this.onBuildCancel(readyCat, chip.dataset.kind as BuildingKind, true);
-        return;
-      }
-      const cat = chip.dataset.cat as BuildCategory | ProdCat;
-      const i = Number(chip.dataset.i);
-      if (cat === "structure" || cat === "defense") this.onBuildCancel(cat, undefined, false, i);
-      else this.onTrainCancel(undefined, cat as ProdCat, i);
-    });
-
     // Chat input
     const chatInput = el<HTMLInputElement>("chat-input");
     chatInput.addEventListener("keydown", (e) => {
@@ -2602,67 +2586,6 @@ export class Hud {
     document.getElementById("side-info")?.classList.add("hidden");
   }
 
-  // Ordered production queue strip — shows every queued/ready item across all categories
-  private renderQueueStrip(state: PlayerState | null): void {
-    const strip = document.getElementById("queue-strip");
-    if (!strip) return;
-    type Chip = { icon: string; label: string; pct: number; pos: number; cat: string; idx: number; readyKind?: BuildingKind };
-    const rows: { name: string; cls: string; chips: Chip[] }[] = [];
-    const mk = (cat: string, items: { k: string; left?: number; total?: number }[], ready: string[]): Chip[] => {
-      const chips: Chip[] = items.map((it, i) => ({
-        icon: it.k,
-        label: i === 0 && it.total ? `${Math.round((1 - (it.left ?? 0) / it.total) * 100)}%` : `#${i + 1}`,
-        pct: i === 0 && it.total ? 1 - (it.left ?? 0) / it.total : 0,
-        pos: i + 1,
-        cat,
-        idx: i,
-      }));
-      // ready pile grouped by kind
-      const pile = new Map<string, number>();
-      for (const k of ready) pile.set(k, (pile.get(k) ?? 0) + 1);
-      for (const [k, n] of pile) chips.push({ icon: k, label: n > 1 ? `▶×${n}` : "▶", pct: 1, pos: 0, cat, idx: -1, readyKind: k as BuildingKind });
-      return chips;
-    };
-    rows.push({ name: "STRUCT", cls: "struct", chips: mk("structure", (state?.bq ?? []).map((i) => ({ k: i.kind, left: i.left, total: i.total })), state?.awaiting ?? []) });
-    rows.push({ name: "DEF", cls: "def", chips: mk("defense", (state?.dq ?? []).map((i) => ({ k: i.kind, left: i.left, total: i.total })), state?.awaitingDef ?? []) });
-    for (const [cat, name] of [["barracks", "INF"], ["factory", "VEH"], ["airfield", "AIR"], ["shipyard", "SEA"]] as const) {
-      rows.push({
-        name,
-        cls: "unit",
-        chips: (state?.queues?.[cat] ?? []).map((it, i) => ({
-          icon: it.unit,
-          label: i === 0 ? `${Math.round((1 - it.left / it.total) * 100)}%` : `#${i + 1}`,
-          pct: i === 0 ? 1 - it.left / it.total : 0,
-          pos: i + 1,
-          cat,
-          idx: i,
-        })),
-      });
-    }
-    const html = rows
-      .filter((r) => r.chips.length)
-      .map(
-        (r) =>
-          `<div class="qrow ${r.cls}"><span class="qrowname">${r.name}</span><span class="qchips">` +
-          r.chips
-            .map((c) => {
-              const attr = c.readyKind ? `data-ready="${c.cat}" data-kind="${c.readyKind}"` : `data-cat="${c.cat}" data-i="${c.idx}"`;
-              const fill = c.pct > 0 && c.pct < 1 ? ` style="--qfill:${(c.pct * 100).toFixed(0)}%"` : "";
-              const cls = c.readyKind ? "qchip ready" : c.idx === 0 ? "qchip head" : "qchip";
-              return `<span class="${cls}"${fill} ${attr} title="${label(c.icon as BuildingKind | UnitKind)} — right-click to cancel"><span class="icon" data-kind="${c.icon}"></span><span class="qlabel">${c.label}</span></span>`;
-            })
-            .join("") +
-          `</span></div>`,
-      )
-      .join("");
-    if (html === this.lastQueueHtml) return;
-    this.lastQueueHtml = html;
-    strip.innerHTML = html;
-    strip.classList.toggle("hidden", !html);
-  }
-
-  private lastQueueHtml = "";
-
   updateSidebar(
     state: PlayerState | null,
     has: (k: string) => boolean,
@@ -2689,7 +2612,6 @@ export class Hud {
       else delete b.dataset.statusText;
     };
 
-    this.renderQueueStrip(state);
 
     for (const [kind, b] of this.buildBtns) {
       const d = BUILDINGS[kind];

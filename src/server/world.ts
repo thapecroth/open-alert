@@ -635,6 +635,9 @@ export class World {
     w.astarBudget = 12;
     w.oreTakenMap = null;
     w.oreTiles = null;
+    w.bldIdx = new Map();
+    w.domeIdx = [];
+    w.ecoIdx = [];
     w.bldDirty = true;
     w.teamArr = new Int8Array(16);
     w.teamSize = -1;

@@ -37,6 +37,7 @@ export class Input {
   private getSlot: () => number;
   private keys = new Set<string>();
   private dragStart: { x: number; y: number; shift: boolean } | null = null;
+  private downArmed = false; // an armed mode was active at pointerdown — click fires it, drag overrides it
   private selBox: HTMLDivElement | null = null;
   private middleDrag: { x: number; y: number } | null = null;
   private yawDrag: { x: number } | null = null;
@@ -629,61 +630,76 @@ export class Input {
       e.preventDefault();
       return;
     }
-    if (this.swArmed) {
-      if (e.button === 0) {
-        const ground = this.gs.pickGround();
-        if (ground) {
-          this.net.send({ t: "superweapon", x: ground.x, y: ground.z });
-          this.disarmSuperweapon();
-          this.orderMarker(ground, "amove", false, 0x4ad8ff);
-          this.flashLabel("☢ NUCLEAR MISSILE LAUNCHED!", 1600);
-          this.onUiSound("attack");
-        }
-      } else {
+    if (e.button === 0) {
+      // Always record the potential drag first. Armed modes (nuke/recon/place/
+      // verb/attack-move) now fire on CLICK in onUp — a real drag (>6px) always
+      // wins as a box-select, so an armed mode can never silently eat drags.
+      this.dragStart = { x: e.clientX, y: e.clientY, shift: e.shiftKey };
+      this.downArmed =
+        this.swArmed ||
+        this.reconArmed ||
+        !!this.placing ||
+        !!this.verb ||
+        ((this.amoveNext || this.patrolNext) && this.myUnits().length > 0);
+      return;
+    }
+    if (e.button === 2) {
+      if (this.swArmed) {
         this.disarmSuperweapon();
+        return;
       }
-      return;
-    }
-    if (this.reconArmed) {
-      if (e.button === 0) {
-        const ground = this.gs.pickGround();
-        if (ground) {
-          this.net.send({ t: "recon", x: ground.x, y: ground.z });
-          this.disarmRecon();
-          this.orderMarker(ground, "move", false, 0x4ad8ff);
-          this.flashLabel("RECON SCAN DEPLOYED", 1300);
-          this.onUiSound("recon");
-        }
-      } else {
+      if (this.reconArmed) {
         this.disarmRecon();
+        return;
       }
-      return;
-    }
-    if (this.placing) {
-      if (e.button === 0) this.tryPlace();
-      else {
+      if (this.placing) {
         // Classic RA2: right-clicking the battlefield stows placement without refunding/deleting the structure
         this.exitPlacing();
         this.flashLabel("STOWED — click READY in sidebar or press B to place", 1300);
-      }
-      return;
-    }
-    if (e.button === 0) {
-      if (this.verb) {
-        this.useVerb();
         return;
       }
-      if ((this.amoveNext || this.patrolNext) && this.myUnits().length) {
-        // Classic RTS: A/P + Left-Click executes Attack-Move / Patrol!
-        this.issueOrder(e.shiftKey);
-        return;
-      }
-      this.dragStart = { x: e.clientX, y: e.clientY, shift: e.shiftKey };
-    } else if (e.button === 2) {
       if (this.verb) {
         this.armVerb(null);
         return;
       }
+      this.issueOrder(e.shiftKey);
+    }
+  }
+
+  // left-click released with no drag — execute whatever mode was armed at pointerdown
+  private fireArmedClick(e: PointerEvent) {
+    if (this.swArmed) {
+      const ground = this.gs.pickGround();
+      if (ground) {
+        this.net.send({ t: "superweapon", x: ground.x, y: ground.z });
+        this.disarmSuperweapon();
+        this.orderMarker(ground, "amove", false, 0x4ad8ff);
+        this.flashLabel("☢ NUCLEAR MISSILE LAUNCHED!", 1600);
+        this.onUiSound("attack");
+      }
+      return;
+    }
+    if (this.reconArmed) {
+      const ground = this.gs.pickGround();
+      if (ground) {
+        this.net.send({ t: "recon", x: ground.x, y: ground.z });
+        this.disarmRecon();
+        this.orderMarker(ground, "move", false, 0x4ad8ff);
+        this.flashLabel("RECON SCAN DEPLOYED", 1300);
+        this.onUiSound("recon");
+      }
+      return;
+    }
+    if (this.placing) {
+      this.tryPlace();
+      return;
+    }
+    if (this.verb) {
+      this.useVerb();
+      return;
+    }
+    if ((this.amoveNext || this.patrolNext) && this.myUnits().length) {
+      // Classic RTS: A/P + Left-Click executes Attack-Move / Patrol!
       this.issueOrder(e.shiftKey);
     }
   }
@@ -837,7 +853,18 @@ export class Input {
         const p = this.r.entScreenPos(id);
         if (p && p.x >= x1 && p.x <= x2 && p.y >= y1 && p.y <= y2) sel.add(id);
       }
+      // a real drag always means box-select — any mode armed at pointerdown yields
+      if (this.downArmed) {
+        this.disarmSuperweapon();
+        this.disarmRecon();
+        this.setAmove(false);
+        this.setPatrol(false);
+        this.armVerb(null);
+        this.exitPlacing();
+      }
       this.setSelection(sel);
+    } else if (this.downArmed) {
+      this.fireArmedClick(e);
     } else {
       const id = this.gs.pickEntity();
       const t = id != null ? this.r.tracked.get(id) : null;
