@@ -97,7 +97,7 @@ export class RtsBot {
       this.tankCap = 1;
       this.turretCap = 1;
       this.armyCap = 14;
-      this.slowStep = 95;
+      this.slowStep = 130;
     } else if (this.diff === "brutal") {
       this.firstWaveAt = 850 + jitter;
       this.assaultEvery = 380;
@@ -106,7 +106,7 @@ export class RtsBot {
       this.tankCap = 5;
       this.turretCap = 3;
       this.armyCap = 48;
-      this.slowStep = 36;
+      this.slowStep = 55;
     } else {
       this.firstWaveAt = 1550 + jitter;
       this.assaultEvery = 680;
@@ -115,7 +115,7 @@ export class RtsBot {
       this.tankCap = 3;
       this.turretCap = 2;
       this.armyCap = 28;
-      this.slowStep = 64;
+      this.slowStep = 90;
     }
     // Personality profile modifiers (rusher = fast early raids, turtle = heavy defense & slow push, tech = boom to MKII/Ion)
     if (this.profile === "rusher") {
@@ -154,15 +154,16 @@ export class RtsBot {
     const t = w.tick;
 
     // Finished structures (`awaiting`) and defenses (`awaitingDef`) place in parallel —
-    // pace placement by difficulty so Easy/Normal feel human rather than instant.
-    const placeStep = this.diff === "easy" ? 16 : this.diff === "brutal" ? 4 : 10;
+    // paced to human APM: ~2-4s between placements with jitter, not metronomic ticks.
+    const placeStep = this.diff === "easy" ? 34 : this.diff === "brutal" ? 12 : 24;
+    const placeJit = ((Math.random() * placeStep) | 0) >> 1;
     if (me.awaiting.length) {
       if (this.awaitingSince < 0) {
         this.awaitingSince = t;
         this.nextPlaceTry = t + placeStep;
       }
       if (t >= this.nextPlaceTry) {
-        this.nextPlaceTry = t + placeStep;
+        this.nextPlaceTry = t + placeStep + placeJit;
         this.place(me.awaiting[0], t, "structure");
       }
     } else this.awaitingSince = -1;
@@ -173,13 +174,13 @@ export class RtsBot {
         this.nextDefPlaceTry = t + placeStep;
       }
       if (t >= this.nextDefPlaceTry) {
-        this.nextDefPlaceTry = t + placeStep;
+        this.nextDefPlaceTry = t + placeStep + placeJit;
         this.place(me.awaitingDef[0], t, "defense");
       }
     } else this.awaitingDefSince = -1;
 
     if (t >= this.nextCheap) {
-      this.nextCheap = t + (this.diff === "easy" ? 20 : this.diff === "brutal" ? 8 : 14);
+      this.nextCheap = t + (this.diff === "easy" ? 45 : this.diff === "brutal" ? 16 : 28) + ((Math.random() * 12) | 0);
       this.defend(t);
     }
     if (t >= this.nextSlow) {
