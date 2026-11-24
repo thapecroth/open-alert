@@ -359,18 +359,18 @@ const fpv = {
   get active() { return fpvReal?.active ?? false; },
   get entId() { return fpvReal?.entId ?? null; },
   get onSfx() { return fpvHandlers.onSfx; },
-  set onSfx(v) { fpvHandlers.onSfx = v; if (fpvReal) fpvReal.onSfx = v; },
+  set onSfx(v) { fpvHandlers.onSfx = v; if (fpvReal && v) fpvReal.onSfx = v; },
   get onExit() { return fpvHandlers.onExit; },
-  set onExit(v) { fpvHandlers.onExit = v; if (fpvReal) fpvReal.onExit = v; },
+  set onExit(v) { fpvHandlers.onExit = v; if (fpvReal && v) fpvReal.onExit = v; },
   get onFireSfx() { return fpvHandlers.onFireSfx; },
-  set onFireSfx(v) { fpvHandlers.onFireSfx = v; if (fpvReal) fpvReal.onFireSfx = v; },
+  set onFireSfx(v) { fpvHandlers.onFireSfx = v; if (fpvReal && v) fpvReal.onFireSfx = v; },
   enter(id: number) {
     if (fpvReal) return fpvReal.enter(id);
     void loadFpv().then((c) => { if (!c.enter(id)) fpvHandlers.onExit?.("user"); });
     return true;
   },
   exit(reason: "user" | "dead") { fpvReal?.exit(reason); },
-  update(dt: number) { return fpvReal?.update(dt); },
+  update(dt: number) { return fpvReal?.update(dt) ?? null; },
   onShotEvent(id: number) { fpvReal?.onShotEvent(id); },
 };
 const story = new FpvStory();
