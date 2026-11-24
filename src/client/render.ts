@@ -11,11 +11,55 @@ import {
 import { makeEntVis, makeCrateVis, setVetBadge, tagEntity, applyFacing, makeRangeRing, EntVis, CrateVis } from "./models";
 import { createAnimState, stepEntityAnim, triggerFireAnim, triggerHitFlash, AnimState } from "./anim";
 import { VfxSystem, WaypointOverlay } from "./vfx";
-import { BUILDINGS, isBuildingKind, type BuildingKind } from "./util";
+import { BUILDINGS, isBuildingKind, type BuildingKind, type EntKind } from "./util";
 import { GameScene } from "./scene";
 
 const INTERP_MS = 250; // 50ms WAN jitter cushion above 200ms (5 Hz) snapshot interval
 const SNAP_KEEP = 8;
+
+// ---------- Instanced swarm rendering ----------
+// Cheap high-count kinds (drones & infantry — the bulk of late-game entity
+// counts) render through InstancedMesh pools: a few draw calls per kind+color
+// regardless of swarm size instead of ~6 per entity. The full EntVis is still
+// built for bookkeeping (fog flag, FPV, icons) but is NEVER added to the scene;
+// a lightweight proxy Group carries the pick box + selection ring.
+const INSTANCED_KINDS = new Set<EntKind>(["fpvdrone", "shahed", "usv", "infantry", "rocket", "engineer"]);
+const INSTANCE_CAP = 512;
+
+const instPickGeo = new THREE.BoxGeometry(1, 1, 1);
+const instPickMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
+const instSelGeo = new THREE.RingGeometry(0.5, 0.62, 28);
+const instSelMat = new THREE.MeshBasicMaterial({
+  color: 0x5ae8ff,
+  transparent: true,
+  opacity: 0.9,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
+const _instPos = new THREE.Vector3();
+const _instQ = new THREE.Quaternion();
+const _instOne = new THREE.Vector3(1, 1, 1);
+const _instZero = new THREE.Vector3(0.0001, 0.0001, 0.0001);
+const _instM = new THREE.Matrix4();
+const _instP = new THREE.Matrix4();
+const _instUp = new THREE.Vector3(0, 1, 0);
+
+interface InstPoolPart {
+  im: THREE.InstancedMesh;
+  local: THREE.Matrix4; // part transform relative to model root
+}
+interface InstPool {
+  parts: InstPoolPart[];
+  owners: Int32Array; // instIdx -> entity id
+  free: number[];
+  used: number; // high-water index
+}
+interface InstSlot {
+  pool: InstPool;
+  idx: number;
+  proxy: THREE.Group;
+  ring: THREE.Mesh;
+}
 const MAX_EXTRAP_T = 1.38;
 const EXTRAP_DAMP = 0.72;
 const SNAP_JUMP_DIST_SQ = 16; // snap visual filter if jump > 4 tiles
@@ -59,6 +103,7 @@ interface Tracked {
   cullR: number; // bounding-sphere radius for frustum update culling (includes stale-matrix margin)
   cullY: number; // bounding-sphere center height
   rangeRing?: THREE.Mesh | null; // lazily-built defense range ring (buildings with range only)
+  inst?: InstSlot | null; // instanced-swarm slot: proxy replaces the full scene subtree
 }
 
 function isStaticBuildingRig(vis: EntVis): boolean {
@@ -457,6 +502,85 @@ export class Renderer {
     this.disposeVis(t.vis);
   }
 
+  // ---------- Instanced swarm pools ----------
+  private instPools = new Map<string, InstPool>();
+  private instGroup: THREE.Group | null = null;
+
+  private ensureInstPool(kind: EntKind, color: string): InstPool {
+    const key = `${kind}|${color}`;
+    const existing = this.instPools.get(key);
+    if (existing) return existing;
+    if (!this.instGroup) {
+      this.instGroup = new THREE.Group();
+      this.instGroup.name = "instanced-swarms";
+      this.gs.scene.add(this.instGroup);
+    }
+    // Harvest the authored model's mesh parts once; reuse for every instance
+    const probe = makeEntVis(kind, color, this.gs.scene);
+    probe.root.updateMatrixWorld(true);
+    const parts: InstPoolPart[] = [];
+    probe.root.traverse((o) => {
+      if (!(o instanceof THREE.Mesh) || o.userData.isBar) return;
+      const im = new THREE.InstancedMesh(o.geometry, o.material, INSTANCE_CAP);
+      im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      im.frustumCulled = false;
+      im.castShadow = false;
+      im.receiveShadow = false;
+      _instM.makeScale(0, 0, 0);
+      for (let i = 0; i < INSTANCE_CAP; i++) im.setMatrixAt(i, _instM);
+      this.instGroup!.add(im);
+      parts.push({ im, local: o.matrixWorld.clone() });
+    });
+    const p: InstPool = { parts, owners: new Int32Array(INSTANCE_CAP).fill(-1), free: [], used: 0 };
+    this.instPools.set(key, p);
+    return p;
+  }
+
+  private makeInstProxy(e: EntSnap): InstSlot | null {
+    const pool = this.ensureInstPool(e.k, this.slotColors.get(e.o) ?? "#888888");
+    const idx = pool.free.length ? pool.free.pop()! : pool.used < INSTANCE_CAP ? pool.used++ : -1;
+    if (idx < 0) return null;
+    const proxy = new THREE.Group();
+    proxy.position.set(e.x, 0, e.y);
+    const pick = new THREE.Mesh(instPickGeo, instPickMat);
+    pick.position.y = 0.45;
+    pick.scale.setScalar(1.15);
+    const ring = new THREE.Mesh(instSelGeo, instSelMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.055;
+    ring.visible = false;
+    proxy.add(pick, ring);
+    tagEntity(proxy, e.id);
+    pool.owners[idx] = e.id;
+    return { pool, idx, proxy, ring };
+  }
+
+  private freeInstance(slot: InstSlot) {
+    _instM.makeScale(0, 0, 0);
+    for (const part of slot.pool.parts) {
+      part.im.setMatrixAt(slot.idx, _instM);
+      part.im.instanceMatrix.needsUpdate = true;
+    }
+    slot.pool.owners[slot.idx] = -1;
+    slot.pool.free.push(slot.idx);
+  }
+
+  private writeInstance(t: Tracked) {
+    const inst = t.inst!;
+    const visible = t.vis.root.visible && t.last.id !== this.hiddenEntityId;
+    _instPos.set(t.visX, 0, t.visY);
+    _instQ.setFromAxisAngle(_instUp, Math.PI / 2 - t.visYaw);
+    _instM.compose(_instPos, _instQ, visible ? _instOne : _instZero);
+    for (const part of inst.pool.parts) {
+      _instP.multiplyMatrices(_instM, part.local);
+      part.im.setMatrixAt(inst.idx, _instP);
+      part.im.instanceMatrix.needsUpdate = true;
+    }
+    inst.proxy.position.set(t.visX, 0, t.visY);
+    inst.proxy.rotation.y = Math.PI / 2 - t.visYaw;
+    inst.proxy.visible = t.vis.root.visible;
+  }
+
   private disposeVis(vis: EntVis) {
     if (vis.rig.subMats) {
       for (const m of vis.rig.subMats) m.dispose();
@@ -492,6 +616,12 @@ export class Renderer {
     this.snaps = [];
     this.selection.clear();
     this.defenseRangesOn = false;
+    for (const p of this.instPools.values()) for (const part of p.parts) part.im.dispose();
+    this.instPools.clear();
+    if (this.instGroup) {
+      scene.remove(this.instGroup);
+      this.instGroup = null;
+    }
     this.seen.clear();
     this.hasInitialSnap = false;
     this.lastAllies = undefined;
@@ -516,10 +646,17 @@ export class Renderer {
     // Remove gone entities
     for (const [id, t] of this.tracked) {
       if (!map.has(id)) {
-        scene.remove(t.vis.root);
+        if (t.inst) {
+          this.freeInstance(t.inst);
+          scene.remove(t.inst.proxy);
+          const i = this.gs.pickables.indexOf(t.inst.proxy);
+          if (i >= 0) this.gs.pickables.splice(i, 1);
+        } else {
+          scene.remove(t.vis.root);
+          const i = this.gs.pickables.indexOf(t.vis.root);
+          if (i >= 0) this.gs.pickables.splice(i, 1);
+        }
         this.disposeTracked(t);
-        const i = this.gs.pickables.indexOf(t.vis.root);
-        if (i >= 0) this.gs.pickables.splice(i, 1);
         this.tracked.delete(id);
         this.selection.delete(id);
       }
@@ -535,8 +672,15 @@ export class Renderer {
       setVetBadge(vis, e.vet ?? 0);
       tagEntity(vis.root, e.id);
       if (e.id === this.hiddenEntityId) vis.root.visible = false;
-      scene.add(vis.root);
-      this.gs.pickables.push(vis.root);
+      // Instanced swarm kinds swap the full scene subtree for a proxy + pool slot
+      const inst = !isBuilding && INSTANCED_KINDS.has(e.k) ? this.makeInstProxy(e) : null;
+      if (inst) {
+        scene.add(inst.proxy);
+        this.gs.pickables.push(inst.proxy);
+      } else {
+        scene.add(vis.root);
+        this.gs.pickables.push(vis.root);
+      }
       const anim = createAnimState(e, this.hasInitialSnap);
       const isStaticBld = isBuilding && isStaticBuildingRig(vis);
       let supplyAura: THREE.Group | undefined;
@@ -560,6 +704,7 @@ export class Renderer {
         lastLowPower: false,
         cullR: cs.r,
         cullY: cs.y,
+        inst,
       });
     }
     this.hasInitialSnap = true;
@@ -669,19 +814,39 @@ export class Renderer {
         // Ownership changed (capture) OR kind changed (factory -> factory2 upgrade) — rebuild visual!
         const scene = this.gs.scene;
         const wasVisible = t.vis.root.visible;
-        scene.remove(t.vis.root);
+        const prevPos = t.inst ? t.inst.proxy.position : t.vis.root.position;
+        const prevYaw = t.inst ? t.inst.proxy.rotation.y : t.vis.root.rotation.y;
+        if (t.inst) {
+          this.freeInstance(t.inst);
+          scene.remove(t.inst.proxy);
+          const pi = this.gs.pickables.indexOf(t.inst.proxy);
+          if (pi >= 0) this.gs.pickables.splice(pi, 1);
+          t.inst = null;
+        } else {
+          scene.remove(t.vis.root);
+          const i = this.gs.pickables.indexOf(t.vis.root);
+          if (i >= 0) this.gs.pickables.splice(i, 1);
+        }
         this.disposeTracked(t);
-        const i = this.gs.pickables.indexOf(t.vis.root);
-        if (i >= 0) this.gs.pickables.splice(i, 1);
         const color = this.slotColors.get(e.o) ?? "#888888";
         const vis = makeEntVis(e.k, color, scene);
-        vis.root.position.copy(t.vis.root.position);
-        vis.root.rotation.y = t.vis.root.rotation.y;
+        vis.root.position.copy(prevPos);
+        vis.root.rotation.y = prevYaw;
         vis.root.visible = id === this.hiddenEntityId ? false : wasVisible;
         tagEntity(vis.root, e.id);
-        scene.add(vis.root);
-        this.gs.pickables.push(vis.root);
+        // Re-instance if the new kind is also a swarm kind (e.g. disguised spy stays infantry)
+        const newInst = !isBuildingKind(e.k) && INSTANCED_KINDS.has(e.k) ? this.makeInstProxy(e) : null;
+        if (newInst) {
+          newInst.proxy.position.copy(prevPos);
+          newInst.proxy.rotation.y = prevYaw;
+          scene.add(newInst.proxy);
+          this.gs.pickables.push(newInst.proxy);
+        } else {
+          scene.add(vis.root);
+          this.gs.pickables.push(vis.root);
+        }
         t.vis = vis;
+        t.inst = newInst;
         t.holdInd = undefined;
         t.logBars = undefined;
         t.supplyAura = undefined;
@@ -705,10 +870,10 @@ export class Renderer {
         } else {
           // Keep selection ring & supply aura active across upgrade
           const sel = this.selection.has(id);
-          t.vis.ring.visible = sel;
+          (t.inst ? t.inst.ring : t.vis.ring).visible = sel;
           if (t.supplyAura) t.supplyAura.visible = sel;
         }
-      } else if (t.vis.root.visible && nowMs - t.lastResupplyFxMs >= 1350) {
+      } else if (!t.inst && t.vis.root.visible && nowMs - t.lastResupplyFxMs >= 1350) {
         // Trigger subtle emerald resupply shimmer when fuel, ammo, or convoy cargo refills
         const fuelGain = (e.fl ?? 100) - (prevLast.fl ?? 100);
         const ammoGain = (e.am ?? 100) - (prevLast.am ?? 100);
@@ -719,6 +884,7 @@ export class Renderer {
         }
       }
       t.last = e;
+      if (t.inst) continue; // instanced swarm ent: no bars/auras/indicators to update
       const selected = this.selection.has(id);
       const frac = Math.max(0, e.hp / e.mhp);
       t.vis.barFg.scale.x = Math.max(0.02, frac * t.vis.barFg.userData.w);
@@ -756,10 +922,10 @@ export class Renderer {
     this.selection = ids;
     for (const [id, t] of this.tracked) {
       const sel = ids.has(id);
-      t.vis.ring.visible = sel;
+      (t.inst ? t.inst.ring : t.vis.ring).visible = sel;
       if (t.supplyAura) t.supplyAura.visible = sel;
       this.syncRangeRing(t, sel);
-      this.updateLogBars(t, t.last, sel);
+      if (!t.inst) this.updateLogBars(t, t.last, sel);
     }
   }
 
@@ -997,20 +1163,29 @@ export class Renderer {
 
           px = t.visX;
           py = t.visY;
-          if (t.staticFrozen) {
-            if (t.vis.root.position.x !== px || t.vis.root.position.z !== py) {
-              t.vis.root.position.set(px, 0, py);
-              t.vis.root.updateMatrix();
-              t.vis.root.updateMatrixWorld(true);
-            }
+          if (t.inst) {
+            // Instanced swarm ent: write the pool matrix + mirror the proxy —
+            // no scene subtree, no per-part anim, no ambient VFX emitters.
+            this.writeInstance(t);
+            t.anim.prevX = px;
+            t.anim.prevY = py;
+            t.anim.prevHeading = t.visYaw;
           } else {
-            t.vis.root.position.x = px;
-            t.vis.root.position.z = py;
+            if (t.staticFrozen) {
+              if (t.vis.root.position.x !== px || t.vis.root.position.z !== py) {
+                t.vis.root.position.set(px, 0, py);
+                t.vis.root.updateMatrix();
+                t.vis.root.updateMatrixWorld(true);
+              }
+            } else {
+              t.vis.root.position.x = px;
+              t.vis.root.position.z = py;
+            }
+            if (!t.isBuilding) {
+              applyFacing(t.vis.root, t.visYaw);
+            }
           }
-          if (!t.isBuilding) {
-            applyFacing(t.vis.root, t.visYaw);
-          }
-
+          if (!t.inst) {
           // Per-entity update culling: skip animation & ambient VFX work when the
           // entity is outside the camera frustum; far on-screen entities animate
           // at a staggered reduced rate. Position/heading still update every frame
@@ -1042,6 +1217,7 @@ export class Renderer {
             t.anim.prevX = px;
             t.anim.prevY = py;
             t.anim.prevHeading = t.visYaw;
+          }
           }
           t.lastLowPower = lowPwr;
         }
