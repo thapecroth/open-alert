@@ -10,6 +10,7 @@ interface FxItem {
   tick: (o: THREE.Object3D, t: number, dt: number) => void;
   disposeGeo?: boolean;
   disposeTex?: boolean;
+  pool?: THREE.Object3D[];
 }
 
 interface CraterItem {
@@ -318,15 +319,43 @@ export class VfxSystem {
     }));
   }
 
+  // reusable-mesh pools for the hottest archetypes (tracer bolts, impact sparks)
+  private boltPool: THREE.Object3D[] = [];
+  private sparkPool: THREE.Object3D[] = [];
+
   private add(
     obj: THREE.Object3D,
     life: number,
     tick: FxItem["tick"],
     disposeGeo = false,
     disposeTex = false,
+    pool?: THREE.Object3D[],
   ) {
     this.scene.add(obj);
-    this.fxs.push({ obj, born: performance.now(), life, tick, disposeGeo, disposeTex });
+    this.fxs.push({ obj, born: performance.now(), life, tick, disposeGeo, disposeTex, pool });
+  }
+
+  private acquireBolt(): { g: THREE.Group; coreMat: THREE.MeshBasicMaterial; glowMat: THREE.MeshBasicMaterial } {
+    const g = this.boltPool.pop() as THREE.Group | undefined;
+    if (g) {
+      const w = g.userData.boltWrap as { coreMat: THREE.MeshBasicMaterial; glowMat: THREE.MeshBasicMaterial };
+      return { g, ...w };
+    }
+    const ng = new THREE.Group();
+    const coreMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
+    const glowMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
+    ng.add(new THREE.Mesh(sharedCyl, coreMat), new THREE.Mesh(sharedCyl, glowMat));
+    ng.userData.boltWrap = { coreMat, glowMat };
+    return { g: ng, coreMat, glowMat };
+  }
+
+  private acquireSpark(): { m: THREE.Mesh; sMat: THREE.MeshBasicMaterial } {
+    const m = this.sparkPool.pop() as THREE.Mesh | undefined;
+    if (m) return { m, sMat: m.userData.sMat as THREE.MeshBasicMaterial };
+    const sMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.96 });
+    const nm = new THREE.Mesh(sharedSpark, sMat);
+    nm.userData.sMat = sMat;
+    return { m: nm, sMat };
   }
 
   spawnSmoke(x: number, y: number, z: number, dark: boolean) {
@@ -445,30 +474,19 @@ export class VfxSystem {
         const bUnit = bDir.clone().normalize();
         const segLen = Math.min(bLen * 0.62, heroic ? 2.85 : 2.35);
 
-        const boltGroup = new THREE.Group();
+        const { g: boltGroup, coreMat, glowMat } = this.acquireBolt();
         boltGroup.quaternion.setFromUnitVectors(UP, bUnit);
 
-        const coreMat = new THREE.MeshBasicMaterial({
-          color: heroic ? new THREE.Color(4.6, 1.85, 0.4) : new THREE.Color(4.5, 2.75, 0.55),
-          transparent: true,
-          opacity: 0,
-          depthWrite: false,
-        });
-        const coreMesh = new THREE.Mesh(sharedCyl, coreMat);
+        coreMat.color.setRGB(...(heroic ? [4.6, 1.85, 0.4] : [4.5, 2.75, 0.55]) as [number, number, number]);
+        coreMat.opacity = 0;
+        const coreMesh = boltGroup.children[0] as THREE.Mesh;
         const cThick = heroic ? 1.85 : 1.45;
         coreMesh.scale.set(cThick, segLen, cThick);
-        boltGroup.add(coreMesh);
 
-        const glowMat = new THREE.MeshBasicMaterial({
-          color: heroic ? new THREE.Color(4.0, 1.3, 0.25) : new THREE.Color(3.8, 2.0, 0.35),
-          transparent: true,
-          opacity: 0,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-        });
-        const glowMesh = new THREE.Mesh(sharedCyl, glowMat);
+        glowMat.color.setRGB(...(heroic ? [4.0, 1.3, 0.25] : [3.8, 2.0, 0.35]) as [number, number, number]);
+        glowMat.opacity = 0;
+        const glowMesh = boltGroup.children[1] as THREE.Mesh;
         glowMesh.scale.set(cThick * 2.3, segLen * 1.12, cThick * 2.3);
-        boltGroup.add(glowMesh);
 
         const delay = i * 0.15;
         const lifeMs = 215 + i * 38;
@@ -508,12 +526,9 @@ export class VfxSystem {
               this.spawnSmoke(impactP.x, 0.28, impactP.z, true);
             }
             for (let s = 0; s < 3; s++) {
-              const sMat = new THREE.MeshBasicMaterial({
-                color: s === 0 ? new THREE.Color(4.4, 3.1, 0.9) : new THREE.Color(3.8, 1.7, 0.3),
-                transparent: true,
-                opacity: 0.96,
-              });
-              const spark = new THREE.Mesh(sharedSpark, sMat);
+              const { m: spark, sMat } = this.acquireSpark();
+              sMat.color.setRGB(...(s === 0 ? [4.4, 3.1, 0.9] : [3.8, 1.7, 0.3]) as [number, number, number]);
+              sMat.opacity = 0.96;
               spark.position.set(impactP.x, 0.22, impactP.z);
               const ang = Math.random() * Math.PI * 2;
               const spd = 1.6 + Math.random() * 2.6;
@@ -529,10 +544,10 @@ export class VfxSystem {
                 const sc = (1 - st) * (heroic ? 1.2 : 0.9);
                 so.scale.set(sc * 0.7, sc * 1.4, sc * 0.7);
                 sMat.opacity = 1 - st;
-              });
+              }, false, false, this.sparkPool);
             }
           }
-        });
+        }, false, false, this.boltPool);
       }
       return;
     }
@@ -2405,8 +2420,11 @@ export class VfxSystem {
       const t = (now - f.born) / f.life;
       if (t >= 1) {
         this.scene.remove(f.obj);
-        disposeFxObj(f.obj, !!f.disposeGeo, !!f.disposeTex);
-        this.fxs.splice(i, 1);
+        if (f.pool && f.pool.length < 160) f.pool.push(f.obj);
+        else disposeFxObj(f.obj, !!f.disposeGeo, !!f.disposeTex);
+        // swap-remove keeps O(1) — order across fx objects is irrelevant
+        this.fxs[i] = this.fxs[this.fxs.length - 1];
+        this.fxs.pop();
       } else {
         f.tick(f.obj, t, dt);
       }

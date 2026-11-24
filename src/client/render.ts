@@ -734,8 +734,9 @@ export class Renderer {
     for (const e of ents) {
       if (this.tracked.has(e.id)) continue;
       const color = this.slotColors.get(e.o) ?? "#888888";
-      const vis = makeEntVis(e.k, color, scene);
       const isBuilding = isBuildingKind(e.k);
+      // instanced kinds render via the pool — their vis only carries HUD overlays
+      const vis = makeEntVis(e.k, color, scene, !isBuilding && INSTANCED_KINDS.has(e.k));
       vis.root.position.set(e.x, 0, e.y);
       if (!isBuilding) applyFacing(vis.root, e.d / 10);
       setVetBadge(vis, e.vet ?? 0);
@@ -898,7 +899,7 @@ export class Renderer {
         }
         this.disposeTracked(t);
         const color = this.slotColors.get(e.o) ?? "#888888";
-        const vis = makeEntVis(e.k, color, scene);
+        const vis = makeEntVis(e.k, color, scene, !isBuildingKind(e.k) && INSTANCED_KINDS.has(e.k));
         vis.root.position.copy(prevPos);
         vis.root.rotation.y = prevYaw;
         vis.root.visible = id === this.hiddenEntityId ? false : wasVisible;

@@ -666,12 +666,14 @@ export class GameScene {
   private borderLine!: THREE.Line;
   private skyMesh!: THREE.Mesh;
   private skyRadius = 420;
-  private ore!: THREE.InstancedMesh;
   private oreGeo!: THREE.BufferGeometry;
   private oreMat!: THREE.MeshStandardMaterial;
-  private oreSlots = new Map<number, number>(); // cellKey -> instance index
-  private oreFree: number[] = [];
-  private orePeak = 0;
+  // ore lives in per-region InstancedMesh pools so off-screen regions frustum-cull
+  private oreRegions: THREE.InstancedMesh[] = [];
+  private oreRegionFree: number[][] = [];
+  private oreRegionPeak: number[] = [];
+  private oreSlots = new Map<number, { r: number; i: number }>(); // cellKey -> region+instance
+  private oreCols = 1;
   private oreMax = MAP_W * MAP_H;
   private dummy = new THREE.Object3D();
 
@@ -1197,21 +1199,16 @@ export class GameScene {
       this.fillTerrainChunks(this.fogMesh, W, H, 0.038, this.fogMat, 2);
     }
 
-    // 6) Ore InstancedMesh capacity for full mapW * mapH battlefield
+    // 6) Ore capacity: regions are per-tile — a new map size resets them all
     const nextOreMax = W * H;
     if (this.oreMax !== nextOreMax) {
-      this.scene.remove(this.ore);
-      this.ore.dispose();
       this.oreMax = nextOreMax;
-      const ore = new THREE.InstancedMesh(this.oreGeo, this.oreMat, this.oreMax);
-      ore.count = 0;
-      ore.castShadow = false;
-      ore.frustumCulled = false;
-      this.ore = ore;
-      this.scene.add(ore);
+      this.oreCols = Math.max(1, Math.ceil(W / 16));
+      for (const im of this.oreRegions) { this.scene.remove(im); im.dispose(); }
+      this.oreRegions.length = 0;
+      this.oreRegionFree.length = 0;
+      this.oreRegionPeak.length = 0;
       this.oreSlots.clear();
-      this.oreFree = [];
-      this.orePeak = 0;
     }
 
     // 7) Keep camera within valid theater bounds and height cap
@@ -2631,41 +2628,66 @@ export class GameScene {
     this.oreGeo = geo;
     this.oreMat = mat;
     this.oreMax = this.mapW * this.mapH;
-    const ore = new THREE.InstancedMesh(geo, mat, this.oreMax);
-    ore.count = 0;
-    ore.castShadow = false;
-    ore.frustumCulled = false;
-    this.ore = ore;
-    this.scene.add(ore);
+    this.oreCols = Math.max(1, Math.ceil(this.mapW / 16));
+  }
+
+  private oreRegionAt(x: number, y: number): number {
+    return (y >> 4) * this.oreCols + (x >> 4);
+  }
+
+  private ensureOreRegion(r: number): THREE.InstancedMesh {
+    let im = this.oreRegions[r];
+    if (!im) {
+      im = new THREE.InstancedMesh(this.oreGeo, this.oreMat, 256);
+      im.count = 0;
+      im.castShadow = false;
+      // static bounding sphere over the whole 16-tile region → frustum culls it
+      const rx = r % this.oreCols, ry = (r / this.oreCols) | 0;
+      im.boundingSphere = new THREE.Sphere(new THREE.Vector3(rx * 16 + 8, 0.4, ry * 16 + 8), 13);
+      im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      this.oreRegions[r] = im;
+      this.scene.add(im);
+      if (!this.oreRegionFree[r]) this.oreRegionFree[r] = [];
+      if (this.oreRegionPeak[r] === undefined) this.oreRegionPeak[r] = 0;
+    }
+    return im;
   }
 
   clearOre() {
     this.oreSlots.clear();
-    this.oreFree = [];
-    this.orePeak = 0;
-    this.ore.count = 0;
-    this.ore.instanceMatrix.needsUpdate = true;
+    for (const im of this.oreRegions) { this.scene.remove(im); im.dispose(); }
+    this.oreRegions.length = 0;
+    this.oreRegionFree.length = 0;
+    this.oreRegionPeak.length = 0;
   }
 
   setOreCells(cells: [number, number, number][]) {
     const W = this.mapW;
+    const touched = new Set<number>();
     for (const [x, y, amt] of cells) {
       const key = y * W + x;
       let slot = this.oreSlots.get(key);
       if (amt <= 0) {
         if (slot !== undefined) {
-          this.dummy.position.set(x + 0.5, -10, y + 0.5);
-          this.dummy.scale.setScalar(0.001);
-          this.dummy.updateMatrix();
-          this.ore.setMatrixAt(slot, this.dummy.matrix);
+          const im = this.oreRegions[slot.r];
+          if (im) {
+            this.dummy.position.set(x + 0.5, -10, y + 0.5);
+            this.dummy.scale.setScalar(0.001);
+            this.dummy.updateMatrix();
+            im.setMatrixAt(slot.i, this.dummy.matrix);
+            touched.add(slot.r);
+          }
           this.oreSlots.delete(key);
-          this.oreFree.push(slot);
+          this.oreRegionFree[slot.r].push(slot.i);
         }
         continue;
       }
+      const r = this.oreRegionAt(x, y);
+      const im = this.ensureOreRegion(r);
       if (slot === undefined) {
-        slot = this.oreFree.length ? this.oreFree.pop()! : this.orePeak++;
-        if (slot >= this.oreMax) continue;
+        const i = this.oreRegionFree[r].length ? this.oreRegionFree[r].pop()! : this.oreRegionPeak[r]++;
+        if (i >= 256) continue;
+        slot = { r, i };
         this.oreSlots.set(key, slot);
       }
       const s = 0.45 + Math.min(1, amt / 60) * 0.55;
@@ -2673,10 +2695,14 @@ export class GameScene {
       this.dummy.rotation.set(0, ((key * 2654435761) % 628) / 100, 0);
       this.dummy.scale.set(s, s * (0.8 + Math.min(1, amt / 60) * 0.4), s);
       this.dummy.updateMatrix();
-      this.ore.setMatrixAt(slot, this.dummy.matrix);
+      im.setMatrixAt(slot.i, this.dummy.matrix);
+      touched.add(r);
     }
-    this.ore.count = this.orePeak;
-    this.ore.instanceMatrix.needsUpdate = true;
+    for (const r of touched) {
+      const im = this.oreRegions[r];
+      im.count = this.oreRegionPeak[r];
+      im.instanceMatrix.needsUpdate = true;
+    }
   }
 
   // ---------- picking ----------
