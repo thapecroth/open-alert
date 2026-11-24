@@ -528,6 +528,7 @@ export class Renderer {
       im.receiveShadow = false;
       _instM.makeScale(0, 0, 0);
       for (let i = 0; i < INSTANCE_CAP; i++) im.setMatrixAt(i, _instM);
+      im.count = 0; // draw only live slots — never burn vertex work on empty ones
       this.instGroup!.add(im);
       parts.push({ im, local: o.matrixWorld.clone() });
     });
@@ -540,6 +541,7 @@ export class Renderer {
     const pool = this.ensureInstPool(e.k, this.slotColors.get(e.o) ?? "#888888");
     const idx = pool.free.length ? pool.free.pop()! : pool.used < INSTANCE_CAP ? pool.used++ : -1;
     if (idx < 0) return null;
+    for (const part of pool.parts) if (part.im.count < pool.used) part.im.count = pool.used;
     const proxy = new THREE.Group();
     proxy.position.set(e.x, 0, e.y);
     const pick = new THREE.Mesh(instPickGeo, instPickMat);
@@ -556,13 +558,27 @@ export class Renderer {
   }
 
   private freeInstance(slot: InstSlot) {
+    const pool = slot.pool;
+    const last = --pool.used;
+    if (slot.idx !== last) {
+      // swap-compact: move the last live instance into the freed slot so count stays tight
+      const movedId = pool.owners[last];
+      const movedT = movedId >= 0 ? this.tracked.get(movedId) : undefined;
+      for (const part of pool.parts) {
+        part.im.getMatrixAt(last, _instP);
+        part.im.setMatrixAt(slot.idx, _instP);
+      }
+      pool.owners[slot.idx] = movedId;
+      if (movedT?.inst) movedT.inst.idx = slot.idx;
+    }
     _instM.makeScale(0, 0, 0);
-    for (const part of slot.pool.parts) {
-      part.im.setMatrixAt(slot.idx, _instM);
+    for (const part of pool.parts) {
+      part.im.setMatrixAt(last, _instM);
+      part.im.count = last;
       part.im.instanceMatrix.needsUpdate = true;
     }
-    slot.pool.owners[slot.idx] = -1;
-    slot.pool.free.push(slot.idx);
+    pool.owners[last] = -1;
+    // dense slots: `used` alone tracks free space — nothing goes on the free list
   }
 
   private writeInstance(t: Tracked) {

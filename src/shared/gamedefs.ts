@@ -1353,7 +1353,105 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     }
   }
 
+  // Cliffs trump water everywhere — resolve overlap BEFORE connectivity so the pass
+  // doesn't route "through" tiles that are about to become non-water.
   for (const k of cliffSet) waterSet.delete(k);
+
+  // Water connectivity pass: bridges, fords, islands & artifacts often pinch seas into
+  // disconnected bodies — trapped ships make naval play useless. Flood-fill components,
+  // keep the largest as "the sea", then Dijkstra-carve a narrow canal from every stray
+  // body back to the sea (spawn zones are high-cost so canals skirt bases).
+  if (waterSet.size > 0) {
+    const spawns = getSpawns(W, H);
+    const nearSpawn = new Uint8Array(W * H);
+    for (const sp of spawns) {
+      for (let y = sp.y - 4; y <= sp.y + 4; y++)
+        for (let x = sp.x - 4; x <= sp.x + 4; x++)
+          if (x >= 0 && y >= 0 && x < W && y < H) nearSpawn[y * W + x] = 1;
+    }
+    const comp = new Int32Array(W * H).fill(-1);
+    const comps: number[][] = [];
+    for (const s of waterSet) {
+      if (comp[s] >= 0) continue;
+      const id0 = comps.length;
+      const members: number[] = [];
+      const q = [s];
+      comp[s] = id0;
+      while (q.length) {
+        const c = q.pop()!;
+        members.push(c);
+        const x = c % W, y = (c / W) | 0;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy, ni = ny * W + nx;
+          if (nx >= 0 && ny >= 0 && nx < W && ny < H && comp[ni] < 0 && waterSet.has(ni)) {
+            comp[ni] = id0;
+            q.push(ni);
+          }
+        }
+      }
+      comps.push(members);
+    }
+    let SEA = 0;
+    for (let i = 1; i < comps.length; i++) if (comps[i].length > comps[SEA].length) SEA = i;
+    for (let guard = 0; guard < comps.length + 2; guard++) {
+      // Dijkstra over land from all sea tiles; stop at the first foreign component
+      const dist = new Int32Array(W * H).fill(-1);
+      const prev = new Int32Array(W * H).fill(-1);
+      const heap: number[] = []; // packed cost*AREA+tile — plain-number binary heap
+      const AREA = W * H;
+      const push = (cost: number, t: number) => {
+        heap.push(cost * AREA + t);
+        let i = heap.length - 1;
+        while (i > 0) { const p = (i - 1) >> 1; if (heap[p] <= heap[i]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; }
+      };
+      const pop = () => {
+        const top = heap[0], last = heap.pop()!;
+        if (heap.length) {
+          heap[0] = last;
+          let i = 0;
+          for (;;) { let m = i; const l = 2 * i + 1, r = l + 1;
+            if (l < heap.length && heap[l] < heap[m]) m = l;
+            if (r < heap.length && heap[r] < heap[m]) m = r;
+            if (m === i) break; [heap[m], heap[i]] = [heap[i], heap[m]]; i = m; }
+        }
+        return top;
+      };
+      for (const t of comps[SEA]) { dist[t] = 0; push(0, t); }
+      let hit = -1;
+      while (heap.length) {
+        const cur = pop();
+        const cost = Math.floor(cur / AREA), t = cur % AREA;
+        if (dist[t] >= 0 && cost > dist[t]) continue;
+        if (comp[t] >= 0 && comp[t] !== SEA) { hit = t; break; }
+        const x = t % W, y = (t / W) | 0;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy, ni = ny * W + nx;
+          if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+          if (comp[ni] === SEA) continue;
+          const step = comp[ni] >= 0 ? 0 : nearSpawn[ni] ? 8 : 1;
+          const nd = cost + step;
+          if (dist[ni] < 0 || nd < dist[ni]) { dist[ni] = nd; prev[ni] = t; push(nd, ni); }
+        }
+      }
+      if (hit < 0) break; // nothing left to connect
+      // carve a 2-wide canal along the backtracked land path. NB: carved tiles must
+      // NOT be relabeled SEA mid-walk — the widening offsets would then make a later
+      // path tile look like "sea reached" and the loop would exit one tile short.
+      const carved: number[] = [];
+      for (let t = hit; t >= 0 && comp[t] !== SEA; t = prev[t]) {
+        const x = t % W, y = (t / W) | 0;
+        for (const [ox, oy] of [[0, 0], [1, 0], [0, 1]]) {
+          const nx = Math.min(W - 1, x + ox), ny = Math.min(H - 1, y + oy), ni = ny * W + nx;
+          if (comp[ni] < 0) { waterSet.add(ni); carved.push(ni); cliffSet.delete(ni); }
+        }
+        cliffSet.delete(t);
+      }
+      for (const t of carved) { comp[t] = SEA; comps[SEA].push(t); }
+      const hc = comp[hit];
+      for (const t of comps[hc]) { comp[t] = SEA; comps[SEA].push(t); }
+      comps[hc] = [];
+    }
+  }
 
   const cliffs: [number, number][] = [];
   for (const k of cliffSet) cliffs.push([k % W, (k / W) | 0]);
