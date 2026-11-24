@@ -13,7 +13,7 @@
 import { World } from "./world";
 import { BUILDINGS, UNITS, ORE_CELL_MAX, PLAYER_COLORS, SHIPYARD_BUILD_DIST } from "../shared/gamedefs";
 import type { BuildingKind, BuildCategory, UnitKind, EntKind, ProdCat } from "../shared/gamedefs";
-import type { OrderKind, PlayerState, ProdQueue } from "../shared/protocol";
+import type { OrderKind, PlayerState, ProdItem } from "../shared/protocol";
 
 const hasOwn = (o: object, k: unknown): boolean =>
   typeof k === "string" && Object.prototype.hasOwnProperty.call(o, k);
@@ -193,10 +193,10 @@ export function extractGymObs(w: World, slot: number): GymObs {
     if (e.k === "harvester") s.cargo = e.cargo;
     ents.push(s);
   }
-  const queues: Partial<Record<ProdCat, ProdQueue>> = {};
+  const queues: Partial<Record<ProdCat, ProdItem[]>> = {};
   if (p) {
     for (const cat of ["barracks", "factory", "airfield", "shipyard"] as const) {
-      if (p.queues[cat]) queues[cat] = { ...p.queues[cat]! };
+      if (p.queues[cat]?.length) queues[cat] = p.queues[cat]!.map((i) => ({ ...i }));
     }
   }
   return {
@@ -622,14 +622,14 @@ export class GymEnv {
     }
     if (this.has(s, "barracks")) {
       const q = p.queues.barracks;
-      if ((q?.count ?? 0) < 4 && p.credits > 400) w.cmdTrain(s, "infantry");
+      if ((q?.length ?? 0) < 4 && p.credits > 400) w.cmdTrain(s, "infantry");
     }
     if (this.has(s, "factory")) {
       const q = p.queues.factory;
       let harv = 0;
       for (const e of w.ents.values()) if (e.o === s && e.k === "harvester") harv++;
-      if (harv < 2 && !(q?.count ?? 0) && p.credits > 1600) w.cmdTrain(s, "harvester");
-      else if ((q?.count ?? 0) < 4 && p.credits > 900) w.cmdTrain(s, "tank");
+      if (harv < 2 && !(q?.length ?? 0) && p.credits > 1600) w.cmdTrain(s, "harvester");
+      else if ((q?.length ?? 0) < 4 && p.credits > 900) w.cmdTrain(s, "tank");
     }
 
     const army = [...w.ents.values()].filter((e) => e.o === s && !isB(e.k) && e.k !== "harvester");

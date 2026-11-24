@@ -60,7 +60,7 @@ import type {
   EntSnap,
   CrateSnap,
   PlayerState,
-  ProdQueue,
+  ProdItem,
   GameEvent,
   WeaponFx,
   MatchStats,
@@ -137,7 +137,7 @@ export interface P {
   bq: { kind: BuildingKind; left: number; total: number }[]; // head builds, rest queued
   awaitingDef: BuildingKind[]; // defense has a parallel queue
   dq: { kind: BuildingKind; left: number; total: number }[];
-  queues: Partial<Record<ProdCat, ProdQueue>>;
+  queues: Partial<Record<ProdCat, ProdItem[]>>;
   eliminated: boolean;
   pwrHave: number;
   pwrUse: number;
@@ -615,6 +615,15 @@ export class World {
       if (!Array.isArray(p.bq)) p.bq = p.bq ? [p.bq] : [];
       if (!Array.isArray(p.awaitingDef)) p.awaitingDef = p.awaitingDef ? [p.awaitingDef] : [];
       if (!Array.isArray(p.dq)) p.dq = p.dq ? [p.dq] : [];
+      // pre-FIFO saves: {unit,left,total,count} → expanded array
+      for (const c of PROD_CATS) {
+        const q = p.queues?.[c] as unknown;
+        if (q && !Array.isArray(q)) {
+          const old = q as { unit: UnitKind; left: number; total: number; count: number };
+          p.queues[c] = [{ unit: old.unit, left: old.left, total: old.total }];
+          for (let i = 1; i < (old.count ?? 1); i++) p.queues[c]!.push({ unit: old.unit, left: old.total, total: old.total });
+        }
+      }
     }
     w.players = new Map(d.players.map((p) => [p.slot, p]));
     w.crates = new Map(d.crates.map((c) => [c.id, c]));
@@ -1634,23 +1643,32 @@ export class World {
     if (!this.hasBuilding(slot, d.trainsAt)) return `need a ${d.trainsAt}`;
     if (d.requires && !this.hasBuilding(slot, d.requires)) return `need a ${d.requires}`;
     if (p.credits < d.cost) return "insufficient funds";
-    const q = p.queues[d.trainsAt];
-    if (q && q.unit !== unit) return "queue busy";
-    if (q && q.count >= 9) return "queue full";
+    const arr = (p.queues[d.trainsAt] ??= []);
+    if (arr.length >= 12) return "queue full";
     p.credits -= d.cost;
-    if (q) q.count++;
-    else p.queues[d.trainsAt] = { unit, left: d.buildTicks, total: d.buildTicks, count: 1 };
+    arr.push({ unit, left: d.buildTicks, total: d.buildTicks });
     return null;
   }
 
-  cmdTrainCancel(slot: number, unit: UnitKind): void {
+  cmdTrainCancel(slot: number, unit?: UnitKind, cat?: ProdCat, index?: number): void {
     const p = this.players.get(slot);
-    if (!p || !hasOwn(UNITS, unit)) return;
-    const d = UNITS[unit];
-    const q = p.queues[d.trainsAt];
-    if (!q || q.unit !== unit) return;
-    p.credits += d.cost;
-    if (--q.count === 0) delete p.queues[d.trainsAt];
+    if (!p) return;
+    const cancelAt = (c: ProdCat, i: number) => {
+      const arr = p.queues[c];
+      if (!arr || i < 0 || i >= arr.length) return;
+      p.credits += UNITS[arr[i].unit].cost;
+      arr.splice(i, 1);
+      if (!arr.length) delete p.queues[c];
+    };
+    if (cat != null && index != null) return cancelAt(cat, index);
+    if (unit != null && hasOwn(UNITS, unit)) {
+      const d = UNITS[unit];
+      const arr = p.queues[d.trainsAt];
+      if (!arr) return;
+      return cancelAt(d.trainsAt, arr.map((q) => q.unit).lastIndexOf(unit));
+    }
+    // no args: cancel tail of the first nonempty queue
+    for (const c of PROD_CATS) if (p.queues[c]?.length) return cancelAt(c, p.queues[c]!.length - 1);
   }
 
   // engineer takes over an enemy building or neutral Oil Derrick once it reaches the footprint edge.
@@ -2177,25 +2195,26 @@ export class World {
         p.reconLeft = -1;
       }
       for (const cat of PROD_CATS) {
-        const q = p.queues[cat];
-        if (!q) continue;
+        const arr = p.queues[cat];
+        if (!arr?.length) continue;
+        const head = arr[0];
         const blds = this.buildingsOf(p.slot, cat);
         const boost = Math.min(2.0, 1 + Math.max(0, blds.length - 1) * 0.25);
-        q.left -= rate * boost;
-        if (q.left <= 0) {
+        head.left -= rate * boost;
+        if (head.left <= 0) {
           // losing the tech prerequisite mid-queue halts production with a refund
-          const ud = UNITS[q.unit];
+          const ud = UNITS[head.unit];
           if (ud.requires && !this.hasBuilding(p.slot, ud.requires)) {
-            p.credits += ud.cost * q.count;
+            for (const it of arr) p.credits += UNITS[it.unit].cost;
             delete p.queues[cat];
             continue;
           }
           const upgKind = UPGRADED_OF[cat];
           const b = (upgKind ? blds.find((x) => x.k === upgKind) : undefined) ?? blds[0];
-          const spawned = b ? this.spawnNearBuilding(p.slot, q.unit, b) : null;
+          const spawned = b ? this.spawnNearBuilding(p.slot, head.unit, b) : null;
           if (!spawned) {
             // nowhere to deploy — refund instead of eating the unit
-            p.credits += UNITS[q.unit].cost;
+            p.credits += UNITS[head.unit].cost;
           } else {
             p.unitsBuilt++;
             // Veteran ★ graduation from upgraded production facilities
@@ -2207,8 +2226,8 @@ export class World {
               this.cmdOrder(p.slot, [spawned.id], rk, b.rally[0], b.rally[1]);
             }
           }
-          if (--q.count <= 0) delete p.queues[cat];
-          else q.left = q.total;
+          arr.shift();
+          if (!arr.length) delete p.queues[cat];
         }
       }
     }
@@ -3394,8 +3413,8 @@ export class World {
     }
     const players: Record<number, PlayerState> = {};
     for (const p of this.players.values()) {
-      const qCopy: Partial<Record<ProdCat, ProdQueue>> = {};
-      for (const cat of PROD_CATS) if (p.queues[cat]) qCopy[cat] = { ...p.queues[cat]! };
+      const qCopy: Partial<Record<ProdCat, ProdItem[]>> = {};
+      for (const cat of PROD_CATS) if (p.queues[cat]?.length) qCopy[cat] = p.queues[cat]!.map((i) => ({ ...i }));
       const ps: PlayerState = {
         slot: p.slot,
         credits: Math.floor(p.credits),

@@ -25,6 +25,7 @@ import {
   BotDiff,
   BotProfile,
   GameConfig,
+  ProdCat,
   MAP_W,
   MAP_H,
 } from "../shared/gamedefs";
@@ -419,10 +420,10 @@ export class Hud {
   onResign: () => void = () => {};
   onChat: (text: string) => void = () => {};
   onBuild: (k: BuildingKind) => void = () => {};
-  onBuildCancel: (cat?: BuildCategory, kind?: BuildingKind, awaiting?: boolean) => void = () => {};
+  onBuildCancel: (cat?: BuildCategory, kind?: BuildingKind, awaiting?: boolean, index?: number) => void = () => {};
   onPlaceMode: (k: BuildingKind) => void = () => {};
   onTrain: (u: UnitKind) => void = () => {};
-  onTrainCancel: (u: UnitKind) => void = () => {};
+  onTrainCancel: (u?: UnitKind, cat?: ProdCat, index?: number) => void = () => {};
   onBuildBlocked?: (msg: string) => void;
   onMinimapNav: (x: number, y: number) => void = () => {};
   onMinimapPing: (x: number, y: number) => void = () => {};
@@ -744,6 +745,22 @@ export class Hud {
       el(`verb-${v}`)?.addEventListener("click", () => this.onVerb(v));
     }
 
+    // queue strip: right-click a chip cancels that exact item
+    el("queue-strip")?.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      const chip = (e.target as HTMLElement).closest<HTMLElement>("[data-cat],[data-ready]");
+      if (!chip) return;
+      const readyCat = chip.dataset.ready as BuildCategory | undefined;
+      if (readyCat) {
+        this.onBuildCancel(readyCat, chip.dataset.kind as BuildingKind, true);
+        return;
+      }
+      const cat = chip.dataset.cat as BuildCategory | ProdCat;
+      const i = Number(chip.dataset.i);
+      if (cat === "structure" || cat === "defense") this.onBuildCancel(cat, undefined, false, i);
+      else this.onTrainCancel(undefined, cat as ProdCat, i);
+    });
+
     // Chat input
     const chatInput = el<HTMLInputElement>("chat-input");
     chatInput.addEventListener("keydown", (e) => {
@@ -808,7 +825,7 @@ export class Hud {
       b.className = "sbtn";
       b.dataset.unit = unit;
       b.title = `${TOOLTIPS[unit] ?? l} · ${d.buildTicks / 10}s to train · Shift+click = ×5`;
-      b.innerHTML = `<span class="icon" data-kind="${unit}"></span><span class="slabel"><span class="sname">${l}</span><span class="req-tag"></span></span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span>`;
+      b.innerHTML = `<span class="icon" data-kind="${unit}"></span><span class="slabel"><span class="sname">${l}</span><span class="req-tag"></span></span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span><span class="qcount hidden"></span>`;
       b.addEventListener("click", (e) => {
         const count = e.shiftKey ? 5 : 1;
         for (let i = 0; i < count; i++) this.onTrain(unit);
@@ -2585,6 +2602,67 @@ export class Hud {
     document.getElementById("side-info")?.classList.add("hidden");
   }
 
+  // Ordered production queue strip — shows every queued/ready item across all categories
+  private renderQueueStrip(state: PlayerState | null): void {
+    const strip = document.getElementById("queue-strip");
+    if (!strip) return;
+    type Chip = { icon: string; label: string; pct: number; pos: number; cat: string; idx: number; readyKind?: BuildingKind };
+    const rows: { name: string; cls: string; chips: Chip[] }[] = [];
+    const mk = (cat: string, items: { k: string; left?: number; total?: number }[], ready: string[]): Chip[] => {
+      const chips: Chip[] = items.map((it, i) => ({
+        icon: it.k,
+        label: i === 0 && it.total ? `${Math.round((1 - (it.left ?? 0) / it.total) * 100)}%` : `#${i + 1}`,
+        pct: i === 0 && it.total ? 1 - (it.left ?? 0) / it.total : 0,
+        pos: i + 1,
+        cat,
+        idx: i,
+      }));
+      // ready pile grouped by kind
+      const pile = new Map<string, number>();
+      for (const k of ready) pile.set(k, (pile.get(k) ?? 0) + 1);
+      for (const [k, n] of pile) chips.push({ icon: k, label: n > 1 ? `▶×${n}` : "▶", pct: 1, pos: 0, cat, idx: -1, readyKind: k as BuildingKind });
+      return chips;
+    };
+    rows.push({ name: "STRUCT", cls: "struct", chips: mk("structure", (state?.bq ?? []).map((i) => ({ k: i.kind, left: i.left, total: i.total })), state?.awaiting ?? []) });
+    rows.push({ name: "DEF", cls: "def", chips: mk("defense", (state?.dq ?? []).map((i) => ({ k: i.kind, left: i.left, total: i.total })), state?.awaitingDef ?? []) });
+    for (const [cat, name] of [["barracks", "INF"], ["factory", "VEH"], ["airfield", "AIR"], ["shipyard", "SEA"]] as const) {
+      rows.push({
+        name,
+        cls: "unit",
+        chips: (state?.queues?.[cat] ?? []).map((it, i) => ({
+          icon: it.unit,
+          label: i === 0 ? `${Math.round((1 - it.left / it.total) * 100)}%` : `#${i + 1}`,
+          pct: i === 0 ? 1 - it.left / it.total : 0,
+          pos: i + 1,
+          cat,
+          idx: i,
+        })),
+      });
+    }
+    const html = rows
+      .filter((r) => r.chips.length)
+      .map(
+        (r) =>
+          `<div class="qrow ${r.cls}"><span class="qrowname">${r.name}</span><span class="qchips">` +
+          r.chips
+            .map((c) => {
+              const attr = c.readyKind ? `data-ready="${c.cat}" data-kind="${c.readyKind}"` : `data-cat="${c.cat}" data-i="${c.idx}"`;
+              const fill = c.pct > 0 && c.pct < 1 ? ` style="--qfill:${(c.pct * 100).toFixed(0)}%"` : "";
+              const cls = c.readyKind ? "qchip ready" : c.idx === 0 ? "qchip head" : "qchip";
+              return `<span class="${cls}"${fill} ${attr} title="${label(c.icon as BuildingKind | UnitKind)} — right-click to cancel"><span class="icon" data-kind="${c.icon}"></span><span class="qlabel">${c.label}</span></span>`;
+            })
+            .join("") +
+          `</span></div>`,
+      )
+      .join("");
+    if (html === this.lastQueueHtml) return;
+    this.lastQueueHtml = html;
+    strip.innerHTML = html;
+    strip.classList.toggle("hidden", !html);
+  }
+
+  private lastQueueHtml = "";
+
   updateSidebar(
     state: PlayerState | null,
     has: (k: string) => boolean,
@@ -2610,6 +2688,8 @@ export class Hud {
       if (statusText) b.dataset.statusText = statusText;
       else delete b.dataset.statusText;
     };
+
+    this.renderQueueStrip(state);
 
     for (const [kind, b] of this.buildBtns) {
       const d = BUILDINGS[kind];
@@ -2835,16 +2915,24 @@ export class Hud {
         applyReason(b, formatShortNeed(directMissing), detail, "lock", "blocked");
         continue;
       }
-      const q = state.queues[cat];
-      if (q && q.unit === unit) {
-        prog.style.width = `${(1 - q.left / q.total) * 100}%`;
-        bt.textContent = `${(q.left / 10).toFixed(1)}s`;
-        const c = document.createElement("span");
-        c.className = "qcount";
-        c.textContent = "×" + q.count;
-        b.appendChild(c);
-        if (q.count >= 9) {
-          applyReason(b, "Queue full", "Production queue full (max 9).", "busy", "blocked");
+      const arr = state.queues[cat];
+      const myIdx = arr ? arr.findIndex((i) => i.unit === unit) : -1;
+      const myCount = arr ? arr.filter((i) => i.unit === unit).length : 0;
+      const qBadge = b.querySelector<HTMLElement>(".qcount");
+      if (qBadge) {
+        qBadge.textContent = myCount > 0 ? `×${myCount}` : "";
+        qBadge.classList.toggle("hidden", myCount === 0);
+      }
+      if (arr?.length && myIdx >= 0) {
+        const head = arr[0];
+        if (myIdx === 0) {
+          prog.style.width = `${(1 - head.left / head.total) * 100}%`;
+          bt.textContent = `${(head.left / 10).toFixed(1)}s`;
+        } else {
+          bt.textContent = `#${myIdx + 1}`;
+        }
+        if (arr.length >= 12) {
+          applyReason(b, "Queue full", "Production queue full (max 12).", "busy", "blocked");
           continue;
         }
         if (state.credits < d.cost) {
@@ -2859,15 +2947,12 @@ export class Hud {
           "",
           "",
           "training",
-          `Training (×${q.count}) — click to queue more · Shift+click ×5 · Right-click to cancel.`,
+          `Training (×${myCount}, queue ${arr.length}/12) — click to queue more · Shift+click ×5 · Right-click to cancel.`,
         );
         continue;
       }
-      if (q) {
-        const prodName = BUILDING_NAMES[cat];
-        const qUnitName = label(q.unit);
-        const detail = `${prodName} is training ${qUnitName}. Right-click ${qUnitName} to cancel.`;
-        applyReason(b, "Queue busy", detail, "busy", "blocked");
+      if (arr?.length && arr.length >= 12) {
+        applyReason(b, "Queue full", "Production queue full (max 12).", "busy", "blocked");
         continue;
       }
       if (state.credits < d.cost) {

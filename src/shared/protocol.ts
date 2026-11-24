@@ -29,7 +29,7 @@ export type C2S =
   | { t: "buildCancel"; cat?: BuildCategory; index?: number; awaiting?: boolean; kind?: BuildingKind } // cancel queued (index/kind) or ready-pile (awaiting) item
   | { t: "place"; tx: number; ty: number; cat?: BuildCategory; kind?: BuildingKind } // place finished structure or defense
   | { t: "train"; unit: UnitKind } // queue one unit
-  | { t: "trainCancel"; unit: UnitKind } // dequeue one
+  | { t: "trainCancel"; unit?: UnitKind; cat?: ProdCat; index?: number } // dequeue one (by kind, or by cat+index)
   | { t: "bridge"; id: number; tx: number; ty: number } // engineer lays a pontoon bridge toward (tx,ty)
   | { t: "sell"; id: number } // sell own building for 50% refund
   | { t: "repair"; id: number } // repair own building to full (25% cost)
@@ -124,11 +124,10 @@ export interface CrateSnap {
   kind: CrateKind;
 }
 
-export interface ProdQueue {
+export interface ProdItem {
   unit: UnitKind;
   left: number;
   total: number;
-  count: number;
 }
 
 export interface PlayerState {
@@ -142,7 +141,7 @@ export interface PlayerState {
   bq: { kind: BuildingKind; left: number; total: number }[]; // head builds, rest queued
   awaitingDef?: BuildingKind[]; // defense finished (parallel queue!), waiting for placement
   dq?: { kind: BuildingKind; left: number; total: number }[];
-  queues: Partial<Record<ProdCat, ProdQueue>>;
+  queues: Partial<Record<ProdCat, ProdItem[]>>;
   team?: number;
   swReady?: boolean;
   swLeft?: number; // ticks remaining on Ion Uplink

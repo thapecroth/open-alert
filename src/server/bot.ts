@@ -596,9 +596,9 @@ export class RtsBot {
     if (this.hasBuilding(bc, "barracks") && army < this.armyCap) {
       const q = me.queues.barracks;
       const wantLandmarkEngi = this.diff !== "easy" && neutralLandmarks > 0 && me.credits >= UNITS.engineer.cost + 200;
-      if (this.diff !== "easy" && !q && !engi && (wantLandmarkEngi || me.credits > 800)) {
+      if (this.diff !== "easy" && !q?.length && !engi && (wantLandmarkEngi || me.credits > 800)) {
         this.trycmd(() => w.cmdTrain(this.slot, "engineer"));
-      } else if (!q) {
+      } else if (!q?.length) {
         const step = this.barracksCycle % 4;
         let unit: UnitKind = "infantry";
         if (step === 1 && fpvdrones < fpvCap && (this.phase !== "early" || this.profile === "rusher")) {
@@ -612,10 +612,10 @@ export class RtsBot {
           this.trycmd(() => w.cmdTrain(this.slot, unit));
           this.barracksCycle++;
         }
-      } else if (q.unit !== "engineer") {
-        const u = q.unit;
+      } else if (q[0]?.unit !== "engineer") {
+        const u = q[0].unit;
         const cap = u === "fpvdrone" ? Math.min(infGoal, Math.max(1, fpvCap - fpvdrones)) : infGoal;
-        if (q.count < cap && me.credits >= UNITS[u].cost + reserve) {
+        if (q.length < cap && me.credits >= UNITS[u].cost + reserve) {
           this.trycmd(() => w.cmdTrain(this.slot, u));
         }
       }
@@ -625,7 +625,7 @@ export class RtsBot {
     if (this.hasBuilding(bc, "factory")) {
       const q = me.queues.factory;
       const harvGoal = this.diff === "easy" ? 2 : this.phase === "early" ? 2 : me.credits > 3000 ? 4 : 3;
-      if (!q && harv < harvGoal && me.credits >= UNITS.harvester.cost + reserve) {
+      if (!q?.length && harv < harvGoal && me.credits >= UNITS.harvester.cost + reserve) {
         this.trycmd(() => w.cmdTrain(this.slot, "harvester"));
       }
       // Huge maps: train 1-2 Supply Convoys to sustain forward forces with fuel & ammo
@@ -650,7 +650,7 @@ export class RtsBot {
       const shahedCap = this.diff === "easy" ? 2 : this.diff === "brutal" ? 5 : 3;
       const a10Cap = this.diff === "easy" ? 0 : this.diff === "brutal" ? 3 : 2;
       const ac130Cap = this.diff === "easy" ? 0 : this.diff === "brutal" ? 2 : 1;
-      if (!q) {
+      if (!q?.length) {
         let unit: UnitKind | null = null;
         if (uavs < 1) unit = "uav";
         else if (radar && ewCap > 0 && ewdrones < ewCap) unit = "ewdrone";
@@ -666,7 +666,7 @@ export class RtsBot {
           this.trycmd(() => w.cmdTrain(this.slot, unit));
         }
       } else {
-        const u = q.unit;
+        const u = q[0].unit;
         const cap =
           u === "ewdrone"
             ? ewCap
@@ -698,8 +698,8 @@ export class RtsBot {
                           ? stealthbombers
                           : hypersonics;
         if (
-          fielded + q.count < cap &&
-          airCount + q.count < airGoal &&
+          fielded + q.length < cap &&
+          airCount + q.length < airGoal &&
           army < this.armyCap + 8 &&
           me.credits >= UNITS[u].cost + reserve
         ) {
@@ -714,7 +714,7 @@ export class RtsBot {
       const seaCount = usvs + gunboats + destroyers + subs + dreadnoughts + carriers;
       const seaGoal = this.diff === "easy" ? 3 : this.diff === "brutal" ? 11 : 6;
       const usvCap = this.diff === "easy" ? 2 : this.diff === "brutal" ? 4 : 3;
-      if (!q) {
+      if (!q?.length) {
         let unit: UnitKind | null = null;
         if (s2 && carriers < 2 && gunboats + destroyers >= 2) unit = "carrier";
         else if (s2 && dreadnoughts < 2 && gunboats + destroyers >= 2) unit = "dreadnought";
@@ -726,7 +726,7 @@ export class RtsBot {
           this.trycmd(() => w.cmdTrain(this.slot, unit));
         }
       } else {
-        const u = q.unit;
+        const u = q[0].unit;
         const cap = u === "usv" ? usvCap : u === "dreadnought" || u === "carrier" || u === "sub" ? 2 : 3;
         const fielded =
           u === "usv"
@@ -741,8 +741,8 @@ export class RtsBot {
                     ? carriers
                     : dreadnoughts;
         if (
-          fielded + q.count < cap &&
-          seaCount + q.count < seaGoal &&
+          fielded + q.length < cap &&
+          seaCount + q.length < seaGoal &&
           army < this.armyCap + 8 &&
           me.credits >= UNITS[u].cost + reserve
         ) {
@@ -758,7 +758,7 @@ export class RtsBot {
       const himarsCap = this.diff === "easy" ? 1 : this.diff === "brutal" ? 3 : 2;
       const railCap = this.diff === "brutal" || this.profile === "tech" ? 5 : 4;
       const ballisticCap = this.diff === "easy" ? 0 : this.diff === "brutal" ? 2 : 1;
-      if (!q) {
+      if (!q?.length) {
         // fresh queue: Aegis Railgun MBTs (factory2), HIMARS rocket artillery (radar), Ballistic TELs, else Main Battle Tanks
         let unit: UnitKind | null = null;
         if (this.phase !== "early") {
@@ -776,7 +776,7 @@ export class RtsBot {
       } else {
         // one shared queue — stack more of what's already in it (queued units
         // count toward the caps) instead of fighting a different queue unit
-        const u = q.unit;
+        const u = q[0].unit;
         const cap =
           u === "tank"
             ? tankGoal
@@ -790,7 +790,7 @@ export class RtsBot {
         const fielded =
           u === "himars" ? himars : u === "ballistic" ? ballistics : u === "railtank" ? railtanks : 0;
         const eliteU = (f2 && u === "railtank") || (radar && u === "himars" && this.phase === "late");
-        if (cap > 0 && fielded + q.count < cap && (army < this.armyCap || eliteU) && me.credits >= UNITS[u].cost + reserve) {
+        if (cap > 0 && fielded + q.length < cap && (army < this.armyCap || eliteU) && me.credits >= UNITS[u].cost + reserve) {
           this.trycmd(() => w.cmdTrain(this.slot, u));
         }
         // a queued harvester or supplytruck is left to finish rather than cancelled

@@ -224,6 +224,38 @@ button.on { background: #1d4459; border-color: var(--acc); color: #eef8ff; }
   border-color: var(--amber); color: var(--amber);
   animation: pulse 0.85s infinite alternate;
 }
+
+/* ---- production queue strip: ordered chips for every pending item ---- */
+.queue-strip {
+  display: flex; flex-direction: column; gap: 3px;
+  margin: 4px 4px 2px; padding: 4px 6px;
+  background: rgba(8, 14, 20, 0.72); border: 1px solid rgba(74, 216, 255, 0.18);
+  border-radius: 4px; font-family: inherit;
+}
+.qrow { display: flex; align-items: center; gap: 4px; min-height: 20px; }
+.qrowname {
+  flex: 0 0 40px; font-size: 9px; font-weight: 800; letter-spacing: 0.6px;
+  color: #7d94a8; text-align: right;
+}
+.qrow.struct .qrowname { color: #6ec1ff; }
+.qrow.def .qrowname { color: #ffb84a; }
+.qchips { display: flex; flex-wrap: wrap; gap: 3px; }
+.qchip {
+  position: relative; display: inline-flex; align-items: center; gap: 3px;
+  padding: 1px 5px 1px 2px; border-radius: 3px; overflow: hidden;
+  background: rgba(18, 28, 38, 0.9); border: 1px solid rgba(110, 148, 178, 0.35);
+  font-size: 10px; font-weight: 700; color: #b8cad8; cursor: context-menu;
+  user-select: none;
+}
+.qchip .icon { width: 14px; height: 14px; display: inline-block; }
+.qchip.head { border-color: rgba(61, 224, 126, 0.55); color: #9fe8b8; }
+.qchip.head::before {
+  content: ""; position: absolute; inset: 0; z-index: 0;
+  background: linear-gradient(90deg, rgba(61,224,126,0.22) var(--qfill,0%), transparent var(--qfill,0%));
+}
+.qchip > * { position: relative; z-index: 1; }
+.qchip.ready { border-color: var(--amber); color: var(--amber); animation: pulse 0.85s infinite alternate; }
+.qchip .qlabel { font-variant-numeric: tabular-nums; }
 .ready-stack {
   position: sticky; top: 0; z-index: 5;
   display: flex; flex-direction: column;
