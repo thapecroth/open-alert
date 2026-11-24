@@ -639,7 +639,7 @@ export class GameScene {
   fpvActive = false;
   public mapW = MAP_W;
   public mapH = MAP_H;
-  ground!: THREE.Mesh;
+  ground!: THREE.Group; // chunked 16x16-tile terrain meshes — frustum culling drops off-screen chunks
   raycaster = new THREE.Raycaster();
   pickables: THREE.Object3D[] = []; // entity roots — raycast for pickEntity
   pointerX = 0;
@@ -695,8 +695,9 @@ export class GameScene {
   private artifactAnims: ((t: number, dt: number) => void)[] = [];
   private artifactMats: THREE.Material[] = [];
 
-  // Live dynamic mapW x mapH Fog of War shroud plane
-  private fogMesh!: THREE.Mesh;
+  // Live dynamic mapW x mapH Fog of War shroud plane (chunked like the ground)
+  private fogMesh!: THREE.Group;
+  private fogMat!: THREE.MeshBasicMaterial;
   private fogTex!: THREE.DataTexture;
   private fogW = MAP_W;
   private fogH = MAP_H;
@@ -982,9 +983,50 @@ export class GameScene {
     this.skirtMat.color.setHex(atm.skirt);
   }
 
+  // Lazy terrain rendering: split whole-map overlays into 16x16-tile chunk
+  // meshes so three.js frustum culling can drop off-screen chunks each frame.
+  // UVs are remapped to world space (u = x/W, v = 1 - z/H — the same mapping a
+  // single full-map PlaneGeometry produces) so shared whole-map textures and
+  // the fog DataTexture stay pixel-identical.
+  private static readonly TERRAIN_CHUNK = 16;
+
+  private fillTerrainChunks(
+    group: THREE.Group,
+    W: number,
+    H: number,
+    y: number,
+    mat: THREE.Material,
+    renderOrder = 0,
+    receiveShadow = false,
+  ): void {
+    for (const child of [...group.children]) {
+      group.remove(child);
+      if (child instanceof THREE.Mesh) child.geometry.dispose();
+    }
+    const CH = GameScene.TERRAIN_CHUNK;
+    for (let cz = 0; cz < H; cz += CH) {
+      for (let cx = 0; cx < W; cx += CH) {
+        const cw = Math.min(CH, W - cx);
+        const ch = Math.min(CH, H - cz);
+        const geo = new THREE.PlaneGeometry(cw, ch);
+        geo.rotateX(-Math.PI / 2);
+        const posA = geo.attributes.position as THREE.BufferAttribute;
+        const uvA = geo.attributes.uv as THREE.BufferAttribute;
+        const ox = cx + cw / 2,
+          oz = cz + ch / 2;
+        for (let i = 0; i < posA.count; i++) {
+          uvA.setXY(i, (ox + posA.getX(i)) / W, 1 - (oz + posA.getZ(i)) / H);
+        }
+        const m = new THREE.Mesh(geo, mat);
+        m.position.set(ox, y, oz);
+        m.renderOrder = renderOrder;
+        m.receiveShadow = receiveShadow;
+        group.add(m);
+      }
+    }
+  }
+
   private buildGround() {
-    const geo = new THREE.PlaneGeometry(this.mapW, this.mapH);
-    geo.rotateX(-Math.PI / 2);
     const { map: microMap, normalMap: microNormalMap } = getGroundMicroDetail();
     this.groundMat = new THREE.MeshStandardMaterial({
       normalScale: new THREE.Vector2(0.88, 0.88),
@@ -1032,11 +1074,9 @@ export class GameScene {
           #endif`,
         );
     };
-    const g = new THREE.Mesh(geo, this.groundMat);
-    g.position.set(this.mapW / 2, 0, this.mapH / 2);
-    g.receiveShadow = true;
-    this.ground = g;
-    this.scene.add(g);
+    this.ground = new THREE.Group();
+    this.fillTerrainChunks(this.ground, this.mapW, this.mapH, 0, this.groundMat, 0, true);
+    this.scene.add(this.ground);
 
     // Subtle tactical command grid overlay (uniform color so no fake center UV seam)
     const gridSize = Math.max(this.mapW, this.mapH);
@@ -1084,12 +1124,8 @@ export class GameScene {
     const W = this.mapW;
     const H = this.mapH;
 
-    // 1) Ground plane + proportional micro-detail repeat (keeps identical crispness on 64/96/128)
-    this.ground.geometry.dispose();
-    const groundGeo = new THREE.PlaneGeometry(W, H);
-    groundGeo.rotateX(-Math.PI / 2);
-    this.ground.geometry = groundGeo;
-    this.ground.position.set(W / 2, 0, H / 2);
+    // 1) Chunked ground meshes + proportional micro-detail repeat (keeps identical crispness on 64/96/128)
+    this.fillTerrainChunks(this.ground, W, H, 0, this.groundMat, 0, true);
     this.microRepeatUniform.value = W * 0.5;
 
     // 2) Tactical grid overlay
@@ -1152,14 +1188,9 @@ export class GameScene {
       this.fogTex.generateMipmaps = false;
       this.fogTex.wrapS = THREE.ClampToEdgeWrapping;
       this.fogTex.wrapT = THREE.ClampToEdgeWrapping;
-      const fogMat = this.fogMesh.material as THREE.MeshBasicMaterial;
-      fogMat.map = this.fogTex;
-      fogMat.needsUpdate = true;
-      this.fogMesh.geometry.dispose();
-      const fogGeo = new THREE.PlaneGeometry(W, H);
-      fogGeo.rotateX(-Math.PI / 2);
-      this.fogMesh.geometry = fogGeo;
-      this.fogMesh.position.set(W / 2, 0.038, H / 2);
+      this.fogMat.map = this.fogTex;
+      this.fogMat.needsUpdate = true;
+      this.fillTerrainChunks(this.fogMesh, W, H, 0.038, this.fogMat, 2);
     }
 
     // 6) Ore InstancedMesh capacity for full mapW * mapH battlefield
@@ -1665,13 +1696,10 @@ export class GameScene {
     }
 
     // Animated 3D Navigable Ocean Water Surface + Coastal Shoreline Foam
+    // Water is emitted per 16x16-tile chunk (same vertex layout as one merged
+    // mesh) so frustum culling can drop off-screen chunks on ocean-heavy maps.
     const waterTiles = layout.water;
     if (waterTiles.length > 0) {
-      const nTiles = waterTiles.length;
-      const pos = new Float32Array(nTiles * 4 * 3);
-      const norm = new Float32Array(nTiles * 4 * 3);
-      const uv = new Float32Array(nTiles * 4 * 2);
-      const indices = new Uint32Array(nTiles * 6);
       const uvScale = 0.22;
       const yWater = 0.03;
 
@@ -1679,54 +1707,15 @@ export class GameScene {
         tx < 0 || ty < 0 || tx >= W || ty >= H ? true : this.waterSet.has(ty * W + tx);
 
       const foamEdges: { x: number; z: number; ry: number }[] = [];
+      const CH = GameScene.TERRAIN_CHUNK;
+      const chunks = new Map<number, [number, number][]>();
+      for (const t of waterTiles) {
+        const key = Math.floor(t[1] / CH) * 64 + Math.floor(t[0] / CH);
+        let list = chunks.get(key);
+        if (!list) chunks.set(key, (list = []));
+        list.push(t);
 
-      for (let i = 0; i < nTiles; i++) {
-        const [tx, ty] = waterTiles[i];
-        const x0 = tx - 0.008;
-        const x1 = tx + 1.008;
-        const z0 = ty - 0.008;
-        const z1 = ty + 1.008;
-        const vOff = i * 4;
-        const pOff = vOff * 3;
-        const uOff = vOff * 2;
-        const iOff = i * 6;
-
-        // Quad lying flat in XZ with upward +Y normal and continuous world-space UVs
-        pos[pOff] = x0;
-        pos[pOff + 1] = yWater;
-        pos[pOff + 2] = z0;
-        pos[pOff + 3] = x0;
-        pos[pOff + 4] = yWater;
-        pos[pOff + 5] = z1;
-        pos[pOff + 6] = x1;
-        pos[pOff + 7] = yWater;
-        pos[pOff + 8] = z1;
-        pos[pOff + 9] = x1;
-        pos[pOff + 10] = yWater;
-        pos[pOff + 11] = z0;
-
-        for (let k = 0; k < 4; k++) {
-          norm[pOff + k * 3] = 0;
-          norm[pOff + k * 3 + 1] = 1;
-          norm[pOff + k * 3 + 2] = 0;
-        }
-
-        uv[uOff] = x0 * uvScale;
-        uv[uOff + 1] = z0 * uvScale;
-        uv[uOff + 2] = x0 * uvScale;
-        uv[uOff + 3] = z1 * uvScale;
-        uv[uOff + 4] = x1 * uvScale;
-        uv[uOff + 5] = z1 * uvScale;
-        uv[uOff + 6] = x1 * uvScale;
-        uv[uOff + 7] = z0 * uvScale;
-
-        indices[iOff] = vOff;
-        indices[iOff + 1] = vOff + 1;
-        indices[iOff + 2] = vOff + 2;
-        indices[iOff + 3] = vOff;
-        indices[iOff + 4] = vOff + 2;
-        indices[iOff + 5] = vOff + 3;
-
+        const [tx, ty] = t;
         // Shoreline white foam strips along every border between water and dry land
         if (!hasWaterTile(tx, ty - 1)) foamEdges.push({ x: tx + 0.5, z: ty + 0.12, ry: 0 });
         if (!hasWaterTile(tx, ty + 1)) foamEdges.push({ x: tx + 0.5, z: ty + 0.88, ry: Math.PI });
@@ -1734,18 +1723,74 @@ export class GameScene {
         if (!hasWaterTile(tx + 1, ty)) foamEdges.push({ x: tx + 0.88, z: ty + 0.5, ry: -Math.PI / 2 });
       }
 
-      const waterGeo = new THREE.BufferGeometry();
-      waterGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-      waterGeo.setAttribute("normal", new THREE.BufferAttribute(norm, 3));
-      waterGeo.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
-      waterGeo.setIndex(new THREE.BufferAttribute(indices, 1));
-
       this.waterMat = createOceanWaterMaterial(mapId);
       this.waterBaseEmissive = this.waterMat.emissiveIntensity;
-      const waterMesh = new THREE.Mesh(waterGeo, this.waterMat);
-      waterMesh.receiveShadow = true;
-      waterMesh.renderOrder = 1;
-      group.add(waterMesh);
+      for (const tiles of chunks.values()) {
+        const nTiles = tiles.length;
+        const pos = new Float32Array(nTiles * 4 * 3);
+        const norm = new Float32Array(nTiles * 4 * 3);
+        const uv = new Float32Array(nTiles * 4 * 2);
+        const indices = new Uint32Array(nTiles * 6);
+
+        for (let i = 0; i < nTiles; i++) {
+          const [tx, ty] = tiles[i];
+          const x0 = tx - 0.008;
+          const x1 = tx + 1.008;
+          const z0 = ty - 0.008;
+          const z1 = ty + 1.008;
+          const vOff = i * 4;
+          const pOff = vOff * 3;
+          const uOff = vOff * 2;
+          const iOff = i * 6;
+
+          // Quad lying flat in XZ with upward +Y normal and continuous world-space UVs
+          pos[pOff] = x0;
+          pos[pOff + 1] = yWater;
+          pos[pOff + 2] = z0;
+          pos[pOff + 3] = x0;
+          pos[pOff + 4] = yWater;
+          pos[pOff + 5] = z1;
+          pos[pOff + 6] = x1;
+          pos[pOff + 7] = yWater;
+          pos[pOff + 8] = z1;
+          pos[pOff + 9] = x1;
+          pos[pOff + 10] = yWater;
+          pos[pOff + 11] = z0;
+
+          for (let k = 0; k < 4; k++) {
+            norm[pOff + k * 3] = 0;
+            norm[pOff + k * 3 + 1] = 1;
+            norm[pOff + k * 3 + 2] = 0;
+          }
+
+          uv[uOff] = x0 * uvScale;
+          uv[uOff + 1] = z0 * uvScale;
+          uv[uOff + 2] = x0 * uvScale;
+          uv[uOff + 3] = z1 * uvScale;
+          uv[uOff + 4] = x1 * uvScale;
+          uv[uOff + 5] = z1 * uvScale;
+          uv[uOff + 6] = x1 * uvScale;
+          uv[uOff + 7] = z0 * uvScale;
+
+          indices[iOff] = vOff;
+          indices[iOff + 1] = vOff + 1;
+          indices[iOff + 2] = vOff + 2;
+          indices[iOff + 3] = vOff;
+          indices[iOff + 4] = vOff + 2;
+          indices[iOff + 5] = vOff + 3;
+        }
+
+        const waterGeo = new THREE.BufferGeometry();
+        waterGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+        waterGeo.setAttribute("normal", new THREE.BufferAttribute(norm, 3));
+        waterGeo.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+        waterGeo.setIndex(new THREE.BufferAttribute(indices, 1));
+
+        const waterMesh = new THREE.Mesh(waterGeo, this.waterMat);
+        waterMesh.receiveShadow = true;
+        waterMesh.renderOrder = 1;
+        group.add(waterMesh);
+      }
 
       if (foamEdges.length > 0) {
         const foamGeo = new THREE.PlaneGeometry(1.06, 0.22);
@@ -2334,19 +2379,16 @@ export class GameScene {
     this.fogTex.wrapS = THREE.ClampToEdgeWrapping;
     this.fogTex.wrapT = THREE.ClampToEdgeWrapping;
 
-    const geo = new THREE.PlaneGeometry(this.fogW, this.fogH);
-    geo.rotateX(-Math.PI / 2);
-    const mat = new THREE.MeshBasicMaterial({
+    this.fogMat = new THREE.MeshBasicMaterial({
       map: this.fogTex,
       transparent: true,
       depthWrite: false,
       fog: false,
     });
-    this.fogMesh = new THREE.Mesh(geo, mat);
-    this.fogMesh.position.set(this.fogW / 2, 0.038, this.fogH / 2);
-    this.fogMesh.renderOrder = 2;
+    this.fogMesh = new THREE.Group();
     this.fogMesh.visible = false;
     this.scene.add(this.fogMesh);
+    this.fillTerrainChunks(this.fogMesh, this.fogW, this.fogH, 0.038, this.fogMat, 2);
     this.resetFog();
   }
 

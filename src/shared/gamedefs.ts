@@ -537,23 +537,23 @@ export const MAP_LIST: {
   naval?: boolean;
   desc: string;
 }[] = [
-  { id: "crossroads", name: "Twin Crossroads", biome: "Steppe", w: 64, h: 64, maxPlayers: 8, desc: "Balanced flank mesas, twin Oil Derricks & Coal Mines" },
-  { id: "canyon", name: "Iron Canyon", biome: "Canyon", w: 64, h: 64, maxPlayers: 8, desc: "Twin sandstone canyon walls channeling fights across 3 lanes" },
-  { id: "basin", name: "Shattered Basin", biome: "Alpine", w: 64, h: 64, maxPlayers: 8, desc: "Open volcanic ore basin ringed by captureable Oil Derricks & Coal" },
-  { id: "tundra", name: "Frostbite Pass", biome: "Arctic", w: 64, h: 64, maxPlayers: 8, desc: "Frozen glacial divide with wide north/south bypasses & rich center ice field" },
-  { id: "fortress", name: "Citadel Bastion", biome: "Desert", w: 64, h: 64, maxPlayers: 8, desc: "Walled central citadel with 4 gates guarding a mega ore cache" },
-  { id: "jungle", name: "Emerald Valley", biome: "Jungle", w: 64, h: 64, maxPlayers: 8, desc: "Diagonal ridge corridors built for ambushes & flanking raids" },
-  { id: "islands", name: "Bridgehead Crossing", biome: "Riverland", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Navigable river channels, lighthouses & bridges — Land, Air & Sea" },
-  { id: "oasis", name: "Scorched Oasis", biome: "Sahara", w: 64, h: 64, maxPlayers: 8, desc: "Golden dune ring with fast open flank tank lanes & twin oasis passes" },
-  { id: "archipelago", name: "Pacific Atoll", biome: "Ocean", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "4 corner islands & volcanic atoll with sea-stacks & blinking buoys" },
-  { id: "coastline", name: "Storm Coast", biome: "Coastal", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Stormy North Sea straits with coastal lighthouses & dreadnought lanes" },
-  { id: "atlantis", name: "Sunken Atlantis", biome: "Mythic Sea", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Ancient submerged crystal obelisks, glowing sea-gates & golden causeways" },
-  { id: "shipwreck", name: "Titan Graveyard", biome: "Abyssal", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Colossal sunken dreadnought wrecks, reefs & salvage ore shoals" },
-  { id: "volcano", name: "Caldera Forge", biome: "Volcanic", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Steaming coastal sea ringing a glowing molten caldera & obsidian bridges" },
-  { id: "oilrig", name: "Offshore Megarig", biome: "Deep Sea", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Open-ocean platform bridges converging on a giant central oil megastructure" },
-  { id: "cybergrid", name: "Neon Megastructure", biome: "Orbital", w: 64, h: 64, maxPlayers: 8, desc: "High-tech titanium battle deck with floating crystal monoliths & energy trenches" },
-  { id: "hormuz", name: "Strait of Hormuz", biome: "Gulf Strait", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Persian Gulf chokepoint — twin tanker channels, mid-strait oil islets & contested shore crossings" },
-  { id: "delta", name: "Mekong Delta", biome: "River Delta", w: 64, h: 64, maxPlayers: 8, naval: true, desc: "Braided jungle rivers fanning into a wide bay — ford crossings, mangrove islets & brown-water navy fights" },
+  { id: "crossroads", name: "Twin Crossroads", biome: "Steppe", w: 96, h: 96, maxPlayers: 8, desc: "Balanced flank mesas, twin Oil Derricks & Coal Mines" },
+  { id: "canyon", name: "Iron Canyon", biome: "Canyon", w: 96, h: 96, maxPlayers: 8, desc: "Twin sandstone canyon walls channeling fights across 3 lanes" },
+  { id: "basin", name: "Shattered Basin", biome: "Alpine", w: 96, h: 96, maxPlayers: 8, desc: "Open volcanic ore basin ringed by captureable Oil Derricks & Coal" },
+  { id: "tundra", name: "Frostbite Pass", biome: "Arctic", w: 96, h: 96, maxPlayers: 8, desc: "Frozen glacial divide with wide north/south bypasses & rich center ice field" },
+  { id: "fortress", name: "Citadel Bastion", biome: "Desert", w: 96, h: 96, maxPlayers: 8, desc: "Walled central citadel with 4 gates guarding a mega ore cache" },
+  { id: "jungle", name: "Emerald Valley", biome: "Jungle", w: 96, h: 96, maxPlayers: 8, desc: "Diagonal ridge corridors built for ambushes & flanking raids" },
+  { id: "islands", name: "Bridgehead Crossing", biome: "Riverland", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Navigable river channels, lighthouses & bridges — Land, Air & Sea" },
+  { id: "oasis", name: "Scorched Oasis", biome: "Sahara", w: 96, h: 96, maxPlayers: 8, desc: "Golden dune ring with fast open flank tank lanes & twin oasis passes" },
+  { id: "archipelago", name: "Pacific Atoll", biome: "Ocean", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "4 corner islands & volcanic atoll with sea-stacks & blinking buoys" },
+  { id: "coastline", name: "Storm Coast", biome: "Coastal", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Stormy North Sea straits with coastal lighthouses & dreadnought lanes" },
+  { id: "atlantis", name: "Sunken Atlantis", biome: "Mythic Sea", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Ancient submerged crystal obelisks, glowing sea-gates & golden causeways" },
+  { id: "shipwreck", name: "Titan Graveyard", biome: "Abyssal", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Colossal sunken dreadnought wrecks, reefs & salvage ore shoals" },
+  { id: "volcano", name: "Caldera Forge", biome: "Volcanic", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Steaming coastal sea ringing a glowing molten caldera & obsidian bridges" },
+  { id: "oilrig", name: "Offshore Megarig", biome: "Deep Sea", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Open-ocean platform bridges converging on a giant central oil megastructure" },
+  { id: "cybergrid", name: "Neon Megastructure", biome: "Orbital", w: 96, h: 96, maxPlayers: 8, desc: "High-tech titanium battle deck with floating crystal monoliths & energy trenches" },
+  { id: "hormuz", name: "Strait of Hormuz", biome: "Gulf Strait", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Persian Gulf chokepoint — twin tanker channels, mid-strait oil islets & contested shore crossings" },
+  { id: "delta", name: "Mekong Delta", biome: "River Delta", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Braided jungle rivers fanning into a wide bay — ford crossings, mangrove islets & brown-water navy fights" },
   { id: "bering", name: "Bering Strait (96×96 · 8P)", biome: "Polar Strait", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Two continents split by an icy strait — Diomede stepping-stone isles, ice floes & carrier-lane dominance" },
   // HUGE 8-Player Grand Strategy Theaters (96x96 & 128x128 — built for 4v4 / 8P FFA & Real Logistics!)
   { id: "europa", name: "Iron Frontier (96×96 · 8P)", biome: "Continental", w: 96, h: 96, maxPlayers: 8, desc: "Huge 96×96 European theater — mountain ridges, long supply lines, 4 Oil & 4 Coal" },
@@ -575,28 +575,44 @@ export interface MapLayout {
 
 const mapCache = new Map<MapId, MapLayout>();
 
+// The huge theaters (96x96 & 128x128) are painted natively at their listed size.
+// Every other map branch below is authored on the classic 64x64 design grid and
+// gets upscaled uniformly to its real dimensions (s = W/64 → 1.5 for 96x96).
+const NATIVE_LAYOUT = new Set<MapId>(["bering", "europa", "pacific_theatre", "arctic_front", "megacontinent"]);
+
 export function getMapLayout(id: MapId = "crossroads"): MapLayout {
   const cached = mapCache.get(id);
   if (cached) return cached;
   const meta = MAP_LIST.find((m) => m.id === id);
   const W = meta?.w ?? MAP_W;
   const H = meta?.h ?? MAP_H;
+  // Design-grid → real-map scale. s = 1 keeps authored-at-native-size maps untouched.
+  const sx = NATIVE_LAYOUT.has(id) ? 1 : W / MAP_W;
+  const sy = NATIVE_LAYOUT.has(id) ? 1 : H / MAP_H;
   const cliffSet = new Set<number>();
   const waterSet = new Set<number>();
-  const addRect = (set: Set<number>, x0: number, y0: number, w: number, h: number) => {
+  // Raw map-space rect ops — used by the post-paint passes (spawn clearing,
+  // water connectivity) which already work in real coordinates.
+  const addRectRaw = (set: Set<number>, x0: number, y0: number, w: number, h: number) => {
     for (let y = y0; y < y0 + h; y++) {
       for (let x = x0; x < x0 + w; x++) {
         if (x >= 0 && y >= 0 && x < W && y < H) set.add(y * W + x);
       }
     }
   };
-  const clearRect = (set: Set<number>, x0: number, y0: number, w: number, h: number) => {
+  const clearRectRaw = (set: Set<number>, x0: number, y0: number, w: number, h: number) => {
     for (let y = y0; y < y0 + h; y++) {
       for (let x = x0; x < x0 + w; x++) {
         if (x >= 0 && y >= 0 && x < W && y < H) set.delete(y * W + x);
       }
     }
   };
+  // Painters feed DESIGN-grid coords; the transform scales origins & sizes so
+  // relative gaps/channels/walls preserve topology at any map size.
+  const addRect = (set: Set<number>, x0: number, y0: number, w: number, h: number) =>
+    addRectRaw(set, Math.round(x0 * sx), Math.round(y0 * sy), Math.max(1, Math.round(w * sx)), Math.max(1, Math.round(h * sy)));
+  const clearRect = (set: Set<number>, x0: number, y0: number, w: number, h: number) =>
+    clearRectRaw(set, Math.round(x0 * sx), Math.round(y0 * sy), Math.max(1, Math.round(w * sx)), Math.max(1, Math.round(h * sy)));
   let derricks: [number, number][] = [];
   let coalmines: [number, number][] | undefined;
   let extraOre: [number, number, number][] | undefined;
@@ -1002,8 +1018,8 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       { kind: "monolith", x: 42, y: 43, scale: 0.95 },
     ];
   } else if (id === "hormuz") {
-    // Strait of Hormuz (64x64): two coasts split by a wide shipping strait with twin channels
-    addRect(waterSet, 0, 25, W, 14);
+    // Strait of Hormuz (design 64x64): two coasts split by a wide shipping strait with twin channels
+    addRect(waterSet, 0, 25, MAP_W, 14);
     // Contested land bridges hugging the far west & east edges
     clearRect(waterSet, 0, 25, 9, 14);
     clearRect(waterSet, 55, 25, 9, 14);
@@ -1041,10 +1057,10 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       { kind: "buoy", x: 36, y: 27 },
     ];
   } else if (id === "delta") {
-    // Mekong Delta (64x64): braided jungle rivers fanning into a wide southern bay
+    // Mekong Delta (design 64x64): braided jungle rivers fanning into a wide southern bay
     addRect(waterSet, 14, 0, 7, 52); // west river joins the bay
     addRect(waterSet, 45, 0, 7, 52); // east river joins the bay
-    addRect(waterSet, 0, 52, W, 12); // wide open sea bay along the south edge
+    addRect(waterSet, 0, 52, MAP_W, 12); // wide open sea bay along the south edge
     // River-mouth fans & a mid-map distributary channel between the rivers
     addRect(waterSet, 10, 47, 15, 5);
     addRect(waterSet, 39, 47, 15, 5);
@@ -1323,11 +1339,12 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
   }
 
   // Ensure all 8 perimeter spawns on every map sit on solid dry land and bridge cleanly across any adjacent water channel
+  // (this pass works in REAL map coordinates — hence the Raw rect ops, not the design-grid scaled ones)
   const cx = Math.floor(W / 2),
     cy = Math.floor(H / 2);
   for (const sp of getSpawns(W, H)) {
-    clearRect(cliffSet, sp.x - 1, sp.y - 1, 5, 5);
-    clearRect(waterSet, sp.x - 2, sp.y - 2, 7, 7);
+    clearRectRaw(cliffSet, sp.x - 1, sp.y - 1, 5, 5);
+    clearRectRaw(waterSet, sp.x - 2, sp.y - 2, 7, 7);
     let tx = sp.x + 1,
       ty = sp.y + 1;
     let enteredWater = false;
@@ -1341,11 +1358,11 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       if (waterSet.has(k)) {
         enteredWater = true;
         // Clear perpendicular 3-tile bridge width WITHOUT clearing ahead along (dx, dy)
-        if (dx === 0) clearRect(waterSet, tx - 1, ty, 3, 1);
-        else if (dy === 0) clearRect(waterSet, tx, ty - 1, 1, 3);
+        if (dx === 0) clearRectRaw(waterSet, tx - 1, ty, 3, 1);
+        else if (dy === 0) clearRectRaw(waterSet, tx, ty - 1, 1, 3);
         else {
-          clearRect(waterSet, tx - 1, ty, 3, 1);
-          clearRect(waterSet, tx, ty - 1, 1, 3);
+          clearRectRaw(waterSet, tx - 1, ty, 3, 1);
+          clearRectRaw(waterSet, tx, ty - 1, 1, 3);
         }
       } else if (enteredWater && !cliffSet.has(k)) {
         break; // reached mainland on far side of channel
@@ -1451,6 +1468,18 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       for (const t of comps[hc]) { comp[t] = SEA; comps[SEA].push(t); }
       comps[hc] = [];
     }
+  }
+
+  // Upscale feature coords for 64-grid-authored maps (identity when s = 1).
+  // Sites keep a 2x2 footprint — only positions & ore-blob radii scale.
+  if (sx !== 1 || sy !== 1) {
+    const px = (v: number) => Math.round(v * sx);
+    const py = (v: number) => Math.round(v * sy);
+    const pr = (v: number) => Math.max(1, Math.round(v * Math.min(sx, sy)));
+    derricks = derricks.map(([x, y]): [number, number] => [px(x), py(y)]);
+    if (coalmines) coalmines = coalmines.map(([x, y]): [number, number] => [px(x), py(y)]);
+    if (extraOre) extraOre = extraOre.map(([x, y, r]): [number, number, number] => [px(x), py(y), pr(r)]);
+    if (artifacts) artifacts = artifacts.map((a) => ({ ...a, x: a.x * sx, y: a.y * sy }));
   }
 
   const cliffs: [number, number][] = [];

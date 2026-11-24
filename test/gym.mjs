@@ -46,7 +46,9 @@ const ok = (cond, name, ev = "") => {
 const skip = (name, why) => { skipN++; console.log(`skip: ${name} (${why})`); };
 
 const isB = (k) => k in BUILDINGS;
-const idx = (x, y) => y * MAP_W + x;
+// Live map dims — maps are no longer all 64x64, so derive from the env's world.
+let MW = MAP_W, MH = MAP_H;
+const idx = (x, y) => y * MW + x;
 
 // ---------- placement helpers (client-side replica of world.canPlace) ----------
 function occupiedAndOre(obs, slot) {
@@ -65,7 +67,7 @@ function occupiedAndOre(obs, slot) {
 }
 function canPlaceObs(obs, slot, kind, tx, ty, sets) {
   const d = BUILDINGS[kind];
-  if (tx < 0 || ty < 0 || tx + d.w > MAP_W || ty + d.h > MAP_H) return false;
+  if (tx < 0 || ty < 0 || tx + d.w > MW || ty + d.h > MH) return false;
   for (let y = ty; y < ty + d.h; y++)
     for (let x = tx; x < tx + d.w; x++) if (sets.occ.has(idx(x, y)) || sets.ore.has(idx(x, y))) return false;
   for (const e of obs.ents) {
@@ -112,6 +114,8 @@ function tryBuild(env, obs, kind) {
 console.log("--- reset / obs ---");
 const env = new GymEnv({ opponent: "idle" });
 let obs = env.reset();
+MW = env.world.w;
+MH = env.world.h;
 ok(obs && typeof obs === "object", "reset returns obs");
 ok(Number.isInteger(obs.tick), "obs.tick integer");
 ok(obs.you && obs.you.slot === 0, "obs.you.slot = 0");
@@ -159,12 +163,12 @@ ok(r.info.invalid !== true && r.obs.you.bq?.[0]?.kind === "power", "build action
 // ---------- 4. feature maps ----------
 console.log("--- featureMaps ---");
 const fm = env.featureMaps();
-ok(fm.w === MAP_W && fm.h === MAP_H && fm.c === 6, `featureMaps shape ${fm.w}x${fm.h}x${fm.c}`);
-ok(fm.data instanceof Float32Array && fm.data.length === MAP_W * MAP_H * 6, "featureMaps data is Float32Array plane set");
+ok(fm.w === MW && fm.h === MH && fm.c === 6, `featureMaps shape ${fm.w}x${fm.h}x${fm.c}`);
+ok(fm.data instanceof Float32Array && fm.data.length === MW * MH * 6, "featureMaps data is Float32Array plane set");
 const chanNZ = (c) => {
   let n = 0;
-  const off = c * MAP_W * MAP_H;
-  for (let i = 0; i < MAP_W * MAP_H; i++) if (fm.data[off + i] !== 0) n++;
+  const off = c * MW * MH;
+  for (let i = 0; i < MW * MH; i++) if (fm.data[off + i] !== 0) n++;
   return n;
 };
 ok(chanNZ(0) > 30, "ch0 ore density populated", `nz=${chanNZ(0)}`);
@@ -178,7 +182,7 @@ ok(inRange, "all feature values within [0,1]");
 
 // ---------- 5. RGB frame ----------
 console.log("--- rgbFrame ---");
-for (const [scale, exp] of [[1, MAP_W], [2, MAP_W * 2], [3, MAP_W * 3]]) {
+for (const [scale, exp] of [[1, MW], [2, MW * 2], [3, MW * 3]]) {
   const fr = env.rgbFrame(scale);
   ok(fr.w === exp && fr.h === exp && fr.data.length === exp * exp * 3, `rgbFrame(${scale}) = ${exp}x${exp}x3`);
 }

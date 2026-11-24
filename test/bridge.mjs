@@ -62,9 +62,9 @@ const w2 = World.deserialize(d);
 ok(w2.bridges.size === w.bridges.size, `serialize keeps ${w2.bridges.size} bridge tiles`);
 ok(w2.passable(bx, by) === true, "restored bridge land-passable");
 
-// reject bad orders
+// reject bad orders — target the engineer's own (land) tile so no water lies on the Bresenham line
 const eng2 = w["spawnUnit"](0, "engineer", sx0, sy0);
-ok(w.cmdBridge(0, eng2.id, 2, 2) !== null, "rejects non-water target");
+ok(w.cmdBridge(0, eng2.id, Math.floor(eng2.x), Math.floor(eng2.y)) !== null, "rejects non-water target");
 ok(w.cmdBridge(1, eng2.id, tx, ty) !== null, "rejects wrong owner");
 
 // retasking mid-build drops the order (bTiles cleared)
