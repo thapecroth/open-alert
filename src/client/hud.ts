@@ -770,7 +770,7 @@ export class Hud {
       b.dataset.kind = kind;
       b.dataset.cat = cat;
       b.title = this.buildTooltip(kind);
-      b.innerHTML = `<span class="icon" data-kind="${kind}"></span><span class="slabel"><span class="sname">${BUILDING_NAMES[kind]}</span><span class="req-tag"></span></span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span><span class="qcount hidden"></span>`;
+      b.innerHTML = `<span class="icon" data-kind="${kind}"></span><span class="slabel"><span class="sname">${BUILDING_NAMES[kind]}</span><span class="req-tag"></span></span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span><span class="qcount hidden"></span><span class="qpos hidden"></span>`;
       b.addEventListener("click", () => this.clickBuild(kind));
       b.addEventListener("contextmenu", (e) => {
         e.preventDefault();
@@ -809,7 +809,7 @@ export class Hud {
       b.className = "sbtn";
       b.dataset.unit = unit;
       b.title = `${TOOLTIPS[unit] ?? l} · ${d.buildTicks / 10}s to train · Shift+click = ×5`;
-      b.innerHTML = `<span class="icon" data-kind="${unit}"></span><span class="slabel"><span class="sname">${l}</span><span class="req-tag"></span></span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span><span class="qcount hidden"></span>`;
+      b.innerHTML = `<span class="icon" data-kind="${unit}"></span><span class="slabel"><span class="sname">${l}</span><span class="req-tag"></span></span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span><span class="qcount hidden"></span><span class="qpos hidden"></span>`;
       b.addEventListener("click", (e) => {
         const count = e.shiftKey ? 5 : 1;
         for (let i = 0; i < count; i++) this.onTrain(unit);
@@ -2628,6 +2628,12 @@ export class Hud {
         qBadge.textContent = totalQueued > 0 ? `×${totalQueued}` : "";
         qBadge.classList.toggle("hidden", totalQueued === 0);
       }
+      const qpos = b.querySelector<HTMLElement>(".qpos");
+      if (qpos) {
+        qpos.textContent = queueIdx >= 0 ? `#${queueIdx + 1}` : "";
+        qpos.classList.toggle("hidden", queueIdx < 0);
+        qpos.classList.toggle("head", queueIdx === 0);
+      }
       b.classList.remove("ready", "locked");
       delete b.dataset.busy;
       b.disabled = false;
@@ -2692,7 +2698,7 @@ export class Hud {
           bt.textContent = `${(head.left / 10).toFixed(1)}s`;
           applyReason(b, "", "", "", "building", `Constructing (×${queueCount} queued) — right-click to cancel & refund.`);
         } else {
-          bt.textContent = `#${queueIdx + 1}`;
+          bt.textContent = ""; // position now shown by .qpos badge
           applyReason(b, "", "", "", "building", `Queued #${queueIdx + 1} — right-click to cancel & refund.`);
         }
         b.title = this.buildTooltip(kind);
@@ -2793,8 +2799,20 @@ export class Hud {
       const bt = b.querySelector<HTMLElement>(".btime")!;
       const cat = d.trainsAt;
       const mult = state?.prodBoost?.[cat] ?? 1;
+      const qBadge = b.querySelector<HTMLElement>(".qcount");
+      const qpos = b.querySelector<HTMLElement>(".qpos");
       prog.style.width = "0%";
-      b.querySelector(".qcount")?.remove();
+      // Badges persist across frames now — reset them up-front so early exits
+      // (locked / no state) don't leave stale ×N / #N chips on the button.
+      if (qBadge) {
+        qBadge.textContent = "";
+        qBadge.classList.add("hidden");
+      }
+      if (qpos) {
+        qpos.textContent = "";
+        qpos.classList.add("hidden");
+        qpos.classList.remove("head");
+      }
       b.classList.remove("locked");
       b.disabled = true;
       if (d.domain === "sea" && !hasWater) {
@@ -2840,10 +2858,14 @@ export class Hud {
       const arr = state.queues[cat];
       const myIdx = arr ? arr.findIndex((i) => i.unit === unit) : -1;
       const myCount = arr ? arr.filter((i) => i.unit === unit).length : 0;
-      const qBadge = b.querySelector<HTMLElement>(".qcount");
       if (qBadge) {
         qBadge.textContent = myCount > 0 ? `×${myCount}` : "";
         qBadge.classList.toggle("hidden", myCount === 0);
+      }
+      if (qpos) {
+        qpos.textContent = myIdx >= 0 ? `#${myIdx + 1}` : "";
+        qpos.classList.toggle("hidden", myIdx < 0);
+        qpos.classList.toggle("head", myIdx === 0);
       }
       if (arr?.length && myIdx >= 0) {
         const head = arr[0];
@@ -2851,7 +2873,7 @@ export class Hud {
           prog.style.width = `${(1 - head.left / head.total) * 100}%`;
           bt.textContent = `${(head.left / 10).toFixed(1)}s`;
         } else {
-          bt.textContent = `#${myIdx + 1}`;
+          bt.textContent = ""; // position now shown by .qpos badge
         }
         if (arr.length >= 12) {
           applyReason(b, "Queue full", "Production queue full (max 12).", "busy", "blocked");
