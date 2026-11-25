@@ -47,11 +47,13 @@ export type C2S =
   | { t: "setMap"; map: MapId } // host: pick map in lobby
   | { t: "setConfig"; config: Partial<GameConfig> } // host: adjust match rules in lobby
   | { t: "setTeam"; team: number; id?: string } // 0 = FFA, 1..4 = Team (host may pass bot id)
+  | { t: "setSlot"; slot: number; id?: string } // move to an EMPTY spawn/color slot in lobby (host may pass another player's id)
+  | { t: "swapSlot"; id: string; id2?: string } // swap spawn/color slots in lobby; default self↔id (bots: anyone; humans: host only), host may pass id2 for arbitrary id↔id2
   | { t: "setName"; name: string } // change callsign in lobby
   | { t: "rematch" }
   | { t: "hb" }; // lightweight keepalive heartbeat
 
-export type OrderKind = "move" | "amove" | "attack" | "harvest" | "patrol" | "bridge";
+export type OrderKind = "move" | "amove" | "attack" | "harvest" | "patrol" | "bridge" | "board" | "unload";
 export type WeaponFx =
   | "bullet"
   | "cannon"
@@ -240,6 +242,7 @@ export type S2C =
   | { t: "chat"; name: string; color: string; text: string }
   | { t: "ping"; x: number; y: number; slot: number }
   | { t: "paused"; paused: boolean }
+  | { t: "hbok" } // heartbeat ack — the only periodic server traffic in a quiet lobby; clients use it as a liveness probe
   | { t: "deny"; msg: string };
 
 export const partyName = "game-room";

@@ -145,13 +145,13 @@ const waitLobby = (s, pred, ms = 2000) => until(() => s.lobby && pred(s.lobby), 
   const v2 = conn("v", "tok-v2", url);
   await waitLobby(va, (l) => l.players.length === 3);
   const v2p = va.lobby?.players.find((p) => p.name === "v");
-  ok(!!v2p && isHostId(va.lobby, v2p.id), "v overrides an earlier explicit transfer");
-  const beforeTransferCount = lobbyCount(v2);
+  ok(!!vbp && isHostId(va.lobby, vbp.id), "explicit transfer survives v joining");
+  if (vbp && v2p) send(vb, { t: "transferHost", id: v2p.id });
+  ok(!!v2p && (await waitLobby(va, (l) => isHostId(l, v2p.id))), "host can transfer to v explicitly");
   if (vaId) send(v2, { t: "transferHost", id: vaId });
-  const transferBroadcast = await until(() => lobbyCount(v2) > beforeTransferCount, 1200);
-  ok(transferBroadcast && !!v2p && isHostId(v2.lobby, v2p.id), "transferring away while v present does not move host flag");
+  ok(!!vaId && (await waitLobby(va, (l) => isHostId(l, vaId))), "v can deliberately give host away while present");
   v2.ws.close();
-  ok(!!vaId && (await waitLobby(va, (l) => isHostId(l, vaId), 2500)), "stored transfer applies once v leaves");
+  ok(!!vaId && (await waitLobby(va, (l) => isHostId(l, vaId), 2500)), "explicit transfer persists after v leaves");
   va.ws.close();
   vb.ws.close();
 }

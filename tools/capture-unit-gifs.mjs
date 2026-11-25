@@ -208,6 +208,135 @@ async function train(h, side, unit, count = 1) {
   return mcpCall(h.room, "train_unit", { token, unit, count });
 }
 
+// ---------- base-defense capture machinery ----------
+//
+// The unit pipeline trains a mobile star and walks it into fodder. Defenses
+// invert that choreography: the star is a static building placed through the
+// real build/place flow, and the fodder must come to IT. Every turret in the
+// defense line can engage aircraft (turret/arc/lasertower/satlink hit ground
+// too), so a single unarmed fodder type — the Jammer Drone — covers the whole
+// lineup. It never shoots back, so the star always survives its own close-up.
+
+// Capture order doubles as defense-queue order: awaitingDef is FIFO, so the
+// kinds must come off the queue in exactly the order they are filmed. satlink
+// goes first because it is a STRUCTURE-queue hybrid that the thaad tech chain
+// requires at queue time only — it is sold immediately after its own close-up.
+const DEFENSE_CAPTURE_ORDER = ["satlink", "turret", "arc", "lasertower", "sam", "irondome", "thaad"];
+const DEFENSE_CAM = {
+  satlink: { height: 12.5, dur: 4000 },
+  turret: { height: 10, dur: 3800 },
+  arc: { height: 10.5, dur: 3800 },
+  lasertower: { height: 11.5, dur: 3800 },
+  sam: { height: 12, dur: 3800 },
+  irondome: { height: 11.5, dur: 3800 },
+  thaad: { height: 13, dur: 4200 },
+};
+
+// buildOne early-returns when one of the kind is already owned, which makes it
+// useless for power plants — the defense line is power-hungry and the session
+// needs several of them before the tech tree even starts.
+async function buildCounted(h, side, kind, count) {
+  const token = side === "a" ? h.tokenA : h.tokenB;
+  for (let i = ownedBuildings(h, side, kind).length; i < count; i++) {
+    const data = await mcpCall(h.room, "build_structure", { token, kind });
+    if (!data.ok) throw new Error(`build ${kind} #${i + 1}: ${data.error}`);
+    await waitFor(() => meOf(h, side)?.awaiting?.includes(kind), 90000, `${kind} #${i + 1} ready to place`);
+    await mcpCall(h.room, "place_structure", { token, cat: "structure" });
+    await waitFor(() => ownedBuildings(h, side, kind).length > i, 15000, `${kind} #${i + 1} placed`);
+  }
+}
+
+// Place a finished building at explicit coordinates near (cx, cy). The game
+// rules only allow construction chained within 2 tiles of the existing base,
+// so the exact ideal tile is often illegal — spiral outward trying candidates
+// and let the server's own canPlace validation decide. Failed attempts cost
+// one cheap HTTP call and do not consume the awaiting entry.
+async function placeNear(h, side, kind, cx, cy, cat) {
+  const token = side === "a" ? h.tokenA : h.tokenB;
+  const d = gd.BUILDINGS[kind];
+  const bx = Math.round(cx - d.w / 2);
+  const by = Math.round(cy - d.h / 2);
+  for (let r = 0; r <= 6; r++) {
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        try {
+          const res = await mcpCall(h.room, "place_structure", { token, tx: bx + dx, ty: by + dy, cat });
+          if (res.ok) return { tx: bx + dx, ty: by + dy, auto: false };
+        } catch {
+          // illegal tile — keep spiraling
+        }
+      }
+    }
+  }
+  // Fallback: let the server pick any legal spot rather than failing the capture.
+  const res = await mcpCall(h.room, "place_structure", { token, cat });
+  return { tx: res.tx, ty: res.ty, auto: true };
+}
+
+// Ray from side A's conyard toward the enemy spawn — the defense line belongs
+// on the enemy-ward edge of the base, both because that is where real players
+// put it and because fodder then approaches across open ground instead of
+// overflying the whole base before the first shot.
+function defenseAnchor(h) {
+  const layout = getMapLayout(h.session.map);
+  const spawns = getSpawns(layout.w, layout.h);
+  const home = ownedBuildings(h, "a", "conyard")[0] ?? spawns[h.conns.a.slot];
+  const enemy = spawns[h.conns.b.slot];
+  const dx = enemy.x - home.x;
+  const dy = enemy.y - home.y;
+  const len = Math.hypot(dx, dy) || 1;
+  return { home, ux: dx / len, uy: dy / len };
+}
+
+// Continuous fodder pipeline. The map diagonal is long enough that every
+// drone spends most of a minute in transit, so the stream is primed the moment
+// the airfield exists and kept saturated to a fixed total budget — waiting for
+// the alive-count to dip before training replacements would starve the mid
+// session, because replacement travel time dwarfs the time they spend dying.
+function startDroneStream(h, getGoal, budget = 34) {
+  let stopped = false;
+  let trained = 0;
+  let lastTrain = 0;
+  (async () => {
+    while (!stopped) {
+      try {
+        // Replenish on ALIVE count, not total trained: the population should
+        // hold steady at a handful of drones — enough for a lively ring around
+        // each defense, few enough that the star is never buried under a
+        // dogpile (26+ trained with zero attrition dogpiled the first takes).
+        const aliveNow = ownedUnits(h, "b").filter((e) => e.k === "ewdrone" && (e.hp === undefined || e.hp > 0)).length;
+        if (trained < budget && aliveNow < 6 && Date.now() - lastTrain > 7000) {
+          lastTrain = Date.now();
+          const batch = Math.min(2, budget - trained);
+          const res = await train(h, "b", "ewdrone", batch).catch(() => null);
+          if (res && res.queued) trained += res.queued;
+        }
+        const goal = getGoal();
+        if (goal) {
+          const drones = ownedUnits(h, "b").filter((e) => e.k === "ewdrone" && (e.hp === undefined || e.hp > 0));
+          for (const e of drones) {
+            // Golden-angle jitter keeps the flock spread around the goal instead
+            // of stacking on one tile — both better footage and fewer multi-kills.
+            const ang = ((e.id * 2.399963) % 6.2832) + 0.35;
+            const r = 1.4 + (e.id % 4) * 0.9;
+            order(h, "b", [e.id], "move", goal.x + Math.cos(ang) * r, goal.y + Math.sin(ang) * r);
+          }
+        }
+      } catch {}
+      await sleep(2200);
+    }
+  })().catch(() => {});
+  return () => {
+    stopped = true;
+  };
+}
+
+async function sellBuilding(h, side, id) {
+  const token = side === "a" ? h.tokenA : h.tokenB;
+  await mcpCall(h.room, "special_action", { token, action: "sell", id }).catch(() => {});
+}
+
 function order(h, side, ids, kind, x, y, target) {
   send(h.conns[side], { t: "order", ids, kind, x, y, ...(target != null ? { target } : {}) });
 }
@@ -450,7 +579,13 @@ async function ensureBrowser(h) {
   });
   const page = await h.browser.newPage();
   page.on("pageerror", (e) => h.pageErrors.push(`${h.room}: ${e.message}`));
-  await page.evaluateOnNewDocument(() => {
+  // Bloom is a per-session decision: mobile-unit clips are mostly tracer fire
+  // at mid camera, where bloom reads as sparkle. Defense close-ups are muzzle
+  // flashes and kill explosions at point blank, and bloom inflates every flash
+  // into a frame-eating white blob (observed: the vulcan close-up hid behind
+  // its own bloom halo for the entire clip).
+  const bloom = h.session.id === "defenses" ? false : true;
+  await page.evaluateOnNewDocument((bloomOn) => {
     try {
       localStorage.setItem("oa-wasd", "0");
       localStorage.setItem("oa-mute", "1");
@@ -460,10 +595,10 @@ async function ensureBrowser(h) {
       // mid-clip (observed 900x650 collapsing to 585x422).
       localStorage.setItem(
         "oa-gfx-v1",
-        JSON.stringify({ preset: "medium", raytracing: false, contactShadows: true, bloom: true, dynamicRes: false, autoQuality: false }),
+        JSON.stringify({ preset: "medium", raytracing: false, contactShadows: true, bloom: bloomOn, dynamicRes: false, autoQuality: false }),
       );
     } catch {}
-  });
+  }, bloom);
   await page.goto(`${HTTP}/?room=${h.room}&spectate=1&name=UnitCam`, { waitUntil: "domcontentloaded", timeout: 30000 });
   await page.waitForFunction(() => window.__oa && window.__oa.phase === "playing", { timeout: 25000 });
   await page.evaluate(() => {
@@ -751,6 +886,176 @@ async function captureCombat(h, unit, opts = {}) {
   return cap;
 }
 
+// The defense-line capture: a single crossroads session films every turret in
+// the lineup. Side A builds the full tech tree (power-heavy — powered defenses
+// go silent when the grid browns out), places each structure on the enemy-ward
+// edge of its base through the real build/place flow, and side B streams
+// unarmed Jammer Drones across the map into its range. Each star is sold right
+// after its close-up so the next capture never has a second battery firing
+// into frame or stealing the fodder.
+async function runDefenseFlow(h, session, wanted, result) {
+  const st = parkStarters(h);
+
+  // Tech races in parallel on both sides. Side B needs nothing but power,
+  // barracks, radar, and an airfield — the entire defense line can engage air,
+  // so one unarmed fodder type covers every capture. Side A skips its refinery
+  // (nothing in the defense tech chain needs it) but still needs the factory
+  // for the tech lab.
+  const techA = (async () => {
+    await buildCounted(h, "a", "power", 3);
+    for (const k of ["barracks", "radar", "factory", "techlab"]) await buildOne(h, "a", k);
+  })();
+  const techB = (async () => {
+    await buildCounted(h, "b", "power", 1);
+    for (const k of ["barracks", "radar", "airfield"]) await buildOne(h, "b", k);
+  })();
+
+  // Spectator warmup overlaps construction — the first recordClip must not pay
+  // the keyframe/mesh-warmup cost inside its own window.
+  ensureBrowser(h).catch(() => {});
+
+  const anchor = defenseAnchor(h);
+  const anchorPt = { x: anchor.home.x + anchor.ux * 11, y: anchor.home.y + anchor.uy * 11 };
+  let goal = { ...anchorPt };
+  let stopStream = null;
+
+  await techB;
+  // Prime the drone pipeline the moment the airfield exists — transit across
+  // the map diagonal dominates the session timeline, never training-time. One
+  // batch of five is plenty: the ewdrone models are large, and past a half
+  // dozen simultaneous bodies the star disappears under the swarm.
+  train(h, "b", "ewdrone", 5).catch(() => {});
+  stopStream = startDroneStream(h, () => goal);
+
+  try {
+    await techA;
+
+    // The spectator keyframe can lag the page load by a long stretch on a
+    // loaded box — recordClip must never open on an empty renderer world.
+    const warmPage = await ensureBrowser(h);
+    await waitFor(
+      () => warmPage.evaluate(() => (window.__oa?.renderer?.tracked?.size ?? 0) > 10).catch(() => false),
+      30000,
+      "spectator world warmup",
+      300,
+    );
+
+    // Satlink first: it is the only defense-line star on the STRUCTURE queue,
+    // and thaad needs it to exist at queue time (only). Queue everything before
+    // selling anything.
+    await mcpCall(h.room, "build_structure", { token: h.tokenA, kind: "satlink" });
+    await waitFor(() => meOf(h, "a")?.awaiting?.includes("satlink"), 150000, "satlink construction");
+    await placeNear(h, "a", "satlink", anchorPt.x, anchorPt.y, "structure");
+    const satEnt = await waitFor(() => ownedBuildings(h, "a", "satlink")[0], 10000, "satlink placed");
+    goal = { x: satEnt.x, y: satEnt.y };
+
+    // Queue every wanted defense in capture order. Requires-checks happen only
+    // at queue time, so the satlink sale afterwards cannot cancel anything.
+    const queueOrder = DEFENSE_CAPTURE_ORDER.filter((k) => k !== "satlink" && wanted.includes(k));
+    for (const k of queueOrder) {
+      try {
+        await mcpCall(h.room, "build_structure", { token: h.tokenA, kind: k });
+      } catch (err) {
+        console.log(`  [def] queue ${k} failed: ${err?.message || err}`);
+      }
+    }
+    // Partial runs that skip the satlink card must still not leave it standing:
+    // its 15-range beam would steal the fodder stream from every other star.
+    if (!wanted.includes("satlink")) await sellBuilding(h, "a", satEnt.id);
+
+    for (const kind of wanted) {
+      const cfg = DEFENSE_CAM[kind] ?? { height: 13.5, dur: 3800 };
+      let ent = null;
+      try {
+        if (kind === "satlink") {
+          ent = satEnt;
+        } else {
+          // FIFO defense queue: the next capture must be the head of awaitingDef.
+          await waitFor(() => meOf(h, "a")?.awaitingDef?.[0] === kind, 150000, `${kind} construction`);
+          await placeNear(h, "a", kind, goal.x, goal.y, "defense");
+          ent = await waitFor(() => ownedBuildings(h, "a", kind)[0], 10000, `${kind} placed`);
+          goal = { x: ent.x, y: ent.y };
+        }
+        if (meOf(h, "a")?.lowPower) console.log(`  [def] WARNING low power during ${kind} — defenses offline`);
+
+        // Staging/flush choreography: defenses shred fodder faster than the
+        // map-wide stream replaces it, so a drip-feed engagement reads as an
+        // empty field with an occasional off-screen beam. Instead the flock
+        // first congregates at a staging point just OUTSIDE weapon range on
+        // the enemyward side, then the goal snaps onto the defense itself and
+        // the whole flock descends at once — dense, visible, continuous fire
+        // for the full clip.
+        const range = gd.BUILDINGS[kind].range ?? 8;
+        const dronesAlive = () => ownedUnits(h, "b").filter((e) => e.k === "ewdrone" && (e.hp === undefined || e.hp > 0));
+        const stage = { x: ent.x + anchor.ux * (range + 4.5), y: ent.y + anchor.uy * (range + 4.5) };
+        goal = { ...stage };
+        await waitFor(
+          () => {
+            const near = dronesAlive().filter((d) => Math.hypot(d.x - stage.x, d.y - stage.y) <= 7).length;
+            return near >= 4 ? { near } : null;
+          },
+          120000,
+          `${kind} fodder flock staging`,
+          300,
+        );
+        // Flush! The flock turns in as a group. The goal lands a few tiles
+        // ENEMYWARD of the structure rather than on top of it: fodder hovering
+        // directly over the star hides it under a dogpile of dark drone bodies
+        // (observed in the first lasertower/irondome takes), while a ring
+        // holding just off the muzzle keeps both parties in the same frame.
+        goal = { x: ent.x + anchor.ux * 2.8, y: ent.y + anchor.uy * 2.8 };
+        // Give the stream a full ordering cycle before trusting the trigger.
+        // Consecutive captures share the same patch of ground, so the closest
+        // drone is often ALREADY inside the envelope when the flush starts —
+        // arming the trigger immediately freezes the flock mid-transit toward
+        // the staging point and the clip films empty grass (observed: arc, sam,
+        // thaad all starved this way in the first full run).
+        await sleep(2400);
+        await waitFor(
+          () => {
+            let bd = Infinity;
+            for (const d of dronesAlive()) bd = Math.min(bd, Math.hypot(d.x - ent.x, d.y - ent.y));
+            return bd <= range * 0.75 ? { bd } : null;
+          },
+          20000,
+          `${kind} flush closing`,
+          200,
+        );
+        // Freeze fodder orders the moment the flush closes: the stream's
+        // constant re-ordering keeps every drone in motion, and moving aircraft
+        // drag contrail puffs every 26ms — a tight orbiting flock whiteouts the
+        // whole frame. Frozen waypoints let the flock settle onto the defense
+        // and give the contrails a beat to dissipate before the tape rolls.
+        const savedGoal = goal;
+        goal = null;
+        await sleep(900);
+        let cap;
+        try {
+          // Frame a touch enemyward of the footprint — the frozen flock holds
+          // off the muzzle on that side, so the engagement sits center-frame.
+          cap = await recordClip(h, kind, ent.id, cfg.dur, cfg.height, { x: ent.x + anchor.ux * 1.3, y: ent.y + anchor.uy * 1.3 });
+        } finally {
+          goal = savedGoal;
+        }
+        result.captured[kind] = { ...cap, stage: st };
+        console.log(`PASS ${kind} (${fmtBytes(cap.size)}, ${cap.quality}) room=${h.room}`);
+      } catch (err) {
+        result.ok = false;
+        result.errors[kind] = err?.message || String(err);
+        console.log(`FAIL ${kind}: ${result.errors[kind]}`);
+      } finally {
+        // Sell the star whether or not the capture worked: a battery left
+        // standing contaminates every following clip with crossfire and kills
+        // fodder meant for the next structure.
+        const leftover = ent ?? ownedBuildings(h, "a", kind)[0];
+        if (leftover && getEnt(h, leftover.id)) await sellBuilding(h, "a", leftover.id);
+      }
+    }
+  } finally {
+    if (stopStream) stopStream();
+  }
+}
+
 async function captureHarvester(h) {
   await train(h, "a", "harvester", 1);
   const ent = await waitSpawned(h, "a", "harvester", h.seenUnits, 100000);
@@ -922,6 +1227,12 @@ const SESSIONS = [
     naval: true,
     units: ["usv", "gunboat", "destroyer", "sub", "dreadnought", "carrier"],
   },
+  {
+    id: "defenses",
+    map: "crossroads",
+    defenseLineup: true,
+    units: DEFENSE_CAPTURE_ORDER,
+  },
 ];
 
 function unitSession(unit) {
@@ -952,6 +1263,14 @@ async function runSession(session, wantedUnits) {
   result.room = h.room;
   let stopSeaShuffle = null;
   try {
+    if (session.defenseLineup) {
+      // Building stars, not unit stars: entirely different choreography (real
+      // build/place flow + fodder streaming to the static defense). Returns
+      // early — the finally below still closes the harness cleanly.
+      await runDefenseFlow(h, session, wantedUnits, result);
+      result.pageErrors = h.pageErrors;
+      return result;
+    }
     const st = parkStarters(h);
     const builds = [buildTech(h, "a", session.tech)];
     if (session.enemyTech) builds.push(buildTech(h, "b", session.tech));
@@ -1059,7 +1378,8 @@ function neededUnitsFor(session) {
   return session.units.filter((u) => {
     if (unitsFilter && !unitsFilter.includes(u)) return false;
     if (!FORCE && existsSync(join(OUT_DIR, `${u}.gif`))) return false;
-    if (!TRAIN_ORDER.some((row) => row.unit === u)) return false;
+    // Defense-lineup sessions list BUILDING kinds, not trainable units.
+    if (!TRAIN_ORDER.some((row) => row.unit === u) && !isBuildingKind(u)) return false;
     return true;
   });
 }

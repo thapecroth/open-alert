@@ -28,6 +28,7 @@ import {
   ProdCat,
   MAP_W,
   MAP_H,
+  transportCapOf,
 } from "../shared/gamedefs";
 import { el, fmtCost, isBuildingKind } from "./util";
 import { Renderer } from "./render";
@@ -89,7 +90,7 @@ const TOOLTIPS: Record<string, string> = {
   shahed: "Delta Kamikaze — attritable $35K-class one-way attack drone; cheap mass saturation swarms vs bases.",
   ewdrone: "Jammer Drone — electronic warfare drone with an 85m counter-drone jamming aura & wide recon optics. Needs Radar Tower.",
   interceptor: "Interceptor — autonomous loyal-wingman fighter jet (1/3 the cost of crewed jets, Air + Ground, AA).",
-  chopper: "Hornet Gunship — agile Air Force gunship (Air + Ground, AA).",
+  chopper: "Hornet Gunship — agile Air Force gunship (Air + Ground, AA) doubling as a troop transport: carries 4 infantry. Right-click it with infantry selected to board; press U + click to unload.",
   a10: "A-10 Warthog — cost-effective armored CAS jet with GAU-8 30mm rotary cannon (BRRRT! 1.5× vs tanks & AA).",
   ac130: "AC-130 Gunship — heavy 4-turboprop flying artillery raining 105mm splash shells from high altitude.",
   bomber: "Tempest Bomber — heavy Air Force splash strike bomber vs ground & ships. Needs Tech Lab.",
@@ -257,6 +258,30 @@ const MAP_PREVIEW_PALETTES: Record<
     water: "#144b6d",
     waterGlint: "rgba(136, 212, 246, 0.3)",
   }, // Eurasia Supertheater (128x128 twin continents & sea strait)
+  mediterranean: {
+    bg: "#536b3f",
+    grid: "rgba(225, 238, 184, 0.08)",
+    cliff: "#6b6252",
+    cliffEdge: "#91866f",
+    water: "#126d8f",
+    waterGlint: "rgba(140, 226, 255, 0.32)",
+  },
+  scandinavia: {
+    bg: "#3e5f58",
+    grid: "rgba(200, 235, 230, 0.09)",
+    cliff: "#617585",
+    cliffEdge: "#8fa5b5",
+    water: "#123f5d",
+    waterGlint: "rgba(150, 216, 245, 0.32)",
+  },
+  terra: {
+    bg: "#3f6746",
+    grid: "rgba(190, 230, 190, 0.08)",
+    cliff: "#5f665d",
+    cliffEdge: "#87917f",
+    water: "#11527e",
+    waterGlint: "rgba(132, 220, 255, 0.34)",
+  },
 };
 
 export type QualityPreset = "low" | "medium" | "high" | "ultra";
@@ -452,6 +477,23 @@ function fmtClock(tick: number): string {
   return `${mm}:${ss}`;
 }
 
+function mapSlotLimit(mapId: MapId): number {
+  const meta = MAP_LIST.find((m) => m.id === mapId);
+  const mw = meta?.w ?? MAP_W;
+  const mh = meta?.h ?? MAP_H;
+  return Math.max(1, Math.min(PLAYER_COLORS.length, meta?.maxPlayers ?? PLAYER_COLORS.length, getSpawns(mw, mh).length));
+}
+
+function spawnTextColor(hex: string): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return "#ffffff";
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 150 ? "#071018" : "#ffffff";
+}
+
 export class Hud {
   onReady: (r: boolean) => void = () => {};
   onStart: () => void = () => {};
@@ -463,6 +505,8 @@ export class Hud {
   onSetMap: (map: MapId) => void = () => {};
   onSetConfig: (cfg: Partial<GameConfig>) => void = () => {};
   onSetTeam: (team: number, id?: string) => void = () => {};
+  onSetSlot: (slot: number, id?: string) => void = () => {};
+  onSwapSlot: (id: string, id2?: string) => void = () => {};
   onSetName: (name: string) => void = () => {};
   onResign: () => void = () => {};
   onChat: (text: string) => void = () => {};
@@ -477,7 +521,7 @@ export class Hud {
   onMinimapOrder?: (x: number, y: number, shift: boolean) => boolean;
   onSuperweaponClick: () => void = () => {};
   onReconClick: () => void = () => {};
-  onVerb: (v: "amove" | "patrol" | "hold" | "stop" | "sell" | "repair" | "bridge") => void = () => {};
+  onVerb: (v: "amove" | "patrol" | "hold" | "stop" | "sell" | "repair" | "bridge" | "unload") => void = () => {};
   onUpgrade?: (id: number) => void;
   onEnterFpv?: (id: number) => void;
   onExitFpv?: () => void;
@@ -791,7 +835,7 @@ export class Hud {
       this.updateMapDesc(MAP_LIST[0].id);
     }
 
-    for (const v of ["amove", "patrol", "hold", "stop", "sell", "repair", "bridge"] as const) {
+    for (const v of ["amove", "patrol", "hold", "stop", "sell", "repair", "bridge", "unload"] as const) {
       el(`verb-${v}`)?.addEventListener("click", () => this.onVerb(v));
     }
 
@@ -1215,20 +1259,28 @@ export class Hud {
       }
     }
 
-    // All 8 perimeter player spawn dots (proportional to layout.w x layout.h)
+    // Numbered perimeter player spawn dots — these are the lobby slot numbers
+    // (slot 0 is shown as S1) and use the same colors players will have in-game.
     const spawns = getSpawns(mw, mh);
-    const spR = mw >= 96 ? 3.1 : 3.4;
-    for (let i = 0; i < spawns.length; i++) {
+    const spawnCount = Math.min(spawns.length, mapSlotLimit(mapId));
+    const spR = mw >= 96 ? 4.2 : 4.5;
+    ctx.font = "bold 6.5px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (let i = 0; i < spawnCount; i++) {
       const sp = spawns[i];
       const px = (sp.x + 1.5) * sx;
       const py = (sp.y + 1.5) * sy;
+      const col = PLAYER_COLORS[i] ?? "#ffffff";
       ctx.beginPath();
       ctx.arc(px, py, spR, 0, Math.PI * 2);
-      ctx.fillStyle = PLAYER_COLORS[i] ?? "#ffffff";
+      ctx.fillStyle = col;
       ctx.fill();
       ctx.strokeStyle = "#0b1118";
       ctx.lineWidth = 1.3;
       ctx.stroke();
+      ctx.fillStyle = spawnTextColor(col);
+      ctx.fillText(String(i + 1), px, py + 0.1);
     }
 
     // Subtle inset tactical frame
@@ -1808,6 +1860,11 @@ export class Hud {
 
     const list = el("player-list");
     list.innerHTML = "";
+    const slotLimit = mapSlotLimit(mapId);
+    const occupantBySlot = new Map<number, LobbyPlayer>();
+    for (const p of players) {
+      if (!p.spectator && p.slot >= 0) occupantBySlot.set(p.slot, p);
+    }
     for (const p of players) {
       const li = document.createElement("li");
       if (p.eliminated) li.classList.add("dead");
@@ -1817,6 +1874,96 @@ export class Hud {
       dot.className = "cdot";
       dot.style.background = color;
       li.appendChild(dot);
+
+      if (!p.spectator && p.slot >= 0) {
+        if (p.id === you) {
+          // Compact self-service spawn picker. The closed control stays tiny ("S3");
+          // its dropdown teaches the semantics: empty = move, swap = exchange slots.
+          const slotSel = document.createElement("select");
+          slotSel.className = "bot-inline";
+          slotSel.title = `Spawn slot ${p.slot + 1} — choose an empty slot to move, or an allowed occupied slot to swap. Numbers match the map preview.`;
+          slotSel.style.color = color;
+          const optionCount = Math.max(slotLimit, p.slot + 1);
+          for (let s = 0; s < optionCount; s++) {
+            if (s >= slotLimit && s !== p.slot) continue;
+            const occupant = occupantBySlot.get(s);
+            const opt = document.createElement("option");
+            opt.value = String(s);
+            if (s === p.slot) {
+              opt.textContent = `S${s + 1}`;
+            } else if (!occupant) {
+              opt.textContent = `S${s + 1} empty`;
+            } else {
+              const maySwap = !!occupant.bot || isHost;
+              opt.textContent = `S${s + 1} ${maySwap ? "swap" : "taken"}`;
+              opt.disabled = !maySwap;
+              opt.title = maySwap
+                ? `Swap spawn slots with ${occupant.name}`
+                : `${occupant.name} is another human — only the host can force this swap`;
+            }
+            opt.selected = s === p.slot;
+            slotSel.appendChild(opt);
+          }
+          slotSel.value = String(p.slot);
+          slotSel.addEventListener("change", () => {
+            const next = Number(slotSel.value);
+            if (Number.isInteger(next) && next !== p.slot && next >= 0 && next < slotLimit) {
+              const target = occupantBySlot.get(next);
+              if (!target) this.onSetSlot(next);
+              else if (target.id !== p.id && (target.bot || isHost)) this.onSwapSlot(target.id);
+            }
+            slotSel.value = String(p.slot);
+          });
+          li.appendChild(slotSel);
+        } else if (isHost) {
+          // Host spawn editor: one compact picker per player can move that player
+          // to an empty slot or atomically swap them with any other occupant.
+          const slotSel = document.createElement("select");
+          slotSel.className = "bot-inline";
+          slotSel.title = `Host: move ${p.name} to an empty spawn slot, or swap them with another player. Numbers match the map preview.`;
+          slotSel.style.color = color;
+          const optionCount = Math.max(slotLimit, p.slot + 1);
+          for (let s = 0; s < optionCount; s++) {
+            if (s >= slotLimit && s !== p.slot) continue;
+            const occupant = occupantBySlot.get(s);
+            const opt = document.createElement("option");
+            opt.value = String(s);
+            opt.textContent = s === p.slot ? `S${s + 1}` : occupant ? `S${s + 1} swap` : `S${s + 1} empty`;
+            if (occupant && occupant.id !== p.id) opt.title = `Swap ${p.name} with ${occupant.name}`;
+            opt.selected = s === p.slot;
+            slotSel.appendChild(opt);
+          }
+          slotSel.value = String(p.slot);
+          slotSel.addEventListener("change", () => {
+            const next = Number(slotSel.value);
+            if (Number.isInteger(next) && next !== p.slot && next >= 0 && next < slotLimit) {
+              const target = occupantBySlot.get(next);
+              if (!target) this.onSetSlot(next, p.id);
+              else if (target.id !== p.id) this.onSwapSlot(p.id, target.id);
+            }
+            slotSel.value = String(p.slot);
+          });
+          li.appendChild(slotSel);
+        } else if (p.bot) {
+          const swapBtn = document.createElement("button");
+          swapBtn.type = "button";
+          swapBtn.className = "host-btn";
+          swapBtn.textContent = `S${p.slot + 1}`;
+          swapBtn.title = `Swap your spawn slot with ${p.name} (numbers match the map preview)`;
+          swapBtn.style.color = color;
+          swapBtn.style.borderColor = color;
+          swapBtn.addEventListener("click", () => this.onSwapSlot(p.id));
+          li.appendChild(swapBtn);
+        } else {
+          const slotTag = document.createElement("span");
+          slotTag.className = "meta";
+          slotTag.textContent = `S${p.slot + 1}`;
+          slotTag.title = `Spawn slot ${p.slot + 1} — number matches the map preview`;
+          slotTag.style.color = color;
+          slotTag.style.fontWeight = "700";
+          li.appendChild(slotTag);
+        }
+      }
 
       const pname = document.createElement("span");
       pname.className = "pname";
@@ -1918,8 +2065,8 @@ export class Hud {
     document.getElementById("bot-diff")?.classList.toggle("hidden", !isHost);
     document.getElementById("bot-profile")?.classList.toggle("hidden", !isHost);
     el("lobby-hint").textContent = isHost
-      ? "you are host — configure match rules, bot difficulty & playstyles, then start (2-8 players)"
-      : "waiting for host to start… (click your team badge to switch teams)";
+      ? "you are host — configure rules/bots, then start. Use your S# picker to move or force swap spawn slots; numbers match the map preview"
+      : "waiting for host… use your S# picker to move to an empty spawn slot or swap with a bot (numbers match the map preview)";
   }
 
   hideLobby(spectating = false) {
@@ -3084,6 +3231,8 @@ export class Hud {
       anyEwJam = false;
     let minFuel: number | null = null;
     let minAmmo: number | null = null;
+    let troopCap = 0,
+      troopAboard = 0;
     let singleId: number | null = null;
     let singleKind: EntKind | null = null;
     for (const id of sel) {
@@ -3108,6 +3257,13 @@ export class Hud {
       if (t.last.am !== undefined && t.last.am < 100) {
         const v = Math.max(0, Math.round(t.last.am));
         if (minAmmo === null || v < minAmmo) minAmmo = v;
+      }
+      if (!isBuildingKind(t.last.k)) {
+        const tc = transportCapOf(t.last.k);
+        if (tc > 0) {
+          troopCap += tc;
+          troopAboard += t.last.cargo ?? 0;
+        }
       }
       if (sel.size === 1 && t.last.o === mySlot) {
         singleId = id;
@@ -3237,6 +3393,12 @@ export class Hud {
         const cls = minAmmo < 15 ? " crit" : minAmmo < 35 ? " warn" : "";
         chips.push(
           `<span class="si-logi-chip${cls}" title="Ammo level — resupply near Forward Supply Hub, Supply Convoy, or base">AMMO ${minAmmo}%</span>`,
+        );
+      }
+      if (troopCap > 0) {
+        const cls = troopAboard >= troopCap ? " warn" : "";
+        chips.push(
+          `<span class="si-logi-chip${cls}" title="Troops embarked — select infantry &amp; right-click the transport to board · press U then click ground to unload">TROOPS ${troopAboard}/${troopCap}</span>`,
         );
       }
       if (chips.length) {

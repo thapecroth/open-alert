@@ -4,8 +4,11 @@
 import {
   DEFAULT_CONFIG,
   MAP_LIST,
+  MAP_W,
+  MAP_H,
   MAX_PLAYERS,
   PLAYER_COLORS,
+  getSpawns,
   SNAP_EVERY,
   TICK_MS,
   type BotDiff,
@@ -164,10 +167,24 @@ export class LocalRoom {
     });
   }
 
+  private mapSlotLimit(map: MapId = this.map): number {
+    const meta = MAP_LIST.find((m) => m.id === map);
+    return Math.max(
+      1,
+      Math.min(MAX_PLAYERS, meta?.maxPlayers ?? MAX_PLAYERS, getSpawns(meta?.w ?? MAP_W, meta?.h ?? MAP_H).length),
+    );
+  }
+
   private freeSlot(): number {
     const used = new Set([...this.players.values()].map((p) => p.slot));
-    for (let i = 0; i < MAX_PLAYERS; i++) if (!used.has(i)) return i;
+    const limit = this.mapSlotLimit();
+    for (let i = 0; i < limit; i++) if (!used.has(i)) return i;
     return -1;
+  }
+
+  private playerAtSlot(slot: number, exceptId?: string): LocalRec | undefined {
+    for (const p of this.players.values()) if (p.id !== exceptId && p.slot === slot) return p;
+    return undefined;
   }
 
   send(m: C2S) {
@@ -221,8 +238,14 @@ export class LocalRoom {
           return;
         case "setMap":
           if (VALID_MAPS.has(m.map)) {
-            this.map = m.map;
-            this.broadcastLobby();
+            const limit = this.mapSlotLimit(m.map);
+            const blocked = [...this.players.values()].find((p) => p.slot >= limit);
+            if (blocked) {
+              this.emit({ t: "deny", msg: `${blocked.name} occupies slot ${blocked.slot + 1}; that map supports only ${limit} spawn slots` });
+            } else {
+              this.map = m.map;
+              this.broadcastLobby();
+            }
           }
           return;
         case "setConfig": {
@@ -241,7 +264,7 @@ export class LocalRoom {
         }
         case "addbot": {
           const slot = this.freeSlot();
-          if (slot < 0) return this.emit({ t: "deny", msg: `room is full (${MAX_PLAYERS} players)` });
+          if (slot < 0) return this.emit({ t: "deny", msg: `room is full (${this.mapSlotLimit()} players on this map)` });
           const diff: BotDiff = m.diff && VALID_DIFFS.has(m.diff) ? m.diff : "normal";
           const profile: BotProfile = m.profile && VALID_PROFILES.has(m.profile) ? m.profile : "balanced";
           const id = `bot-${slot}-${Date.now().toString(36)}`;
@@ -281,9 +304,52 @@ export class LocalRoom {
           }
           return;
         }
+        case "setSlot": {
+          const target = m.id ? this.players.get(m.id) : me;
+          const limit = this.mapSlotLimit();
+          if (!target) return this.emit({ t: "deny", msg: "target player has no spawn slot" });
+          if (!Number.isInteger(m.slot) || m.slot < 0 || m.slot >= limit) {
+            return this.emit({ t: "deny", msg: `invalid spawn slot for this map (0-${limit - 1})` });
+          }
+          if (target.slot === m.slot) return;
+          if (this.playerAtSlot(m.slot, target.id)) {
+            return this.emit({ t: "deny", msg: `slot ${m.slot + 1} is occupied — use swap` });
+          }
+          target.slot = m.slot;
+          this.broadcastLobby();
+          return;
+        }
+        case "swapSlot": {
+          const first = this.players.get(m.id);
+          if (!first) return this.emit({ t: "deny", msg: "target player has no spawn slot" });
+          let a = me;
+          let b = first;
+          if (typeof m.id2 === "string") {
+            const second = this.players.get(m.id2);
+            if (!second) return this.emit({ t: "deny", msg: "second target player has no spawn slot" });
+            if (second.id === first.id) return this.emit({ t: "deny", msg: "cannot swap a player with themselves" });
+            a = first;
+            b = second;
+          } else if (first.id === me.id) {
+            return this.emit({ t: "deny", msg: "cannot swap slots with yourself" });
+          }
+          const limit = this.mapSlotLimit();
+          if (a.slot >= limit || b.slot >= limit) return this.emit({ t: "deny", msg: "spawn slot is not valid for this map" });
+          const slot = a.slot;
+          a.slot = b.slot;
+          b.slot = slot;
+          this.broadcastLobby();
+          return;
+        }
         case "start": {
           if (this.players.size < 2) {
             this.emit({ t: "deny", msg: "need at least 2 players — add a bot!" });
+            return;
+          }
+          const limit = this.mapSlotLimit();
+          const invalid = [...this.players.values()].find((p) => p.slot >= limit);
+          if (invalid) {
+            this.emit({ t: "deny", msg: `${invalid.name} is in slot ${invalid.slot + 1}, outside this map's ${limit} spawn slots` });
             return;
           }
           this.startGame();
@@ -353,7 +419,7 @@ export class LocalRoom {
     this.emit({
       t: "init",
       you: this.myId,
-      slot: 0,
+      slot: this.players.get(this.myId)?.slot ?? 0,
       w: w.w,
       h: w.h,
       map: this.map,

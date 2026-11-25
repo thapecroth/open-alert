@@ -610,6 +610,27 @@ const BIOME_ATMOSPHERE: Record<MapId, BiomeAtmosphere> = {
     groundRoughness: 0.88,
     groundEnv: 0.48,
   },
+  mediterranean: {
+    // bright southern sun, warm limestone coasts and luminous blue water
+    zenith: 0x1d5e9e, midSky: 0x61aad6, horizon: 0xf4d6a0, groundBounce: 0x665437,
+    sunColor: 0xffedc8, sunIntensity: 2.55, sunOffset: [-44, 58, 28], hemiSky: 0xb6def8, hemiGround: 0x66543d,
+    hemiIntensity: 1.05, rimColor: 0x77c6f0, rimIntensity: 0.58, skirt: 0x25536a, fogColor: 0xaec6cf,
+    fogDensity: 0.0014, cloudTint: 0xfff6e5, cloudOpacity: 0.23, groundRoughness: 0.86, groundEnv: 0.5,
+  },
+  scandinavia: {
+    // cold high-latitude light, blue-grey fjord haze and snow-bright granite
+    zenith: 0x274f7f, midSky: 0x7395b8, horizon: 0xd8e2e6, groundBounce: 0x354842,
+    sunColor: 0xf5f0df, sunIntensity: 2.15, sunOffset: [-52, 48, 34], hemiSky: 0xb9d3e5, hemiGround: 0x3d4b45,
+    hemiIntensity: 1.0, rimColor: 0x8fc2e8, rimIntensity: 0.52, skirt: 0x203b4d, fogColor: 0x9fb5c2,
+    fogDensity: 0.0018, cloudTint: 0xecf4f8, cloudOpacity: 0.3, groundRoughness: 0.9, groundEnv: 0.43,
+  },
+  terra: {
+    // orbital blue-planet clarity: oceanic atmosphere over varied continental biomes
+    zenith: 0x164f91, midSky: 0x4f9ed2, horizon: 0xcfe5ef, groundBounce: 0x43563d,
+    sunColor: 0xfff2d6, sunIntensity: 2.45, sunOffset: [-46, 56, 30], hemiSky: 0xb4dcfa, hemiGround: 0x495842,
+    hemiIntensity: 1.04, rimColor: 0x79c8f4, rimIntensity: 0.6, skirt: 0x1d4662, fogColor: 0x9fbdd0,
+    fogDensity: 0.00145, cloudTint: 0xf7fbff, cloudOpacity: 0.27, groundRoughness: 0.87, groundEnv: 0.5,
+  },
 };
 
 const SKY_VERT = /* glsl */ `
@@ -2501,7 +2522,7 @@ export class GameScene {
   addReconReveal(x: number, y: number, r: number, durationMs = 10000): void {
     this.reconReveals.push({ x, y, r, expiresAt: performance.now() + durationMs });
     if (this.lastFogSlot >= 0) {
-      this.updateFog(this.lastFogSlot, this.lastFogSources);
+      this.updateFog(this.lastFogSlot, this.lastFogSources, true);
     }
   }
 
@@ -2519,13 +2540,20 @@ export class GameScene {
     return this.reconReveals;
   }
 
-  updateFog(mySlot: number, visionSources: { x: number; y: number; r: number }[]): void {
+  // Fog is recomputed at most every 3rd call (~20Hz at 60fps). The shroud edge
+  // moves at unit speed — a 50ms refresh stride is imperceptible — but the
+  // per-frame cost (source×tile scan + full-map rewrite + a 150-200KB texture
+  // upload) drops ~3×. Forced updates (recon reveals, map reset) bypass the stride.
+  private fogStrideCount = 0;
+
+  updateFog(mySlot: number, visionSources: { x: number; y: number; r: number }[], force = false): void {
     this.lastFogSlot = mySlot;
     this.lastFogSources = visionSources;
     if (mySlot < 0) {
       this.fogMesh.visible = false;
       return;
     }
+    if (!force && ++this.fogStrideCount % 3 !== 1) return;
     this.fogMesh.visible = true;
 
     const W = this.mapW;

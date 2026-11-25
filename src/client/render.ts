@@ -13,13 +13,14 @@ import { createAnimState, stepEntityAnim, triggerFireAnim, triggerHitFlash, Anim
 import { VfxSystem, WaypointOverlay } from "./vfx";
 import { BUILDINGS, isBuildingKind, type BuildingKind, type EntKind } from "./util";
 import { GameScene } from "./scene";
+import { getAccentMat } from "./textures";
 
 const INTERP_MS = 250; // 50ms WAN jitter cushion above 200ms (5 Hz) snapshot interval
 const SNAP_KEEP = 8;
 
 // ---------- Instanced swarm rendering ----------
 // Cheap high-count kinds (drones & infantry — the bulk of late-game entity
-// counts) render through InstancedMesh pools: a few draw calls per kind+color
+// counts) render through InstancedMesh pools: a few draw calls per kind
 // regardless of swarm size instead of ~6 per entity. The full EntVis is still
 // built for bookkeeping (fog flag, FPV, icons) but is NEVER added to the scene;
 // a lightweight proxy Group carries the pick box + selection ring.
@@ -43,10 +44,34 @@ const _instZero = new THREE.Vector3(0.0001, 0.0001, 0.0001);
 const _instM = new THREE.Matrix4();
 const _instP = new THREE.Matrix4();
 const _instUp = new THREE.Vector3(0, 1, 0);
+const _instColor = new THREE.Color();
+const _instWhite = new THREE.Color(0xffffff);
+let instWhiteAccentMat: THREE.MeshStandardMaterial | null = null;
+
+function getInstWhiteAccentMat(src: THREE.Material): THREE.MeshStandardMaterial {
+  if (!instWhiteAccentMat) {
+    // Accent materials differ only by faction color; maps/roughness/metalness are
+    // identical. A white clone lets InstancedMesh.instanceColor carry the exact
+    // per-player tint, collapsing the old kind+color pool proliferation.
+    instWhiteAccentMat = (src as THREE.MeshStandardMaterial).clone();
+    instWhiteAccentMat.color.set(0xffffff);
+  }
+  return instWhiteAccentMat;
+}
+
+function accentHexForVariant(colorHex: string, variant: number): string {
+  _instColor.set(colorHex);
+  if (variant === 1) _instColor.multiplyScalar(0.62);
+  else if (variant === 2) _instColor.lerp(_instWhite, 0.22);
+  // The model helpers round through a hex string before constructing the
+  // cached accent material; preserving that quantization keeps colors exact.
+  return `#${_instColor.getHexString()}`;
+}
 
 interface InstPoolPart {
   im: THREE.InstancedMesh;
   local: THREE.Matrix4; // part transform relative to model root
+  accentVariant?: number; // faction-tinted part: 0=base, 1=dimmed, 2=lifted
 }
 interface InstPool {
   parts: InstPoolPart[];
@@ -414,6 +439,124 @@ function makeLogBars(topY: number, barW: number): LogBars {
   return { group, barW, fuelBg, fuelFg, ammoBg, ammoFg };
 }
 
+// ---------- Batched solid-color billboard bars ----------
+// Health / fuel / ammo bars were individual THREE.Sprite objects: simple solid
+// quads, but each visible bar cost a separate transparent draw call and every
+// entity carried several extra scene nodes. They remain Sprite-shaped state
+// objects for the existing gameplay logic, but are rendered here as one
+// instanced billboard mesh with per-instance RGB + alpha.
+const OVERLAY_BAR_CAP = 4096;
+const _barM = new THREE.Matrix4();
+
+class OverlayBarBatch {
+  private readonly mesh: THREE.InstancedMesh;
+  private readonly alphaArr: Float32Array;
+  private readonly alphaAttr: THREE.InstancedBufferAttribute;
+  private readonly colorArr: Float32Array;
+  private readonly colorAttr: THREE.InstancedBufferAttribute;
+  private count = 0;
+
+  constructor(
+    scene: THREE.Scene,
+    texture: THREE.Texture | null = null,
+    renderOrder = 20,
+    private readonly cap = OVERLAY_BAR_CAP,
+  ) {
+    const geo = new THREE.PlaneGeometry(1, 1);
+    this.alphaArr = new Float32Array(this.cap);
+    this.alphaAttr = new THREE.InstancedBufferAttribute(this.alphaArr, 1);
+    this.alphaAttr.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute("aAlpha", this.alphaAttr);
+
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      map: texture,
+      transparent: true,
+      opacity: 1,
+      depthTest: false,
+      // SpriteMaterial's default depthWrite=true is preserved; depthTest=false
+      // is the property that makes these read as command-overlay bars.
+      depthWrite: true,
+    });
+    mat.customProgramCacheKey = () => (texture ? "overlay-textured-instanced-billboard" : "overlay-bar-instanced-billboard");
+    mat.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nattribute float aAlpha;\nvarying float vBarAlpha;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvBarAlpha = aAlpha;")
+        .replace(
+          "#include <project_vertex>",
+          `#ifdef USE_INSTANCING
+vec4 mvPosition = modelViewMatrix * vec4( instanceMatrix[3].xyz, 1.0 );
+mvPosition.xy += transformed.xy * vec2( length( instanceMatrix[0].xyz ), length( instanceMatrix[1].xyz ) );
+gl_Position = projectionMatrix * mvPosition;
+#else
+#include <project_vertex>
+#endif`,
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace("#include <common>", "#include <common>\nvarying float vBarAlpha;")
+        .replace("#include <color_fragment>", "#include <color_fragment>\ndiffuseColor.a *= vBarAlpha;");
+    };
+
+    this.mesh = new THREE.InstancedMesh(geo, mat, this.cap);
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.colorArr = new Float32Array(this.cap * 3);
+    this.colorAttr = new THREE.InstancedBufferAttribute(this.colorArr, 3);
+    this.colorAttr.setUsage(THREE.DynamicDrawUsage);
+    this.mesh.instanceColor = this.colorAttr;
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = renderOrder;
+    this.mesh.count = 0;
+    this.mesh.visible = false;
+    scene.add(this.mesh);
+  }
+
+  begin() {
+    this.count = 0;
+  }
+
+  pushSprite(s: THREE.Sprite, x: number, z: number, rotCos = 1, rotSin = 0) {
+    if (!s.visible || this.count >= this.cap) return;
+    const i = this.count++;
+    const sx = s.scale.x;
+    const sy = s.scale.y;
+    if (sx <= 0 || sy <= 0) {
+      this.count = i;
+      return;
+    }
+    _barM.makeScale(sx, sy, 1);
+    // Sprite local offsets live in the rotating entity root's XZ plane. Solid
+    // bars are centered (offset zero), while group badges sit slightly left;
+    // rotating that offset preserves the original parent-transform behavior.
+    const lx = s.position.x;
+    const lz = s.position.z;
+    _barM.setPosition(x + lx * rotCos + lz * rotSin, s.position.y, z - lx * rotSin + lz * rotCos);
+    this.mesh.setMatrixAt(i, _barM);
+    const mat = s.material as THREE.SpriteMaterial;
+    const c3 = i * 3;
+    this.colorArr[c3] = mat.color.r;
+    this.colorArr[c3 + 1] = mat.color.g;
+    this.colorArr[c3 + 2] = mat.color.b;
+    this.alphaArr[i] = mat.opacity;
+  }
+
+  commit() {
+    this.mesh.count = this.count;
+    this.mesh.visible = this.count > 0;
+    if (this.count > 0) {
+      this.mesh.instanceMatrix.needsUpdate = true;
+      this.alphaAttr.needsUpdate = true;
+      this.colorAttr.needsUpdate = true;
+    }
+  }
+
+  clear() {
+    this.count = 0;
+    this.mesh.count = 0;
+    this.mesh.visible = false;
+  }
+}
+
 export class Renderer {
   tracked = new Map<number, Tracked>();
   groupOf = new Map<number, number>(); // entId → control-group digit
@@ -458,6 +601,9 @@ export class Renderer {
 
   private vfx: VfxSystem;
   private waypoints: WaypointOverlay;
+  private overlayBars: OverlayBarBatch; // background planes (old renderOrder 20)
+  private overlayBarFg: OverlayBarBatch; // foreground fill planes (old renderOrder 21)
+  private overlayTextureBatches = new Map<THREE.Texture, OverlayBarBatch>();
   private crateVis = new Map<number, CrateVis>();
   private seen = new Set<number>();
   private hasInitialSnap = false;
@@ -490,6 +636,12 @@ export class Renderer {
   constructor(private gs: GameScene) {
     this.vfx = new VfxSystem(gs.scene);
     this.waypoints = new WaypointOverlay(gs.scene);
+    this.overlayBars = new OverlayBarBatch(gs.scene, null, 20);
+    // Sprite renderOrder separated all logistics foregrounds from backgrounds.
+    // Keep that ordering exactly: two instanced draws still replace hundreds of
+    // individual sprite draws, and overlapping bars cannot paint a later
+    // background over an earlier foreground.
+    this.overlayBarFg = new OverlayBarBatch(gs.scene, null, 21);
     this.emitSmoke = (x, y, z, dark) => {
       if (Math.random() <= this.vfxScale) this.vfx.spawnSmoke(x, y, z, dark);
     };
@@ -546,7 +698,10 @@ export class Renderer {
   private instGroup: THREE.Group | null = null;
 
   private ensureInstPool(kind: EntKind, color: string): InstPool {
-    const key = `${kind}|${color}`;
+    // One pool per kind, not kind+player-color. Faction-accented parts use a
+    // shared white material plus per-instance colors, so an 8-player infantry
+    // battle no longer multiplies the whole 35-part soldier rig by 8.
+    const key = kind;
     const existing = this.instPools.get(key);
     if (existing) return existing;
     if (!this.instGroup) {
@@ -560,8 +715,19 @@ export class Renderer {
     const parts: InstPoolPart[] = [];
     probe.root.traverse((o) => {
       if (!(o instanceof THREE.Mesh) || o.userData.isBar) return;
-      const im = new THREE.InstancedMesh(o.geometry, o.material, INSTANCE_CAP);
+      const srcMat = o.material as THREE.Material;
+      const accentVariant = typeof srcMat.userData?.instAccentVariant === "number"
+        ? (srcMat.userData.instAccentVariant as number)
+        : undefined;
+      const mat = accentVariant !== undefined ? getInstWhiteAccentMat(srcMat) : srcMat;
+      const im = new THREE.InstancedMesh(o.geometry, mat, INSTANCE_CAP);
       im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      if (accentVariant !== undefined) {
+        const colors = new Float32Array(INSTANCE_CAP * 3);
+        colors.fill(1);
+        im.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
+        im.instanceColor.setUsage(THREE.DynamicDrawUsage);
+      }
       im.frustumCulled = false;
       im.castShadow = false;
       im.receiveShadow = false;
@@ -569,7 +735,7 @@ export class Renderer {
       for (let i = 0; i < INSTANCE_CAP; i++) im.setMatrixAt(i, _instM);
       im.count = 0; // draw only live slots — never burn vertex work on empty ones
       this.instGroup!.add(im);
-      parts.push({ im, local: o.matrixWorld.clone() });
+      parts.push({ im, local: o.matrixWorld.clone(), accentVariant });
     });
     const p: InstPool = { parts, owners: new Int32Array(INSTANCE_CAP).fill(-1), free: [], used: 0 };
     this.instPools.set(key, p);
@@ -577,10 +743,18 @@ export class Renderer {
   }
 
   private makeInstProxy(e: EntSnap): InstSlot | null {
-    const pool = this.ensureInstPool(e.k, this.slotColors.get(e.o) ?? "#888888");
+    const colorHex = this.slotColors.get(e.o) ?? "#888888";
+    const pool = this.ensureInstPool(e.k, colorHex);
     const idx = pool.free.length ? pool.free.pop()! : pool.used < INSTANCE_CAP ? pool.used++ : -1;
     if (idx < 0) return null;
-    for (const part of pool.parts) if (part.im.count < pool.used) part.im.count = pool.used;
+    for (const part of pool.parts) {
+      if (part.im.count < pool.used) part.im.count = pool.used;
+      if (part.accentVariant !== undefined) {
+        const accent = getAccentMat(accentHexForVariant(colorHex, part.accentVariant)).color;
+        part.im.setColorAt(idx, accent);
+        if (part.im.instanceColor) part.im.instanceColor.needsUpdate = true;
+      }
+    }
     const proxy = new THREE.Group();
     proxy.position.set(e.x, 0, e.y);
     const pick = new THREE.Mesh(instPickGeo, instPickMat);
@@ -607,6 +781,11 @@ export class Renderer {
       for (const part of pool.parts) {
         part.im.getMatrixAt(last, _instP);
         part.im.setMatrixAt(slot.idx, _instP);
+        if (part.accentVariant !== undefined && part.im.instanceColor) {
+          part.im.getColorAt(last, _instColor);
+          part.im.setColorAt(slot.idx, _instColor);
+          part.im.instanceColor.needsUpdate = true;
+        }
       }
       pool.owners[slot.idx] = movedId;
       if (movedT?.inst) movedT.inst.idx = slot.idx;
@@ -635,9 +814,41 @@ export class Renderer {
     _instPos.set(t.visX, 0, t.visY);
     _instQ.setFromAxisAngle(_instUp, Math.PI / 2 - t.visYaw);
     _instM.compose(_instPos, _instQ, visible ? _instOne : _instZero);
+    // Entity transforms are always yaw + uniform scale + translation. Exploit
+    // that sparsity and write each instanceMatrix directly: 24 multiplies per
+    // part instead of Matrix4.multiplyMatrices' generic 64, with no temp copy.
+    // Verified element-for-element against three's column-major multiplication.
+    const em = _instM.elements;
+    const ea = em[0];
+    const eb = em[2];
+    const ec = em[5];
+    const ed = em[8];
+    const ef = em[10];
+    const etx = em[12];
+    const ety = em[13];
+    const etz = em[14];
+    const base = inst.idx * 16;
     for (const part of inst.pool.parts) {
-      _instP.multiplyMatrices(_instM, part.local);
-      part.im.setMatrixAt(inst.idx, _instP);
+      const lm = part.local.elements;
+      const out = part.im.instanceMatrix.array as Float32Array;
+      for (let col = 0; col < 3; col++) {
+        const li = col * 4;
+        const oi = base + li;
+        const x = lm[li];
+        const y = lm[li + 1];
+        const z = lm[li + 2];
+        out[oi] = ea * x + ed * z;
+        out[oi + 1] = ec * y;
+        out[oi + 2] = eb * x + ef * z;
+        out[oi + 3] = 0;
+      }
+      const x = lm[12];
+      const y = lm[13];
+      const z = lm[14];
+      out[base + 12] = ea * x + ed * z + etx;
+      out[base + 13] = ec * y + ety;
+      out[base + 14] = eb * x + ef * z + etz;
+      out[base + 15] = 1;
       part.im.instanceMatrix.needsUpdate = true;
     }
     inst.proxy.position.set(t.visX, 0, t.visY);
@@ -650,7 +861,7 @@ export class Renderer {
 
   private disposeVis(vis: EntVis) {
     if (vis.rig.subMats) {
-      for (const m of vis.rig.subMats) m.dispose();
+      for (const m of vis.rig.subMats) m?.dispose?.();
     }
     if (vis.rig.powerGlow) {
       for (const gm of vis.rig.powerGlow) {
@@ -659,11 +870,11 @@ export class Renderer {
         else m.dispose();
       }
     }
-    (vis.ring.material as THREE.Material).dispose();
-    (vis.barBg.material as THREE.Material).dispose();
-    (vis.barFg.material as THREE.Material).dispose();
-    (vis.vetBadge.material as THREE.Material).dispose();
-    (vis.groupTag.material as THREE.Material).dispose();
+    (vis.ring?.material as THREE.Material | undefined)?.dispose?.();
+    (vis.barBg?.material as THREE.Material | undefined)?.dispose?.();
+    (vis.barFg?.material as THREE.Material | undefined)?.dispose?.();
+    (vis.vetBadge?.material as THREE.Material | undefined)?.dispose?.();
+    (vis.groupTag?.material as THREE.Material | undefined)?.dispose?.();
   }
 
   reset() {
@@ -701,6 +912,9 @@ export class Renderer {
     this.swShakeTimers = [];
     this.vfx.clear();
     this.waypoints.clear();
+    this.overlayBars.clear();
+    this.overlayBarFg.clear();
+    for (const b of this.overlayTextureBatches.values()) b.clear();
     this.gs.resetFog();
     this.gs.setBuildZones(null);
   }
@@ -824,7 +1038,8 @@ export class Renderer {
     if (!t.logBars) {
       const w = (t.vis.barFg.userData.w as number | undefined) ?? 0.96;
       t.logBars = makeLogBars(t.vis.topY, w);
-      t.vis.root.add(t.logBars.group);
+      // Like the HP bars, these sprites are logical state consumed by the
+      // instanced overlay batch — never individual scene-graph draw calls.
     }
 
     const lb = t.logBars;
@@ -1104,6 +1319,56 @@ export class Renderer {
     return this.framePosInto(id, win.a!, win.b!, win.t, out) ? out : null;
   }
 
+  private pushTexturedOverlay(s: THREE.Sprite, x: number, z: number, rotCos: number, rotSin: number) {
+    if (!s.visible) return;
+    const mat = s.material as THREE.SpriteMaterial;
+    const tex = mat.map;
+    if (!tex) return;
+    let batch = this.overlayTextureBatches.get(tex);
+    if (!batch) {
+      batch = new OverlayBarBatch(this.gs.scene, tex, 22, 1024);
+      this.overlayTextureBatches.set(tex, batch);
+    }
+    batch.pushSprite(s, x, z, rotCos, rotSin);
+  }
+
+  private updateOverlayBars() {
+    const batch = this.overlayBars;
+    const fgBatch = this.overlayBarFg;
+    batch.begin();
+    fgBatch.begin();
+    for (const b of this.overlayTextureBatches.values()) b.begin();
+    for (const [id, t] of this.tracked) {
+      if (t.inst || id === this.hiddenEntityId || !t.vis.root.visible) continue;
+      const x = t.visX;
+      const z = t.visY;
+      this.cullSphere.center.set(x, t.cullY, z);
+      this.cullSphere.radius = t.cullR;
+      if (!this.frustum.intersectsSphere(this.cullSphere)) continue;
+
+      batch.pushSprite(t.vis.barBg, x, z);
+      fgBatch.pushSprite(t.vis.barFg, x, z);
+      const lb = t.logBars;
+      if (lb && lb.group.visible) {
+        batch.pushSprite(lb.fuelBg, x, z);
+        fgBatch.pushSprite(lb.fuelFg, x, z);
+        batch.pushSprite(lb.ammoBg, x, z);
+        fgBatch.pushSprite(lb.ammoFg, x, z);
+      }
+
+      // applyFacing uses rotation.y = PI/2 - server yaw. Textured badges keep
+      // their authored root-local offsets under that rotation, then billboard.
+      const rot = Math.PI / 2 - t.visYaw;
+      const rc = Math.cos(rot);
+      const rs = Math.sin(rot);
+      this.pushTexturedOverlay(t.vis.vetBadge, x, z, rc, rs);
+      this.pushTexturedOverlay(t.vis.groupTag, x, z, rc, rs);
+    }
+    batch.commit();
+    fgBatch.commit();
+    for (const b of this.overlayTextureBatches.values()) b.commit();
+  }
+
   update(dt = 0.016) {
     const nowMs = performance.now();
     const nowSec = nowMs / 1000;
@@ -1354,6 +1619,7 @@ export class Renderer {
     thaadAuraGoldMat.opacity = 0.44 + 0.12 * Math.sin(nowSec * 2.8 + 1.2);
     thaadAuraDomeMat.opacity = 0.042 + 0.014 * Math.sin(nowSec * 2.2);
 
+    this.updateOverlayBars();
     this.waypoints.update(this.wpEntries, nowSec, this.rallyEntries);
     this.vfx.update();
   }

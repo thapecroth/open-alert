@@ -2,6 +2,10 @@ import "./units.css";
 import {
   ARMOR_MULTS,
   BUILDING_NAMES,
+  BUILDINGS,
+  IRONDOME_COOLDOWN,
+  IRONDOME_RADIUS,
+  THAAD_NUKE_RADIUS,
   TRAIN_ORDER,
   UNITS,
   UPGRADE_PATHS,
@@ -26,7 +30,8 @@ interface CategoryDef {
   kicker: string;
   title: string;
   desc: string;
-  units: UnitKind[];
+  units?: UnitKind[];
+  defenses?: BuildingKind[];
 }
 
 const unitLabel = new Map<UnitKind, string>(TRAIN_ORDER.map((row) => [row.unit, row.label]));
@@ -138,6 +143,42 @@ const COPY: Partial<Record<UnitKind, UnitCopy>> = {
   },
 };
 
+const DEFENSE_COPY: Partial<Record<BuildingKind, UnitCopy>> = {
+  turret: {
+    role: "The cheapest gun in the defense line: a 1×1 Vulcan point-defense cannon that engages ground and air targets alike. Damage per shot is modest, but it is power-cheap, goes up faster than any other turret, and costs little enough to sprinkle across every approach.",
+    tactic: "Build them in pairs guarding the ore line as soon as your first refinery is running. One Vulcan only slows a tank column; three of them cost less than a single Railgun MBT and erase infantry waves, FPV drones, and light raiders. The anti-air is opportunistic — its reach is short — so treat it as a ground-first stopgap until SAMs take over the sky.",
+  },
+  sam: {
+    role: "Dedicated long-range anti-air battery. It cannot engage ground targets at all — every credit goes into a wide air umbrella with a heavy damage multiplier against aircraft, and its radar-tier sensors strip stealth from cloaked bombers that lesser defenses never see.",
+    tactic: "Coverage first, density second: spread SAM sites so their rings overlap refineries, production, and the tech lab instead of stacking them in one cluster. Always pair them with Vulcans or an Arc Spire on the ground side — a SAM site alone is free real estate for any tank that drives up to it.",
+  },
+  arc: {
+    role: "Mid-tier Tesla spire trading rate of fire for a heavy per-shot punch against both ground and air targets. No specialized multiplier — its value is raw damage concentration in a cheap 1×1 footprint.",
+    tactic: "Use it as the midline anchor behind a screen of Vulcans: the spire's slower cycle wastes shots on rifle infantry, but each bolt genuinely hurts tanks, helicopters, and gunships. It still loses the range duel to artillery, so never let it be your only answer to a siege.",
+  },
+  irondome: {
+    role: `Rapid-fire air-denial system with an active interception layer no other defense has: every ${fmtNum(IRONDOME_COOLDOWN / 10)} seconds it can destroy one incoming artillery shell, HIMARS or cruiser volley, bomb, or kamikaze drone mid-flight within ${fmtNum(IRONDOME_RADIUS)} tiles — the projectiles your other guns cannot stop at all.`,
+    tactic: "You are limited to three, so spend them protecting what cannot be replaced — the superweapon, tech lab, and refinery cluster — not the front line. One dome stops one projectile per cycle, meaning saturation volleys leak through: it buys time and blunts sieges, it does not make anything invincible.",
+  },
+  lasertower: {
+    role: "The heavy anchor of the defense line. The Helios beam hits harder per shot than any other turret, with a large damage multiplier against vehicles and ships — and it still swats aircraft. It outranges every tank in the game, though not artillery.",
+    tactic: "Its appetite for power is enormous, so check the grid before placing or the whole defense line browns out. Park it where armor actually attacks and protect it from HIMARS and ballistic launchers, which outrange it: pair the laser with Iron Dome coverage or mobile tanks that can push back.",
+  },
+  thaad: {
+    role: `The theater umbrella. Longest engagement reach of any defense, a damage bonus against exactly the aircraft that matter — bombers, gunships, interceptors, hypersonic gliders — and the only hard counter to nuclear weapons: each ready THAAD within ${fmtNum(THAAD_NUKE_RADIUS)} tiles of the impact point has an 80% chance to kill an incoming ICBM, with similar odds against ballistic missiles.`,
+    tactic: "Only two per commander, so position them where their rings cover the whole base rather than the front edge — their job is killing deep strike aircraft and nukes, not skirmishers. They cannot shoot ground targets at all: anything that survives the umbrella walks up unopposed, so layer them behind Vulcans and lasers.",
+  },
+  satlink: {
+    role: "Not a pure turret but an armed technology structure: the satellite uplink mounts the longest-reaching beam in the base-defense inventory, strips stealth from B-21 bombers at extreme range, and is the mandatory gateway to the Nuclear Silo.",
+    tactic: "Never buy it as a defensive gun — bought for damage alone it is badly outclassed per credit. Buy it because the stealth detection, radar coverage, and superweapon access win games, and treat the laser as a bonus that happens to make raiders regret approaching the most important building in your base.",
+  },
+};
+
+// The defensive line in tech progression order. satlink is listed last on
+// purpose: it is an armed hybrid tech structure rather than a turret, and its
+// card explains that distinction to new commanders.
+const DEFENSE_LINEUP: BuildingKind[] = ["turret", "sam", "arc", "irondome", "lasertower", "thaad", "satlink"];
+
 const CATEGORIES: CategoryDef[] = [
   {
     id: "infantry",
@@ -173,6 +214,13 @@ const CATEGORIES: CategoryDef[] = [
     title: "Naval Warfare",
     desc: "Explosive drone boats, escorts, fleet air defense, stealth submarines, shore bombardment, and capital drone carriers.",
     units: ["usv", "gunboat", "destroyer", "sub", "dreadnought", "carrier"],
+  },
+  {
+    id: "defenses",
+    kicker: "06 / STATIC FIREPOWER",
+    title: "Base Defenses",
+    desc: "The parallel construction-queue defense line: point-defense guns, anti-air umbrellas, active interception systems, and the armed satellite uplink. They never move — placement, power, and layering are the whole game.",
+    defenses: DEFENSE_LINEUP,
   },
 ];
 
@@ -225,7 +273,7 @@ function entName(kind: EntKind): string {
   return BUILDING_NAMES[kind as BuildingKind] ?? kind;
 }
 
-function countersText(kind: UnitKind): string {
+function countersText(kind: EntKind): string {
   const rules = ARMOR_MULTS[kind] ?? [];
   const strong = new Set<string>();
   for (const rule of rules) {
@@ -241,9 +289,16 @@ function addBadge(row: HTMLElement, text: string, cls = ""): void {
   row.append(el("span", `badge${cls ? ` ${cls}` : ""}`, text));
 }
 
-function targetPills(def: UnitDef): HTMLElement {
+interface WeaponLike {
+  dmg?: number;
+  range?: number;
+  canHitAir?: boolean;
+  canHitGround?: boolean;
+}
+
+function targetPills(def: WeaponLike): HTMLElement {
   const row = el("div", "target-row");
-  const armed = def.dmg > 0 && def.range > 0;
+  const armed = (def.dmg ?? 0) > 0 && (def.range ?? 0) > 0;
   const entries: { label: string; yes: boolean }[] = [
     { label: "LAND", yes: armed && def.canHitGround !== false },
     { label: "AIR", yes: armed && def.canHitAir === true },
@@ -354,6 +409,112 @@ function buildUnitCard(kind: UnitKind): HTMLElement {
   return card;
 }
 
+function buildDefenseCard(kind: BuildingKind): HTMLElement {
+  const def = BUILDINGS[kind];
+  const copy = DEFENSE_COPY[kind] ?? {
+    role: "Defensive structure generated from the live Open Alert building definition.",
+    tactic: "Use the stats, prerequisites, and target capabilities above to decide where it belongs in your base layout.",
+  };
+  const label = BUILDING_NAMES[kind];
+  const card = el("article", "unit-card defense-card");
+  card.id = `defense-${kind}`;
+
+  const media = el("div", "media-panel");
+  const frame = el("div", "media-frame");
+  const img = document.createElement("img");
+  img.src = `/units/${kind}.gif`;
+  img.alt = `${label} recorded in live Open Alert gameplay`;
+  img.loading = "lazy";
+  img.decoding = "async";
+  img.addEventListener("error", () => frame.classList.add("missing"), { once: true });
+  frame.append(img);
+  media.append(frame, el("div", "media-caption", `Tactical file · ${kind.toUpperCase()} · recorded in-game`));
+
+  const info = el("div", "unit-info");
+  const titleRow = el("div", "unit-title-row");
+  const titleWrap = el("div");
+  titleWrap.append(el("h3", "", label));
+  titleRow.append(titleWrap, el("div", "cost", `$${def.cost.toLocaleString("en-US")}`));
+  info.append(titleRow);
+
+  const dmg = def.dmg ?? 0;
+  const range = def.range ?? 0;
+  const rof = def.rof ?? 0;
+  const armed = dmg > 0 && range > 0;
+  const hitsGround = armed && def.canHitGround !== false;
+  const hitsAir = armed && def.canHitAir === true;
+
+  const badges = el("div", "badges");
+  addBadge(badges, "static defense");
+  if (hitsGround && hitsAir) addBadge(badges, "ground + air", "violet");
+  else if (hitsAir) addBadge(badges, "air only", "warn");
+  else if (hitsGround) addBadge(badges, "surface only", "violet");
+  if (def.limit != null) addBadge(badges, `limit ${def.limit}`, "danger");
+  if (kind === "irondome") addBadge(badges, "intercepts projectiles", "utility");
+  if (kind === "thaad") addBadge(badges, "anti-nuke", "utility");
+  if (kind === "sam" || kind === "irondome" || kind === "thaad") addBadge(badges, "stealth detector", "utility");
+  if (kind === "satlink") {
+    addBadge(badges, "stealth detect 18", "utility");
+    addBadge(badges, "tech structure", "warn");
+  }
+  info.append(badges);
+
+  info.append(el("p", "role", copy.role));
+
+  const stats = el("div", "stat-grid");
+  const dps = dmg > 0 && rof > 0 ? (dmg * 10) / rof : 0;
+  stats.append(
+    stat("HP", String(def.hp), "hot"),
+    stat("RANGE", range > 0 ? fmtNum(range) : "—", "cool"),
+    stat("DAMAGE", dmg > 0 ? String(dmg) : "—", "hot"),
+    stat("RELOAD", rof > 0 ? `${fmtNum(rof / 10)}s` : "—"),
+    stat("BASE DPS", dps > 0 ? fmtNum(dps) : "—", "hot"),
+    stat("POWER DRAW", def.power < 0 ? String(-def.power) : "0", "cool"),
+    stat("BUILD TIME", `${fmtNum(def.buildTicks / 10)}s`),
+    stat("FOOTPRINT", `${def.w}×${def.h}`),
+  );
+  info.append(stats);
+
+  const targets = el("div", "info-block");
+  targets.append(el("h4", "", "Can attack"), targetPills(def));
+  info.append(targets);
+
+  const counter = el("div", "info-block");
+  counter.append(el("h4", "", "What it counters"), el("p", "", countersText(kind)));
+  info.append(counter);
+
+  const tactic = el("div", "info-block");
+  const tacticText = el("p");
+  tacticText.append(el("strong", "", "Commander doctrine: "), document.createTextNode(copy.tactic));
+  tactic.append(el("h4", "", "How to use it"), tacticText);
+  info.append(tactic);
+
+  const train = el("div", "training-line");
+  const produced = el("span");
+  produced.append(
+    document.createTextNode("Built at "),
+    el("b", "", BUILDING_NAMES.conyard),
+    document.createTextNode(def.category === "defense" ? " — defense queue" : " — structure queue"),
+  );
+  train.append(produced);
+  if (def.requires?.length) {
+    train.append(el("span", "sep", "•"));
+    const req = el("span");
+    req.append(document.createTextNode("Requires "), el("b", "", def.requires.map((r) => BUILDING_NAMES[r]).join(" + ")));
+    train.append(req);
+  }
+  if (def.power < 0) {
+    train.append(el("span", "sep", "•"));
+    const pw = el("span");
+    pw.append(document.createTextNode("Goes "), el("b", "", "offline"), document.createTextNode(" if the grid browns out"));
+    train.append(pw);
+  }
+  info.append(train);
+
+  card.append(media, info);
+  return card;
+}
+
 function render(): void {
   const root = document.getElementById("units-app");
   if (!root) throw new Error("missing #units-app");
@@ -393,14 +554,14 @@ function render(): void {
     el(
       "p",
       "hero-copy",
-      "A visual field database for new commanders. Every card is generated from the same authoritative unit definitions the server simulates, then paired with real recorded multiplayer gameplay footage so you can recognize what each system actually does in battle.",
+      "A visual field database for new commanders. Every card is generated from the same authoritative unit and building definitions the server simulates — mobile units, then the static defense line — paired with real recorded multiplayer gameplay footage so you can recognize what each system actually does in battle.",
     ),
   );
   const heroStats = el("div", "hero-stats");
   const heroData: [string, string][] = [
     [String(activeCount), "active units"],
+    [String(DEFENSE_LINEUP.length), "base defenses"],
     [String(categories), "doctrine groups"],
-    ["3", "combat domains"],
     ["100%", "live game data"],
   ];
   for (const [num, lab] of heroData) {
@@ -451,7 +612,8 @@ function render(): void {
     titleBox.append(el("div", "category-kicker", cat.kicker), el("h2", "", cat.title));
     head.append(titleBox, el("p", "", cat.desc));
     const grid = el("div", "unit-grid");
-    for (const kind of cat.units) grid.append(buildUnitCard(kind));
+    for (const kind of cat.units ?? []) grid.append(buildUnitCard(kind));
+    for (const kind of cat.defenses ?? []) grid.append(buildDefenseCard(kind));
     section.append(head, grid);
     root.append(section);
   }
@@ -461,7 +623,7 @@ function render(): void {
   footer.append(
     fb,
     document.createTextNode(
-      " — Hit points, speed, cost, build time, range, damage, reload, stealth, vision, cargo, EW radius, prerequisites, and armor multipliers are imported directly from src/shared/gamedefs.ts at build time. Speed is displayed in tiles per second at the simulation's 10 Hz tick rate. Surface-capable weapons can engage land units, ships, and buildings because the combat simulation treats all non-air entities as surface targets. Retired legacy units are intentionally omitted from this modern roster. Return to the ",
+      " — Hit points, speed, cost, build time, range, damage, reload, stealth, vision, cargo, EW radius, prerequisites, power draw, footprint, build limits, and armor multipliers are imported directly from src/shared/gamedefs.ts at build time. Speed is displayed in tiles per second at the simulation's 10 Hz tick rate; damage-per-second figures are base values before armor multipliers and veterancy. Surface-capable weapons can engage land units, ships, and buildings because the combat simulation treats all non-air entities as surface targets. Defense structures build in a parallel construction queue and require a healthy power grid — a browned-out base is a silent one. Retired legacy units are intentionally omitted from this modern roster. Return to the ",
     ),
   );
   const home = document.createElement("a");

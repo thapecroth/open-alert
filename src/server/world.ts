@@ -57,6 +57,7 @@ import {
   matchesArmorClass,
   isInfantryKind,
   isSeaShipKind,
+  transportCapOf,
   usesVehicleSeparation,
   WEAPON_FX_OF,
   AMMO_COST_OF,
@@ -86,6 +87,11 @@ const MAX_TRAIN_QUEUE = 30;
 const PROD_BOOST_PER_EXTRA = 0.25; // duplicate producer speed gain (+25% per extra)
 const PROD_BOOST_CAP = 2.0;
 const CRATE_KINDS: readonly CrateKind[] = ["cash", "vet", "heal", "unit"];
+// Troop transport tuning: helicopters hover (there is no landed state in this sim —
+// aircraft are always airborne), so they load/unload anywhere they can hover.
+const BOARD_RANGE = 2.0; // infantry within this distance of the transport embarks
+const UNLOAD_EVERY = 3; // ticks between passenger drops once the transport arrives
+const UNLOAD_SEARCH_R = 8; // passable-tile search radius around the landing point
 
 const hasOwn = (o: object, k: unknown): boolean =>
   typeof k === "string" && Object.prototype.hasOwnProperty.call(o, k);
@@ -147,6 +153,11 @@ export interface Ent {
     lock?: number; // persistent lock-on target id
   };
   fpvAlt?: number; // normalized altitude 0..1 while player-driven (air only)
+  // troop transport cargo: embarked infantry, stored as FULL ent records (ids never recycle,
+  // so a passenger re-enters the world with its identity/veterancy intact on unload).
+  // Passengers are NOT in the world ents map while embarked — invisible, untargetable,
+  // unticked; their position mirrors the transport. They die with it (classic RTS rule).
+  passengers?: Ent[];
 }
 
 export interface P {
@@ -305,6 +316,7 @@ const copyEnt = (e: Ent): Ent => ({
   bTiles: e.bTiles ? [...e.bTiles] : e.bTiles,
   rally: e.rally ? [e.rally[0], e.rally[1]] : e.rally,
   direct: e.direct ? { ...e.direct } : e.direct,
+  passengers: e.passengers ? e.passengers.map(copyEnt) : e.passengers,
 });
 const copyPlayer = (p: P): P => {
   const queues: P["queues"] = {};
@@ -339,7 +351,17 @@ export class World {
   private cliff!: Uint8Array; // 1 = impassable rocky cliff
   private water!: Uint8Array; // 1 = navigable water
   bridges!: Set<number>; // pontoon-bridge tiles — land+sea passable, still water underneath
+  private bridgeMask!: Uint8Array; // hot-path mirror of `bridges` — passable() runs millions of tile checks per second of heavy pathing, Set.has is far pricier than a typed-array load
   private waterCount!: number;
+  // connectivity labels per tile for land/sea passability — an A* whose goal
+  // sits in a different region than the start is PROVABLY hopeless, so it
+  // fails in O(1) instead of expanding the entire reachable region (the
+  // dominant tick cost on naval maps: 93% of searches were unreachable-goal
+  // scans). Rebuilt lazily on the first path query after block/bridge mutation.
+  private regionLand!: Int32Array;
+  private regionSea!: Int32Array;
+  private regionQ!: Int32Array; // flood-fill scratch
+  private regionDirty!: boolean;
   private bld!: Int32Array; // ent id per tile
   private ore!: Int16Array; // remaining per tile
   private nextId!: number;
@@ -386,11 +408,12 @@ export class World {
     this.domeIdx = [];
     this.ecoIdx = [];
     this.bldDirty = true;
+    this.regionDirty = true;
     this.passable = (x: number, y: number) =>
       this.inBounds(x, y) &&
       this.block[this.idx(x, y)] === 0 &&
       this.cliff[this.idx(x, y)] === 0 &&
-      (this.water[this.idx(x, y)] === 0 || this.bridges.has(this.idx(x, y)));
+      (this.water[this.idx(x, y)] === 0 || this.bridgeMask[this.idx(x, y)] === 1);
     this.passableSea = (x: number, y: number) =>
       this.inBounds(x, y) && this.block[this.idx(x, y)] === 0 && this.cliff[this.idx(x, y)] === 0 && this.water[this.idx(x, y)] === 1;
   }
@@ -402,6 +425,7 @@ export class World {
     this.water = new Uint8Array(area);
     this.bld = new Int32Array(area).fill(-1);
     this.ore = new Int16Array(area);
+    this.bridgeMask = new Uint8Array(area);
     this.gridCols = Math.ceil(this.w / 8);
     this.gridRows = Math.ceil(this.h / 8);
     this.grid = Array.from({ length: this.gridCols * this.gridRows }, () => []);
@@ -530,6 +554,7 @@ export class World {
     w.initRuntimeState();
     const area = w.initMapState(layout);
     w.bridges = new Set(d.bridges ?? []);
+    for (const b of w.bridges) if (b >= 0 && b < area) w.bridgeMask[b] = 1;
     if (d.ore && d.ore.length === area) w.ore = new Int16Array(d.ore);
     else w.genOre((d.players ?? []).map((p) => p.slot));
     w.tick = d.tick;
@@ -548,6 +573,23 @@ export class World {
       (d.ents ?? []).map((e) => {
         const r = e as unknown as Record<string, unknown>;
         for (const k in ENT_DEFAULTS) if (r[k] === undefined) r[k] = (ENT_DEFAULTS as Record<string, unknown>)[k];
+        // transport cargo hardening: passengers are nested full ent records — they need the
+        // same default-fill, and anything malformed is dropped rather than crashing a later tick
+        if (r.passengers !== undefined) {
+          if (Array.isArray(r.passengers)) {
+            r.passengers = r.passengers.filter((p2) => {
+              if (!p2 || typeof p2 !== "object") return false;
+              const pr = p2 as Record<string, unknown>;
+              if (!Number.isFinite(pr.id) || typeof pr.k !== "string") return false;
+              for (const k in ENT_DEFAULTS) if (pr[k] === undefined) pr[k] = (ENT_DEFAULTS as Record<string, unknown>)[k];
+              delete pr.passengers; // no nesting — only infantry (never transports) can board
+              return true;
+            });
+            if ((r.passengers as unknown[]).length === 0) delete r.passengers;
+          } else {
+            delete r.passengers;
+          }
+        }
         return [e.id, e];
       }),
     );
@@ -883,6 +925,7 @@ export class World {
     this.ents.set(e.id, e);
     this.gridInsert(e);
     this.bldDirty = true;
+    this.regionDirty = true;
     if (e.o >= 0) this.slotCnt[e.o]++;
     for (let y = ty; y < ty + d.h; y++)
       for (let x = tx; x < tx + d.w; x++)
@@ -1063,7 +1106,16 @@ export class World {
 
   cmdOrder(slot: number, ids: number[], kind: OrderKind, x: number, y: number, target?: number, queue = false): string | null {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return "bad order";
-    if (kind !== "move" && kind !== "amove" && kind !== "attack" && kind !== "harvest" && kind !== "patrol") return "bad order";
+    if (
+      kind !== "move" &&
+      kind !== "amove" &&
+      kind !== "attack" &&
+      kind !== "harvest" &&
+      kind !== "patrol" &&
+      kind !== "board" &&
+      kind !== "unload"
+    )
+      return "bad order";
     if (!this.inBounds(Math.floor(x), Math.floor(y))) return "off map";
     const cols = Math.max(1, Math.ceil(Math.sqrt(ids.length)));
     const rows = Math.max(1, Math.ceil(ids.length / cols));
@@ -1076,8 +1128,8 @@ export class World {
       if (kind === "attack" && weaponOf(e).dmg <= 0 && e.k !== "engineer" && e.k !== "spy") continue;
       if ((kind === "amove" || kind === "patrol") && weaponOf(e).dmg <= 0 && e.k !== "engineer" && e.k !== "spy" && !isSupportMover) continue;
       // spread group destinations on a dynamic grid so large groups don't stack on one tile
-      const ox = kind === "attack" || kind === "harvest" ? 0 : ((i % cols) - (cols - 1) / 2) * 1.15;
-      const oy = kind === "attack" || kind === "harvest" ? 0 : (Math.floor(i / cols) - (rows - 1) / 2) * 1.15;
+      const ox = kind === "attack" || kind === "harvest" || kind === "board" ? 0 : ((i % cols) - (cols - 1) / 2) * 1.15;
+      const oy = kind === "attack" || kind === "harvest" || kind === "board" ? 0 : (Math.floor(i / cols) - (rows - 1) / 2) * 1.15;
       const gx = Math.max(0.5, Math.min(this.w - 0.5, x + ox));
       const gy = Math.max(0.5, Math.min(this.h - 0.5, y + oy));
 
@@ -1085,7 +1137,22 @@ export class World {
       let hstate: Ent["hstate"] = null;
       let oreIdx = -1;
 
-      if (kind === "harvest" && e.k !== "harvester") {
+      if (kind === "board") {
+        // troop transport boarding: only infantry-class units can embark, and only into their
+        // OWN transport (allied rides are out of scope). Anything else in a mixed selection —
+        // or a board order whose target is no longer a valid ride — degrades to a plain move,
+        // mirroring the harvest-escort fallback and classic right-click-on-friendly semantics.
+        const tgt = Number.isFinite(target) ? this.ents.get(target as number) : null;
+        if (isInfantryKind(e.k) && tgt && tgt.o === slot && transportCapOf(tgt.k) > 0) {
+          ord = { kind, x: tgt.x, y: tgt.y, target };
+        } else {
+          ord = { kind: "move", x: gx, y: gy };
+        }
+      } else if (kind === "unload") {
+        // only transports can disembark passengers — other units in the selection are skipped
+        if (transportCapOf(e.k) <= 0) continue;
+        ord = { kind, x: gx, y: gy };
+      } else if (kind === "harvest" && e.k !== "harvester") {
         // escorting units in a mixed group follow along as a plain move
         ord = { kind: "move", x: gx, y: gy };
       } else if (kind === "attack") {
@@ -1253,7 +1320,7 @@ export class World {
     // verify the engineer can actually reach the approach — otherwise the order stalls forever
     if (
       (Math.floor(e.x) !== ax || Math.floor(e.y) !== ay) &&
-      !findPath(Math.floor(e.x), Math.floor(e.y), ax, ay, this.passable, Math.max(2400, this.w * this.h), this.w, this.h)
+      !this.pathfind(Math.floor(e.x), Math.floor(e.y), ax, ay, false, Math.max(2400, this.w * this.h))
     )
       return "can't reach the shore";
     e.bTiles = tiles;
@@ -1279,6 +1346,15 @@ export class World {
         const tgt = this.ents.get(next.target);
         if (!tgt || !this.canAttack(e, tgt)) continue;
       }
+      if (next.kind === "board") {
+        // queued board orders re-validate at shift time: the transport may have died or
+        // been captured away while the infantry walked its earlier waypoints — skip rather
+        // than chase a ghost (transports are never buildings, so ownership can't flip, but
+        // the target existence check must not regress)
+        const tgt = next.target != null ? this.ents.get(next.target) : null;
+        if (!tgt || tgt.o !== e.o || transportCapOf(tgt.k) <= 0) continue;
+      }
+      if (next.kind === "unload" && transportCapOf(e.k) <= 0) continue;
       if (next.kind === "harvest" && e.k === "harvester") {
         const t = this.idx(Math.floor(next.x), Math.floor(next.y));
         if (this.ore[t] > 0) {
@@ -2325,6 +2401,14 @@ export class World {
   private tickEnt(e: Ent) {
     if (e.cd > 0) e.cd--;
     if (e.interceptCd > 0) e.interceptCd--;
+    // embarked passengers ride along — position mirrors the transport every tick
+    // (they are outside the world ents map: unticked, untargetable, unrendered)
+    if (e.passengers?.length) {
+      for (const p of e.passengers) {
+        p.x = e.x;
+        p.y = e.y;
+      }
+    }
     if (e.direct) {
       if (this.tick > e.direct.until) {
         delete e.direct;
@@ -2354,7 +2438,7 @@ export class World {
               this.astarBudget--;
               const maxExpand = Math.max(2400, this.w * this.h);
               e.path =
-                findPath(Math.floor(e.x), Math.floor(e.y), Math.floor(o.x), Math.floor(o.y), this.passable, maxExpand, this.w, this.h) ?? [];
+                this.pathfind(Math.floor(e.x), Math.floor(e.y), Math.floor(o.x), Math.floor(o.y), false, maxExpand) ?? [];
               // unreachable approach — don't burn an A* every 12 ticks forever
               if (!e.path.length) {
                 if ((e.bFail = (e.bFail ?? 0) + 1) >= 3) {
@@ -2392,12 +2476,35 @@ export class World {
             } else {
               p.credits -= 40;
               this.bridges.add(t);
+              this.bridgeMask[t] = 1;
+              this.regionDirty = true;
               e.bTiles.shift();
               e.bT = 18;
               if (!e.bTiles.length) this.advanceOrder(e);
             }
           }
         }
+      }
+    } else if (o?.kind === "board") {
+      // Troop transport boarding — the infantry chases its ride like an attack target
+      // (transports can keep moving) and embarks once adjacent. Helicopters in this sim
+      // are always airborne hoverers, so they load anywhere they can hover; the only
+      // requirement is physical adjacency.
+      const tgt = o.target != null ? this.ents.get(o.target) : null;
+      if (!tgt || tgt.o !== e.o || transportCapOf(tgt.k) <= 0) {
+        this.advanceOrder(e); // ride destroyed or otherwise invalid — stand down
+      } else if (dist(e.x, e.y, tgt.x, tgt.y) <= BOARD_RANGE) {
+        if ((tgt.passengers?.length ?? 0) < transportCapOf(tgt.k)) {
+          this.embark(e, tgt);
+        } else {
+          this.advanceOrder(e); // full — the squad waits beside the transport
+        }
+      } else {
+        if (e.repath-- <= 0) {
+          e.repath = 12;
+          if (this.repathDue(e, tgt.x, tgt.y)) this.pathNear(e, tgt);
+        }
+        this.stepAlong(e);
       }
     } else if (o?.kind === "attack" && o.target != null) {
       const tgt = this.ents.get(o.target);
@@ -2415,7 +2522,7 @@ export class World {
         if (!(e.k === "spy" ? this.trySabotage(e, tgt) : this.tryCapture(e, tgt))) {
           if (e.repath-- <= 0) {
             e.repath = 12;
-            this.pathNear(e, tgt);
+            if (this.repathDue(e, tgt.x, tgt.y)) this.pathNear(e, tgt);
           }
           this.stepAlong(e);
         }
@@ -2427,7 +2534,7 @@ export class World {
         } else {
           if (e.repath-- <= 0) {
             e.repath = 12;
-            this.pathNear(e, tgt);
+            if (this.repathDue(e, tgt.x, tgt.y)) this.pathNear(e, tgt);
           }
           this.stepAlong(e);
         }
@@ -2450,7 +2557,7 @@ export class World {
             e.agro = enemy.id;
             if (e.repath-- <= 0) {
               e.repath = 12;
-              this.pathNear(e, enemy);
+              if (this.repathDue(e, enemy.x, enemy.y)) this.pathNear(e, enemy);
             }
             this.stepAlong(e);
           }
@@ -2463,7 +2570,7 @@ export class World {
             e.agro = enemy.id;
             if (e.repath-- <= 0) {
               e.repath = 12;
-              this.pathNear(e, enemy);
+              if (this.repathDue(e, enemy.x, enemy.y)) this.pathNear(e, enemy);
             }
             this.stepAlong(e);
           }
@@ -2489,6 +2596,18 @@ export class World {
           } else {
             this.advanceOrder(e);
           }
+        }
+      }
+    } else if (o?.kind === "unload") {
+      // fly to the drop zone, then hover & disembark one passenger every few ticks.
+      // A transport with empty cargo treats this as a plain move (order completes on
+      // arrival); if no passable landing tile exists nearby the unload aborts and the
+      // remaining passengers stay aboard — they are never dropped into impassable terrain.
+      if (this.stepAlong(e)) {
+        if (!e.passengers?.length) {
+          this.advanceOrder(e);
+        } else if (this.tick % UNLOAD_EVERY === 0) {
+          if (!this.disembarkOne(e, o.x, o.y) || !e.passengers?.length) this.advanceOrder(e);
         }
       }
     } else if (o?.kind === "move") {
@@ -2773,15 +2892,13 @@ export class World {
             if (this.astarBudget > 0) {
               this.astarBudget--;
               const maxExpand = Math.max(2400, this.w * this.h);
-              e.path = findPath(
+              e.path = this.pathfind(
                 e.x | 0,
                 e.y | 0,
                 e.oreIdx % this.w,
                 (e.oreIdx / this.w) | 0,
-                this.passable,
+                false,
                 maxExpand,
-                this.w,
-                this.h,
               );
             } else {
               e.repath = 1; // budgeted retry next tick
@@ -2862,7 +2979,7 @@ export class World {
       if (this.astarBudget <= 0) return;
       this.astarBudget--;
       const maxExpand = Math.max(2400, this.w * this.h);
-      e.path = findPath(e.x | 0, e.y | 0, g.x, g.y, this.passable, maxExpand, this.w, this.h);
+      e.path = this.pathfind(e.x | 0, e.y | 0, g.x, g.y, false, maxExpand);
       e.order = { kind: "harvest", x: g.x, y: g.y };
       if (!e.path) {
         // Back off for 5s so an unreachable island ore tile never spins A* every tick
@@ -3207,6 +3324,49 @@ export class World {
     }
   }
 
+  // Infantry steps into the transport: removed from the world entity set (so it is
+  // untargetable, unticked, unrendered, and dropped from the elimination headcount)
+  // but kept as a full record on the transport — identity/veterancy/hp survive the ride.
+  private embark(e: Ent, tgt: Ent) {
+    if (!this.ents.has(e.id)) return;
+    this.ents.delete(e.id);
+    if (e.o >= 0) this.slotCnt[e.o]--;
+    e.order = null;
+    e.orderQueue = [];
+    e.path = null;
+    e.repath = 0;
+    e.agro = null;
+    e.hstate = null;
+    e.bTiles = undefined;
+    delete e.direct; // an embarked unit is never player-driven
+    delete e.fpvAlt;
+    e.x = tgt.x;
+    e.y = tgt.y;
+    (tgt.passengers ??= []).push(e);
+  }
+
+  // One passenger steps out onto the nearest passable land tile to the drop point.
+  // Returns false when nobody can disembark there (no passable tile in range) — the
+  // passenger stays aboard and the caller aborts the unload order.
+  private disembarkOne(transport: Ent, x: number, y: number): boolean {
+    const p = transport.passengers?.[0];
+    if (!p) return false;
+    const spot = nearestPassable(Math.floor(x), Math.floor(y), this.passable, UNLOAD_SEARCH_R, this.w, this.h);
+    if (!spot) return false;
+    transport.passengers!.shift();
+    if (transport.passengers!.length === 0) delete transport.passengers;
+    p.x = spot.x + 0.5;
+    p.y = spot.y + 0.5;
+    p.order = null;
+    p.orderQueue = [];
+    p.path = null;
+    p.repath = 0;
+    p.agro = null;
+    this.ents.set(p.id, p);
+    if (p.o >= 0) this.slotCnt[p.o]++;
+    return true;
+  }
+
   private destroy(e: Ent, killerSlot?: number) {
     if (!this.ents.has(e.id)) return;
     const wasBuilding = isBuilding(e.k);
@@ -3225,6 +3385,7 @@ export class World {
     if (e.o >= 0) this.slotCnt[e.o]--;
     if (wasBuilding) {
       this.bldDirty = true;
+      this.regionDirty = true;
       this.recomputePower(e.o); // after removal so the corpse doesn't count
       if (killerSlot != null && killerSlot >= 0 && !this.isAlly(killerSlot, e.o)) {
         const kp = this.players.get(killerSlot);
@@ -3234,17 +3395,172 @@ export class World {
       const op = this.players.get(e.o);
       if (op) op.unitsLost++;
     }
+    // classic transport rule: everyone aboard dies with the vehicle. Passengers are
+    // already outside the world entity set (no slotCnt bookkeeping, no separate death
+    // events) — they simply cease to exist and count toward the owner's losses.
+    if (e.passengers?.length) {
+      const op = this.players.get(e.o);
+      if (op) op.unitsLost += e.passengers.length;
+      delete e.passengers;
+    }
     const size = wasBuilding ? Math.max(BUILDINGS[e.k as BuildingKind].w, BUILDINGS[e.k as BuildingKind].h) : 1;
     this.events.push({ e: "boom", x: e.x, y: e.y, r: size });
+  }
+
+  // One-scan multi-source flood: every passable tile gets its connectivity
+  // label; impassable tiles stay 0. O(area) with zero allocation (typed-array
+  // ring buffer) — runs rarely (lazily, after construction/bridge mutations),
+  // amortizing to nothing next to the full-area A* failures it eliminates.
+  private recomputeRegions() {
+    const W = this.w,
+      H = this.h,
+      area = W * H;
+    if (!this.regionLand || this.regionLand.length !== area) {
+      this.regionLand = new Int32Array(area);
+      this.regionSea = new Int32Array(area);
+      this.regionQ = new Int32Array(area);
+    }
+    const land = this.regionLand,
+      sea = this.regionSea,
+      q = this.regionQ,
+      block = this.block,
+      cliff = this.cliff,
+      water = this.water,
+      bmask = this.bridgeMask;
+    land.fill(0);
+    sea.fill(0);
+    let nextLand = 0,
+      nextSea = 0;
+    for (let i = 0; i < area; i++) {
+      if (block[i] !== 0 || cliff[i] !== 0) continue;
+      const isWater = water[i] === 1;
+      // land flood: dry tiles + pontoon bridges
+      if ((!isWater || bmask[i] === 1) && land[i] === 0) {
+        const id = ++nextLand;
+        let qh = 0,
+          qt = 0;
+        land[i] = id;
+        q[qt++] = i;
+        while (qh < qt) {
+          const t = q[qh++];
+          const tx = t % W,
+            ty = (t / W) | 0;
+          if (tx + 1 < W) {
+            const n = t + 1;
+            if (land[n] === 0 && block[n] === 0 && cliff[n] === 0 && (water[n] === 0 || bmask[n] === 1)) {
+              land[n] = id;
+              q[qt++] = n;
+            }
+          }
+          if (tx > 0) {
+            const n = t - 1;
+            if (land[n] === 0 && block[n] === 0 && cliff[n] === 0 && (water[n] === 0 || bmask[n] === 1)) {
+              land[n] = id;
+              q[qt++] = n;
+            }
+          }
+          if (ty + 1 < H) {
+            const n = t + W;
+            if (land[n] === 0 && block[n] === 0 && cliff[n] === 0 && (water[n] === 0 || bmask[n] === 1)) {
+              land[n] = id;
+              q[qt++] = n;
+            }
+          }
+          if (ty > 0) {
+            const n = t - W;
+            if (land[n] === 0 && block[n] === 0 && cliff[n] === 0 && (water[n] === 0 || bmask[n] === 1)) {
+              land[n] = id;
+              q[qt++] = n;
+            }
+          }
+        }
+      }
+      // sea flood: navigable water (bridges stay water underneath)
+      if (isWater && sea[i] === 0) {
+        const id = ++nextSea;
+        let qh = 0,
+          qt = 0;
+        sea[i] = id;
+        q[qt++] = i;
+        while (qh < qt) {
+          const t = q[qh++];
+          const tx = t % W,
+            ty = (t / W) | 0;
+          if (tx + 1 < W) {
+            const n = t + 1;
+            if (sea[n] === 0 && block[n] === 0 && cliff[n] === 0 && water[n] === 1) {
+              sea[n] = id;
+              q[qt++] = n;
+            }
+          }
+          if (tx > 0) {
+            const n = t - 1;
+            if (sea[n] === 0 && block[n] === 0 && cliff[n] === 0 && water[n] === 1) {
+              sea[n] = id;
+              q[qt++] = n;
+            }
+          }
+          if (ty + 1 < H) {
+            const n = t + W;
+            if (sea[n] === 0 && block[n] === 0 && cliff[n] === 0 && water[n] === 1) {
+              sea[n] = id;
+              q[qt++] = n;
+            }
+          }
+          if (ty > 0) {
+            const n = t - W;
+            if (sea[n] === 0 && block[n] === 0 && cliff[n] === 0 && water[n] === 1) {
+              sea[n] = id;
+              q[qt++] = n;
+            }
+          }
+        }
+      }
+    }
+    this.regionDirty = false;
+  }
+
+  // Repath throttle: a unit only needs a fresh path when it has none (or the
+  // path is nearly exhausted) or the chase target has meaningfully moved from
+  // where the current path leads. Siege against static buildings previously
+  // re-ran a full A* per unit every 12 ticks forever — pure waste.
+  private repathDue(e: Ent, tx: number, ty: number): boolean {
+    if (!e.path || e.path.length <= 2) return true;
+    const last = e.path[e.path.length - 1];
+    return Math.abs(last.x + 0.5 - tx) + Math.abs(last.y + 0.5 - ty) > 6;
+  }
+
+  // Region-gated A*: identical semantics to findPath, except searches whose
+  // endpoints are provably disconnected fail in O(1). When either endpoint is
+  // itself impassable (region 0 — e.g. the goal is inside a building footprint
+  // before nearestPassable adjustment) we cannot prove hopelessness and run
+  // the real search, preserving prior behavior exactly.
+  private pathfind(
+    sx: number,
+    sy: number,
+    gx: number,
+    gy: number,
+    sea: boolean,
+    maxExpand: number,
+  ): { x: number; y: number }[] | null {
+    if (this.regionDirty) this.recomputeRegions();
+    const region = sea ? this.regionSea : this.regionLand;
+    if (sx >= 0 && sy >= 0 && sx < this.w && sy < this.h && gx >= 0 && gy >= 0 && gx < this.w && gy < this.h) {
+      const rs = region[sy * this.w + sx];
+      const rg = region[gy * this.w + gx];
+      if (rs > 0 && rg > 0 && rs !== rg) return null;
+    }
+    return findPath(sx, sy, gx, gy, sea ? this.passableSea : this.passable, maxExpand, this.w, this.h);
   }
 
   private pathNear(e: Ent, tgt: Ent, r = 0) {
     const dom = domainOf(e.k);
     if (dom === "air") return; // aircraft fly directly in stepAlong
-    const pass = dom === "sea" ? this.passableSea : this.passable;
+    const sea = dom === "sea";
+    const pass = sea ? this.passableSea : this.passable;
     const gx = tgt.x | 0,
       gy = tgt.y | 0;
-    const searchR = dom === "sea" ? 24 : 10;
+    const searchR = sea ? 24 : 10;
     const spot = nearestPassable(gx, gy, pass, searchR, this.w, this.h);
     if (!spot) {
       e.path = [];
@@ -3256,7 +3572,7 @@ export class World {
     }
     this.astarBudget--;
     const maxExpand = Math.max(2400, this.w * this.h);
-    e.path = findPath(e.x | 0, e.y | 0, spot.x, spot.y, pass, maxExpand, this.w, this.h);
+    e.path = this.pathfind(e.x | 0, e.y | 0, spot.x, spot.y, sea, maxExpand);
     // null path = "needs compute" → stepAlong would immediately run a SECOND budgeted
     // search at the stale order coords. Mark hard failure as gave-up instead.
     if (!e.path?.length) e.path = [];
@@ -3301,8 +3617,9 @@ export class World {
       e.d = Math.atan2(gy - e.y, gx - e.x);
       return false;
     }
-    const pass = dom === "sea" ? this.passableSea : this.passable;
-    const searchR = dom === "sea" ? 24 : 12;
+    const sea = dom === "sea";
+    const pass = sea ? this.passableSea : this.passable;
+    const searchR = sea ? 24 : 12;
     const maxExpand = Math.max(2400, this.w * this.h);
     if (e.path === null) {
       const o = e.order;
@@ -3313,7 +3630,7 @@ export class World {
       if (this.astarBudget <= 0) return false;
       this.astarBudget--;
       const goal = nearestPassable(Math.floor(o.x), Math.floor(o.y), pass, searchR, this.w, this.h);
-      e.path = goal ? (findPath(e.x | 0, e.y | 0, goal.x, goal.y, pass, maxExpand, this.w, this.h) ?? []) : [];
+      e.path = goal ? (this.pathfind(e.x | 0, e.y | 0, goal.x, goal.y, sea, maxExpand) ?? []) : [];
     }
     if (!e.path.length) return true;
     const wp = e.path[0];
@@ -3333,7 +3650,7 @@ export class World {
       if (this.astarBudget <= 0) return false; // out of budget — retry next tick instead of dropping the order
       this.astarBudget--;
       const goal = nearestPassable(Math.floor(o.x), Math.floor(o.y), pass, searchR, this.w, this.h);
-      e.path = goal ? (findPath(e.x | 0, e.y | 0, goal.x, goal.y, pass, maxExpand, this.w, this.h) ?? []) : [];
+      e.path = goal ? (this.pathfind(e.x | 0, e.y | 0, goal.x, goal.y, sea, maxExpand) ?? []) : [];
       return e.path.length === 0;
     }
     const step = Math.min(speed, d);
@@ -3486,6 +3803,9 @@ export class World {
         d: Math.round(e.d * 10),
       };
       if (e.k === "harvester" || e.k === "supplytruck") s.cargo = Math.round(e.cargo);
+      // troop transports reuse the same wire scalar: cargo = passengers aboard
+      // (interpretation stays kind-dependent, exactly like ore load vs supply load)
+      else if (transportCapOf(e.k) > 0) s.cargo = e.passengers?.length ?? 0;
       if (this.config.logistics !== false && !isBuilding(e.k)) {
         const fl = Math.round(e.fuel);
         const am = Math.round(e.ammo);
@@ -3503,7 +3823,7 @@ export class World {
         const pushOrd = (ord: Order) => {
           let ox = ord.x,
             oy = ord.y;
-          if (ord.kind === "attack" && ord.target != null) {
+          if ((ord.kind === "attack" || ord.kind === "board") && ord.target != null) {
             const t = this.ents.get(ord.target);
             if (t) {
               ox = t.x;

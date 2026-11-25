@@ -119,6 +119,7 @@ const BUILDABLE_KINDS = Object.entries(BUILDINGS)
 
 const UNIT_KINDS = Object.keys(UNITS);
 const MAP_IDS = MAP_LIST.map((m) => m.id);
+const MAX_PLAYERS = gd.MAX_PLAYERS ?? 8;
 const MAP_META = new Map(MAP_LIST.map((m) => [m.id, m]));
 const NAVAL_MAPS = MAP_LIST.filter((m) => m.naval).map((m) => m.id);
 // Largest dimension across all maps — used only as a loose upper bound in tool
@@ -1138,6 +1139,34 @@ const TOOLS = [
     },
   },
   {
+    name: "set_slot",
+    description:
+      "Lobby only: move yourself to an EMPTY spawn/color slot (0-based). Slots determine both player color and home-base spawn position; the server validates the current map's slot count. Hosts may pass another player's id to move that player to an empty slot.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        room: { type: "string", description: "Room ID you joined via join_game." },
+        slot: { type: "integer", minimum: 0, maximum: MAX_PLAYERS - 1, description: "Empty destination slot index (0-based; shown as S1..Sn in the lobby UI)." },
+        id: { type: "string", description: "Optional target player id (host only). Omit to move yourself." },
+      },
+      required: ["room", "slot"],
+    },
+  },
+  {
+    name: "swap_slot",
+    description:
+      "Lobby only: swap your spawn/color slot with another player. Anyone may swap with an AI bot; swaps with another human are host-only. Hosts may pass id2 to atomically swap any two players. Slots determine color and home-base spawn position.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        room: { type: "string", description: "Room ID you joined via join_game." },
+        id: { type: "string", description: "Target player id to swap slots with." },
+        id2: { type: "string", description: "Optional second player id (host only): swap id↔id2 instead of yourself↔id." },
+      },
+      required: ["room", "id"],
+    },
+  },
+  {
     name: "get_game_state",
     description:
       "Get full RL Gym parity state (`gym_obs`) plus a real-time LLM-optimized tactical summary of the match: tick, done, winner, credits, power, awaiting placement, production queues, own buildings & units, visible enemy buildings & units, neutral Oil Derricks & Coal Mines, supply crates, nearest ore clusters, recent combat/alert events, and valid build placement coordinates. Includes map_size — dimensions vary per map.",
@@ -1483,6 +1512,88 @@ async function handleTransferHost(args) {
     transferred_to: { id: target.id, name: target.name },
     host: host ? { id: host.id, name: host.name } : null,
     players: session.lobbyPlayers,
+  };
+}
+
+async function handleSetSlot(args) {
+  const session = await ensureSessionConnected(args.room);
+  const slot = Number(args.slot);
+  if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_PLAYERS) {
+    throw new Error(`set_slot requires integer slot 0..${MAX_PLAYERS - 1}`);
+  }
+  const id = typeof args.id === "string" && args.id.trim() ? args.id.trim() : null;
+  const targetId = id ?? session.you;
+  const targetBefore = session.lobbyPlayers.find((p) => p.id === targetId);
+  if (targetBefore?.slot === slot) {
+    return {
+      ok: true,
+      room: session.room,
+      phase: session.phase,
+      requested_slot: slot,
+      player: { id: targetBefore.id, name: targetBefore.name, slot: targetBefore.slot },
+      players: session.lobbyPlayers,
+    };
+  }
+  const denyBefore = session.denies.length;
+  session.send({ t: "setSlot", slot, ...(id ? { id } : {}) });
+  await session
+    .waitFor(
+      (m) => m.t === "deny" || (m.t === "lobby" && m.players?.some((p) => p.id === targetId && p.slot === slot)),
+      900,
+    )
+    .catch(() => null);
+  const denies = session.denies.slice(denyBefore).map((d) => d.msg);
+  const target = session.lobbyPlayers.find((p) => p.id === targetId);
+  const ok = denies.length === 0 && target?.slot === slot;
+  return {
+    ok,
+    room: session.room,
+    phase: session.phase,
+    requested_slot: slot,
+    player: target ? { id: target.id, name: target.name, slot: target.slot } : null,
+    players: session.lobbyPlayers,
+    ...(ok ? {} : { error: denies.join("; ") || "slot move was not acknowledged by the server" }),
+  };
+}
+
+async function handleSwapSlot(args) {
+  const session = await ensureSessionConnected(args.room);
+  const id = typeof args.id === "string" ? args.id.trim() : "";
+  if (!id) throw new Error("swap_slot requires a non-empty target player 'id'.");
+  const id2 = typeof args.id2 === "string" && args.id2.trim() ? args.id2.trim() : null;
+  const firstBefore = session.lobbyPlayers.find((p) => p.id === id);
+  const secondBefore = session.lobbyPlayers.find((p) => p.id === (id2 ?? session.you));
+  if (!firstBefore || !secondBefore) {
+    return { ok: false, room: session.room, error: "target player not found in lobby", players: session.lobbyPlayers };
+  }
+  const denyBefore = session.denies.length;
+  session.send({ t: "swapSlot", id, ...(id2 ? { id2 } : {}) });
+  await session
+    .waitFor(
+      (m) =>
+        m.t === "deny" ||
+        (m.t === "lobby" &&
+          m.players?.some((p) => p.id === firstBefore.id && p.slot === secondBefore.slot) &&
+          m.players?.some((p) => p.id === secondBefore.id && p.slot === firstBefore.slot)),
+      900,
+    )
+    .catch(() => null);
+  const denies = session.denies.slice(denyBefore).map((d) => d.msg);
+  const firstAfter = session.lobbyPlayers.find((p) => p.id === firstBefore.id);
+  const secondAfter = session.lobbyPlayers.find((p) => p.id === secondBefore.id);
+  const ok = denies.length === 0 && firstAfter?.slot === secondBefore.slot && secondAfter?.slot === firstBefore.slot;
+  return {
+    ok,
+    room: session.room,
+    phase: session.phase,
+    swapped: ok
+      ? [
+          { id: firstBefore.id, name: firstBefore.name, slot: firstAfter?.slot },
+          { id: secondBefore.id, name: secondBefore.name, slot: secondAfter?.slot },
+        ]
+      : null,
+    players: session.lobbyPlayers,
+    ...(ok ? {} : { error: denies.join("; ") || "slot swap was not acknowledged by the server" }),
   };
 }
 
@@ -1989,6 +2100,10 @@ async function dispatchTool(name, args = {}) {
       return handleJoinGame(args);
     case "transfer_host":
       return handleTransferHost(args);
+    case "set_slot":
+      return handleSetSlot(args);
+    case "swap_slot":
+      return handleSwapSlot(args);
     case "create_ai_arena":
       return handleCreateAiArena(args);
     case "get_gym_schema":

@@ -88,22 +88,42 @@ function getAirShadowMat(): THREE.MeshBasicMaterial {
 // signature) — ~55 draw calls per unit collapse to ~6-10 with identical pixels.
 
 function mergeStaticBody(body: THREE.Group, rig: AnimRig): void {
-  const keepRoots = new Set<THREE.Object3D>();
-  const keep = (n?: THREE.Object3D | THREE.Object3D[] | null) => {
+  // Rig subtrees whose parts all move rigidly with the animated root node can be
+  // merged *within* that subtree: bake geometry into the animated node's local
+  // space and re-parent the merged mesh to it, so the animation (turret yaw,
+  // recoil kick, leg/arm stride, spider-leg wave, crane slew) stays pixel-identical
+  // while the dozens of sub-meshes collapse to one draw call per material.
+  const rigidRoots = new Set<THREE.Object3D>();
+  const looseRoots = new Set<THREE.Object3D>();
+  const rigid = (n?: THREE.Object3D | THREE.Object3D[] | null) => {
     if (!n) return;
-    if (Array.isArray(n)) for (const x of n) x && keepRoots.add(x);
-    else keepRoots.add(n);
+    if (Array.isArray(n)) for (const x of n) x && rigidRoots.add(x);
+    else rigidRoots.add(n);
   };
-  keep(rig.turret); keep(rig.recoil); keep(rig.spiderLegs);
-  keep(rig.spin); keep(rig.spin2); keep(rig.crane);
-  keep(rig.legL); keep(rig.legR); keep(rig.armL); keep(rig.armR);
-  keep(rig.head); keep(rig.flag); keep(rig.bin);
-  keep(rig.pulse); keep(rig.powerGlow); keep(rig.shadow);
+  const loose = (n?: THREE.Object3D | THREE.Object3D[] | null) => {
+    if (!n) return;
+    if (Array.isArray(n)) for (const x of n) x && looseRoots.add(x);
+    else looseRoots.add(n);
+  };
+  rigid(rig.turret); rigid(rig.recoil); rigid(rig.spiderLegs);
+  rigid(rig.crane);
+  rigid(rig.legL); rigid(rig.legR); rigid(rig.armL); rigid(rig.armR);
+  rigid(rig.head);
+  // spin/spin2 children counter-rotate individually (props, radars) and the glow/
+  // pulse/shadow meshes animate their own scale/opacity — never merge those.
+  loose(rig.spin); loose(rig.spin2);
+  loose(rig.flag); loose(rig.bin);
+  loose(rig.pulse); loose(rig.powerGlow); loose(rig.shadow);
 
-  const insideKeep = (o: THREE.Object3D): boolean => {
-    for (let p: THREE.Object3D | null = o; p && p !== body; p = p.parent)
-      if (keepRoots.has(p)) return true;
-    return false;
+  // Nearest animated ancestor wins: a barrel inside rig.recoil inside rig.turret
+  // bakes into recoil space (it both yaws with the turret and kicks with recoil).
+  // Returns "loose" when the nearest animated root must stay unmerged.
+  const anchorFor = (o: THREE.Object3D): THREE.Object3D | "loose" | null => {
+    for (let p: THREE.Object3D | null = o; p && p !== body; p = p.parent) {
+      if (looseRoots.has(p)) return "loose";
+      if (rigidRoots.has(p)) return p;
+    }
+    return null;
   };
 
   const subMats = new Set(rig.subMats ?? []);
@@ -144,6 +164,8 @@ function mergeStaticBody(body: THREE.Group, rig: AnimRig): void {
 
   interface Bucket {
     mat: THREE.Material;
+    anchor: THREE.Object3D;
+    anchorInv: THREE.Matrix4;
     castShadow: boolean;
     receiveShadow: boolean;
     renderOrder: number;
@@ -153,13 +175,14 @@ function mergeStaticBody(body: THREE.Group, rig: AnimRig): void {
   const buckets = new Map<string, Bucket>();
 
   body.updateMatrixWorld(true);
-  const bodyInv = new THREE.Matrix4().copy(body.matrixWorld).invert();
   const rel = new THREE.Matrix4();
 
   body.traverse((o) => {
     if (!(o instanceof THREE.Mesh) || o instanceof THREE.SkinnedMesh) return;
     if (!o.visible || o.userData.isBar) return;
-    if (insideKeep(o)) return;
+    const anchorHit = anchorFor(o);
+    if (anchorHit === "loose") return;
+    const anchor = anchorHit ?? body;
     const g = o.geometry;
     if (!g || (g.morphAttributes && Object.keys(g.morphAttributes).length > 0)) return;
     if (Array.isArray(o.material) || subMats.has(o.material)) return;
@@ -173,14 +196,23 @@ function mergeStaticBody(body: THREE.Group, rig: AnimRig): void {
       }
     }
     const sig =
-      `${mat.uuid}|${o.castShadow}|${o.receiveShadow}|${o.renderOrder}|` +
+      `${anchor.uuid}|${mat.uuid}|${o.castShadow}|${o.receiveShadow}|${o.renderOrder}|` +
       `${g2.index ? 1 : 0}|${Object.keys(g2.attributes).sort().join(",")}`;
     let b = buckets.get(sig);
     if (!b) {
-      b = { mat, castShadow: o.castShadow, receiveShadow: o.receiveShadow, renderOrder: o.renderOrder, geos: [], owners: [] };
+      b = {
+        mat,
+        anchor,
+        anchorInv: new THREE.Matrix4().copy(anchor.matrixWorld).invert(),
+        castShadow: o.castShadow,
+        receiveShadow: o.receiveShadow,
+        renderOrder: o.renderOrder,
+        geos: [],
+        owners: [],
+      };
       buckets.set(sig, b);
     }
-    rel.multiplyMatrices(bodyInv, o.matrixWorld);
+    rel.multiplyMatrices(b.anchorInv, o.matrixWorld);
     b.geos.push(g2.applyMatrix4(rel));
     b.owners.push(o);
   });
@@ -195,7 +227,7 @@ function mergeStaticBody(body: THREE.Group, rig: AnimRig): void {
     m.castShadow = b.castShadow;
     m.receiveShadow = b.receiveShadow;
     m.renderOrder = b.renderOrder;
-    body.add(m);
+    b.anchor.add(m);
     for (const o of b.owners) o.parent?.remove(o);
   }
 }
@@ -436,7 +468,9 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
   const { bg, fg } = makeBar(barW);
   bg.position.y = topY + 0.38;
   fg.position.y = topY + 0.38;
-  root.add(bg, fg);
+  // HP bar sprites are logical overlay records only: Renderer compacts them into
+  // one instanced billboard batch each frame instead of paying two scene-graph
+  // sprite draw calls per bar. They intentionally stay out of `root`.
 
   // Veterancy badge sprite (centered above HP bar; hidden until rank >= 1)
   const vetMat = new THREE.SpriteMaterial({ transparent: true, opacity: 0.98, depthTest: false });
@@ -447,7 +481,7 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
   vetBadge.visible = false;
   vetBadge.userData.isBar = true;
   vetBadge.userData.vetRank = 0;
-  root.add(vetBadge);
+  // Logical overlay state only; Renderer batches textured badges too.
 
   // Control-group digit badge (left of vet badge; hidden until grouped)
   const grpMat = new THREE.SpriteMaterial({ transparent: true, opacity: 0.95, depthTest: false });
@@ -458,7 +492,7 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
   groupTag.visible = false;
   groupTag.userData.isBar = true;
   groupTag.userData.grp = 0;
-  root.add(groupTag);
+  // Logical overlay state only; Renderer batches textured badges too.
 
   // Selection ring on ground/water directly beneath unit
   const ringSize = isBuildingKind(kind)

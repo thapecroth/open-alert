@@ -1038,6 +1038,11 @@ export function buildAirSeaModel(
   const accent = getAccentMat(colorHex);
   const accentDark = getAccentMat(dim(colorHex, 0.62));
   const accentBright = getAccentMat(lift(colorHex, 0.22));
+  // Variant tags let Renderer merge drone/USV instanced pools across player
+  // colors while preserving these three distinct accent shades per instance.
+  accent.userData.instAccentVariant = 0;
+  accentDark.userData.instAccentVariant = 1;
+  accentBright.userData.instAccentVariant = 2;
   const hull = getChassisMat(TITANIUM, 0.36, 0.62);
   const hullLt = getChassisMat(TITANIUM_LT, 0.32, 0.68);
   const hullDk = getChassisMat(TITANIUM_DK, 0.42, 0.56);

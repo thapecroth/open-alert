@@ -39,6 +39,36 @@ export const MCP_TOOLS = [
     },
   },
   {
+    name: "set_slot",
+    description:
+      "Lobby only: move yourself to an EMPTY spawn/color slot (0-based). Slots determine both player color and home-base spawn position. Hosts may pass another player token/id in `id` to move that player.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        room: { type: "string", description: "Room slug." },
+        token: { type: "string", description: "Your commander token returned by join_game." },
+        slot: { type: "integer", minimum: 0, maximum: MAX_PLAYERS - 1, description: "Empty destination slot index (0-based)." },
+        id: { type: "string", description: "Optional target player id/token (host only)." },
+      },
+      required: ["room", "token", "slot"],
+    },
+  },
+  {
+    name: "swap_slot",
+    description:
+      "Lobby only: swap your spawn/color slot with another player. Anyone may swap with an AI bot; swaps with another human are host-only. Hosts may pass id2 to atomically swap any two players.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        room: { type: "string", description: "Room slug." },
+        token: { type: "string", description: "Your commander token returned by join_game." },
+        id: { type: "string", description: "Target player id/token." },
+        id2: { type: "string", description: "Optional second player id/token (host only): swap id↔id2 instead of yourself↔id." },
+      },
+      required: ["room", "token", "id"],
+    },
+  },
+  {
     name: "get_game_state",
     description:
       "Get full RL Gym parity state (`gym_obs`) plus concise tactical summary for your commander: tick, done, winner, watch_url, credits, power, awaiting placement, production queues, own buildings & units, visible enemies, neutral oil derricks, supply crates, and nearest ore. Optionally include 6x64x64 float32 `feature_maps` and/or 64x64x3 uint8 `rgb_frame`.",

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { BUILDINGS, BuildingKind, buildCategoryOf, getSpawns } from "../shared/gamedefs";
+import { BUILDINGS, BuildingKind, buildCategoryOf, getSpawns, isInfantryKind, transportCapOf } from "../shared/gamedefs";
 import type { OrderKind } from "../shared/protocol";
 import { GameScene } from "./scene";
 import { Renderer } from "./render";
@@ -50,6 +50,7 @@ export class Input {
   private placePendingTimer: ReturnType<typeof setTimeout> | null = null;
   private amoveNext = false;
   private patrolNext = false;
+  private unloadNext = false;
   private lastClickTime = 0;
   private lastClickId = -1;
   private lastGroupTap = { num: -1, time: 0 };
@@ -179,6 +180,7 @@ export class Input {
   disarmOrders() {
     this.setAmove(false);
     this.setPatrol(false);
+    this.setUnload(false);
   }
 
   setLastAlert(x: number, y: number) {
@@ -220,7 +222,7 @@ export class Input {
 
   private syncCursor() {
     const c = this.gs.canvas;
-    if (this.placing || this.amoveNext || this.patrolNext || this.swArmed || this.reconArmed) {
+    if (this.placing || this.amoveNext || this.patrolNext || this.unloadNext || this.swArmed || this.reconArmed) {
       c.style.cursor = "crosshair";
     } else if (this.verb) {
       c.style.cursor = "pointer";
@@ -327,6 +329,7 @@ export class Input {
     }
 
     if (e.code === "KeyP") this.armPatrol();
+    if (e.code === "KeyU") this.armUnload();
     if (e.code === "KeyG") this.holdSelected();
     if (e.code === "KeyV") this.armVerb("sell");
     if (e.code === "KeyR") this.armVerb("repair");
@@ -356,6 +359,7 @@ export class Input {
       }
       this.setAmove(false);
       this.setPatrol(false);
+      this.setUnload(false);
       this.armVerb(null);
       if (this.placing) {
         // Classic RA2: Esc / right-click stows placement mode WITHOUT deleting the finished structure!
@@ -384,10 +388,16 @@ export class Input {
     document.getElementById("verb-patrol")?.classList.toggle("armed", on);
   }
 
+  private setUnload(on: boolean) {
+    this.unloadNext = on;
+    document.getElementById("verb-unload")?.classList.toggle("armed", on);
+  }
+
   setSelection(sel: Set<number>) {
     this.selection = sel;
     if (this.amoveNext) this.setAmove(false);
     if (this.patrolNext) this.setPatrol(false);
+    if (this.unloadNext) this.setUnload(false);
     this.r.setSelected(this.selection);
     this.onSelectionChange(this.selection);
     if (sel.size > 0) this.onUiSound("select");
@@ -662,7 +672,7 @@ export class Input {
         this.reconArmed ||
         !!this.placing ||
         !!this.verb ||
-        ((this.amoveNext || this.patrolNext) && this.myUnits().length > 0);
+        ((this.amoveNext || this.patrolNext || this.unloadNext) && this.myUnits().length > 0);
       return;
     }
     if (e.button === 2) {
@@ -726,8 +736,8 @@ export class Input {
       this.useVerb();
       return;
     }
-    if ((this.amoveNext || this.patrolNext) && this.myUnits().length) {
-      // Classic RTS: A/P + Left-Click executes Attack-Move / Patrol!
+    if ((this.amoveNext || this.patrolNext || this.unloadNext) && this.myUnits().length) {
+      // Classic RTS: A/P/U + Left-Click executes Attack-Move / Patrol / Unload!
       this.issueOrder(e.shiftKey);
     }
   }
@@ -763,6 +773,31 @@ export class Input {
     }
     this.setPatrol(true);
     this.flashLabel("PATROL — click or right-click destination (Shift to queue)", 1400);
+  }
+
+  armUnload() {
+    if (this.placing) return;
+    if (this.unloadNext) {
+      this.setUnload(false);
+      if (this.labelTimer) clearTimeout(this.labelTimer);
+      this.onOrderLabel(null);
+      return;
+    }
+    this.disarmSuperweapon();
+    this.disarmRecon();
+    this.setAmove(false);
+    this.setPatrol(false);
+    this.armVerb(null);
+    const transports = this.myUnits().filter((id) => {
+      const t = this.r.tracked.get(id);
+      return t && transportCapOf(t.last.k) > 0;
+    });
+    if (!transports.length) {
+      this.flashLabel("select a transport first", 800);
+      return;
+    }
+    this.setUnload(true);
+    this.flashLabel("UNLOAD — click the drop zone (Shift to queue)", 1400);
   }
 
   holdNow() {
@@ -968,10 +1003,13 @@ export class Input {
     } else if (this.patrolNext) {
       kind = "patrol";
       this.setPatrol(false);
+    } else if (this.unloadNext) {
+      kind = "unload";
+      this.setUnload(false);
     }
     this.net.send({ t: "order", ids, kind, x, y, ...(queue ? { queue: true } : {}) });
     this.orderMarker(new THREE.Vector3(x, 0, y), kind, queue);
-    const base = kind === "amove" ? "ATTACK-MOVE" : kind === "patrol" ? "PATROL" : "MOVE";
+    const base = kind === "amove" ? "ATTACK-MOVE" : kind === "patrol" ? "PATROL" : kind === "unload" ? "UNLOAD" : "MOVE";
     this.flashLabel(queue ? `+ ${base} (MAP)` : `${base} (MAP)`, 750);
     this.onUiSound(kind === "amove" ? "attack" : "move");
     return true;
@@ -1021,8 +1059,26 @@ export class Input {
     } else if (this.patrolNext) {
       kind = "patrol";
       this.setPatrol(false);
+    } else if (this.unloadNext) {
+      // armed unload: the drop zone is wherever the player clicked — passengers
+      // disembark onto the nearest passable tile once the transport arrives
+      kind = "unload";
+      this.setUnload(false);
     } else if (t && t.last.o !== slot && t.last.o >= 0 && !this.isAlly(t.last.o)) {
       kind = "attack";
+      target = entId!;
+    } else if (
+      t &&
+      t.last.o === slot &&
+      transportCapOf(t.last.k) > 0 &&
+      ids.some((id) => {
+        const u = this.r.tracked.get(id);
+        return u && isInfantryKind(u.last.k);
+      })
+    ) {
+      // right-clicking your own troop transport with infantry selected = board it.
+      // The server degrades non-infantry in a mixed selection to a plain move.
+      kind = "board";
       target = entId!;
     } else if (
       t &&
@@ -1057,7 +1113,11 @@ export class Input {
             ? 0x4ad8ff
             : kind === "harvest"
               ? 0xffcc33
-              : 0x4dff70);
+              : kind === "board"
+                ? 0x7cf7ff
+                : kind === "unload"
+                  ? 0xffd84a
+                  : 0x4dff70);
     const disc = new THREE.Mesh(
       new THREE.RingGeometry(queue ? 0.22 : 0.3, queue ? 0.34 : 0.44, 24),
       new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }),

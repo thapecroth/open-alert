@@ -43,6 +43,25 @@ const DIRS: [number, number, number][] = [
   [-1, -1, SQRT2],
 ];
 
+// Lightweight always-on profiling counters — a few integer increments per
+// search, used by test/perfserv.mjs to attribute per-tick A* cost.
+export const PATH_STATS = {
+  calls: 0, // searches started
+  ok: 0, // searches that found a path
+  failed: 0, // searches that exhausted the open set or hit the expand cap
+  expanded: 0, // total node expansions (the cost driver)
+  capped: 0, // searches stopped by maxExpand rather than exhaustion/success
+  ms: 0, // wall time inside findPath
+  reset() {
+    this.calls = 0;
+    this.ok = 0;
+    this.failed = 0;
+    this.expanded = 0;
+    this.capped = 0;
+    this.ms = 0;
+  },
+};
+
 export function findPath(
   sx: number,
   sy: number,
@@ -59,6 +78,8 @@ export function findPath(
   gy |= 0;
   if (sx === gx && sy === gy) return [];
   if (sx < 0 || sy < 0 || sx >= W || sy >= H || gx < 0 || gy < 0 || gx >= W || gy >= H) return null;
+  const t0 = performance.now();
+  PATH_STATS.calls++;
 
   // scratch buffers shared across calls — findPath is non-reentrant (single
   // synchronous A*), so module-level arrays kill the 3×W·H per-call allocation
@@ -128,6 +149,9 @@ export function findPath(
         i = parent[i];
       }
       path.reverse();
+      PATH_STATS.ok++;
+      PATH_STATS.expanded += expanded;
+      PATH_STATS.ms += performance.now() - t0;
       return path;
     }
     for (const [dx, dy, cost] of DIRS) {
@@ -148,6 +172,10 @@ export function findPath(
       }
     }
   }
+  PATH_STATS.failed++;
+  PATH_STATS.expanded += expanded;
+  if (expanded > maxExpand) PATH_STATS.capped++;
+  PATH_STATS.ms += performance.now() - t0;
   return null;
 }
 

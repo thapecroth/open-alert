@@ -10,6 +10,7 @@ registerHooks({
 const { getMapLayout, getSpawns } = await import("/home/r1ch/projs/ra2/src/shared/gamedefs.ts");
 const id = process.argv[2] ?? "archipelago";
 const sy = +(process.argv[3] ?? 2); // vertical sample step
+const sx = +(process.argv[4] ?? 1); // horizontal sample step (optional; default exact)
 const layout = getMapLayout(id);
 const W = layout.w, H = layout.h;
 const water = new Uint8Array(W * H), cliff = new Uint8Array(W * H);
@@ -23,7 +24,7 @@ const der = new Set([...layout.derricks, ...(layout.coalmines ?? [])].map(([x, y
 let out = `${id} ${W}x${H} water=${(layout.water.length / (W * H) * 100).toFixed(1)}% cliff=${(layout.cliffs.length / (W * H) * 100).toFixed(1)}%\n`;
 for (let y = 0; y < H; y += sy) {
   let row = "";
-  for (let x = 0; x < W; x++) {
+  for (let x = 0; x < W; x += sx) {
     const k = `${x},${y}`;
     if (sp.has(k)) { row += String(sp.get(k)); continue; }
     if (der.has(k)) { row += "D"; continue; }

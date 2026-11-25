@@ -12,6 +12,7 @@ export default defineConfig({
       input: {
         main: clientFile("index.html"),
         units: clientFile("units.html"),
+        shortcuts: clientFile("shortcuts.html"),
       },
     },
   },

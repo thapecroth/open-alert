@@ -74,9 +74,11 @@ const ORDER_COLORS: Record<OrderKind, number> = {
   harvest: 0xffc436,
   patrol: 0x4ad8ff,
   bridge: 0xd8a04a,
+  board: 0x7cf7ff,
+  unload: 0xffd84a,
 };
 
-const ORDER_KINDS: readonly OrderKind[] = ["move", "amove", "attack", "harvest", "patrol", "bridge"];
+const ORDER_KINDS: readonly OrderKind[] = ["move", "amove", "attack", "harvest", "patrol", "bridge", "board", "unload"];
 const ORDER_KIND_INDEX: Record<OrderKind, number> = {
   move: 0,
   amove: 1,
@@ -84,6 +86,8 @@ const ORDER_KIND_INDEX: Record<OrderKind, number> = {
   harvest: 3,
   patrol: 4,
   bridge: 5,
+  board: 6,
+  unload: 7,
 };
 const ORDER_COLOR_OBJS: Record<OrderKind, THREE.Color> = {
   move: new THREE.Color(ORDER_COLORS.move),
@@ -92,6 +96,8 @@ const ORDER_COLOR_OBJS: Record<OrderKind, THREE.Color> = {
   harvest: new THREE.Color(ORDER_COLORS.harvest),
   patrol: new THREE.Color(ORDER_COLORS.patrol),
   bridge: new THREE.Color(ORDER_COLORS.bridge),
+  board: new THREE.Color(ORDER_COLORS.board),
+  unload: new THREE.Color(ORDER_COLORS.unload),
 };
 
 const WHITE_COL = new THREE.Color(0xffffff);
@@ -322,6 +328,19 @@ export class VfxSystem {
   // reusable-mesh pools for the hottest archetypes (tracer bolts, impact sparks)
   private boltPool: THREE.Object3D[] = [];
   private sparkPool: THREE.Object3D[] = [];
+  // Weapon-fire one-shots used to allocate a fresh Mesh/Sprite plus Material for
+  // every shot. These small pools recycle the whole render object while keeping
+  // one material instance per object so per-shot color/opacity animation is unchanged.
+  private flashPool: THREE.Object3D[] = [];
+  private ringPool: THREE.Object3D[] = [];
+  private shellPool: THREE.Object3D[] = [];
+  private rocketPool: THREE.Object3D[] = [];
+  private cannonPool: THREE.Object3D[] = [];
+  private tracerPool: THREE.Object3D[] = [];
+  private fireballPool: THREE.Object3D[] = [];
+  private debrisPool: THREE.Object3D[] = [];
+  private laserPool: THREE.Object3D[] = [];
+  private railgunPool: THREE.Object3D[] = [];
 
   private add(
     obj: THREE.Object3D,
@@ -356,6 +375,68 @@ export class VfxSystem {
     const nm = new THREE.Mesh(sharedSpark, sMat);
     nm.userData.sMat = sMat;
     return { m: nm, sMat };
+  }
+
+  private acquireFlashSprite(): { sp: THREE.Sprite; mat: THREE.SpriteMaterial } {
+    const sp = this.flashPool.pop() as THREE.Sprite | undefined;
+    if (sp) return { sp, mat: sp.userData.fxMat as THREE.SpriteMaterial };
+    const mat = new THREE.SpriteMaterial({
+      map: getSoftPuffTex(),
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+    });
+    const ns = new THREE.Sprite(mat);
+    ns.userData.fxMat = mat;
+    return { sp: ns, mat };
+  }
+
+  private acquireBasicMesh(
+    pool: THREE.Object3D[],
+    geometry: THREE.BufferGeometry,
+    init: ConstructorParameters<typeof THREE.MeshBasicMaterial>[0],
+  ): { m: THREE.Mesh; mat: THREE.MeshBasicMaterial } {
+    const m = pool.pop() as THREE.Mesh | undefined;
+    if (m) return { m, mat: m.userData.fxMat as THREE.MeshBasicMaterial };
+    const mat = new THREE.MeshBasicMaterial(init);
+    const nm = new THREE.Mesh(geometry, mat);
+    nm.userData.fxMat = mat;
+    return { m: nm, mat };
+  }
+
+  private acquireRingMesh(): { m: THREE.Mesh; mat: THREE.MeshBasicMaterial } {
+    return this.acquireBasicMesh(this.ringPool, sharedRing, {
+      transparent: true,
+      opacity: 0.88,
+      depthWrite: false,
+    });
+  }
+
+  private acquireBeamGroup(
+    pool: THREE.Object3D[],
+    sheathAdditive: boolean,
+  ): {
+    g: THREE.Group;
+    coreMesh: THREE.Mesh;
+    coreMat: THREE.MeshBasicMaterial;
+    sheathMesh: THREE.Mesh;
+    sheathMat: THREE.MeshBasicMaterial;
+  } {
+    const g = pool.pop() as THREE.Group | undefined;
+    if (g) return g.userData.beamWrap;
+    const ng = new THREE.Group();
+    const coreMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 1, depthWrite: false });
+    const sheathMat = new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0.68,
+      blending: sheathAdditive ? THREE.AdditiveBlending : THREE.NormalBlending,
+      depthWrite: false,
+    });
+    const coreMesh = new THREE.Mesh(sharedCyl, coreMat);
+    const sheathMesh = new THREE.Mesh(sharedCyl, sheathMat);
+    ng.add(coreMesh, sheathMesh);
+    ng.userData.beamWrap = { g: ng, coreMesh, coreMat, sheathMesh, sheathMat };
+    return ng.userData.beamWrap;
   }
 
   spawnSmoke(x: number, y: number, z: number, dark: boolean) {
@@ -562,34 +643,23 @@ export class VfxSystem {
       const lUnit = lDir.clone().normalize();
       const mid = laserA.clone().lerp(laserB, 0.5);
 
-      const beamGroup = new THREE.Group();
+      const { g: beamGroup, coreMesh, coreMat, sheathMesh, sheathMat } = this.acquireBeamGroup(this.laserPool, true);
       beamGroup.position.copy(mid);
       beamGroup.quaternion.setFromUnitVectors(UP, lUnit);
 
       // Incandescent golden-white inner thermal core
-      const coreMat = new THREE.MeshBasicMaterial({
-        color: heroic ? new THREE.Color(4.4, 2.35, 1.05) : new THREE.Color(4.1, 3.35, 1.75),
-        transparent: true,
-        opacity: 0.98,
-        depthWrite: false,
-      });
-      const coreMesh = new THREE.Mesh(sharedCyl, coreMat);
+      if (heroic) coreMat.color.setRGB(4.4, 2.35, 1.05);
+      else coreMat.color.setRGB(4.1, 3.35, 1.75);
+      coreMat.opacity = 0.98;
       const coreThick = (isOrbital ? 3.2 : 2.15) * (heroic ? 1.25 : 1.0);
       coreMesh.scale.set(coreThick, lLen, coreThick);
-      beamGroup.add(coreMesh);
 
       // Searing outer cyan-gold plasma sheath
-      const sheathMat = new THREE.MeshBasicMaterial({
-        color: isOrbital ? new THREE.Color(1.4, 3.3, 4.1) : new THREE.Color(1.5, 3.1, 3.5),
-        transparent: true,
-        opacity: 0.68,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      const sheathMesh = new THREE.Mesh(sharedCyl, sheathMat);
+      if (isOrbital) sheathMat.color.setRGB(1.4, 3.3, 4.1);
+      else sheathMat.color.setRGB(1.5, 3.1, 3.5);
+      sheathMat.opacity = 0.68;
       const sheathThick = coreThick * 2.35;
       sheathMesh.scale.set(sheathThick, lLen, sheathThick);
-      beamGroup.add(sheathMesh);
 
       this.add(beamGroup, 240, (_o, t) => {
         const pulse = 1 + 0.16 * Math.sin(t * 48);
@@ -600,7 +670,7 @@ export class VfxSystem {
         sheathMesh.scale.set(sW, lLen, sW);
         coreMat.opacity = 0.98 * taper;
         sheathMat.opacity = 0.68 * (1 - t * 0.85);
-      });
+      }, false, false, this.laserPool);
 
       // Muzzle emitter flare + intense glowing scorching impact ring & flash!
       this.spawnFlash(
@@ -638,34 +708,26 @@ export class VfxSystem {
       const railUnit = dir.clone().normalize();
       const mid = a.clone().lerp(b, 0.5);
 
-      const boltGroup = new THREE.Group();
+      const { g: boltGroup, coreMesh, coreMat, sheathMesh: haloMesh, sheathMat: haloMat } = this.acquireBeamGroup(
+        this.railgunPool,
+        true,
+      );
       boltGroup.position.copy(mid);
       boltGroup.quaternion.setFromUnitVectors(UP, railUnit);
 
       // Blazing cyan-white hyper-velocity inner core
-      const coreMat = new THREE.MeshBasicMaterial({
-        color: heroic ? new THREE.Color(3.8, 2.8, 4.6) : new THREE.Color(2.8, 4.0, 4.6),
-        transparent: true,
-        opacity: 1.0,
-        depthWrite: false,
-      });
-      const coreMesh = new THREE.Mesh(sharedCyl, coreMat);
+      if (heroic) coreMat.color.setRGB(3.8, 2.8, 4.6);
+      else coreMat.color.setRGB(2.8, 4.0, 4.6);
+      coreMat.opacity = 1.0;
       const coreThick = heroic ? 2.45 : 1.85;
       coreMesh.scale.set(coreThick, len, coreThick);
-      boltGroup.add(coreMesh);
 
       // Outer electric cyan plasma corona
-      const haloMat = new THREE.MeshBasicMaterial({
-        color: heroic ? new THREE.Color(2.4, 1.5, 4.0) : new THREE.Color(0.75, 2.75, 4.1),
-        transparent: true,
-        opacity: 0.65,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      const haloMesh = new THREE.Mesh(sharedCyl, haloMat);
+      if (heroic) haloMat.color.setRGB(2.4, 1.5, 4.0);
+      else haloMat.color.setRGB(0.75, 2.75, 4.1);
+      haloMat.opacity = 0.65;
       const haloThick = coreThick * 2.7;
       haloMesh.scale.set(haloThick, len, haloThick);
-      boltGroup.add(haloMesh);
 
       this.add(boltGroup, 220, (_o, t) => {
         const snap = Math.max(0.06, Math.pow(1 - t, 1.25));
@@ -673,7 +735,7 @@ export class VfxSystem {
         haloMesh.scale.set(haloThick * (1 + t * 0.55), len, haloThick * (1 + t * 0.55));
         coreMat.opacity = snap;
         haloMat.opacity = 0.65 * (1 - t) * (1 - t);
-      });
+      }, false, false, this.railgunPool);
 
       // 3 expanding electromagnetic vortex shock rings spaced along the barrel path
       const zAxis = new THREE.Vector3(0, 0, 1);
@@ -682,14 +744,11 @@ export class VfxSystem {
       for (let i = 0; i < fracs.length; i++) {
         const u = fracs[i];
         const rPos = a.clone().lerp(b, u);
-        const rMat = new THREE.MeshBasicMaterial({
-          color: i === 1 ? new THREE.Color(2.0, 3.6, 4.4) : new THREE.Color(0.85, 2.8, 4.2),
-          transparent: true,
-          opacity: 0.92,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-        });
-        const ring = new THREE.Mesh(sharedRing, rMat);
+        const { m: ring, mat: rMat } = this.acquireRingMesh();
+        if (i === 1) rMat.color.setRGB(2.0, 3.6, 4.4);
+        else rMat.color.setRGB(0.85, 2.8, 4.2);
+        rMat.opacity = 0.92;
+        rMat.blending = THREE.AdditiveBlending;
         ring.position.copy(rPos);
         ring.quaternion.copy(ringQuat);
         ring.scale.setScalar(0.12);
@@ -706,7 +765,7 @@ export class VfxSystem {
           ro.scale.setScalar(sc);
           ro.rotateZ(0.14);
           rMat.opacity = 0.92 * (1 - rt) * (1 - rt);
-        });
+        }, false, false, this.ringPool);
       }
 
       // Muzzle discharge flash + blinding impact flash + electromagnetic ground shockwave
@@ -959,9 +1018,9 @@ export class VfxSystem {
 
     if (weapon === "arty") {
       // High-arcing parabolic artillery shell + impact shockwave
-      const col = heroic ? new THREE.Color(3.4, 0.85, 0.35) : new THREE.Color(2.4, 1.5, 0.5);
-      const mat = new THREE.MeshBasicMaterial({ color: col });
-      const shell = new THREE.Mesh(sharedShell, mat);
+      const { m: shell, mat } = this.acquireBasicMesh(this.shellPool, sharedShell, {});
+      mat.color.setRGB(...(heroic ? [3.4, 0.85, 0.35] : [2.4, 1.5, 0.5]) as [number, number, number]);
+      mat.opacity = 1;
       shell.scale.setScalar(heroic ? 1.85 : 1.35);
       const arcH = Math.min(5.2, 1.8 + len * 0.36);
       let smokeTick = 0;
@@ -980,16 +1039,16 @@ export class VfxSystem {
           this.spawnImpactRing(b.x, b.z, heroic ? 1.55 : 1.15, heroic ? new THREE.Color(3.2, 0.8, 0.3) : new THREE.Color(2.4, 1.2, 0.35));
           this.spawnFlash(b, heroic ? new THREE.Color(3.4, 0.95, 0.35) : new THREE.Color(2.8, 1.4, 0.4), heroic ? 1.35 : 1.0, 220);
         }
-      });
+      }, false, false, this.shellPool);
       this.spawnFlash(a, heroic ? new THREE.Color(3.2, 1.0, 0.4) : new THREE.Color(2.4, 1.4, 0.5), heroic ? 0.95 : 0.7, 150);
       return;
     }
 
     if (weapon === "rocket") {
       // Flying smoking rocket
-      const col = heroic ? new THREE.Color(3.3, 0.85, 0.32) : new THREE.Color(2.5, 1.6, 0.55);
-      const mat = new THREE.MeshBasicMaterial({ color: col });
-      const m = new THREE.Mesh(sharedCyl, mat);
+      const { m, mat } = this.acquireBasicMesh(this.rocketPool, sharedCyl, {});
+      mat.color.setRGB(...(heroic ? [3.3, 0.85, 0.32] : [2.5, 1.6, 0.55]) as [number, number, number]);
+      mat.opacity = 1;
       const sc = heroic ? 2.1 : 1.5;
       m.scale.set(sc, heroic ? 0.58 : 0.42, sc);
       m.quaternion.setFromUnitVectors(UP, dir.clone().normalize());
@@ -1007,16 +1066,19 @@ export class VfxSystem {
           this.spawnFlash(b, heroic ? new THREE.Color(3.3, 0.9, 0.3) : new THREE.Color(2.6, 1.3, 0.35), heroic ? 1.05 : 0.75, 170);
           if (heroic) this.spawnImpactRing(b.x, b.z, 0.85, new THREE.Color(3.1, 0.85, 0.3));
         }
-      });
+      }, false, false, this.rocketPool);
       this.spawnFlash(a, heroic ? new THREE.Color(3.0, 0.95, 0.35) : new THREE.Color(2.2, 1.4, 0.5), heroic ? 0.65 : 0.45, 110);
       return;
     }
 
     if (weapon === "cannon") {
       // Heavy glowing shell streaking rapidly + muzzle puff
-      const col = heroic ? new THREE.Color(3.4, 0.92, 0.3) : new THREE.Color(2.6, 1.7, 0.55);
-      const mat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.98 });
-      const beam = new THREE.Mesh(sharedCyl, mat);
+      const { m: beam, mat } = this.acquireBasicMesh(this.cannonPool, sharedCyl, {
+        transparent: true,
+        opacity: 0.98,
+      });
+      mat.color.setRGB(...(heroic ? [3.4, 0.92, 0.3] : [2.6, 1.7, 0.55]) as [number, number, number]);
+      mat.opacity = 0.98;
       const thick = heroic ? 2.15 : 1.45;
       beam.scale.set(thick, Math.min(len, heroic ? 1.85 : 1.4), thick);
       beam.quaternion.setFromUnitVectors(UP, dir.clone().normalize());
@@ -1029,7 +1091,7 @@ export class VfxSystem {
           this.spawnFlash(b, heroic ? new THREE.Color(3.4, 0.95, 0.3) : new THREE.Color(2.5, 1.4, 0.4), heroic ? 0.95 : 0.65, 150);
           if (heroic) this.spawnImpactRing(b.x, b.z, 0.9, new THREE.Color(3.2, 0.85, 0.28));
         }
-      });
+      }, false, false, this.cannonPool);
       this.spawnFlash(a, heroic ? new THREE.Color(3.4, 1.25, 0.4) : new THREE.Color(2.8, 1.9, 0.7), heroic ? 0.95 : 0.68, 140);
       this.spawnSmoke(a.x, a.y, a.z, false);
       return;
@@ -1041,51 +1103,48 @@ export class VfxSystem {
     }
 
     // Default: crisp ballistic rifle / turret tracer
-    const mat = new THREE.MeshBasicMaterial({
-      color: heroic ? new THREE.Color(3.2, 0.95, 0.35) : new THREE.Color(2.2, 1.9, 0.85),
+    const { m: beam, mat } = this.acquireBasicMesh(this.tracerPool, sharedCyl, {
       transparent: true,
       opacity: 0.94,
     });
-    const beam = new THREE.Mesh(sharedCyl, mat);
+    mat.color.setRGB(...(heroic ? [3.2, 0.95, 0.35] : [2.2, 1.9, 0.85]) as [number, number, number]);
+    mat.opacity = 0.94;
     const thick = heroic ? 1.25 : 0.75;
     beam.scale.set(thick, len, thick);
     beam.position.copy(a).lerp(b, 0.5);
     beam.quaternion.setFromUnitVectors(UP, dir.normalize());
-    this.add(beam, 125, (_o, t) => (mat.opacity = 0.94 * (1 - t)));
+    this.add(beam, 125, (_o, t) => (mat.opacity = 0.94 * (1 - t)), false, false, this.tracerPool);
     this.spawnFlash(a, heroic ? new THREE.Color(3.3, 1.15, 0.4) : new THREE.Color(2.6, 2.0, 0.85), heroic ? 0.56 : 0.36, 110);
     if (heroic) this.spawnFlash(b, new THREE.Color(3.0, 0.9, 0.35), 0.42, 110);
   }
 
   private spawnFlash(pos: THREE.Vector3, color: THREE.Color, size: number, life: number) {
     if (this.fxs.length >= this.fxCap) return;
-    const mat = new THREE.SpriteMaterial({
-      map: getSoftPuffTex(),
-      color,
-      transparent: true,
-      opacity: 0.95,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    const sp = new THREE.Sprite(mat);
+    const { sp, mat } = this.acquireFlashSprite();
+    mat.color.copy(color);
+    mat.opacity = 0.95;
+    mat.blending = THREE.AdditiveBlending;
     sp.position.copy(pos);
     sp.scale.setScalar(size * 1.35);
     this.add(sp, life, (o, t) => {
       o.scale.setScalar(size * 1.35 * (1 - t * 0.5));
       mat.opacity = 0.95 * (1 - t);
-    });
+    }, false, false, this.flashPool);
   }
 
   private spawnImpactRing(x: number, z: number, radius: number, color: THREE.Color, life = 380) {
     if (this.fxs.length >= this.fxCap) return;
-    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.88, depthWrite: false });
-    const ring = new THREE.Mesh(sharedRing, mat);
-    ring.rotation.x = -Math.PI / 2;
+    const { m: ring, mat } = this.acquireRingMesh();
+    mat.color.copy(color);
+    mat.opacity = 0.88;
+    mat.blending = THREE.NormalBlending;
+    ring.rotation.set(-Math.PI / 2, 0, 0);
     ring.position.set(x, 0.1, z);
     this.add(ring, life, (o, t) => {
       const sc = 0.3 + t * radius * 1.5;
       o.scale.setScalar(sc);
       mat.opacity = 0.88 * (1 - t);
-    });
+    }, false, false, this.ringPool);
   }
 
   /** Subtle emerald-green logistics resupply shimmer ring around refueled / rearmed units */
@@ -1166,14 +1225,10 @@ export class VfxSystem {
     }
 
     // 1. Bright incandescent flash core (punchy initial blinding pop!)
-    const flashMat = new THREE.SpriteMaterial({
-      map: getSoftPuffTex(),
-      color: new THREE.Color(4.2, 3.4, 2.1),
-      transparent: true,
-      opacity: 1,
-      depthWrite: false,
-    });
-    const flash = new THREE.Sprite(flashMat);
+    const { sp: flash, mat: flashMat } = this.acquireFlashSprite();
+    flashMat.color.setRGB(4.2, 3.4, 2.1);
+    flashMat.opacity = 1;
+    flashMat.blending = THREE.NormalBlending;
     flash.position.set(x, 0.55, y);
     const flashSize = 1.15 * rad;
     flash.scale.setScalar(flashSize * 0.6);
@@ -1181,17 +1236,17 @@ export class VfxSystem {
       const pop = t < 0.25 ? 0.6 + (t / 0.25) * 0.85 : 1.45 - (t - 0.25) * 0.6;
       o.scale.setScalar(flashSize * pop);
       flashMat.opacity = Math.pow(1 - t, 1.5);
-    });
+    }, false, false, this.flashPool);
 
     // 2. Fiery expanding explosion sphere (shifts incandescent gold-orange -> deep ember red)
     const hotCol = new THREE.Color(3.3, 1.25, 0.26);
     const coolCol = new THREE.Color(1.45, 0.3, 0.06);
-    const fireMat = new THREE.MeshBasicMaterial({
-      color: hotCol.clone(),
+    const { m: fire, mat: fireMat } = this.acquireBasicMesh(this.fireballPool, sharedFire, {
       transparent: true,
       opacity: 0.96,
     });
-    const fire = new THREE.Mesh(sharedFire, fireMat);
+    fireMat.color.copy(hotCol);
+    fireMat.opacity = 0.96;
     fire.position.set(x, 0.52, y);
     this.add(fire, 520, (o, t) => {
       const ease = 1 - Math.pow(1 - t, 2.0);
@@ -1199,7 +1254,7 @@ export class VfxSystem {
       o.position.y = 0.42 + ease * 0.95;
       fireMat.color.copy(hotCol).lerp(coolCol, Math.min(1, t * 1.35));
       fireMat.opacity = (1 - t) * (1 - t);
-    });
+    }, false, false, this.fireballPool);
 
     // 3. Crisp dual shockwave rings (outer gold-amber blast wave + fast inner pressure ring)
     this.spawnImpactRing(x, y, rad * 1.08, new THREE.Color(2.7, 1.35, 0.36), 440);
@@ -1213,16 +1268,17 @@ export class VfxSystem {
       const ang = (i / chunks) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
       const spd = (2.0 + Math.random() * 2.6) * Math.min(2.2, rad * 0.78);
       const vy = (isEmber ? 3.2 : 2.6) + Math.random() * 2.6;
-      const dMat = new THREE.MeshBasicMaterial({
-        color: isEmber
-          ? i % 2 === 0
-            ? new THREE.Color(3.4, 1.65, 0.35)
-            : new THREE.Color(3.2, 2.35, 0.85)
-          : 0x2a3038,
+      const { m: deb, mat: dMat } = this.acquireBasicMesh(this.debrisPool, sharedSpark, {
         transparent: true,
         opacity: 1,
       });
-      const deb = new THREE.Mesh(sharedSpark, dMat);
+      if (isEmber) {
+        if (i % 2 === 0) dMat.color.setRGB(3.4, 1.65, 0.35);
+        else dMat.color.setRGB(3.2, 2.35, 0.85);
+      } else {
+        dMat.color.setHex(0x2a3038);
+      }
+      dMat.opacity = 1;
       deb.scale.setScalar(isEmber ? 0.85 + Math.random() * 0.45 : 1.05 + Math.random() * 0.55);
       deb.position.set(x, 0.5, y);
       this.add(deb, isEmber ? 460 : 580, (o, t) => {
@@ -1235,7 +1291,7 @@ export class VfxSystem {
         o.rotation.x = s * 14.4;
         o.rotation.y = s * 10.8;
         dMat.opacity = 1 - t * t;
-      });
+      }, false, false, this.debrisPool);
     }
 
     // 5. Rising billowing dark blast smoke clouds
@@ -2579,7 +2635,8 @@ export class VfxSystem {
   clear() {
     for (const f of this.fxs) {
       this.scene.remove(f.obj);
-      disposeFxObj(f.obj, !!f.disposeGeo, !!f.disposeTex);
+      if (f.pool && f.pool.length < 160) f.pool.push(f.obj);
+      else disposeFxObj(f.obj, !!f.disposeGeo, !!f.disposeTex);
     }
     this.fxs = [];
     for (const c of this.craters) {

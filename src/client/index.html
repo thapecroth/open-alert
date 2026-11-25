@@ -55,6 +55,7 @@
       <button id="verb-sell" title="Sell ($ or V): click your building for a 50% refund">SELL <kbd>$</kbd></button>
       <button id="verb-repair" title="Repair (R): click your damaged building to fix it">REPAIR <kbd>R</kbd></button>
       <button id="verb-bridge" title="Pontoon Bridge: select an engineer, then click water to bridge a strait ($40/tile, max 16)">BRIDGE</button>
+      <button id="verb-unload" title="Unload troops (U): select a transport, then click the drop zone — passengers disembark there">UNLOAD <kbd>U</kbd></button>
     </div>
 
     <div id="sidebar" class="hidden">
@@ -226,11 +227,12 @@
         <table>
           <tr><td>Left-click / drag / Shift+click</td><td>select · box-select · add/toggle</td></tr>
           <tr><td>Double-click unit</td><td>select all same-type units on screen</td></tr>
-          <tr><td>Right-click</td><td>move · attack · harvest · set rally point</td></tr>
+          <tr><td>Right-click</td><td>move · attack · harvest · board transport (infantry onto own chopper) · set rally point</td></tr>
           <tr><td><kbd>Shift</kbd> + Right-click · Minimap R-click</td><td>queue waypoints · issue map orders (<kbd>Alt</kbd>+R-click = ping)</td></tr>
           <tr><td><kbd>Shift</kbd> + Click unit icon</td><td>queue ×5 units in production</td></tr>
           <tr><td><kbd>Alt</kbd>+<kbd>1</kbd>–<kbd>9</kbd> / <kbd>1</kbd>–<kbd>9</kbd></td><td>assign / recall control groups (2× tap = center)</td></tr>
           <tr><td><kbd>A</kbd> / <kbd>P</kbd> + click / right-click</td><td>attack-move (fight en route) · patrol route</td></tr>
+          <tr><td><kbd>U</kbd> + click</td><td>unload transport — passengers disembark at the drop zone</td></tr>
           <tr><td><kbd>G</kbd> / <kbd>S</kbd> / <kbd>X</kbd></td><td>hold position · stop & clear waypoints · scatter</td></tr>
           <tr><td><kbd>E</kbd></td><td>Enter / Exit First-Person POV (control any soldier, tank, jet, or ship)</td></tr>
           <tr><td><kbd>Q</kbd> / <kbd>F1</kbd> / <kbd>Tab</kbd></td><td>all combat · next harvester · cycle bases</td></tr>
@@ -475,6 +477,7 @@
           <button id="lobby-gfx-btn" type="button" title="Graphics, Raytracing &amp; GPU Settings">⚙ GRAPHICS</button>
           <a href="/guide.html" target="_blank" class="guide-btn" title="Field Manual — strategy guide &amp; build orders for new commanders">📖 GUIDE</a>
           <a href="/units.html" target="_blank" class="guide-btn units-btn" title="Units Encyclopedia — visual stats, counters &amp; live gameplay footage">⚔ UNITS</a>
+          <a href="/shortcuts.html" target="_blank" class="guide-btn shortcuts-btn" title="Keyboard Shortcuts — camera, orders, production, FPV &amp; spectator controls">⌨ KEYS</a>
         </div>
         <div id="quota-banner" class="quota-banner hidden" role="status">
           <div class="quota-copy">

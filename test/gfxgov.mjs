@@ -164,6 +164,30 @@ function makeGfx() {
   ok(horde.animFarDist >= 18 && horde.animSkip >= 1 && horde.vfxScale > 0, "budgets stay within sane floors");
 }
 
+// ---------- 6. Crisis fast-path bypasses dwell ----------
+{
+  const gm = makeGfx();
+  gm.applyPreset("ultra");
+  // Sustained sub-28fps crisis sheds a tier immediately even inside the dwell window
+  gm.lastTierChangeMs = performance.now(); // dwell fully closed
+  gm.crisisMs = 450;
+  gm.sampleFrame(50, makeStubRenderer());
+  ok(gm.autoTier === 1, `crisis sheds tier despite closed dwell (got ${gm.autoTier})`);
+  // 30fps is degraded but NOT a crisis: no bypass, normal dwell applies
+  const gm2 = makeGfx();
+  gm2.applyPreset("ultra");
+  gm2.lastTierChangeMs = performance.now();
+  gm2.crisisMs = 0;
+  gm2.lowMs = 1400;
+  gm2.sampleFrame(33, makeStubRenderer());
+  ok(gm2.autoTier === 0, `non-crisis low fps respects downshift dwell (got ${gm2.autoTier})`);
+  // Crisis accumulation resets when fps recovers
+  gm.crisisMs = 300;
+  gm.emaFrameMs = 14; // simulate recovered EMA (~71fps) — the EMA legitimately smooths over frames
+  gm.sampleFrame(14, makeStubRenderer());
+  ok(gm.crisisMs === 0, `crisis timer resets on recovery (got ${gm.crisisMs})`);
+}
+
 console.log(`\n${passN} passed, ${failN} failed`);
 if (failN > 0) {
   console.log("failures:", fails.join(", "));

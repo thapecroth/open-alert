@@ -171,7 +171,8 @@ function analyze(id) {
   }
 
   // ---- A* reachability: farthest spawn pair within server maxExpand ----
-  const maxExpand = W >= 96 ? 4500 : 2400;
+  // Mirror World exactly: large theaters get an area-scaled expansion budget.
+  const maxExpand = Math.max(2400, W * H);
   let astarOk = true, astarNote = "";
   if (landLinked === maxP) {
     // check the diagonal corner pair (longest haul)

@@ -537,6 +537,9 @@ function buildSoldierRig(
   const matGraph = getChassisMat(GRAPHITE, 0.64, 0.42);
   const matHaz = getChassisMat(HAZARD, 0.42, 0.35);
   const matAcc = getAccentMat(colorHex);
+  // Marks the faction-hue material so Renderer's cross-player instanced swarm
+  // pool can replace it with a white base + exact per-instance accent color.
+  matAcc.userData.instAccentVariant = 0;
   const matVisor = getGlassMat(role === "rocket" ? "#e89236" : "#44c2f0");
 
   const scale = role === "engineer" ? 0.98 : role === "rocket" ? 1.06 : 1.04;

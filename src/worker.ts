@@ -104,6 +104,11 @@ export class GameRoom extends Server<Env> {
   config: GameConfig = { ...DEFAULT_CONFIG };
   players = new Map<string, PlayerRec>(); // by player id (client token)
   connPlayer = new Map<string, string>(); // conn id -> player id
+  // last inbound-message time per conn — a half-open TCP socket (client network
+  // died silently: NAT drop, laptop sleep, network switch) never fires onClose
+  // server-side, so without liveness tracking a zombie conn keeps its player
+  // connected:true forever and blocks lobby start with phantom "not ready".
+  private connLastMsg = new Map<string, number>();
   private hostId: string | null = null;
   world: World | null = null;
   alarmActive = false;
@@ -221,6 +226,7 @@ export class GameRoom extends Server<Env> {
     const pid = this.connPlayer.get(conn.id);
     this.connPlayer.delete(conn.id);
     this.connV2.delete(conn.id);
+    this.connLastMsg.delete(conn.id);
     if (!pid) return;
     const p = this.players.get(pid);
     if (!p) return;
@@ -253,6 +259,57 @@ export class GameRoom extends Server<Env> {
     }
   }
 
+  // Reap connections that have gone completely silent. Healthy clients heartbeat
+  // every 15s, so 30s without ANY message means the socket is half-open dead —
+  // close it, which funnels into onClose's normal cleanup (lobby: frees the
+  // player's slot so they stop blocking start; playing: 30s reconnect grace).
+  // Scanned lazily on inbound traffic: a lobby where everyone is zombie-silent
+  // has nobody left who cares, and any real activity (join/click) triggers a sweep.
+  private static readonly IDLE_CONN_MS = 30_000;
+  private reapIdleConns() {
+    // lobby phases only — mid-match a quiet connection is legitimate (passive
+    // spectators, observers) and zombies there block nothing; in the lobby a
+    // zombie permanently blocks start with phantom "not ready" denies.
+    if (this.phase === "playing") return;
+    const now = Date.now();
+    let swept = false;
+    for (const conn of this.getConnections()) {
+      const last = this.connLastMsg.get(conn.id);
+      if (last === undefined || now - last <= GameRoom.IDLE_CONN_MS) continue;
+      // mark the player disconnected rather than deleting the record: a network
+      // casualty is not a rage-quit — the slot/team/name survive for the rejoin
+      // (reconnecting clients resend join with their token automatically), and
+      // disconnected players are excluded from start validation, so the phantom
+      // "not ready" block lifts the moment the sweep lands.
+      const pid = this.connPlayer.get(conn.id);
+      this.connPlayer.delete(conn.id);
+      this.connLastMsg.delete(conn.id);
+      if (pid) {
+        const p = this.players.get(pid);
+        if (p && p.connId === conn.id) {
+          if (p.spectator) this.players.delete(pid); // spectators hold no slot worth saving
+          else {
+            p.connected = false;
+            p.connId = null;
+          }
+        }
+      }
+      try {
+        conn.close(4001, "idle timeout");
+      } catch {
+        /* already closing */
+      }
+      swept = true;
+    }
+    if (swept) {
+      // mirror onClose's bookkeeping for the room as a whole
+      // (never phase "playing" here — the reaper returns early in that case)
+      const noHumans = [...this.players.values()].every((x) => x.bot || !x.connected);
+      if (noHumans) this.resetRoom();
+      else this.broadcastLobby();
+    }
+  }
+
   onMessage(conn: Connection, raw: string | ArrayBuffer) {
     let m: C2S;
     try {
@@ -261,6 +318,8 @@ export class GameRoom extends Server<Env> {
       return;
     }
     if (!m || typeof m !== "object" || typeof (m as { t?: unknown }).t !== "string") return;
+    this.connLastMsg.set(conn.id, Date.now());
+    this.reapIdleConns();
     try {
       this.dispatch(conn, m);
     } catch (err) {
@@ -276,6 +335,7 @@ export class GameRoom extends Server<Env> {
 
     switch (m.t) {
       case "hb":
+        send(conn, { t: "hbok" } satisfies S2C);
         if (this.resetTimer) {
           clearTimeout(this.resetTimer);
           this.resetTimer = null;
@@ -296,6 +356,14 @@ export class GameRoom extends Server<Env> {
         if (me && this.isHost(me) && this.phase !== "playing") {
           const actives = [...this.players.values()].filter((p) => p.connected && !p.spectator && p.slot >= 0);
           if (actives.length < 2) return send(conn, { t: "deny", msg: "need at least 2 players — add a bot!" });
+          const limit = this.mapSlotLimit();
+          const invalid = actives.find((p) => p.slot >= limit);
+          if (invalid) {
+            return send(conn, {
+              t: "deny",
+              msg: `${invalid.name} is in slot ${invalid.slot + 1}, outside this map's ${limit} spawn slots`,
+            } satisfies S2C);
+          }
           const unready = actives.filter((p) => !p.bot && p.id !== me.id && !p.ready);
           if (unready.length) return send(conn, { t: "deny", msg: `${unready[0].name} is not ready` });
           const firstTeam = actives[0].team;
@@ -311,7 +379,7 @@ export class GameRoom extends Server<Env> {
           const profile: BotProfile =
             typeof m.profile === "string" && VALID_PROFILES.has(m.profile) ? m.profile : "balanced";
           if (!this.addBot(diff, profile)) {
-            send(conn, { t: "deny", msg: `room is full (${MAX_PLAYERS} players)` });
+            send(conn, { t: "deny", msg: `room is full (${this.mapSlotLimit()} players on this map)` });
           }
         }
         return;
@@ -347,8 +415,17 @@ export class GameRoom extends Server<Env> {
         return;
       case "setMap":
         if (me && this.isHost(me) && this.phase === "lobby" && typeof m.map === "string" && VALID_MAPS.has(m.map)) {
-          this.map = m.map;
-          this.broadcastLobby();
+          const limit = this.mapSlotLimit(m.map);
+          const blocked = [...this.players.values()].find((p) => !p.spectator && p.slot >= limit);
+          if (blocked) {
+            send(conn, {
+              t: "deny",
+              msg: `${blocked.name} occupies slot ${blocked.slot + 1}; that map supports only ${limit} spawn slots`,
+            } satisfies S2C);
+          } else {
+            this.map = m.map;
+            this.broadcastLobby();
+          }
         }
         return;
       case "setConfig":
@@ -380,6 +457,12 @@ export class GameRoom extends Server<Env> {
             this.broadcastLobby();
           }
         }
+        return;
+      case "setSlot":
+        if (me) this.handleSetSlot(conn, me, m);
+        return;
+      case "swapSlot":
+        if (me) this.handleSwapSlot(conn, me, m);
         return;
       case "setName":
         if (me && this.phase === "lobby" && typeof m.name === "string") {
@@ -414,10 +497,11 @@ export class GameRoom extends Server<Env> {
           // spectators who joined mid-game get real slots so they can play next
           // round — but only while a slot is free; a full room keeps them spectating
           const used = new Set([...this.players.values()].filter((p) => !p.spectator).map((p) => p.slot));
+          const limit = this.mapSlotLimit();
           for (const p of this.players.values()) {
             p.ready = !!p.bot || !!p.mcp;
             if (p.spectator && !p.wantSpectate) {
-              for (let s = 0; s < MAX_PLAYERS; s++)
+              for (let s = 0; s < limit; s++)
                 if (!used.has(s)) {
                   used.add(s);
                   p.slot = s;
@@ -538,14 +622,15 @@ export class GameRoom extends Server<Env> {
     }
 
     const used = new Set([...this.players.values()].filter((x) => !x.spectator && x.slot >= 0).map((p) => p.slot));
+    const limit = this.mapSlotLimit();
     let slot = -1;
-    for (let s = 0; s < MAX_PLAYERS; s++)
+    for (let s = 0; s < limit; s++)
       if (!used.has(s)) {
         slot = s;
         break;
       }
     if (slot < 0) {
-      send(conn, { t: "deny", msg: `room is full (${MAX_PLAYERS} players)` });
+      send(conn, { t: "deny", msg: `room is full (${limit} players on this map)` });
       conn.close(4000, "room full");
       return;
     }
@@ -561,14 +646,105 @@ export class GameRoom extends Server<Env> {
       .filter((x) => x.connected && !x.spectator && !x.bot)
       .sort((a, b) => a.slot - b.slot);
     if (!humans.length) return undefined;
+    // deliberate explicit transfer beats the 'v' auto-claim — 'v' keeps host
+    // against slot-order accidents but can voluntarily give it away
+    if (this.hostId && humans.some((x) => x.id === this.hostId)) return this.hostId;
     const v = humans.find((x) => x.name === "v");
     if (v) return v.id;
-    if (this.hostId && humans.some((x) => x.id === this.hostId)) return this.hostId;
     return humans[0].id;
   }
 
   private isHost(p: PlayerRec) {
     return this.resolveHostId() === p.id;
+  }
+
+  // Valid spawn/color slots are capped by BOTH the global player palette and the
+  // currently selected map. getSpawns() is dimension-driven today, but using its
+  // length here keeps future lower-spawn layouts authoritative too.
+  private mapSlotLimit(map: MapId = this.map): number {
+    const meta = MAP_LIST.find((m) => m.id === map);
+    const w = meta?.w ?? MAP_W;
+    const h = meta?.h ?? MAP_H;
+    return Math.max(1, Math.min(MAX_PLAYERS, meta?.maxPlayers ?? MAX_PLAYERS, getSpawns(w, h).length));
+  }
+
+  private playerAtSlot(slot: number, exceptId?: string): PlayerRec | undefined {
+    for (const p of this.players.values()) {
+      if (p.id !== exceptId && !p.spectator && p.slot === slot) return p;
+    }
+    return undefined;
+  }
+
+  // Host fallback historically follows the lowest occupied slot. Once players can
+  // rearrange slots, that fallback must not silently transfer host as a side effect
+  // of a spawn move/swap — pin the pre-change host; v still overrides in resolveHostId().
+  private pinHostBeforeSlotChange() {
+    const hostId = this.resolveHostId();
+    if (hostId) this.hostId = hostId;
+  }
+
+  private denySlot(conn: Connection, msg: string) {
+    send(conn, { t: "deny", msg } satisfies S2C);
+  }
+
+  private handleSetSlot(conn: Connection, me: PlayerRec, m: { slot: number; id?: string }) {
+    if (this.phase !== "lobby") return this.denySlot(conn, "spawn slots can only change in the lobby");
+    if (me.spectator || me.slot < 0) return this.denySlot(conn, "spectators do not have spawn slots");
+    const limit = this.mapSlotLimit();
+    if (!Number.isInteger(m.slot) || m.slot < 0 || m.slot >= limit) {
+      return this.denySlot(conn, `invalid spawn slot for this map (0-${limit - 1})`);
+    }
+
+    let target = me;
+    if (typeof m.id === "string" && m.id !== me.id) {
+      if (!this.isHost(me)) return this.denySlot(conn, "only the host can move another player");
+      const other = this.players.get(m.id);
+      if (!other || other.spectator || other.slot < 0) return this.denySlot(conn, "target player has no spawn slot");
+      target = other;
+    }
+    if (target.slot === m.slot) return; // harmless no-op
+
+    const occupant = this.playerAtSlot(m.slot, target.id);
+    if (occupant) return this.denySlot(conn, `slot ${m.slot + 1} is occupied — use swap`);
+
+    this.pinHostBeforeSlotChange();
+    target.slot = m.slot;
+    this.broadcastLobby();
+  }
+
+  private handleSwapSlot(conn: Connection, me: PlayerRec, m: { id: string; id2?: string }) {
+    if (this.phase !== "lobby") return this.denySlot(conn, "spawn slots can only change in the lobby");
+    if (me.spectator || me.slot < 0) return this.denySlot(conn, "spectators do not have spawn slots");
+    const first = typeof m.id === "string" ? this.players.get(m.id) : undefined;
+    if (!first || first.spectator || first.slot < 0) return this.denySlot(conn, "target player has no spawn slot");
+
+    // Default semantics are requester↔target. Hosts may instead pass id2 to
+    // rearrange any two occupants atomically — important in a full lobby where
+    // there is no spare slot to use as a temporary holding cell.
+    let a = me;
+    let b = first;
+    if (typeof m.id2 === "string") {
+      if (!this.isHost(me)) return this.denySlot(conn, "only the host can swap two other players");
+      const second = this.players.get(m.id2);
+      if (!second || second.spectator || second.slot < 0) return this.denySlot(conn, "second target player has no spawn slot");
+      if (second.id === first.id) return this.denySlot(conn, "cannot swap a player with themselves");
+      a = first;
+      b = second;
+    } else {
+      if (first.id === me.id) return this.denySlot(conn, "cannot swap slots with yourself");
+      if (!first.bot && !this.isHost(me)) {
+        return this.denySlot(conn, "only the host can swap with another human");
+      }
+    }
+
+    const limit = this.mapSlotLimit();
+    if (a.slot >= limit || b.slot >= limit) return this.denySlot(conn, "spawn slot is not valid for this map");
+
+    this.pinHostBeforeSlotChange();
+    const slot = a.slot;
+    a.slot = b.slot;
+    b.slot = slot;
+    this.broadcastLobby();
   }
 
   private lobbyList(): LobbyPlayer[] {
@@ -680,8 +856,9 @@ export class GameRoom extends Server<Env> {
 
   private addBot(diff: BotDiff = "normal", profile: BotProfile = "balanced"): boolean {
     const used = new Set([...this.players.values()].filter((p) => p.slot >= 0).map((p) => p.slot));
+    const limit = this.mapSlotLimit();
     let slot = -1;
-    for (let s = 0; s < MAX_PLAYERS; s++)
+    for (let s = 0; s < limit; s++)
       if (!used.has(s)) {
         slot = s;
         break;
@@ -710,7 +887,8 @@ export class GameRoom extends Server<Env> {
   private startGame() {
     const actives = [...this.players.values()].filter((p) => p.connected && !p.spectator && p.slot >= 0);
     const slots = actives.map((p) => p.slot).sort((a, b) => a - b);
-    if (!slots.length) return;
+    const limit = this.mapSlotLimit();
+    if (!slots.length || actives.some((p) => p.slot >= limit)) return;
     const teams: Record<number, number> = {};
     const names: Record<number, string> = {};
     for (const p of actives) {
@@ -1087,6 +1265,18 @@ export class GameRoom extends Server<Env> {
         typeof args.token === "string" && args.token.length > 0 && args.token.length <= 64 ? args.token : undefined;
       let p = reqTok ? this.players.get(reqTok) : undefined;
       if (p && p.spectator) p = undefined;
+      const requestedMap =
+        typeof args.map === "string" && VALID_MAPS.has(args.map as MapId) ? (args.map as MapId) : null;
+      if (requestedMap && this.phase !== "playing") {
+        const limit = this.mapSlotLimit(requestedMap);
+        const blocked = [...this.players.values()].find((x) => !x.spectator && x.slot >= limit);
+        if (blocked) {
+          return {
+            ok: false,
+            error: `${blocked.name} occupies slot ${blocked.slot + 1}; ${requestedMap} supports only ${limit} spawn slots`,
+          };
+        }
+      }
 
       if (!p) {
         if (this.phase === "ended") {
@@ -1104,14 +1294,15 @@ export class GameRoom extends Server<Env> {
           return { ok: false, error: "match already in progress; spectate or join another room" };
         }
         const used = new Set([...this.players.values()].filter((x) => !x.spectator && x.slot >= 0).map((x) => x.slot));
+        const limit = this.mapSlotLimit(requestedMap ?? this.map);
         let slot = -1;
-        for (let s = 0; s < MAX_PLAYERS; s++) {
+        for (let s = 0; s < limit; s++) {
           if (!used.has(s)) {
             slot = s;
             break;
           }
         }
-        if (slot < 0) return { ok: false, error: `room is full (${MAX_PLAYERS} players)` };
+        if (slot < 0) return { ok: false, error: `room is full (${limit} players on this map)` };
         const token = reqTok || `mcp-${crypto.randomUUID().slice(0, 12)}`;
         p = {
           id: token,
@@ -1131,14 +1322,15 @@ export class GameRoom extends Server<Env> {
       }
 
       if (this.phase === "lobby") {
-        if (typeof args.map === "string" && VALID_MAPS.has(args.map as MapId)) {
-          this.map = args.map as MapId;
+        if (requestedMap) {
+          this.map = requestedMap;
         }
+        const limit = this.mapSlotLimit();
         const botCount =
           args.add_bot === true
             ? 1
             : typeof args.add_bot === "number" && Number.isFinite(args.add_bot)
-              ? Math.max(0, Math.min(MAX_PLAYERS - 1, Math.floor(args.add_bot)))
+              ? Math.max(0, Math.min(limit - 1, Math.floor(args.add_bot)))
               : 0;
         const diff: BotDiff =
           typeof args.diff === "string" && VALID_DIFFS.has(args.diff as BotDiff) ? (args.diff as BotDiff) : "normal";
@@ -1154,6 +1346,13 @@ export class GameRoom extends Server<Env> {
           const actives = [...this.players.values()].filter((x) => x.connected && !x.spectator && x.slot >= 0);
           if (actives.length < 2) {
             return { ok: false, error: "need at least 2 players to start — pass add_bot: true" };
+          }
+          const invalid = actives.find((x) => x.slot >= limit);
+          if (invalid) {
+            return {
+              ok: false,
+              error: `${invalid.name} is in slot ${invalid.slot + 1}, outside this map's ${limit} spawn slots`,
+            };
           }
           this.startGame();
         } else {
@@ -1178,6 +1377,65 @@ export class GameRoom extends Server<Env> {
 
     const p = this.mcpPlayer(args.token);
     if (!p) return { ok: false, error: "invalid or missing player token — call join_game first" };
+
+    if (op === "set_slot") {
+      if (this.phase !== "lobby") return { ok: false, error: "spawn slots can only change in the lobby" };
+      const slot = typeof args.slot === "number" ? args.slot : NaN;
+      const limit = this.mapSlotLimit();
+      if (!Number.isInteger(slot) || slot < 0 || slot >= limit) {
+        return { ok: false, error: `invalid spawn slot for this map (0-${limit - 1})` };
+      }
+      let target = p;
+      if (typeof args.id === "string" && args.id !== p.id) {
+        if (!this.isHost(p)) return { ok: false, error: "only the host can move another player" };
+        const other = this.players.get(args.id);
+        if (!other || other.spectator || other.slot < 0) return { ok: false, error: "target player has no spawn slot" };
+        target = other;
+      }
+      const occupant = this.playerAtSlot(slot, target.id);
+      if (occupant) return { ok: false, error: `slot ${slot + 1} is occupied — use swap_slot` };
+      if (target.slot !== slot) {
+        this.pinHostBeforeSlotChange();
+        target.slot = slot;
+        this.broadcastLobby();
+      }
+      return { ok: true, room: this.name, player: { id: target.id, name: target.name, slot: target.slot }, players: this.lobbyList() };
+    }
+
+    if (op === "swap_slot") {
+      if (this.phase !== "lobby") return { ok: false, error: "spawn slots can only change in the lobby" };
+      const first = typeof args.id === "string" ? this.players.get(args.id) : undefined;
+      if (!first || first.spectator || first.slot < 0) return { ok: false, error: "target player has no spawn slot" };
+      let a = p;
+      let b = first;
+      if (typeof args.id2 === "string") {
+        if (!this.isHost(p)) return { ok: false, error: "only the host can swap two other players" };
+        const second = this.players.get(args.id2);
+        if (!second || second.spectator || second.slot < 0) return { ok: false, error: "second target player has no spawn slot" };
+        if (second.id === first.id) return { ok: false, error: "cannot swap a player with themselves" };
+        a = first;
+        b = second;
+      } else {
+        if (first.id === p.id) return { ok: false, error: "cannot swap slots with yourself" };
+        if (!first.bot && !this.isHost(p)) return { ok: false, error: "only the host can swap with another human" };
+      }
+      const limit = this.mapSlotLimit();
+      if (a.slot >= limit || b.slot >= limit) return { ok: false, error: "spawn slot is not valid for this map" };
+      this.pinHostBeforeSlotChange();
+      const slot = a.slot;
+      a.slot = b.slot;
+      b.slot = slot;
+      this.broadcastLobby();
+      return {
+        ok: true,
+        room: this.name,
+        swapped: [
+          { id: a.id, name: a.name, slot: a.slot },
+          { id: b.id, name: b.name, slot: b.slot },
+        ],
+        players: this.lobbyList(),
+      };
+    }
 
     if (op === "get_game_state") {
       const watchUrl = `${origin}/?room=${encodeURIComponent(this.name)}&spectate=1`;
@@ -1730,6 +1988,8 @@ async function handleMcpRequest(request: Request, env: Env, url: URL): Promise<R
     const roomTools = new Set([
       "join_game",
       "create_ai_arena",
+      "set_slot",
+      "swap_slot",
       "get_game_state",
       "build_structure",
       "place_structure",

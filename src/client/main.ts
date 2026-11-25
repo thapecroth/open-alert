@@ -65,6 +65,17 @@ const audio = new AudioEngine();
 const net = new Net(room);
 net.setIdentity(name, joinToken);
 
+// Half-open-connection watchdog: in a quiet lobby the ONLY periodic server
+// traffic is the hbok reply to our 15s heartbeat (in-game, snapshots arrive at
+// 5Hz). 32s of total silence therefore means the TCP socket is dead even though
+// the browser still reports it open — a state in which every click (ready,
+// start!) silently vanishes into PartySocket's offline queue. Force a reconnect
+// so the socket heals, the queued commands flush, and the server-side reaper
+// can clean up any stale duplicate of us.
+setInterval(() => {
+  if (!net.localMode && Date.now() - net.lastRecvAt > 32_000) net.reconnect();
+}, 5_000);
+
 const unlockAudio = () => {
   audio.unlock();
 };
@@ -457,6 +468,8 @@ hud.onTransferHost = (id) => net.send({ t: "transferHost", id });
 hud.onSetMap = (map) => net.send({ t: "setMap", map });
 hud.onSetConfig = (config) => net.send({ t: "setConfig", config });
 hud.onSetTeam = (team, id) => net.send({ t: "setTeam", team, ...(id ? { id } : {}) });
+hud.onSetSlot = (slot, id) => net.send({ t: "setSlot", slot, ...(id ? { id } : {}) });
+hud.onSwapSlot = (id, id2) => net.send({ t: "swapSlot", id, ...(id2 ? { id2 } : {}) });
 hud.onSetName = (n) => {
   name = n;
   localStorage.setItem("oa-name", n);
@@ -469,6 +482,7 @@ hud.onVerb = (v) => {
   else if (v === "patrol") input.armPatrol();
   else if (v === "hold") input.holdNow();
   else if (v === "stop") input.stopNow();
+  else if (v === "unload") input.armUnload();
   else input.armVerb(v);
 };
 hud.onBuild = (kind) => {

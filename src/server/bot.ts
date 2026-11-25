@@ -680,7 +680,7 @@ export class RtsBot {
       }
     }
 
-    // Air Command: Reaper UAVs, EW Jammer Drones, Delta Kamikaze Drones, Valkyrie Jets, Hornet Gunships, A-10 Warthogs, AC-130 Gunships, B-21 Stealth & Mach-9 Hypersonic
+    // Air Command: Reaper UAVs, EW Jammer Drones, Delta Kamikaze Drones, Valkyrie Jets, A-10 Warthogs, AC-130 Gunships, B-21 Stealth & Mach-9 Hypersonic
     if (this.hasBuilding(bc, "airfield")) {
       const q = me.queues.airfield;
       const airCount = uavs + ewdrones + shaheds + interceptors + choppers + a10s + ac130s + stealthbombers + hypersonics;

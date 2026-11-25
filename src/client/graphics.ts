@@ -70,6 +70,13 @@ const AUTO_UP_FPS = 56;
 const AUTO_DOWN_MS = 1400;
 const AUTO_UP_MS = 6000;
 const AUTO_DWELL_MS = 4000;
+// Downshifts answer a *current* crisis, so they need far less oscillation
+// protection than upshifts (which are already guarded by 6s sustained headroom).
+// Below CRISIS_FPS the dwell is bypassed entirely — a battle that tanks the
+// frame rate must reach the protective tier in ~1-2s, not ~15s.
+const AUTO_DWELL_DOWN_MS = 900;
+const CRISIS_FPS = 28;
+const CRISIS_DOWN_MS = 450;
 const TIER_VFX = [1, 0.8, 0.55, 0.3];
 const TIER_FX = [1, 0.75, 0.5, 0.35];
 const TIER_ANIM = [1, 0.85, 0.7, 0.55];
@@ -239,6 +246,7 @@ export class GraphicsManager {
   private entityCount = 0;
   private lowMs = 0;
   private highMs = 0;
+  private crisisMs = 0;
   private lastTierChangeMs = 0;
 
   constructor(
@@ -434,6 +442,7 @@ export class GraphicsManager {
     this.autoTier = t;
     this.lowMs = 0;
     this.highMs = 0;
+    this.crisisMs = 0;
     this.lastTierChangeMs = performance.now();
     this.recomputeEffective();
     this.emitChange();
@@ -522,9 +531,16 @@ export class GraphicsManager {
     if (this.settings.autoQuality) {
       const now = performance.now();
       const floor = this.entityFloor();
+      if (emaFps < CRISIS_FPS) this.crisisMs += clampedDt;
+      else this.crisisMs = 0;
       if (this.autoTier < floor) {
         this.setAutoTier(floor);
-      } else if (now - this.lastTierChangeMs >= AUTO_DWELL_MS) {
+      } else if (this.crisisMs >= CRISIS_DOWN_MS && this.autoTier < AUTO_TIER_MAX) {
+        // Crisis fast-path: sustained sub-CRISIS_FPS sheds a tier immediately,
+        // bypassing the dwell — protection matters more than stability here.
+        this.setAutoTier(this.autoTier + 1);
+      } else {
+        const dwellMs = now - this.lastTierChangeMs;
         if (emaFps < AUTO_DOWN_FPS) {
           this.lowMs += clampedDt;
           this.highMs = 0;
@@ -535,9 +551,9 @@ export class GraphicsManager {
           this.lowMs = 0;
           this.highMs = 0;
         }
-        if (this.lowMs >= AUTO_DOWN_MS && this.autoTier < AUTO_TIER_MAX) {
+        if (this.lowMs >= AUTO_DOWN_MS && this.autoTier < AUTO_TIER_MAX && dwellMs >= AUTO_DWELL_DOWN_MS) {
           this.setAutoTier(this.autoTier + 1);
-        } else if (this.highMs >= AUTO_UP_MS && this.autoTier > floor) {
+        } else if (this.highMs >= AUTO_UP_MS && this.autoTier > floor && dwellMs >= AUTO_DWELL_MS) {
           this.setAutoTier(Math.max(floor, this.autoTier - 1));
         }
       }
@@ -547,10 +563,12 @@ export class GraphicsManager {
 
     if (this.settings.dynamicRes) {
       this.govFrameCount++;
-      if (this.govFrameCount >= 45) {
+      const cadence = emaFps < 30 ? 12 : 45;
+      const floor = this.autoTier >= 3 ? 0.5 : 0.65;
+      if (this.govFrameCount >= cadence) {
         this.govFrameCount = 0;
-        if (emaFps < 46 && this.dynamicScale > 0.65) {
-          const next = Math.max(0.65, Math.round((this.dynamicScale - 0.1) * 100) / 100);
+        if (emaFps < 46 && this.dynamicScale > floor) {
+          const next = Math.max(floor, Math.round((this.dynamicScale - 0.1) * 100) / 100);
           if (next !== this.dynamicScale) {
             this.dynamicScale = next;
             scaleChanged = true;

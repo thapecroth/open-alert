@@ -1022,6 +1022,18 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
       accent: 0xdbe6ee,
       water: 0x125e94,
     },
+    mediterranean: {
+      wall: 0x6a6254, cap: 0xa89a78, boulder: 0x756c5b, foliage: 0x3f6b32, trunk: 0x563d25,
+      wallRough: 0.76, capRough: 0.7, wallMetal: 0.08, accent: 0xf0dfb4, water: 0x14749a,
+    },
+    scandinavia: {
+      wall: 0x4d5c66, cap: 0x9fb2bd, boulder: 0x5b6b74, foliage: 0x24533d, trunk: 0x3d2d22,
+      wallRough: 0.8, capRough: 0.72, wallMetal: 0.1, accent: 0xe4eef5, water: 0x124765,
+    },
+    terra: {
+      wall: 0x535d55, cap: 0x9aa79a, boulder: 0x626b61, foliage: 0x2e6336, trunk: 0x4b3524,
+      wallRough: 0.78, capRough: 0.72, wallMetal: 0.09, accent: 0xdde8dc, water: 0x115b8c,
+    },
   };
   const p = palette[mapId] ?? palette.crossroads;
 
@@ -1654,6 +1666,21 @@ const BIOMES: Record<MapId, BiomePalette> = {
     beach: [192, 172, 126],
     seabedShallow: [26, 110, 152],
     seabedDeep: [9, 40, 82],
+  },
+  mediterranean: {
+    seedA: 7631, seedB: 4111, base: [104, 103, 58], altDelta: [-10, 17, -4], noiseAmp: [23, 21, 13],
+    road: [145, 125, 86], spawn: [111, 105, 91], cliff: [102, 92, 74], talus: [126, 111, 82],
+    trackStroke: "rgba(72, 54, 28, 0.16)", beach: [205, 179, 121], seabedShallow: [24, 126, 158], seabedDeep: [8, 54, 101],
+  },
+  scandinavia: {
+    seedA: 7643, seedB: 4127, base: [72, 99, 72], altDelta: [-8, 20, 9], noiseAmp: [18, 25, 18],
+    road: [111, 113, 96], spawn: [99, 105, 96], cliff: [72, 91, 104], talus: [96, 111, 119],
+    trackStroke: "rgba(30, 43, 39, 0.18)", beach: [162, 168, 143], seabedShallow: [30, 91, 119], seabedDeep: [7, 34, 68],
+  },
+  terra: {
+    seedA: 7657, seedB: 4151, base: [83, 109, 62], altDelta: [-12, 19, -7], noiseAmp: [22, 25, 15],
+    road: [129, 116, 82], spawn: [104, 106, 94], cliff: [79, 91, 82], talus: [104, 109, 94],
+    trackStroke: "rgba(40, 48, 28, 0.17)", beach: [190, 174, 124], seabedShallow: [27, 113, 158], seabedDeep: [7, 43, 91],
   },
 };
 

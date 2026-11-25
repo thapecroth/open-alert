@@ -98,7 +98,11 @@ try {
   const joinTool = tools.find((t) => t.name === "join_game");
   const placeTool = tools.find((t) => t.name === "place_structure");
   const arenaTool = tools.find((t) => t.name === "create_ai_arena");
+  const setSlotTool = tools.find((t) => t.name === "set_slot");
   ok(tools.some((t) => t.name === "transfer_host"), "transfer_host tool exposed");
+  ok(!!setSlotTool, "set_slot tool exposed");
+  ok(tools.some((t) => t.name === "swap_slot"), "swap_slot tool exposed");
+  ok(setSlotTool?.inputSchema?.properties?.slot?.maximum === (gd.MAX_PLAYERS ?? 8) - 1, `set_slot slot maximum tracks MAX_PLAYERS (${(gd.MAX_PLAYERS ?? 8) - 1})`, JSON.stringify(setSlotTool?.inputSchema?.properties?.slot ?? {}));
 
   // ---- enum drift checks: exact set equality with real defs ----
   const bk = buildTool?.inputSchema?.properties?.kind?.enum ?? [];
