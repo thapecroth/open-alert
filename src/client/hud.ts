@@ -1859,6 +1859,13 @@ export class Hud {
     this.updateMapDesc(mapId);
 
     const list = el("player-list");
+    // A broadcast arriving while a spawn-slot dropdown is open would destroy
+    // the picker mid-interaction (the user's click/selection vanishes). While
+    // any select inside the list is focused, defer the rebuild — the state that
+    // matters is re-rendered on the next broadcast, and a completed pick fires
+    // change (which drops focus, re-enabling rebuilds for the accept broadcast).
+    const focused = document.activeElement;
+    if (focused instanceof HTMLSelectElement && list.contains(focused)) return;
     list.innerHTML = "";
     const slotLimit = mapSlotLimit(mapId);
     const occupantBySlot = new Map<number, LobbyPlayer>();

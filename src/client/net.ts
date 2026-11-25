@@ -153,6 +153,15 @@ export class Net {
       return;
     }
     try {
+      // PartySocket flushes its offline queue BEFORE dispatching "open" — but the
+      // join handshake is only sent from the open handler. A click (ready/start!)
+      // made during a reconnect gap would therefore reach the server BEFORE the
+      // join, hit an unbound connection, and be silently dropped. Whenever the
+      // socket is not open, enqueue the join first so ordering is guaranteed;
+      // the open handler's join is a harmless idempotent duplicate.
+      if (this.socket.readyState !== WebSocket.OPEN && m.t !== "join" && m.t !== "hb") {
+        this.socket.send(JSON.stringify({ t: "join", name: this.joinName, token: this.joinToken, v: 2 } satisfies C2S));
+      }
       this.socket.send(JSON.stringify(m));
     } catch {
       /* PartySocket queues or reconnects */

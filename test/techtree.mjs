@@ -32,6 +32,8 @@ function conn(name, token) {
   const st = wsconn(URL, name, token, {
     onmsg: (m, st) => {
       if (m.t === "init") {
+        st.mapW = m.w;
+        st.mapH = m.h;
         for (const [x, y, a] of m.ore) st.ore.set(x + "," + y, a);
       }
       if (m.t === "snap") {
@@ -43,6 +45,8 @@ function conn(name, token) {
     },
   });
   st.ore = new Map();
+  st.mapW = 128;
+  st.mapH = 128;
   return st;
 }
 const send = (s, m) => s.ws.send(JSON.stringify(m));
@@ -101,7 +105,7 @@ function legalSpots(s, kind, anchor) {
         const gapX = Math.max(b.tx - (tx + fw), tx - (b.tx + b.w));
         const gapY = Math.max(b.ty - (ty + fh), ty - (b.ty + b.h));
         if (Math.max(gapX, gapY) > 2) continue; // só guarda tile já adjacente a ESTE prédio
-        if (tx < 0 || ty < 0 || tx + fw > 128 || ty + fh > 128) continue;
+        if (tx < 0 || ty < 0 || tx + fw > s.mapW || ty + fh > s.mapH) continue;
         let bad = false;
         for (let y = ty; y < ty + fh && !bad; y++)
           for (let x = tx; x < tx + fw && !bad; x++)

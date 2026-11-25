@@ -1,4 +1,5 @@
 import { Net } from "./net";
+import { installTelemetry } from "./telemetry";
 import { GameScene } from "./scene";
 import { Renderer } from "./render";
 import { Input } from "./input";
@@ -87,6 +88,10 @@ let myTeam = 0;
 let myId = "";
 let lobbyHumans = 1; // non-spectator, non-bot count from latest lobby state — gates the pause button
 let phase: "lobby" | "playing" | "ended" = "lobby";
+// Important-only error telemetry — reports uncaught exceptions/rejections/
+// console.errors with room+phase+slot context so client failures are fetchable
+// server-side (/client-error?room=X) instead of dying inside one user's browser.
+installTelemetry({ room, name, phase: () => phase, slot: () => mySlot });
 let currentMap: MapId = "crossroads";
 let currentConfig: GameConfig = { ...DEFAULT_CONFIG };
 let latestState: PlayerState | null = null;

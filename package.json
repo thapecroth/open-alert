@@ -9,7 +9,7 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json",
     "test": "node test/gym.mjs",
-    "test:ws": "node test/regress.mjs && node test/bugfix.mjs && node test/features.mjs && node test/techtree.mjs && node test/orderfuzz.mjs && node test/gfxgov.mjs && node test/fpvdrive.mjs && node test/fpvstory.mjs && node test/covert.mjs && node test/harvest.mjs && node test/bridge.mjs && node test/trainq.mjs && node test/lobbyzombie.mjs && node test/lobbyslots.mjs",
+    "test:ws": "node test/regress.mjs && node test/bugfix.mjs && node test/features.mjs && node test/techtree.mjs && node test/orderfuzz.mjs && node test/gfxgov.mjs && node test/fpvdrive.mjs && node test/fpvstory.mjs && node test/covert.mjs && node test/harvest.mjs && node test/bridge.mjs && node test/trainq.mjs && node test/airtrans.mjs && node test/lobbyzombie.mjs && node test/lobbyslots.mjs && node test/wstrans.mjs",
     "test:browser": "node test/interact.mjs && node test/waypoints-controls.mjs && node test/techvisual.mjs",
     "test:mcp": "node test/mcpdefs.mjs",
     "test:all": "npm run test && npm run test:ws && npm run test:browser && npm run test:mcp",

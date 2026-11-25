@@ -131,6 +131,10 @@ export class GameRoom extends Server<Env> {
   private joinKeySeq = -1;
   private connV2 = new Set<string>(); // conn ids that joined with v:2 (delta-stream capable)
   private dir = new Map<string, RoomSummary>(); // used only when this.name === "__directory"
+  // Client-error telemetry ring: browsers POST uncaught exceptions/rejections/
+  // console.errors over plain HTTP (independent of ws health — the dead-socket
+  // case is exactly what this exists to diagnose). Memory-only, last 100.
+  private clientErrors: { ts: number; name: string; kind: string; msg: string; stack?: string; phase?: string; slot?: number; ua?: string; n?: number }[] = [];
 
   // ---------- match persistence: survive DO restarts/evictions ----------
   // A live match's state lives in memory; when the DO restarts (deploy, host
@@ -371,6 +375,13 @@ export class GameRoom extends Server<Env> {
             return send(conn, { t: "deny", msg: "need opponents on another team" });
           }
           this.startGame();
+        } else if (this.phase === "lobby") {
+          // Never drop a start click silently: an unbound connection means the
+          // client's command raced ahead of its rejoin (half-open reconnect gap),
+          // and a non-host click means the UI/host state desynced — both need
+          // visible feedback instead of a dead button.
+          if (!me) send(conn, { t: "deny", msg: "still reconnecting — click START again" } satisfies S2C);
+          else if (!this.isHost(me)) send(conn, { t: "deny", msg: "only the host can start the game" } satisfies S2C);
         }
         return;
       case "addbot":
@@ -1885,6 +1896,49 @@ export class GameRoom extends Server<Env> {
       return Response.json({ rooms });
     }
 
+    if (new URL(req.url).pathname === "/clerr") {
+      if (req.method === "GET") return Response.json({ errors: this.clientErrors });
+      if (req.method !== "POST") return new Response(null, { status: 405 });
+      let body: Record<string, unknown> = {};
+      try {
+        const parsed = await req.json();
+        if (parsed && typeof parsed === "object") body = parsed as Record<string, unknown>;
+      } catch {
+        return Response.json({ ok: false, error: "bad json" }, { status: 400 });
+      }
+      const clip = (v: unknown, max: number) => (typeof v === "string" ? v.slice(0, max) : undefined);
+      const msg = clip(body.msg, 500);
+      const kind = clip(body.kind, 24);
+      if (!msg || !kind) return Response.json({ ok: false, error: "msg/kind required" }, { status: 400 });
+      // coalesce repeats of the same message from the same player (spam guard)
+      const nm = clip(body.name, 40);
+      let dup: (typeof this.clientErrors)[number] | undefined;
+      for (let i = this.clientErrors.length - 1; i >= 0; i--) {
+        const e = this.clientErrors[i];
+        if (e.msg === msg && e.name === nm) {
+          dup = e;
+          break;
+        }
+      }
+      if (dup && Date.now() - dup.ts < 60_000) {
+        dup.n = (dup.n ?? 1) + 1;
+        dup.ts = Date.now();
+        return Response.json({ ok: true });
+      }
+      this.clientErrors.push({
+        ts: Date.now(),
+        name: clip(body.name, 40) ?? "?",
+        kind,
+        msg,
+        stack: clip(body.stack, 800),
+        phase: clip(body.phase, 12),
+        slot: typeof body.slot === "number" ? body.slot : undefined,
+        ua: clip(body.ua, 140),
+      });
+      if (this.clientErrors.length > 100) this.clientErrors.splice(0, this.clientErrors.length - 100);
+      return Response.json({ ok: true });
+    }
+
     const mcpOp = req.headers.get("x-mcp-op");
     if (req.method === "POST" && mcpOp) {
       let args: Record<string, unknown> = {};
@@ -2066,6 +2120,34 @@ export default {
           { status: 200, headers: { "cache-control": "no-store", "access-control-allow-origin": "*" } },
         );
       }
+    }
+
+    if (url.pathname === "/client-error") {
+      // Browser-error telemetry relay. POST: browser reports (room in body) —
+      // forwarded into the room DO's ring buffer. GET ?room=X: read the ring.
+      // Plain HTTP on purpose: the dead-websocket case is the one worth logging.
+      if (request.method === "POST") {
+        try {
+          const body = (await request.json()) as { room?: string };
+          const room = typeof body?.room === "string" && /^[a-z0-9-]{2,32}$/i.test(body.room) ? body.room : null;
+          if (!room) return Response.json({ ok: false, error: "room required" }, { status: 400 });
+          const stub = env.GameRoom.getByName(room);
+          const res = await stub.fetch(
+            new Request("https://internal/clerr", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+          );
+          return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+        } catch {
+          return Response.json({ ok: false }, { status: 400 });
+        }
+      }
+      if (request.method === "GET") {
+        const room = url.searchParams.get("room") ?? "";
+        if (!/^[a-z0-9-]{2,32}$/i.test(room)) return Response.json({ ok: false, error: "room required" }, { status: 400 });
+        const stub = env.GameRoom.getByName(room);
+        const res = await stub.fetch(new Request("https://internal/clerr"));
+        return new Response(res.body, { status: res.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+      }
+      return new Response(null, { status: 405 });
     }
 
     try {

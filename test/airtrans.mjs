@@ -208,5 +208,32 @@ const stepUntil = (w, cond, guardMax = 3000) => {
   ok(empty?.cargo === 1, "cargo scalar present pre-destruction");
 }
 
+// ---------- 10. edge cases: shift-queued board, retask, transport death mid-board ----------
+{
+  const w = mk();
+  const spot = openLand(w);
+  const chop = w["spawnUnit"](0, "chopper", spot.x, spot.y);
+  const inf = w["spawnUnit"](0, "infantry", spot.x + 8, spot.y);
+  // queue: walk a move waypoint first, THEN board — the shift-queue chain must hold
+  w.cmdOrder(0, [inf.id], "move", spot.x + 2.5, spot.y + 0.5);
+  w.cmdOrder(0, [inf.id], "board", chop.x, chop.y, chop.id, true);
+  ok(inf.order?.kind === "move" && inf.orderQueue[0]?.kind === "board", "board order queues behind the move waypoint");
+  const g = stepUntil(w, () => !w.ents.has(inf.id));
+  ok(!w.ents.has(inf.id) && chop.passengers?.length === 1, `queued board embarks after the waypoint chain (${g} ticks)`);
+
+  // retasking a walking boarder with a move order cancels the boarding run
+  const inf2 = w["spawnUnit"](0, "infantry", spot.x + 8, spot.y + 1);
+  w.cmdOrder(0, [inf2.id], "board", chop.x, chop.y, chop.id);
+  w.cmdOrder(0, [inf2.id], "move", spot.x + 8.5, spot.y + 3.5);
+  ok(inf2.order?.kind === "move", "retask with move cancels the board order");
+
+  // transport destroyed while a boarder is en route — the infantry stands down, never freezes
+  const inf3 = w["spawnUnit"](0, "infantry", spot.x + 9, spot.y + 2);
+  w.cmdOrder(0, [inf3.id], "board", chop.x, chop.y, chop.id);
+  w["destroy"](chop, 1);
+  for (let i = 0; i < 40; i++) w.step();
+  ok(inf3.order?.kind !== "board", "board order clears when the ride dies en route (no freeze)");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -103,6 +103,26 @@ export function wsconn(url, name, token, opts = {}) {
   return st;
 }
 
-export const send = (st, m) => st.ws.send(JSON.stringify(m));
+// Browser-like send: real clients queue commands while the socket is still
+// connecting (PartySocket offline queue). Mirror that instead of throwing —
+// test flows routinely fire inputs right after constructing a connection.
+export const send = (st, m) => {
+  const data = JSON.stringify(m);
+  if (st.ws.readyState === 1) return st.ws.send(data);
+  if (st.ws.readyState === 0) {
+    const iv = setInterval(() => {
+      if (st.ws.readyState === 1) {
+        clearInterval(iv);
+        try {
+          st.ws.send(data);
+        } catch {
+          /* closed meanwhile */
+        }
+      } else if (st.ws.readyState > 1) clearInterval(iv);
+    }, 25);
+    setTimeout(() => clearInterval(iv), 5000).unref?.();
+    iv.unref?.();
+  }
+};
 export const lastSnap = (st) => st.snaps[st.snaps.length - 1];
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

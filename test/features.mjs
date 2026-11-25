@@ -61,7 +61,8 @@ const waitLobby = (s, pred, ms = 2000) => until(() => s.lobby && pred(s.lobby), 
   const startDenies = denies(ha).length;
   send(ha, { t: "start" });
   await sleep(450);
-  ok(!ha.msgs.some((m) => m.t === "init") && ha.snaps.length === 0 && denies(ha).length === startDenies, "old host start silently ignored");
+  ok(!ha.msgs.some((m) => m.t === "init") && ha.snaps.length === 0, "old host start does not start the game");
+  ok(await until(() => denies(ha).length > startDenies, 2000) && denies(ha).at(-1)?.includes("only the host"), "old host start denied with feedback (never silent)");
   send(hb, { t: "start" });
   await sleep(1500);
   ok((lastSnap(ha)?.ents?.length ?? 0) > 0 || ha.msgs.some((m) => m.t === "init"), "new host start permission works");

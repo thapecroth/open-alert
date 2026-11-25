@@ -142,13 +142,16 @@ function mergeStaticBody(body: THREE.Group, rig: AnimRig): void {
       m = new THREE.MeshStandardMaterial({
         color: 0xffffff,
         vertexColors: true,
-        roughness: +p[2],
-        metalness: +p[3],
-        emissive: new THREE.Color(`#${p[4]}`),
-        emissiveIntensity: +p[5],
-        transparent: p[6] === "true",
-        opacity: +p[7],
-        side: +p[8] as THREE.Side,
+        // key layout: std|roughness|metalness|emissiveHex|emissiveIntensity|transparent|opacity|side
+        // (p[0] is the "std" tag — the fields start at p[1]; misindexing here put
+        // NaN into metalness/emissiveIntensity/side and built invalid "#1" colors)
+        roughness: +p[1],
+        metalness: +p[2],
+        emissive: new THREE.Color(`#${p[3]}`),
+        emissiveIntensity: +p[4],
+        transparent: p[5] === "true",
+        opacity: +p[6],
+        side: +p[7] as THREE.Side,
       });
       stdMergeMats.set(key, m);
     }

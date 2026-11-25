@@ -55,6 +55,7 @@ const p3 = conn("P3", "tok-z3");
 const p4 = conn("P4", "tok-z4");
 ok(await waitLobby(host, (l) => l.players.length === 5, 4000), "five players joined the lobby");
 
+ok(await until(() => [p2, p3, p4].every((s) => s.ws.readyState === 1), 3000), "client sockets open before sending");
 for (const s of [p2, p3, p4]) send(s, { t: "ready", ready: true });
 ok(await waitLobby(host, (l) => l.players.filter((p) => p.ready).length === 3, 3000), "P2-P4 readied up");
 
