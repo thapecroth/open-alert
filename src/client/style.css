@@ -235,6 +235,15 @@ button.on { background: #1d4459; border-color: var(--acc); color: #eef8ff; }
 }
 /* Make room for the position chip so it never covers the cost text. */
 .sbtn:has(.qpos:not(.hidden)) .cost { padding-right: 26px; }
+/* Owned-count chip — bottom-left corner, muted steel so it reads as persistent
+   info rather than transient queue state (green ×N) or position (cyan #N).
+   "2" = two already standing, "2+1" = two standing plus one in production. */
+.sbtn .owncount {
+  position: absolute; left: 5px; bottom: 3px; padding: 0 3px; border-radius: 2px;
+  background: rgba(12, 18, 26, 0.92); border: 1px solid rgba(148, 178, 205, 0.45);
+  color: #b8cbdd; font-weight: 700; font-size: 10.5px; line-height: 1.25; z-index: 2;
+  letter-spacing: 0.2px;
+}
 .sbtn.ready {
   border-color: var(--amber); color: var(--amber);
   animation: pulse 0.85s infinite alternate;
@@ -642,6 +651,11 @@ button.on { background: #1d4459; border-color: var(--acc); color: #eef8ff; }
 .tbadge.t4 { border-color: #8f4cc7; color: #d69bff; background: #22132e; }
 button.tbadge.own { cursor: pointer; }
 button.tbadge.own:hover { border-color: var(--text); color: #fff; }
+.host-btn {
+  padding: 0 6px; height: 22px; line-height: 1; font-size: 12px;
+  border-color: #2f5c6d; color: var(--acc); background: #0f1c24;
+}
+.host-btn:hover:not(:disabled) { background: #173040; border-color: var(--acc); color: #fff; }
 .kick-btn {
   padding: 0 6px; height: 22px; line-height: 1; font-size: 14px;
   border-color: #522e2e; color: #e69898; background: #1d1214;
@@ -1350,4 +1364,57 @@ button.tbadge.own:hover { border-color: var(--text); color: #fff; }
   letter-spacing: 0.3em;
   color: rgba(220, 230, 245, 0.75);
   margin-top: 8px;
+}
+
+/* ---------- WebGL-unavailable boot gate ---------- */
+/* Full-screen and impossible to miss: when this shows, the game never booted,
+   so nothing else is competing for the screen anyway. */
+#webgl-modal {
+  position: fixed; inset: 0; z-index: 100; display: flex;
+  align-items: center; justify-content: center; padding: 24px;
+  background:
+    linear-gradient(180deg, rgba(6, 10, 16, 0.86), rgba(6, 10, 16, 0.95)),
+    radial-gradient(ellipse at center, #0c1f2c, #05090e);
+}
+.webgl-panel {
+  border: 1px solid var(--danger); border-radius: 10px;
+  background: rgba(11, 17, 24, 0.97); padding: 30px 38px;
+  max-width: 640px; width: min(640px, 94vw); text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 34px rgba(255, 84, 84, 0.12);
+  max-height: 92vh; overflow-y: auto;
+}
+.webgl-panel h1 {
+  font-family: "Orbitron", monospace; color: var(--danger);
+  letter-spacing: 6px; font-size: 26px; margin-bottom: 10px;
+  text-shadow: 0 0 18px rgba(255, 84, 84, 0.4);
+}
+.webgl-sub { color: var(--text); font-size: 14.5px; line-height: 1.45; margin-bottom: 18px; }
+.webgl-how { text-align: left; margin-bottom: 16px; }
+.webgl-how h2 {
+  font-family: "Orbitron", monospace; color: var(--acc);
+  letter-spacing: 3px; font-size: 14px; margin-bottom: 10px; text-align: center;
+}
+.webgl-how-row {
+  display: flex; gap: 12px; align-items: baseline;
+  border: 1px solid var(--line); border-radius: 5px;
+  background: rgba(15, 23, 32, 0.85); padding: 8px 12px; margin-bottom: 7px;
+  font-size: 13.5px; line-height: 1.4;
+}
+.webgl-how-row b {
+  color: var(--amber); flex: 0 0 108px; font-size: 13px;
+  letter-spacing: 0.4px; text-align: right;
+}
+.webgl-how-row span { color: var(--text); }
+.webgl-notes { color: var(--muted); font-size: 12.8px; line-height: 1.5; margin-bottom: 18px; }
+.webgl-actions { display: flex; justify-content: center; margin-bottom: 6px; }
+#webgl-retry {
+  font-family: "Orbitron", monospace; font-size: 15px; font-weight: 700;
+  letter-spacing: 3px; color: #04101a; background: var(--acc);
+  border: none; border-radius: 5px; padding: 11px 42px; cursor: pointer;
+  box-shadow: 0 0 18px rgba(74, 216, 255, 0.35);
+}
+#webgl-retry:hover { background: #7ce4ff; }
+.webgl-detail {
+  color: var(--muted); font-size: 11px; margin-top: 10px;
+  word-break: break-word; opacity: 0.75; font-family: monospace;
 }

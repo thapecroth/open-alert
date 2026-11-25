@@ -14,6 +14,7 @@
     "test:mcp": "node test/mcpdefs.mjs",
     "test:all": "npm run test && npm run test:ws && npm run test:browser && npm run test:mcp",
     "mcp": "node mcp/open-alert-mcp.mjs",
+    "capture:units": "node tools/capture-unit-gifs.mjs",
     "deploy": "vite build && wrangler deploy"
   },
   "dependencies": {

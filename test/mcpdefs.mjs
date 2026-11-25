@@ -98,6 +98,7 @@ try {
   const joinTool = tools.find((t) => t.name === "join_game");
   const placeTool = tools.find((t) => t.name === "place_structure");
   const arenaTool = tools.find((t) => t.name === "create_ai_arena");
+  ok(tools.some((t) => t.name === "transfer_host"), "transfer_host tool exposed");
 
   // ---- enum drift checks: exact set equality with real defs ----
   const bk = buildTool?.inputSchema?.properties?.kind?.enum ?? [];

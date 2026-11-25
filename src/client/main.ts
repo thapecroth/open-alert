@@ -453,6 +453,7 @@ hud.onRematch = () => net.send({ t: "rematch" });
 hud.onAddBot = (diff, profile) => net.send({ t: "addbot", diff, profile });
 hud.onSetBotConfig = (id, diff, profile) => net.send({ t: "setBotConfig", id, diff, profile });
 hud.onKickBot = (id) => net.send({ t: "kickbot", id });
+hud.onTransferHost = (id) => net.send({ t: "transferHost", id });
 hud.onSetMap = (map) => net.send({ t: "setMap", map });
 hud.onSetConfig = (config) => net.send({ t: "setConfig", config });
 hud.onSetTeam = (team, id) => net.send({ t: "setTeam", team, ...(id ? { id } : {}) });

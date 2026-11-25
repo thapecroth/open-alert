@@ -43,6 +43,7 @@ export type C2S =
   | { t: "addbot"; diff?: BotDiff; profile?: BotProfile } // host: add an AI player to the lobby
   | { t: "setBotConfig"; id: string; diff?: BotDiff; profile?: BotProfile } // host: tweak bot difficulty/profile
   | { t: "kickbot"; id: string } // host: remove an AI player in lobby
+  | { t: "transferHost"; id: string } // host: transfer host to another player
   | { t: "setMap"; map: MapId } // host: pick map in lobby
   | { t: "setConfig"; config: Partial<GameConfig> } // host: adjust match rules in lobby
   | { t: "setTeam"; team: number; id?: string } // 0 = FFA, 1..4 = Team (host may pass bot id)

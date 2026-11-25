@@ -293,6 +293,11 @@ export class RtsBot {
     return (bc.get(k) ?? 0) > 0 || (upg !== undefined && (bc.get(upg) ?? 0) > 0);
   }
 
+  // Forward Supply Hubs take over construction when the ConYard is destroyed.
+  private hasConstruction(bc: Map<BuildingKind, number>): boolean {
+    return this.hasBuilding(bc, "conyard") || this.hasBuilding(bc, "supplyhub");
+  }
+
   // nearest enemy building to `ref` — the assault target
   private enemyBasePt(ref: { x: number; y: number }): { x: number; y: number } | null {
     let best: { x: number; y: number } | null = null,
@@ -463,7 +468,7 @@ export class RtsBot {
   // Next structure for the Structure queue (defenses construct in parallel via wantDefense!).
   private wantBuilding(me: P, bc: Map<BuildingKind, number>): BuildingKind | null {
     const has = (k: BuildingKind) => this.hasBuilding(bc, k);
-    if (!has("conyard")) return null; // nothing to build with
+    if (!this.hasConstruction(bc)) return null; // nothing to build with
     const pwrCount = (bc.get("power") ?? 0) + (bc.get("coalplant") ?? 0) + (bc.get("fusion") ?? 0);
     // early: the classic opener, nothing else competes for the structure queue
     if (pwrCount === 0) return "power";
@@ -539,7 +544,7 @@ export class RtsBot {
   // Next defense for the parallel Defense queue (builds simultaneously with Structures!).
   private wantDefense(me: P, bc: Map<BuildingKind, number>): BuildingKind | null {
     const has = (k: BuildingKind) => this.hasBuilding(bc, k);
-    if (!has("conyard")) return null;
+    if (!this.hasConstruction(bc)) return null;
     if (!has("factory") && !(this.profile === "turtle" && has("barracks"))) return null;
     if (me.lowPower || me.pwrHave - me.pwrUse < 45) return null;
     const turrets = bc.get("turret") ?? 0;

@@ -1125,6 +1125,19 @@ const TOOLS = [
     },
   },
   {
+    name: "transfer_host",
+    description:
+      "Transfer lobby host powers to another connected non-spectator human player (host only). Use the target player id from join_game/get_game_state players. The stored transfer also carries into post-game rematch lobbies.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        room: { type: "string", description: "Room ID you joined via join_game." },
+        id: { type: "string", description: "Target player id to make host." },
+      },
+      required: ["room", "id"],
+    },
+  },
+  {
     name: "get_game_state",
     description:
       "Get full RL Gym parity state (`gym_obs`) plus a real-time LLM-optimized tactical summary of the match: tick, done, winner, credits, power, awaiting placement, production queues, own buildings & units, visible enemy buildings & units, neutral Oil Derricks & Coal Mines, supply crates, nearest ore clusters, recent combat/alert events, and valid build placement coordinates. Includes map_size — dimensions vary per map.",
@@ -1433,6 +1446,43 @@ async function handleJoinGame(args) {
       session.phase === "playing"
         ? "Match is LIVE! Call get_game_state to inspect your base, credits, and valid build coordinates."
         : "Connected in lobby. Call join_game with add_bot=true and start=true (if host) or wait for opponents.",
+  };
+}
+
+async function handleTransferHost(args) {
+  const session = await ensureSessionConnected(args.room);
+  const id = typeof args.id === "string" ? args.id.trim() : "";
+  if (!id) throw new Error("transfer_host requires a non-empty target player 'id'.");
+  if (!session.host) {
+    return { ok: false, room: session.room, error: "you are not host", players: session.lobbyPlayers };
+  }
+  const target = session.lobbyPlayers.find((p) => p.id === id);
+  if (!target || target.id === session.you || !target.connected || target.spectator || target.bot) {
+    return {
+      ok: false,
+      room: session.room,
+      error: "target must be another connected non-spectator human player",
+      players: session.lobbyPlayers,
+    };
+  }
+  session.send({ t: "transferHost", id });
+  const updated = await session.waitFor((m) => m.t === "lobby", 700).catch(() => null);
+  const host = session.lobbyPlayers.find((p) => p.host);
+  if (!updated) {
+    return {
+      ok: false,
+      room: session.room,
+      error: "transfer was not acknowledged by the server",
+      host: host ? { id: host.id, name: host.name } : null,
+      players: session.lobbyPlayers,
+    };
+  }
+  return {
+    ok: true,
+    room: session.room,
+    transferred_to: { id: target.id, name: target.name },
+    host: host ? { id: host.id, name: host.name } : null,
+    players: session.lobbyPlayers,
   };
 }
 
@@ -1937,6 +1987,8 @@ async function dispatchTool(name, args = {}) {
       return handleListLiveGames(args);
     case "join_game":
       return handleJoinGame(args);
+    case "transfer_host":
+      return handleTransferHost(args);
     case "create_ai_arena":
       return handleCreateAiArena(args);
     case "get_gym_schema":

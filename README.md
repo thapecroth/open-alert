@@ -142,6 +142,21 @@ The server owns all truth: entities, economy, combat, fog. Clients send intents
 (`build`, `place`, `train`, `order`, `upgrade`, `sell`, `repair`…) and receive
 5 Hz snapshots + events.
 
+## AI build stats
+
+Point-in-time telemetry snapshot: **2026-11-24 16:03 PST** (2026-11-25 00:03 UTC). These are measured API-generation totals from Devin CLI's local `sessions.db` for the only two Devin sessions whose working directory was this repository: `animated-receipt` (the long build session) and `ordinary-hook` (the review/performance session, still active when measured). Each assistant generation is counted once by `request_id`; duplicate copies in Devin's branch tree are ignored. Input context is fresh input + cache-read input. These are per-call usage totals — resent conversation context counts again on every generation — not unique source/code tokens. Figures are rounded to 0.01M: measured, not estimated.
+
+| model (`generation_model`) | generations | fresh input | cache-read input | output | total input context |
+|---|---:|---:|---:|---:|---:|
+| `gemini-4-neon-high` | 1,726 | 24.52M | 382.04M | 2.77M | 406.56M |
+| `swe-2-max` | 3,799 | 8.86M | 372.63M | 3.19M | 381.49M |
+| `swe-2-1-max` | 1,662 | 3.92M | 169.66M | 0.93M | 173.58M |
+| `swe-2-medium` | 47 | 0.40M | 3.04M | 0.08M | 3.45M |
+| `compactor` (internal summarizer) | 17 | 1.30M | 0.00M | 0.10M | 1.30M |
+| **Total** | **7,251** | **39.01M** | **927.36M** | **7.08M** | **966.37M** |
+
+Scope notes: the rows include main-thread and subagent generations inside those two session records, including internal compaction and cache-keepalive traffic (74 keepalive calls, 16.42M input-context tokens). Eighteen unique generation records had no token-usage payload (empty or aborted calls), so the measured total is a slight lower bound. They are session totals, not per-commit attribution: git history had 119 commits at the snapshot, 54 carrying `Generated with Devin` trailers, but commit metadata does not record token use. Devin transcript JSON files carry `final_metrics` for their exported main-chain view but omit most subagent/branch usage; markdown compaction summaries contain no token metrics. Local Claude Code and Codex transcript searches found no `ra2`/`open-alert` sessions. Because `ordinary-hook` was still running, treat this as a timestamped snapshot — not a final lifetime total.
+
 ## Assets & credits
 
 - All code, models, names, and artwork are **original** — this project clones

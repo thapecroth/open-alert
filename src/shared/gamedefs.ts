@@ -112,7 +112,12 @@ export type MapId =
   | "europa"
   | "pacific_theatre"
   | "megacontinent"
-  | "arctic_front";
+  | "arctic_front"
+  // Colossal real-world theaters (192-256 class)
+  | "english_channel"
+  | "persian_gulf"
+  | "panama"
+  | "fulda_gap";
 
 export type ArtifactKind =
   | "shipwreck"
@@ -208,12 +213,12 @@ export const BUILDINGS: Record<BuildingKind, BuildingDef> = {
   superweapon: { w: 3, h: 3, cost: 2500, hp: 1100, power: -100, buildTicks: 150, requires: ["satlink"], limit: 1 },
 
   // Dedicated Parallel Defense Category (cost-efficient modern defense-tech stack!)
-  turret: { w: 1, h: 1, cost: 400, hp: 420, power: -20, buildTicks: 45, category: "defense", range: 6.5, dmg: 15, rof: 14, canHitAir: true },
-  sam: { w: 2, h: 2, cost: 420, hp: 520, power: -30, buildTicks: 45, category: "defense", range: 11.5, dmg: 36, rof: 18, canHitAir: true, canHitGround: false, requires: ["radar"] },
-  arc: { w: 1, h: 1, cost: 700, hp: 550, power: -40, buildTicks: 60, category: "defense", range: 7.5, dmg: 32, rof: 24, canHitAir: true, requires: ["radar"] },
-  irondome: { w: 2, h: 2, cost: 850, hp: 720, power: -45, buildTicks: 60, category: "defense", range: 10.5, dmg: 26, rof: 14, canHitAir: true, canHitGround: false, requires: ["radar", "techlab"], limit: 3 },
-  lasertower: { w: 2, h: 2, cost: 1350, hp: 820, power: -65, buildTicks: 80, category: "defense", range: 9.5, dmg: 68, rof: 28, canHitAir: true, requires: ["techlab"] },
-  thaad: { w: 2, h: 2, cost: 1150, hp: 780, power: -55, buildTicks: 75, category: "defense", range: 14, dmg: 54, rof: 24, canHitAir: true, canHitGround: false, requires: ["satlink"], limit: 2 },
+  turret: { w: 1, h: 1, cost: 400, hp: 490, power: -20, buildTicks: 45, category: "defense", range: 6.9, dmg: 17, rof: 13, canHitAir: true },
+  sam: { w: 2, h: 2, cost: 420, hp: 590, power: -30, buildTicks: 45, category: "defense", range: 12, dmg: 42, rof: 17, canHitAir: true, canHitGround: false, requires: ["radar"] },
+  arc: { w: 1, h: 1, cost: 700, hp: 620, power: -40, buildTicks: 60, category: "defense", range: 7.9, dmg: 37, rof: 22, canHitAir: true, requires: ["radar"] },
+  irondome: { w: 2, h: 2, cost: 850, hp: 820, power: -45, buildTicks: 60, category: "defense", range: 11, dmg: 30, rof: 13, canHitAir: true, canHitGround: false, requires: ["radar", "techlab"], limit: 3 },
+  lasertower: { w: 2, h: 2, cost: 1350, hp: 940, power: -65, buildTicks: 80, category: "defense", range: 10, dmg: 79, rof: 26, canHitAir: true, requires: ["techlab"] },
+  thaad: { w: 2, h: 2, cost: 1150, hp: 890, power: -55, buildTicks: 75, category: "defense", range: 14.5, dmg: 63, rof: 22, canHitAir: true, canHitGround: false, requires: ["satlink"], limit: 2 },
 
   // Neutral Captureable Resource Landmarks
   derrick: { w: 2, h: 2, cost: 0, hp: 850, power: 0, buildTicks: 0, noBuild: true },
@@ -354,7 +359,7 @@ export const UNITS: Record<UnitKind, UnitDef> = {
   uav: { hp: 130, speed: 0.30, range: 6.5, dmg: 18, rof: 16, cost: 550, buildTicks: 50, trainsAt: "airfield", domain: "air", canHitAir: true, vision: 13 },
   shahed: { hp: 95, speed: 0.28, range: 1.65, dmg: 210, rof: 10, cost: 110, buildTicks: 24, trainsAt: "airfield", domain: "air", kamikaze: true, vision: 9 },
   ewdrone: { hp: 185, speed: 0.24, range: 0, dmg: 0, rof: 0, cost: 280, buildTicks: 40, trainsAt: "airfield", domain: "air", ewJamRadius: 8.5, vision: 12, requires: "radar" },
-  interceptor: { hp: 190, speed: 0.34, range: 6.5, dmg: 26, rof: 18, cost: 750, buildTicks: 55, trainsAt: "airfield", domain: "air", canHitAir: true },
+  interceptor: { hp: 230, speed: 0.38, range: 8, dmg: 30, rof: 14, cost: 750, buildTicks: 55, trainsAt: "airfield", domain: "air", canHitAir: true },
   chopper: { hp: 310, speed: 0.22, range: 6, dmg: 22, rof: 14, cost: 1000, buildTicks: 70, trainsAt: "airfield", domain: "air", canHitAir: true },
   a10: { hp: 460, speed: 0.27, range: 6.8, dmg: 22, rof: 6, cost: 950, buildTicks: 70, trainsAt: "airfield", domain: "air", canHitAir: true, requires: "radar" },
   ac130: { hp: 980, speed: 0.14, range: 8.8, dmg: 74, rof: 20, cost: 2100, buildTicks: 110, trainsAt: "airfield", domain: "air", vision: 13, requires: "airfield2" },
@@ -436,7 +441,7 @@ export const ARMOR_MULTS: Partial<Record<EntKind, readonly ArmorMultRule[]>> = {
   thaad: [{ kinds: ["stealthbomber", "ac130", "hypersonic", "a10", "interceptor"], mult: 1.5 }],
   uav: [{ classes: ["lightUnit"], mult: 1.25 }],
   sub: [{ classes: ["seaShip"], mult: 1.45 }],
-  interceptor: [{ classes: ["air"], mult: 1.4 }],
+  interceptor: [{ classes: ["air"], mult: 1.5 }],
   bomber: [{ classes: ["building"], mult: 1.3 }],
   stealthbomber: [{ classes: ["building"], mult: 1.3 }],
   himars: [{ classes: ["building"], mult: 1.3 }],
@@ -444,7 +449,7 @@ export const ARMOR_MULTS: Partial<Record<EntKind, readonly ArmorMultRule[]>> = {
   dreadnought: [{ classes: ["building"], mult: 1.3 }],
   hypersonic: [{ classes: ["building", "seaShip"], mult: 1.5 }],
   ballistic: [{ classes: ["building", "seaShip"], mult: 1.4 }],
-  a10: [{ kinds: ANTI_ARMOR_TARGETS, mult: 1.5 }],
+  a10: [{ kinds: ANTI_ARMOR_TARGETS, mult: 1.5 }, { classes: ["air"], mult: 0.5 }],
   ac130: [{ classes: ["infantry", "vehicle", "building"], mult: 1.3 }],
   gunboat: [{ classes: ["air"], mult: 1.35 }],
   destroyer: [{ classes: ["air"], mult: 1.35 }],
@@ -707,6 +712,10 @@ export const MAP_LIST: {
   { id: "pacific_theatre", name: "Coral Sea Theatre (96×96 · 8P)", biome: "Grand Ocean", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Massive 96×96 8-player naval archipelago with central carrier atoll & sea lanes" },
   { id: "arctic_front", name: "Polar Sea Front (96×96 · 8P)", biome: "Polar War", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Huge 96×96 frozen sea channels, icebreaker passages & contested polar fuel hubs" },
   { id: "megacontinent", name: "Eurasia Supertheater (128×128 · 8P)", biome: "Grand Theater", w: 128, h: 128, maxPlayers: 8, naval: true, desc: "Colossal 128×128 (4× area) 8-player super-map — twin continents, sea strait & real supply logistics!" },
+  { id: "english_channel", name: "English Channel (256×192 · 8P)", biome: "Grand Theater", w: 256, h: 192, maxPlayers: 8, naval: true, desc: "Colossal cross-channel invasion theater — Britain vs France across a true blue-water channel. Dover chokepoint causeways & open North Sea lanes!" },
+  { id: "persian_gulf", name: "Persian Gulf (224×224 · 8P)", biome: "Grand Theater", w: 224, h: 224, maxPlayers: 8, naval: true, desc: "Colossal gulf theater — Iran vs Arabia across wide open water, tanker lanes & the Hormuz chokepoint. True blue-water naval warfare!" },
+  { id: "panama", name: "Panama Isthmus (224×192 · 8P)", biome: "Grand Theater", w: 224, h: 192, maxPlayers: 8, naval: true, desc: "Colossal two-ocean theater — the canal cut links Atlantic & Pacific through the contested isthmus crossing!" },
+  { id: "fulda_gap", name: "Fulda Gap (192×192 · 8P)", biome: "Grand Theater", w: 192, h: 192, maxPlayers: 8, naval: false, desc: "Colossal armored land war — ridge corridors, pass chokepoints & rolling open ground. The Cold War tank battlefield at grand scale!" },
 ];
 
 export interface MapLayout {
@@ -722,10 +731,33 @@ export interface MapLayout {
 
 const mapCache = new Map<MapId, MapLayout>();
 
-// The huge theaters (96x96 & 128x128) are painted natively at their listed size.
-// Every other map branch below is authored on the classic 64x64 design grid and
-// gets upscaled uniformly to its real dimensions (s = W/64 → 1.5 for 96x96).
-const NATIVE_LAYOUT = new Set<MapId>(["bering", "europa", "pacific_theatre", "arctic_front", "megacontinent"]);
+// Dev/test hook: skip the sea-connectivity canal pass (canal carving is adversarial
+// with authored causeways — this lets map tooling inspect raw authored topology).
+export const MAP_DEBUG = { noCanalPass: false };
+
+// The huge theaters (96x96 & 128x128) plus every oceanic rework are painted natively
+// at their listed size. The remaining classic land maps are authored on the 64x64
+// design grid and get upscaled uniformly to their real dimensions (s = W/64 → 1.5 for 96x96).
+const NATIVE_LAYOUT = new Set<MapId>([
+  "bering",
+  "europa",
+  "pacific_theatre",
+  "arctic_front",
+  "megacontinent",
+  "islands",
+  "archipelago",
+  "coastline",
+  "atlantis",
+  "shipwreck",
+  "volcano",
+  "oilrig",
+  "hormuz",
+  "delta",
+  "english_channel",
+  "persian_gulf",
+  "panama",
+  "fulda_gap",
+]);
 
 export function getMapLayout(id: MapId = "crossroads"): MapLayout {
   const cached = mapCache.get(id);
@@ -760,6 +792,116 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     addRectRaw(set, Math.round(x0 * sx), Math.round(y0 * sy), Math.max(1, Math.round(w * sx)), Math.max(1, Math.round(h * sy)));
   const clearRect = (set: Set<number>, x0: number, y0: number, w: number, h: number) =>
     clearRectRaw(set, Math.round(x0 * sx), Math.round(y0 * sy), Math.max(1, Math.round(w * sx)), Math.max(1, Math.round(h * sy)));
+
+  // ---------- procedural coastline helpers (REAL map coords, deterministic across server & client) ----------
+  // Seeded PRNG (mulberry32) — layout generation must be bit-identical in every
+  // process because the client renders terrain straight from getMapLayout().
+  const seededRng = (seed: number) => {
+    let a = seed >>> 0;
+    return () => {
+      a |= 0;
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  };
+  // Even-odd scanline polygon fill. `pts` is a closed ring in real coords.
+  const paintPoly = (set: Set<number>, pts: readonly (readonly [number, number])[], fill: boolean) => {
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    for (const [x, y] of pts) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+    const x0 = Math.max(0, Math.floor(minX)),
+      x1 = Math.min(W - 1, Math.ceil(maxX));
+    const y0 = Math.max(0, Math.floor(minY)),
+      y1 = Math.min(H - 1, Math.ceil(maxY));
+    for (let y = y0; y <= y1; y++) {
+      // gather edge crossings for this row's tile-center scanline
+      const py = y + 0.5;
+      const xs: number[] = [];
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const [ax, ay] = pts[j],
+          [bx, by] = pts[i];
+        if (ay <= py === by <= py) continue;
+        xs.push(ax + ((py - ay) / (by - ay)) * (bx - ax));
+      }
+      xs.sort((p, q) => p - q);
+      for (let k = 0; k + 1 < xs.length; k += 2) {
+        const xa = Math.max(x0, Math.floor(xs[k])),
+          xb = Math.min(x1, Math.ceil(xs[k + 1]) - 1);
+        for (let x = xa; x <= xb; x++) {
+          if (x + 0.5 < xs[k] || x + 0.5 > xs[k + 1]) continue;
+          if (fill) set.add(y * W + x);
+          else set.delete(y * W + x);
+        }
+      }
+    }
+  };
+  // Chaikin corner-cutting — smooths a coarse ring/open polyline into organic coastline.
+  const chaikin = (pts: readonly (readonly [number, number])[], closed: boolean, iterations = 2): [number, number][] => {
+    let cur: [number, number][] = pts.map(([x, y]) => [x, y]);
+    for (let it = 0; it < iterations; it++) {
+      const next: [number, number][] = [];
+      const n = cur.length;
+      const seg = closed ? n : n - 1;
+      if (!closed) next.push(cur[0]);
+      for (let i = 0; i < seg; i++) {
+        const [ax, ay] = cur[i],
+          [bx, by] = cur[(i + 1) % n];
+        next.push([ax * 0.75 + bx * 0.25, ay * 0.75 + by * 0.25]);
+        next.push([ax * 0.25 + bx * 0.75, ay * 0.25 + by * 0.75]);
+      }
+      if (!closed) next.push(cur[n - 1]);
+      cur = next;
+    }
+    return cur;
+  };
+  // Organic island/continent outline: ellipse ring modulated by seeded low-frequency
+  // harmonics (harmonics 2-5, so the mass stays centered), then Chaikin-smoothed.
+  const noiseRing = (cx0: number, cy0: number, rx: number, ry: number, seed: number, rough = 0.22, n = 26): [number, number][] => {
+    const rnd = seededRng(seed);
+    const harmonics: { h: number; a: number; p: number }[] = [];
+    for (const h of [2, 3, 4, 5]) harmonics.push({ h, a: (rnd() - 0.35) * (rough / (h - 1)), p: rnd() * Math.PI * 2 });
+    const pts: [number, number][] = [];
+    for (let i = 0; i < n; i++) {
+      const t = (i / n) * Math.PI * 2;
+      let m = 1;
+      for (const { h, a, p } of harmonics) m += a * Math.sin(t * h + p);
+      pts.push([cx0 + Math.cos(t) * rx * m, cy0 + Math.sin(t) * ry * m]);
+    }
+    return chaikin(pts, true, 1);
+  };
+  // Stamp a wide soft-edged stroke along a polyline (causeways, rivers, canals).
+  const paintLine = (set: Set<number>, pts: readonly (readonly [number, number])[], width: number, fill: boolean) => {
+    const r = width / 2;
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const [ax, ay] = pts[i],
+        [bx, by] = pts[i + 1];
+      const len = Math.hypot(bx - ax, by - ay);
+      const steps = Math.max(1, Math.ceil(len * 2));
+      for (let s = 0; s <= steps; s++) {
+        const cx0 = ax + ((bx - ax) * s) / steps,
+          cy0 = ay + ((by - ay) * s) / steps;
+        const ri = Math.ceil(r);
+        for (let dy = -ri; dy <= ri; dy++)
+          for (let dx = -ri; dx <= ri; dx++) {
+            if (Math.hypot(dx, dy) > r) continue;
+            const x = Math.round(cx0 + dx),
+              y = Math.round(cy0 + dy);
+            if (x < 0 || y < 0 || x >= W || y >= H) continue;
+            if (fill) set.add(y * W + x);
+            else set.delete(y * W + x);
+          }
+      }
+    }
+  };
   let derricks: [number, number][] = [];
   let coalmines: [number, number][] | undefined;
   let extraOre: [number, number, number][] | undefined;
@@ -863,275 +1005,388 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [44, 32, 3],
     ];
   } else if (id === "islands") {
-    addRect(waterSet, 26, 0, 12, 12);
-    addRect(waterSet, 26, 17, 12, 9);
-    addRect(waterSet, 26, 38, 12, 9);
-    addRect(waterSet, 26, 52, 12, 12);
-    addRect(waterSet, 0, 26, 12, 12);
-    addRect(waterSet, 17, 26, 9, 12);
-    addRect(waterSet, 38, 26, 9, 12);
-    addRect(waterSet, 52, 26, 12, 12);
-    clearRect(waterSet, 30, 17, 4, 9);
-    clearRect(waterSet, 30, 38, 4, 9);
-    clearRect(waterSet, 17, 30, 9, 4);
-    clearRect(waterSet, 38, 30, 9, 4);
-    addRect(waterSet, 13, 0, 13, 6);
-    addRect(waterSet, 38, 0, 13, 6);
-    addRect(waterSet, 13, 58, 13, 6);
-    addRect(waterSet, 38, 58, 13, 6);
+    // Bridgehead Crossing (native 96x96): four riverland continents in open water,
+    // parted by wide navigable channels that wrap every coastline. Narrow stone
+    // causeways link the quadrants; offshore islets beg for engineer pontoon bridges.
+    addRectRaw(waterSet, 0, 0, W, H);
+    const quads: [number, number, number, number, number][] = [
+      [22, 22, 19, 17, 701], // NW continent (spawns 0 + parts of 4/6)
+      [74, 74, 19, 17, 702], // SE continent (spawn 1)
+      [74, 22, 18, 16, 703], // NE continent (spawn 2)
+      [22, 74, 18, 16, 704], // SW continent (spawn 3)
+    ];
+    for (const [qx, qy, rx, ry, seed] of quads) paintPoly(waterSet, noiseRing(qx, qy, rx, ry, seed, 0.16), false);
+    // mid-edge shelf islands for the N/S/E/W perimeter spawns
+    paintPoly(waterSet, noiseRing(48, 11, 11, 8, 705, 0.15), false);
+    paintPoly(waterSet, noiseRing(48, 85, 11, 8, 706, 0.15), false);
+    paintPoly(waterSet, noiseRing(11, 48, 8, 11, 707, 0.15), false);
+    paintPoly(waterSet, noiseRing(85, 48, 8, 11, 708, 0.15), false);
+    // stone causeways linking shelves to their neighboring continents (tree, no loops)
+    paintLine(waterSet, chaikin([[41, 12], [44, 14], [46, 16]], false, 1), 3.4, false); // NW-N shelf
+    paintLine(waterSet, chaikin([[57, 14], [60, 15], [63, 17]], false, 1), 3.4, false); // N shelf-NE
+    paintLine(waterSet, chaikin([[14, 41], [16, 44], [17, 47]], false, 1), 3.4, false); // NW-W shelf
+    paintLine(waterSet, chaikin([[15, 57], [16, 60], [18, 63]], false, 1), 3.4, false); // W shelf-SW
+    paintLine(waterSet, chaikin([[82, 41], [81, 44], [80, 47]], false, 1), 3.4, false); // NE-E shelf
+    paintLine(waterSet, chaikin([[81, 57], [80, 60], [78, 63]], false, 1), 3.4, false); // E shelf-SE
+    paintLine(waterSet, chaikin([[41, 84], [44, 82], [46, 79]], false, 1), 3.4, false); // SW-S shelf
+    paintLine(waterSet, chaikin([[57, 82], [60, 81], [63, 79]], false, 1), 3.4, false); // S shelf-SE
+    // grand central crossings — the two bridgehead isthmuses the map is named for
+    paintLine(waterSet, chaikin([[38, 42], [44, 46], [52, 50], [58, 54]], false, 2), 4, false); // NW-SE diagonal
+    paintLine(waterSet, chaikin([[58, 42], [52, 46], [44, 50], [38, 54]], false, 2), 4, false); // NE-SW diagonal
+    addRectRaw(waterSet, 20, 44, 10, 8);
+    addRectRaw(waterSet, 66, 44, 10, 8);
+    addRectRaw(waterSet, 42, 0, 12, 8);
+    addRectRaw(waterSet, 42, 88, 12, 8);
+    addRectRaw(waterSet, 0, 42, 8, 12);
+    addRectRaw(waterSet, 88, 42, 8, 12);
+    // widen the sea lanes: deep channel cuts through the cross strait
+    paintLine(waterSet, chaikin([[48, 20], [48, 40], [48, 60], [48, 78]], false, 2), 7, true);
+    paintLine(waterSet, chaikin([[16, 48], [36, 47], [60, 49], [82, 48]], false, 2), 6.5, true);
+    // small offshore bridgeable islets (contested ore & forward posts)
+    paintPoly(waterSet, noiseRing(48, 48, 5, 4.5, 709, 0.14), false);
+    paintPoly(waterSet, noiseRing(25, 48, 3.5, 3, 710, 0.14), false);
+    paintPoly(waterSet, noiseRing(71, 48, 3.5, 3, 711, 0.14), false);
     derricks = [
-      [21, 21],
-      [41, 41],
+      [48, 30],
+      [48, 64],
+      [24, 24],
+      [70, 70],
     ];
     coalmines = [
-      [41, 21],
-      [21, 41],
+      [30, 48],
+      [64, 48],
     ];
     extraOre = [
-      [14, 21, 2],
-      [48, 42, 2],
+      [48, 48, 3],
+      [24, 72, 3],
+      [72, 24, 3],
     ];
     artifacts = [
-      { kind: "lighthouse", x: 25, y: 12, scale: 1.0 },
-      { kind: "lighthouse", x: 39, y: 52, scale: 1.0 },
-      { kind: "buoy", x: 32, y: 6 },
-      { kind: "buoy", x: 32, y: 58 },
-      { kind: "buoy", x: 6, y: 32 },
-      { kind: "buoy", x: 58, y: 32 },
+      { kind: "lighthouse", x: 47, y: 12, scale: 1.0 },
+      { kind: "lighthouse", x: 47, y: 84, scale: 1.0 },
+      { kind: "buoy", x: 48, y: 40 },
+      { kind: "buoy", x: 48, y: 58 },
+      { kind: "buoy", x: 30, y: 48 },
+      { kind: "buoy", x: 66, y: 48 },
+      { kind: "seastack", x: 64, y: 14, scale: 1.1 },
+      { kind: "seastack", x: 32, y: 82, scale: 1.1 },
     ];
   } else if (id === "archipelago") {
-    addRect(waterSet, 0, 0, MAP_W, MAP_H);
-    clearRect(waterSet, 0, 0, 18, 18);
-    clearRect(waterSet, 46, 0, 18, 18);
-    clearRect(waterSet, 0, 46, 18, 18);
-    clearRect(waterSet, 46, 46, 18, 18);
-    clearRect(waterSet, 25, 25, 14, 14);
-    clearRect(waterSet, 30, 14, 4, 12);
-    clearRect(waterSet, 30, 38, 4, 12);
-    clearRect(waterSet, 14, 30, 12, 4);
-    clearRect(waterSet, 38, 30, 12, 4);
-    clearRect(waterSet, 13, 17, 4, 14);
-    clearRect(waterSet, 47, 17, 4, 14);
-    clearRect(waterSet, 13, 33, 4, 14);
-    clearRect(waterSet, 47, 33, 4, 14);
-    clearRect(waterSet, 29, 7, 6, 7);
-    clearRect(waterSet, 29, 50, 6, 7);
-    clearRect(waterSet, 7, 29, 7, 6);
-    clearRect(waterSet, 50, 29, 7, 6);
-    addRect(cliffSet, 26, 26, 2, 2);
-    addRect(cliffSet, 36, 26, 2, 2);
-    addRect(cliffSet, 26, 36, 2, 2);
-    addRect(cliffSet, 36, 36, 2, 2);
+    // Pacific Atoll (native 96x96): a genuine ocean — 8 volcanic spawn islands rising
+    // from open water, linked by a ring of narrow coral causeways around a central
+    // lagoon atoll. Wide blue-water lanes dominate the middle of the map.
+    addRectRaw(waterSet, 0, 0, W, H);
+    // 8 organic spawn islands — INTERIOR (narrow navigable channels run along every
+    // map edge, so the sea is one continuous body wrapping the whole theater)
+    const isleCenters: [number, number, number][] = [
+      [10.5, 10.5, 8.5], // NW corner spawn 0
+      [85.5, 85.5, 8.5], // SE corner spawn 1
+      [85.5, 10.5, 8.5], // NE corner spawn 2
+      [10.5, 85.5, 8.5], // SW corner spawn 3
+      [48, 10.5, 9], // N mid spawn 4
+      [48, 85.5, 9], // S mid spawn 5
+      [10.5, 48, 9], // W mid spawn 6
+      [85.5, 48, 9], // E mid spawn 7
+    ];
+    isleCenters.forEach(([ix, iy, r], i) => {
+      paintPoly(waterSet, noiseRing(ix, iy, r + 1, r, 101 + i * 37, 0.16), false);
+    });
+    // Central volcanic atoll — ring island with a lagoon open to the sea on the NW
+    paintPoly(waterSet, noiseRing(48, 48, 13, 12, 501, 0.16), false);
+    paintPoly(waterSet, noiseRing(48, 48, 6.5, 6, 502, 0.1), true);
+    paintLine(waterSet, chaikin([[33, 35], [39, 40], [44, 44], [49, 47]], false, 2), 7, true); // lagoon mouth reaches open sea
+    // contested resource islets out in the blue water
+    paintPoly(waterSet, noiseRing(25, 25, 5.5, 5, 601, 0.18), false);
+    paintPoly(waterSet, noiseRing(71, 71, 5.5, 5, 602, 0.18), false);
+    paintPoly(waterSet, noiseRing(25, 71, 4.5, 4, 603, 0.18), false);
+    paintPoly(waterSet, noiseRing(71, 25, 4.5, 4, 604, 0.18), false);
+    // Coral causeway chain hopping the perimeter islands NW-N-NE-E-SE-S-SW-W — an
+    // UNCLOSED chain floating in the interior: a tree never encloses the sea, so land
+    // armies and battle fleets both stay fully connected. One spoke ties the central
+    // atoll into the chain as the contested king-of-the-hill.
+    const chain: [number, number][][] = [
+      [[18, 10], [30, 9], [40, 10]], // NW -> N
+      [[56, 10], [70, 9], [78, 10]], // N -> NE
+      [[86, 18], [87, 30], [86, 40]], // NE -> E
+      [[86, 56], [87, 70], [86, 78]], // E -> SE
+      [[78, 86], [66, 87], [56, 86]], // SE -> S
+      [[40, 86], [28, 87], [18, 86]], // S -> SW
+      [[10, 78], [9, 66], [10, 56]], // SW -> W
+      [[48, 19], [48, 28], [48, 38]], // N -> atoll hub (single spoke)
+    ];
+    for (const leg of chain) paintLine(waterSet, chaikin(leg, false, 2), 3.2, false);
+    // Volcanic cliff peaks on the atoll rim
+    addRectRaw(cliffSet, 41, 40, 2, 2);
+    addRectRaw(cliffSet, 54, 40, 2, 2);
+    addRectRaw(cliffSet, 41, 54, 2, 2);
+    addRectRaw(cliffSet, 54, 54, 2, 2);
     derricks = [
-      [31, 9],
-      [31, 53],
+      [47, 41],
+      [47, 53],
+      [24, 24],
+      [70, 70],
     ];
     coalmines = [
-      [9, 31],
-      [53, 31],
+      [41, 47],
+      [54, 47],
     ];
-    extraOre = [[32, 32, 4]];
+    extraOre = [
+      [48, 48, 4],
+      [24, 72, 3],
+      [72, 24, 3],
+    ];
     artifacts = [
-      { kind: "seastack", x: 22, y: 12, scale: 1.2 },
-      { kind: "seastack", x: 42, y: 52, scale: 1.2 },
-      { kind: "shipwreck", x: 42, y: 14, rot: 0.7, scale: 1.0 },
-      { kind: "shipwreck", x: 22, y: 50, rot: -2.2, scale: 1.0 },
-      { kind: "lighthouse", x: 17, y: 17, scale: 0.95 },
-      { kind: "lighthouse", x: 47, y: 47, scale: 0.95 },
-      { kind: "buoy", x: 24, y: 20 },
-      { kind: "buoy", x: 40, y: 44 },
+      { kind: "seastack", x: 30, y: 30, scale: 1.2 },
+      { kind: "seastack", x: 66, y: 66, scale: 1.2 },
+      { kind: "shipwreck", x: 66, y: 22, rot: 0.7, scale: 1.0 },
+      { kind: "shipwreck", x: 30, y: 74, rot: -2.2, scale: 1.0 },
+      { kind: "lighthouse", x: 15, y: 15, scale: 0.95 },
+      { kind: "lighthouse", x: 81, y: 81, scale: 0.95 },
+      { kind: "buoy", x: 48, y: 30 },
+      { kind: "buoy", x: 48, y: 66 },
+      { kind: "buoy", x: 30, y: 48 },
+      { kind: "buoy", x: 66, y: 48 },
     ];
   } else if (id === "coastline") {
-    addRect(waterSet, 23, 0, 18, MAP_H);
-    clearRect(waterSet, 23, 12, 18, 5);
-    clearRect(waterSet, 23, 29, 18, 6);
-    clearRect(waterSet, 23, 47, 18, 5);
-    addRect(waterSet, 14, 0, 9, 8);
-    addRect(waterSet, 41, 0, 9, 8);
-    addRect(waterSet, 14, 56, 9, 8);
-    addRect(waterSet, 41, 56, 9, 8);
-    addRect(cliffSet, 18, 22, 3, 5);
-    addRect(cliffSet, 43, 22, 3, 5);
-    addRect(cliffSet, 18, 37, 3, 5);
-    addRect(cliffSet, 43, 37, 3, 5);
+    // Storm Coast (native 96x96): twin continents on the west & east seaboards with a
+    // wide open strait between — the sea wraps the northern cape while a narrow
+    // causeway crosses at the southern chokepoint. Classic contested-shore naval war.
+    addRectRaw(waterSet, 0, 0, W, H);
+    paintPoly(waterSet, noiseRing(20, 48, 15, 43, 801, 0.12), false); // west continent (spawns 0,3,6)
+    paintPoly(waterSet, noiseRing(76, 48, 15, 43, 802, 0.12), false); // east continent (spawns 1,2,7)
+    paintPoly(waterSet, noiseRing(48, 12, 13, 9, 803, 0.15), false); // north cape isle (spawn 4)
+    paintPoly(waterSet, noiseRing(48, 84, 13, 9, 804, 0.15), false); // south cape isle (spawn 5)
+    addRectRaw(waterSet, 34, 20, 28, 8);
+    addRectRaw(waterSet, 34, 68, 28, 8);
+    addRectRaw(waterSet, 38, 42, 20, 12);
+    // causeways: capes into the continents + the southern chokepoint crossing
+    paintLine(waterSet, chaikin([[38, 16], [33, 22], [29, 28]], false, 1), 3.4, false);
+    paintLine(waterSet, chaikin([[58, 16], [63, 22], [67, 28]], false, 1), 3.4, false);
+    paintLine(waterSet, chaikin([[38, 80], [33, 74], [29, 68]], false, 1), 3.4, false);
+    paintLine(waterSet, chaikin([[58, 80], [63, 74], [67, 68]], false, 1), 3.4, false);
+    paintLine(waterSet, chaikin([[33, 86], [41, 85], [55, 85], [63, 86]], false, 2), 3.6, false); // south strait crossing
+    // cliffs on both headlands
+    addRectRaw(cliffSet, 22, 40, 3, 5);
+    addRectRaw(cliffSet, 71, 52, 3, 5);
     derricks = [
-      [31, 13],
-      [31, 48],
+      [47, 12],
+      [47, 82],
     ];
     coalmines = [
-      [10, 31],
-      [52, 31],
+      [18, 22],
+      [76, 72],
     ];
     extraOre = [
-      [15, 32, 3],
-      [48, 32, 3],
+      [22, 56, 3],
+      [74, 40, 3],
+      [48, 48, 2],
     ];
     artifacts = [
-      { kind: "lighthouse", x: 22, y: 12, scale: 1.05 },
-      { kind: "lighthouse", x: 42, y: 52, scale: 1.05 },
-      { kind: "shipwreck", x: 32, y: 22, rot: 0.35, scale: 1.1 },
-      { kind: "shipwreck", x: 32, y: 41, rot: -2.6, scale: 1.1 },
-      { kind: "buoy", x: 28, y: 5 },
-      { kind: "buoy", x: 36, y: 59 },
+      { kind: "lighthouse", x: 35, y: 14, scale: 1.05 },
+      { kind: "lighthouse", x: 61, y: 82, scale: 1.05 },
+      { kind: "shipwreck", x: 48, y: 30, rot: 0.35, scale: 1.1 },
+      { kind: "shipwreck", x: 48, y: 64, rot: -2.6, scale: 1.1 },
+      { kind: "buoy", x: 44, y: 22 },
+      { kind: "buoy", x: 52, y: 74 },
     ];
+
   } else if (id === "atlantis") {
-    addRect(waterSet, 0, 0, MAP_W, MAP_H);
-    clearRect(waterSet, 0, 0, 19, 19);
-    clearRect(waterSet, 45, 0, 19, 19);
-    clearRect(waterSet, 0, 45, 19, 19);
-    clearRect(waterSet, 45, 45, 19, 19);
-    clearRect(waterSet, 24, 24, 16, 16);
-    clearRect(waterSet, 19, 29, 6, 6);
-    clearRect(waterSet, 39, 29, 6, 6);
-    clearRect(waterSet, 29, 19, 6, 6);
-    clearRect(waterSet, 29, 39, 6, 6);
-    clearRect(waterSet, 14, 19, 5, 12);
-    clearRect(waterSet, 45, 33, 5, 12);
-    clearRect(waterSet, 45, 19, 5, 12);
-    clearRect(waterSet, 14, 33, 5, 12);
-    addRect(cliffSet, 25, 25, 2, 2);
-    addRect(cliffSet, 37, 25, 2, 2);
-    addRect(cliffSet, 25, 37, 2, 2);
-    addRect(cliffSet, 37, 37, 2, 2);
+    // Sunken Atlantis (native 96x96): a drowned kingdom — golden causeway lattice over
+    // deep mythic waters, crystal obelisks on interior isles, one connected shining sea.
+    addRectRaw(waterSet, 0, 0, W, H);
+    const ailes: [number, number, number][] = [
+      [11, 11, 9.5], [85, 85, 9.5], [85, 11, 9.5], [11, 85, 9.5],
+      [48, 11, 10], [48, 85, 10], [11, 48, 10], [85, 48, 10],
+    ];
+    ailes.forEach(([ix, iy, r], i) => paintPoly(waterSet, noiseRing(ix, iy, r, r - 1, 811 + i * 13, 0.14), false));
+    // central sunken citadel
+    paintPoly(waterSet, noiseRing(48, 48, 11, 10, 819, 0.12), false);
+    // golden causeways: grand diagonal avenues + cardinal boulevards (tree+spokes, sea flows free)
+    const aves: [number, number][][] = [
+      [[16, 16], [28, 28], [40, 40]],
+      [[80, 80], [68, 68], [56, 56]],
+      [[80, 16], [68, 28], [56, 40]],
+      [[16, 80], [28, 68], [40, 56]],
+      [[48, 17], [48, 28], [48, 37]],
+      [[48, 79], [48, 68], [48, 59]],
+      [[17, 48], [28, 48], [36, 48]],
+      [[79, 48], [68, 48], [60, 48]],
+    ];
+    for (const a of aves) paintLine(waterSet, chaikin(a, false, 2), 3.4, false);
+    addRectRaw(cliffSet, 44, 44, 2, 2);
+    addRectRaw(cliffSet, 51, 44, 2, 2);
+    addRectRaw(cliffSet, 44, 51, 2, 2);
+    addRectRaw(cliffSet, 51, 51, 2, 2);
     derricks = [
-      [28, 28],
-      [34, 34],
+      [46, 46],
+      [24, 24],
+      [70, 70],
     ];
     coalmines = [
-      [21, 31],
-      [41, 31],
+      [24, 70],
+      [70, 24],
     ];
     extraOre = [
-      [32, 32, 3],
-      [32, 21, 2],
-      [32, 43, 2],
+      [48, 48, 3],
+      [48, 24, 2],
+      [48, 72, 2],
     ];
     artifacts = [
-      { kind: "seagate", x: 32, y: 10, rot: 0, scale: 1.35 },
-      { kind: "seagate", x: 32, y: 54, rot: 0, scale: 1.35 },
-      { kind: "seagate", x: 7, y: 32, rot: Math.PI / 2, scale: 1.25 },
-      { kind: "seagate", x: 57, y: 32, rot: Math.PI / 2, scale: 1.25 },
-      { kind: "obelisk", x: 26, y: 26, scale: 1.2 },
-      { kind: "obelisk", x: 38, y: 26, scale: 1.2 },
-      { kind: "obelisk", x: 26, y: 38, scale: 1.2 },
-      { kind: "obelisk", x: 38, y: 38, scale: 1.2 },
-      { kind: "obelisk", x: 22, y: 12, scale: 1.0 },
-      { kind: "obelisk", x: 42, y: 52, scale: 1.0 },
+      { kind: "seagate", x: 48, y: 24, rot: 0, scale: 1.35 },
+      { kind: "seagate", x: 48, y: 72, rot: 0, scale: 1.35 },
+      { kind: "seagate", x: 24, y: 48, rot: Math.PI / 2, scale: 1.25 },
+      { kind: "seagate", x: 72, y: 48, rot: Math.PI / 2, scale: 1.25 },
+      { kind: "obelisk", x: 44, y: 42, scale: 1.2 },
+      { kind: "obelisk", x: 52, y: 54, scale: 1.2 },
+      { kind: "obelisk", x: 30, y: 30, scale: 1.0 },
+      { kind: "obelisk", x: 66, y: 66, scale: 1.0 },
     ];
+
   } else if (id === "shipwreck") {
-    addRect(waterSet, 0, 0, MAP_W, MAP_H);
-    clearRect(waterSet, 0, 0, 18, 18);
-    clearRect(waterSet, 46, 0, 18, 18);
-    clearRect(waterSet, 0, 46, 18, 18);
-    clearRect(waterSet, 46, 46, 18, 18);
-    clearRect(waterSet, 25, 25, 14, 14);
-    clearRect(waterSet, 15, 29, 34, 6);
-    clearRect(waterSet, 29, 15, 6, 34);
-    clearRect(waterSet, 14, 17, 4, 14);
-    clearRect(waterSet, 46, 17, 4, 14);
-    clearRect(waterSet, 14, 33, 4, 14);
-    clearRect(waterSet, 46, 33, 4, 14);
-    addRect(cliffSet, 22, 20, 3, 2);
-    addRect(cliffSet, 39, 42, 3, 2);
-    addRect(cliffSet, 39, 20, 3, 2);
-    addRect(cliffSet, 22, 42, 3, 2);
+    // Titan Graveyard (native 96x96): open abyssal water littered with colossal wrecks,
+    // interior spawn isles chained by coral shoals around the central graveyard reef.
+    addRectRaw(waterSet, 0, 0, W, H);
+    const siles: [number, number, number][] = [
+      [11, 11, 9], [85, 85, 9], [85, 11, 9], [11, 85, 9],
+      [48, 11, 9.5], [48, 85, 9.5], [11, 48, 9.5], [85, 48, 9.5],
+    ];
+    siles.forEach(([ix, iy, r], i) => paintPoly(waterSet, noiseRing(ix, iy, r + 0.5, r, 821 + i * 17, 0.17), false));
+    // central graveyard shoal
+    paintPoly(waterSet, noiseRing(48, 48, 12, 11, 829, 0.15), false);
+    // shoal causeway chain (unclosed) + single spoke into the graveyard
+    const schain: [number, number][][] = [
+      [[18, 12], [30, 10], [39, 11]],
+      [[57, 11], [68, 10], [77, 12]],
+      [[85, 18], [86, 30], [86, 39]],
+      [[86, 57], [86, 68], [85, 77]],
+      [[78, 85], [66, 86], [57, 85]],
+      [[39, 85], [28, 86], [18, 84]],
+      [[11, 77], [10, 66], [11, 57]],
+      [[48, 20], [48, 30], [48, 37]],
+    ];
+    for (const leg of schain) paintLine(waterSet, chaikin(leg, false, 2), 3.2, false);
+    addRectRaw(cliffSet, 43, 42, 3, 2);
+    addRectRaw(cliffSet, 52, 53, 3, 2);
     derricks = [
-      [18, 31],
-      [44, 31],
+      [45, 43],
+      [45, 53],
+      [24, 24],
+      [70, 70],
     ];
     coalmines = [
-      [31, 18],
-      [31, 44],
+      [42, 48],
+      [54, 48],
     ];
     extraOre = [
-      [32, 32, 4],
-      [21, 32, 2],
-      [43, 32, 2],
+      [48, 48, 3],
+      [25, 70, 2],
+      [71, 26, 2],
     ];
     artifacts = [
-      { kind: "shipwreck", x: 22, y: 10, rot: 0.4, scale: 1.5 },
-      { kind: "shipwreck", x: 42, y: 54, rot: -2.7, scale: 1.5 },
-      { kind: "shipwreck", x: 43, y: 11, rot: -0.6, scale: 1.4 },
-      { kind: "shipwreck", x: 21, y: 53, rot: 2.5, scale: 1.4 },
-      { kind: "shipwreck", x: 10, y: 32, rot: 1.45, scale: 1.3 },
-      { kind: "shipwreck", x: 54, y: 32, rot: -1.65, scale: 1.3 },
-      { kind: "seastack", x: 23, y: 21, scale: 1.1 },
-      { kind: "seastack", x: 40, y: 43, scale: 1.1 },
-      { kind: "buoy", x: 32, y: 8 },
-      { kind: "buoy", x: 32, y: 56 },
+      { kind: "shipwreck", x: 44, y: 44, rot: 0.4, scale: 1.6 },
+      { kind: "shipwreck", x: 53, y: 52, rot: -2.7, scale: 1.6 },
+      { kind: "shipwreck", x: 24, y: 60, rot: -0.6, scale: 1.4 },
+      { kind: "shipwreck", x: 72, y: 36, rot: 2.5, scale: 1.4 },
+      { kind: "shipwreck", x: 30, y: 16, rot: 1.45, scale: 1.3 },
+      { kind: "shipwreck", x: 66, y: 82, rot: -1.65, scale: 1.3 },
+      { kind: "seastack", x: 30, y: 48, scale: 1.1 },
+      { kind: "seastack", x: 66, y: 48, scale: 1.1 },
+      { kind: "buoy", x: 48, y: 24 },
+      { kind: "buoy", x: 48, y: 72 },
     ];
+
   } else if (id === "volcano") {
-    addRect(waterSet, 0, 0, MAP_W, 5);
-    addRect(waterSet, 0, 59, MAP_W, 5);
-    addRect(waterSet, 0, 0, 5, MAP_H);
-    addRect(waterSet, 59, 0, 5, MAP_H);
-    clearRect(waterSet, 0, 0, 14, 14);
-    clearRect(waterSet, 50, 0, 14, 14);
-    clearRect(waterSet, 0, 50, 14, 14);
-    clearRect(waterSet, 50, 50, 14, 14);
-    addRect(waterSet, 15, 0, 14, 7);
-    addRect(waterSet, 35, 0, 14, 7);
-    addRect(waterSet, 15, 57, 14, 7);
-    addRect(waterSet, 35, 57, 14, 7);
-    addRect(cliffSet, 24, 22, 6, 3);
-    addRect(cliffSet, 34, 22, 6, 3);
-    addRect(cliffSet, 24, 39, 6, 3);
-    addRect(cliffSet, 34, 39, 6, 3);
-    addRect(cliffSet, 22, 25, 3, 5);
-    addRect(cliffSet, 22, 34, 3, 5);
-    addRect(cliffSet, 39, 25, 3, 5);
-    addRect(cliffSet, 39, 34, 3, 5);
+    // Caldera Forge (native 96x96): a molten caldera isle rising from a steaming ring
+    // sea — the perimeter rim is one continuous coast, the ocean lane circles inside it.
+    addRectRaw(waterSet, 0, 0, W, H);
+    // central volcanic massif
+    paintPoly(waterSet, noiseRing(48, 48, 20, 18, 831, 0.13), false);
+    // interior spawn capes pushing into the rim shallows
+    const vcapes: [number, number, number][] = [
+      [12, 12, 9], [84, 84, 9], [84, 12, 9], [12, 84, 9],
+      [48, 9, 9.5], [48, 87, 9.5], [9, 48, 9.5], [87, 48, 9.5],
+    ];
+    vcapes.forEach(([ix, iy, r], i) => paintPoly(waterSet, noiseRing(ix, iy, r, r - 1, 841 + i * 11, 0.15), false));
+    // obsidian causeways chaining the capes along the rim (unclosed) + one caldera bridge
+    const vchain: [number, number][][] = [
+      [[18, 12], [30, 10], [39, 10]],
+      [[57, 10], [68, 10], [77, 12]],
+      [[85, 18], [86, 30], [86, 39]],
+      [[86, 57], [86, 68], [85, 77]],
+      [[77, 84], [66, 86], [57, 86]],
+      [[39, 86], [28, 86], [18, 84]],
+      [[11, 77], [10, 66], [11, 57]],
+      [[48, 18], [48, 26], [48, 31]], // single bridge onto the caldera massif
+    ];
+    for (const leg of vchain) paintLine(waterSet, chaikin(leg, false, 2), 3.2, false);
+    addRectRaw(cliffSet, 40, 36, 6, 3);
+    addRectRaw(cliffSet, 52, 36, 6, 3);
+    addRectRaw(cliffSet, 40, 57, 6, 3);
+    addRectRaw(cliffSet, 52, 57, 6, 3);
+    addRectRaw(cliffSet, 36, 42, 3, 4);
+    addRectRaw(cliffSet, 58, 50, 3, 4);
     derricks = [
-      [31, 12],
-      [31, 50],
+      [47, 42],
+      [47, 53],
     ];
     coalmines = [
-      [12, 31],
-      [50, 31],
+      [40, 48],
+      [55, 48],
     ];
-    extraOre = [[32, 32, 4]];
+    extraOre = [[48, 48, 4]];
     artifacts = [
-      { kind: "lava_vent", x: 26, y: 23.5, scale: 1.2 },
-      { kind: "lava_vent", x: 38, y: 23.5, scale: 1.2 },
-      { kind: "lava_vent", x: 26, y: 40.5, scale: 1.2 },
-      { kind: "lava_vent", x: 38, y: 40.5, scale: 1.2 },
-      { kind: "seastack", x: 20, y: 3, scale: 1.1 },
-      { kind: "seastack", x: 44, y: 61, scale: 1.1 },
+      { kind: "lava_vent", x: 42, y: 38, scale: 1.2 },
+      { kind: "lava_vent", x: 54, y: 38, scale: 1.2 },
+      { kind: "lava_vent", x: 42, y: 58, scale: 1.2 },
+      { kind: "lava_vent", x: 54, y: 58, scale: 1.2 },
+      { kind: "seastack", x: 30, y: 22, scale: 1.1 },
+      { kind: "seastack", x: 66, y: 74, scale: 1.1 },
     ];
+
   } else if (id === "oilrig") {
-    addRect(waterSet, 0, 0, MAP_W, MAP_H);
-    clearRect(waterSet, 0, 0, 17, 17);
-    clearRect(waterSet, 47, 0, 17, 17);
-    clearRect(waterSet, 0, 47, 17, 17);
-    clearRect(waterSet, 47, 47, 17, 17);
-    clearRect(waterSet, 23, 23, 18, 18);
-    clearRect(waterSet, 16, 29, 8, 6);
-    clearRect(waterSet, 40, 29, 8, 6);
-    clearRect(waterSet, 29, 16, 6, 8);
-    clearRect(waterSet, 29, 40, 6, 8);
-    clearRect(waterSet, 12, 16, 5, 16);
-    clearRect(waterSet, 47, 16, 5, 16);
-    clearRect(waterSet, 12, 32, 5, 16);
-    clearRect(waterSet, 47, 32, 5, 16);
+    // Offshore Megarig (native 96x96): deep open ocean — small interior platform isles
+    // linked by pontoon causeways converging on the giant central rig superstructure.
+    addRectRaw(waterSet, 0, 0, W, H);
+    const oiles: [number, number, number][] = [
+      [11, 11, 8.5], [85, 85, 8.5], [85, 11, 8.5], [11, 85, 8.5],
+      [48, 10.5, 9], [48, 85.5, 9], [10.5, 48, 9], [85.5, 48, 9],
+    ];
+    oiles.forEach(([ix, iy, r], i) => paintPoly(waterSet, noiseRing(ix, iy, r, r - 0.5, 851 + i * 19, 0.14), false));
+    // central megastructure platform — broad enough for the rig forest & contested war
+    paintPoly(waterSet, noiseRing(48, 48, 14, 13, 859, 0.1), false);
+    // pontoon causeways: perimeter chain (unclosed) + twin rig access decks
+    const ochain: [number, number][][] = [
+      [[17, 13], [29, 10], [39, 11]],
+      [[57, 11], [68, 10], [78, 13]],
+      [[86, 17], [87, 29], [86, 39]],
+      [[86, 57], [87, 68], [85, 78]],
+      [[78, 84], [67, 86], [57, 86]],
+      [[39, 86], [28, 86], [17, 84]],
+      [[10, 77], [9, 66], [10, 57]],
+      [[48, 19], [48, 28], [48, 35]], // north deck
+      [[84, 48], [73, 48], [62, 48]], // east deck
+    ];
+    for (const leg of ochain) paintLine(waterSet, chaikin(leg, false, 2), 3.2, false);
     derricks = [
-      [25, 25],
-      [37, 25],
-      [25, 37],
-      [37, 37],
+      [42, 42],
+      [54, 42],
+      [42, 54],
+      [54, 54],
     ];
-    extraOre = [[32, 32, 3]];
+    extraOre = [[48, 48, 3]];
     artifacts = [
-      { kind: "oilrig_tower", x: 32, y: 24, scale: 1.2 },
-      { kind: "oilrig_tower", x: 32, y: 40, scale: 1.2 },
-      { kind: "lighthouse", x: 17, y: 17, scale: 0.9 },
-      { kind: "lighthouse", x: 47, y: 47, scale: 0.9 },
-      { kind: "buoy", x: 24, y: 10 },
-      { kind: "buoy", x: 40, y: 10 },
-      { kind: "buoy", x: 24, y: 54 },
-      { kind: "buoy", x: 40, y: 54 },
-      { kind: "shipwreck", x: 5, y: 32, rot: 0.2, scale: 1.1 },
-      { kind: "shipwreck", x: 59, y: 32, rot: -2.9, scale: 1.1 },
+      { kind: "oilrig_tower", x: 44, y: 44, scale: 1.2 },
+      { kind: "oilrig_tower", x: 53, y: 53, scale: 1.2 },
+      { kind: "lighthouse", x: 13, y: 13, scale: 0.9 },
+      { kind: "lighthouse", x: 83, y: 83, scale: 0.9 },
+      { kind: "buoy", x: 30, y: 24 },
+      { kind: "buoy", x: 66, y: 24 },
+      { kind: "buoy", x: 30, y: 72 },
+      { kind: "buoy", x: 66, y: 72 },
+      { kind: "shipwreck", x: 24, y: 66, rot: 0.2, scale: 1.1 },
+      { kind: "shipwreck", x: 72, y: 30, rot: -2.9, scale: 1.1 },
     ];
+
   } else if (id === "cybergrid") {
     addRect(cliffSet, 20, 20, 4, 2);
     addRect(cliffSet, 40, 20, 4, 2);
@@ -1165,130 +1420,152 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       { kind: "monolith", x: 42, y: 43, scale: 0.95 },
     ];
   } else if (id === "hormuz") {
-    // Strait of Hormuz (design 64x64): two coasts split by a wide shipping strait with twin channels
-    addRect(waterSet, 0, 25, MAP_W, 14);
-    // Contested land bridges hugging the far west & east edges
-    clearRect(waterSet, 0, 25, 9, 14);
-    clearRect(waterSet, 55, 25, 9, 14);
-    // Mid-strait island chain splitting the strait into twin tanker channels
-    clearRect(waterSet, 22, 29, 5, 5);
-    clearRect(waterSet, 31, 30, 4, 4);
-    clearRect(waterSet, 39, 29, 5, 5);
-    // Coastal bluffs guarding the shore approaches
-    addRect(cliffSet, 16, 20, 4, 3);
-    addRect(cliffSet, 44, 20, 4, 3);
-    addRect(cliffSet, 16, 41, 4, 3);
-    addRect(cliffSet, 44, 41, 4, 3);
+    // Strait of Hormuz (native 96x96): Iran's northern coast faces Arabia's southern
+    // shore across a true blue-water strait. Tanker lanes wrap the open western gulf;
+    // the only land crossing is the contested eastern chokepoint causeway.
+    addRectRaw(waterSet, 0, 0, W, H);
+    paintPoly(waterSet, noiseRing(48, 10, 46, 10, 901, 0.08), false); // northern coast (Iran)
+    paintPoly(waterSet, noiseRing(48, 86, 46, 10, 902, 0.08), false); // southern coast (Arabia)
+    // mid-strait island chain (the real Abu Musa / Tunbs of the chokepoint)
+    paintPoly(waterSet, noiseRing(74, 44, 5.5, 5, 903, 0.16), false);
+    paintPoly(waterSet, noiseRing(83, 52, 4.5, 4, 904, 0.16), false);
+    paintPoly(waterSet, noiseRing(24, 52, 5, 4.5, 905, 0.16), false);
+    // eastern chokepoint causeway chaining shore -> islets -> far shore
+    paintLine(waterSet, chaikin([[78, 24], [77, 33], [75, 41]], false, 1), 3.6, false);
+    paintLine(waterSet, chaikin([[74, 49], [77, 55], [80, 62], [81, 71]], false, 1), 3.6, false);
+    paintLine(waterSet, chaikin([[83, 56], [85, 63], [86, 71]], false, 1), 3.2, false);
+    // coastal bluffs guarding the shore approaches
+    addRectRaw(cliffSet, 20, 20, 4, 3);
+    addRectRaw(cliffSet, 70, 19, 4, 3);
+    addRectRaw(cliffSet, 22, 74, 4, 3);
+    addRectRaw(cliffSet, 66, 75, 4, 3);
     derricks = [
-      [24, 30],
-      [41, 30],
-      [15, 10],
-      [48, 52],
+      [74, 43],
+      [23, 51],
+      [15, 11],
+      [80, 83],
     ];
     coalmines = [
-      [10, 20],
-      [52, 42],
+      [12, 22],
+      [84, 74],
     ];
     extraOre = [
-      [32, 14, 3],
-      [32, 50, 3],
+      [48, 12, 3],
+      [48, 84, 3],
     ];
     artifacts = [
-      { kind: "oilrig_tower", x: 30, y: 32, scale: 1.35 },
-      { kind: "lighthouse", x: 24, y: 30, scale: 1.0 },
-      { kind: "lighthouse", x: 40, y: 30, scale: 1.0 },
-      { kind: "shipwreck", x: 50, y: 34, rot: -0.5, scale: 1.2 },
-      { kind: "buoy", x: 18, y: 27 },
-      { kind: "buoy", x: 47, y: 36 },
-      { kind: "buoy", x: 28, y: 36 },
-      { kind: "buoy", x: 36, y: 27 },
+      { kind: "oilrig_tower", x: 48, y: 48, scale: 1.35 },
+      { kind: "lighthouse", x: 75, y: 42, scale: 1.0 },
+      { kind: "lighthouse", x: 24, y: 53, scale: 1.0 },
+      { kind: "shipwreck", x: 60, y: 40, rot: -0.5, scale: 1.2 },
+      { kind: "buoy", x: 40, y: 38 },
+      { kind: "buoy", x: 56, y: 58 },
+      { kind: "buoy", x: 30, y: 44 },
+      { kind: "buoy", x: 66, y: 50 },
     ];
+
   } else if (id === "delta") {
-    // Mekong Delta (design 64x64): braided jungle rivers fanning into a wide southern bay
-    addRect(waterSet, 14, 0, 7, 52); // west river joins the bay
-    addRect(waterSet, 45, 0, 7, 52); // east river joins the bay
-    addRect(waterSet, 0, 52, MAP_W, 12); // wide open sea bay along the south edge
-    // River-mouth fans & a mid-map distributary channel between the rivers
-    addRect(waterSet, 10, 47, 15, 5);
-    addRect(waterSet, 39, 47, 15, 5);
-    addRect(waterSet, 14, 31, 38, 4);
-    // Narrow land fords across each river (chokepoint crossings)
-    clearRect(waterSet, 14, 11, 7, 3);
-    clearRect(waterSet, 14, 38, 7, 3);
-    clearRect(waterSet, 45, 18, 7, 3);
-    clearRect(waterSet, 45, 40, 7, 3);
-    // Islets in the bay
-    clearRect(waterSet, 20, 55, 6, 6);
-    clearRect(waterSet, 38, 56, 5, 5);
-    // Mangrove high ground in the center paddies
-    addRect(cliffSet, 30, 20, 4, 3);
-    addRect(cliffSet, 36, 44, 3, 3);
+    // Mekong Delta (native 96x96): braided jungle rivers fan out of the north into a
+    // wide open bay — brown-water navy rules the channels while fords & causeways
+    // stitch the mangrove paddies together.
+    addRectRaw(waterSet, 0, 0, W, H);
+    // three jungle continental fingers reaching down from the north edge
+    paintPoly(waterSet, noiseRing(16, 20, 15, 22, 911, 0.13), false); // west finger (spawn 0/6)
+    paintPoly(waterSet, noiseRing(48, 16, 14, 18, 912, 0.13), false); // central finger (spawn 4/2?)
+    paintPoly(waterSet, noiseRing(82, 20, 15, 22, 913, 0.13), false); // east finger (spawn 2/7)
+    // southern bay islands
+    paintPoly(waterSet, noiseRing(15, 82, 12, 9, 914, 0.15), false); // SW isle (spawn 3)
+    paintPoly(waterSet, noiseRing(81, 82, 12, 9, 915, 0.15), false); // SE isle (spawn 1)
+    paintPoly(waterSet, noiseRing(48, 86, 8, 7, 916, 0.15), false); // S isle (spawn 5)
+    // causeway fords chaining continent fingers and southern isles (unclosed tree)
+    paintLine(waterSet, chaikin([[28, 36], [34, 40], [40, 42]], false, 1), 3.4, false); // west-central ford
+    paintLine(waterSet, chaikin([[60, 42], [66, 40], [72, 36]], false, 1), 3.4, false); // central-east ford
+    paintLine(waterSet, chaikin([[26, 58], [25, 65], [24, 71]], false, 1), 3.4, false); // SW isle link
+    paintLine(waterSet, chaikin([[70, 71], [71, 65], [72, 58]], false, 1), 3.4, false); // SE isle link
+    paintLine(waterSet, chaikin([[48, 60], [48, 68], [48, 78]], false, 1), 3.4, false); // S isle causeway
+    paintLine(waterSet, chaikin([[20, 42], [21, 48], [22, 54]], false, 1), 3.2, false); // west bank chain
+    paintLine(waterSet, chaikin([[78, 54], [79, 48], [80, 42]], false, 1), 3.2, false); // east bank chain
+    // mangrove high ground
+    addRectRaw(cliffSet, 44, 34, 4, 3);
+    addRectRaw(cliffSet, 52, 40, 3, 3);
     derricks = [
-      [31, 40],
-      [8, 45],
-      [39, 57],
+      [47, 44],
+      [23, 77],
+      [71, 77],
     ];
     coalmines = [
-      [6, 20],
-      [56, 20],
+      [10, 24],
+      [84, 24],
     ];
     extraOre = [
-      [32, 12, 3],
-      [32, 24, 3],
+      [48, 24, 3],
+      [48, 56, 3],
     ];
     artifacts = [
-      { kind: "lighthouse", x: 39, y: 57, scale: 0.95 },
-      { kind: "seastack", x: 27, y: 58, scale: 1.1 },
-      { kind: "shipwreck", x: 50, y: 58, rot: 2.3, scale: 1.0 },
-      { kind: "buoy", x: 17, y: 6 },
-      { kind: "buoy", x: 48, y: 44 },
-      { kind: "buoy", x: 32, y: 33 },
+      { kind: "lighthouse", x: 47, y: 85, scale: 0.95 },
+      { kind: "seastack", x: 36, y: 72, scale: 1.1 },
+      { kind: "shipwreck", x: 62, y: 68, rot: 2.3, scale: 1.0 },
+      { kind: "buoy", x: 32, y: 52 },
+      { kind: "buoy", x: 64, y: 52 },
+      { kind: "buoy", x: 48, y: 68 },
     ];
+
   } else if (id === "bering") {
-    // Bering Strait (96x96): two continents split by an icy north-south strait
-    addRect(waterSet, 40, 0, 16, H);
-    // Diomede stepping-stone islands mid-strait
-    clearRect(waterSet, 44, 43, 5, 5);
-    clearRect(waterSet, 49, 49, 5, 6);
-    // Ice floes clogging strait edges & approaches (impassable to ships AND walkers)
-    addRect(cliffSet, 38, 12, 3, 3);
-    addRect(cliffSet, 58, 20, 3, 3);
-    addRect(cliffSet, 37, 60, 2, 3);
-    addRect(cliffSet, 59, 74, 3, 2);
-    addRect(cliffSet, 44, 28, 2, 2);
-    addRect(cliffSet, 52, 34, 2, 2);
-    addRect(cliffSet, 43, 68, 2, 2);
-    addRect(cliffSet, 53, 82, 2, 2);
-    // Continental ridge lines
-    addRect(cliffSet, 18, 10, 5, 3);
-    addRect(cliffSet, 72, 14, 5, 3);
-    addRect(cliffSet, 18, 80, 4, 3);
-    addRect(cliffSet, 74, 78, 4, 3);
+    // Bering Strait (native 96x96): Asia west, America east — a broad icy strait between
+    // them wrapping the open northern end, with the Diomede stepping-stone isles and a
+    // narrow causeway chain across the southern chokepoint.
+    addRectRaw(waterSet, 0, 0, W, H);
+    paintPoly(waterSet, noiseRing(21, 48, 15, 42, 921, 0.11), false); // Asia continent (spawns 0,3,6)
+    paintPoly(waterSet, noiseRing(75, 48, 15, 42, 922, 0.11), false); // America continent (spawns 1,2,7)
+    addRectRaw(waterSet, 36, 4, 24, 10);
+    addRectRaw(waterSet, 38, 30, 20, 8);
+    // Diomede stepping stones mid-strait
+    paintPoly(waterSet, noiseRing(48, 62, 5, 4.5, 923, 0.15), false);
+    paintPoly(waterSet, noiseRing(51, 74, 4.5, 4, 924, 0.15), false);
+    // north & south mid-edge ice capes for spawns 4/5
+    paintPoly(waterSet, noiseRing(48, 12, 12, 8, 925, 0.14), false);
+    paintPoly(waterSet, noiseRing(48, 88, 10, 7, 926, 0.14), false);
+    // cape links + Diomede causeway chain across the southern strait chokepoint
+    paintLine(waterSet, chaikin([[37, 14], [34, 20], [31, 27]], false, 1), 3.4, false);
+    paintLine(waterSet, chaikin([[59, 14], [62, 20], [65, 27]], false, 1), 3.4, false);
+    paintLine(waterSet, chaikin([[36, 68], [41, 65], [45, 63]], false, 1), 3.4, false);
+    paintLine(waterSet, chaikin([[51, 60], [57, 58], [62, 55]], false, 1), 3.4, false);
+    paintLine(waterSet, chaikin([[49, 79], [48, 83]], false, 1), 3.2, false);
+    paintLine(waterSet, chaikin([[45, 87], [41, 84], [36, 80]], false, 1), 3.2, false);
+    paintLine(waterSet, chaikin([[55, 87], [60, 84], [64, 79]], false, 1), 3.2, false);
+    // ice floes & continental ridges
+    addRectRaw(cliffSet, 40, 30, 2, 3);
+    addRectRaw(cliffSet, 56, 24, 2, 3);
+    addRectRaw(cliffSet, 44, 18, 2, 2);
+    addRectRaw(cliffSet, 52, 44, 2, 2);
+    addRectRaw(cliffSet, 18, 30, 5, 3);
+    addRectRaw(cliffSet, 74, 64, 5, 3);
+    addRectRaw(cliffSet, 18, 82, 4, 3);
+    addRectRaw(cliffSet, 74, 14, 4, 3);
     derricks = [
+      [47, 61],
       [30, 48],
-      [64, 48],
+      [64, 44],
       [20, 20],
-      [76, 76],
     ];
     coalmines = [
-      [12, 46],
-      [82, 46],
-      [45, 44],
+      [14, 60],
+      [82, 30],
     ];
     extraOre = [
-      [24, 64, 4],
-      [72, 32, 4],
-      [30, 30, 3],
-      [66, 66, 3],
+      [26, 72, 4],
+      [70, 24, 4],
+      [48, 30, 3],
     ];
     artifacts = [
-      { kind: "lighthouse", x: 46, y: 44, scale: 1.05 },
-      { kind: "seastack", x: 44, y: 18, scale: 1.25 },
-      { kind: "seastack", x: 51, y: 72, scale: 1.25 },
-      { kind: "shipwreck", x: 47, y: 36, rot: 0.9, scale: 1.3 },
-      { kind: "buoy", x: 43, y: 30 },
-      { kind: "buoy", x: 52, y: 60 },
+      { kind: "lighthouse", x: 47, y: 61, scale: 1.05 },
+      { kind: "seastack", x: 44, y: 38, scale: 1.25 },
+      { kind: "seastack", x: 52, y: 82, scale: 1.25 },
+      { kind: "shipwreck", x: 50, y: 46, rot: 0.9, scale: 1.3 },
+      { kind: "buoy", x: 44, y: 52 },
+      { kind: "buoy", x: 54, y: 68 },
     ];
+
   } else if (id === "europa") {
     // Iron Frontier (96x96, 8-player continental theater): mountain ridges, 4 regional hubs, 4 Oil & 4 Coal
     addRect(cliffSet, 24, 24, 10, 4);
@@ -1319,153 +1596,377 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [48, 72, 3],
     ];
   } else if (id === "pacific_theatre") {
-    // Coral Sea Theatre (96x96, 8-player grand ocean): 8 perimeter islands + central Carrier Atoll + causeways
-    addRect(waterSet, 0, 0, W, H);
-    // 8 generous 18x18 perimeter spawn islands
-    for (const sp of getSpawns(W, H)) {
-      clearRect(waterSet, Math.max(0, sp.x - 6), Math.max(0, sp.y - 6), 17, 17);
-    }
-    // Central Carrier Atoll (20x20) + ring causeways linking all 8 islands & center
-    clearRect(waterSet, 38, 38, 20, 20);
-    clearRect(waterSet, 12, 46, 72, 4);
-    clearRect(waterSet, 46, 12, 4, 72);
-    clearRect(waterSet, 12, 14, 72, 4);
-    clearRect(waterSet, 12, 78, 72, 4);
-    clearRect(waterSet, 14, 12, 4, 72);
-    clearRect(waterSet, 78, 12, 4, 72);
-    // 4 coal mine resource islets
-    clearRect(waterSet, 23, 23, 6, 6);
-    clearRect(waterSet, 67, 23, 6, 6);
-    clearRect(waterSet, 23, 67, 6, 6);
-    clearRect(waterSet, 67, 67, 6, 6);
-    addRect(cliffSet, 40, 40, 3, 3);
-    addRect(cliffSet, 53, 40, 3, 3);
-    addRect(cliffSet, 40, 53, 3, 3);
-    addRect(cliffSet, 53, 53, 3, 3);
+    // Coral Sea Theatre (native 96x96, 8-player grand ocean): full blue-water theater —
+    // 8 interior island bases chained by coral causeways around the central carrier
+    // atoll, with wide open carrier lanes everywhere.
+    addRectRaw(waterSet, 0, 0, W, H);
+    const piles: [number, number, number][] = [
+      [10.5, 10.5, 9], [85.5, 85.5, 9], [85.5, 10.5, 9], [10.5, 85.5, 9],
+      [48, 10.5, 10], [48, 85.5, 10], [10.5, 48, 10], [85.5, 48, 10],
+    ];
+    piles.forEach(([ix, iy, r], i) => paintPoly(waterSet, noiseRing(ix, iy, r + 1, r, 941 + i * 23, 0.15), false));
+    // central carrier atoll
+    paintPoly(waterSet, noiseRing(48, 48, 13, 12, 949, 0.13), false);
+    paintPoly(waterSet, noiseRing(48, 48, 6, 5.5, 950, 0.08), true);
+    paintLine(waterSet, chaikin([[34, 36], [41, 42], [47, 45]], false, 2), 6.5, true);
+    // perimeter causeway chain (unclosed) + single spoke to the atoll
+    const pchain: [number, number][][] = [
+      [[18, 11], [30, 10], [39, 11]],
+      [[57, 11], [68, 10], [78, 12]],
+      [[86, 18], [87, 30], [86, 39]],
+      [[86, 57], [87, 68], [86, 78]],
+      [[78, 86], [66, 87], [57, 86]],
+      [[39, 86], [28, 87], [18, 85]],
+      [[11, 78], [10, 66], [11, 57]],
+      [[48, 20], [48, 29], [48, 36]],
+    ];
+    for (const leg of pchain) paintLine(waterSet, chaikin(leg, false, 2), 3.2, false);
+    // resource islets in the blue water
+    paintPoly(waterSet, noiseRing(25, 25, 5, 4.5, 951, 0.16), false);
+    paintPoly(waterSet, noiseRing(71, 71, 5, 4.5, 952, 0.16), false);
+    paintPoly(waterSet, noiseRing(71, 25, 4.5, 4, 953, 0.16), false);
+    paintPoly(waterSet, noiseRing(25, 71, 4.5, 4, 954, 0.16), false);
+    addRectRaw(cliffSet, 42, 42, 3, 3);
+    addRectRaw(cliffSet, 53, 53, 3, 3);
     derricks = [
-      [47, 25],
-      [47, 69],
-      [25, 47],
-      [69, 47],
+      [47, 41],
+      [47, 54],
+      [24, 24],
+      [70, 70],
     ];
     coalmines = [
-      [25, 25],
-      [69, 25],
-      [25, 69],
-      [69, 69],
+      [24, 70],
+      [70, 24],
     ];
     extraOre = [
-      [48, 48, 5],
-      [30, 30, 3],
-      [66, 66, 3],
-    ];
-    artifacts = [
-      { kind: "lighthouse", x: 38, y: 38, scale: 1.1 },
-      { kind: "lighthouse", x: 58, y: 58, scale: 1.1 },
-      { kind: "shipwreck", x: 31, y: 20, rot: 0.5, scale: 1.4 },
-      { kind: "shipwreck", x: 65, y: 76, rot: -2.6, scale: 1.4 },
-      { kind: "seastack", x: 24, y: 60, scale: 1.3 },
-      { kind: "seastack", x: 72, y: 36, scale: 1.3 },
-      { kind: "buoy", x: 32, y: 34 },
-      { kind: "buoy", x: 64, y: 62 },
-    ];
-  } else if (id === "arctic_front") {
-    // Polar Sea Front (96x96, 8-player arctic ocean & glacier lanes)
-    addRect(waterSet, 36, 0, 24, H);
-    addRect(waterSet, 0, 36, W, 24);
-    for (const sp of getSpawns(W, H)) {
-      clearRect(waterSet, Math.max(0, sp.x - 6), Math.max(0, sp.y - 6), 16, 16);
-    }
-    // Ice bridges & central polar fortress
-    clearRect(waterSet, 38, 38, 20, 20);
-    clearRect(waterSet, 12, 46, 72, 4);
-    clearRect(waterSet, 46, 12, 4, 72);
-    clearRect(waterSet, 20, 34, 6, 28);
-    clearRect(waterSet, 70, 34, 6, 28);
-    clearRect(waterSet, 34, 20, 28, 6);
-    clearRect(waterSet, 34, 70, 28, 6);
-    addRect(cliffSet, 28, 28, 5, 4);
-    addRect(cliffSet, 63, 28, 5, 4);
-    addRect(cliffSet, 28, 64, 5, 4);
-    addRect(cliffSet, 63, 64, 5, 4);
-    derricks = [
-      [47, 22],
-      [47, 72],
-      [22, 47],
-      [72, 47],
-    ];
-    coalmines = [
-      [41, 41],
-      [53, 53],
-    ];
-    extraOre = [
-      [48, 48, 5],
+      [48, 48, 4],
       [25, 25, 3],
       [71, 71, 3],
     ];
     artifacts = [
-      { kind: "lighthouse", x: 38, y: 22, scale: 1.05 },
-      { kind: "lighthouse", x: 58, y: 74, scale: 1.05 },
-      { kind: "shipwreck", x: 48, y: 8, rot: 0.2, scale: 1.3 },
-      { kind: "shipwreck", x: 48, y: 88, rot: -2.9, scale: 1.3 },
-      { kind: "buoy", x: 37, y: 12 },
-      { kind: "buoy", x: 59, y: 84 },
+      { kind: "lighthouse", x: 42, y: 40, scale: 1.1 },
+      { kind: "lighthouse", x: 55, y: 56, scale: 1.1 },
+      { kind: "shipwreck", x: 30, y: 60, rot: 0.5, scale: 1.4 },
+      { kind: "shipwreck", x: 66, y: 36, rot: -2.6, scale: 1.4 },
+      { kind: "seastack", x: 24, y: 48, scale: 1.3 },
+      { kind: "seastack", x: 72, y: 48, scale: 1.3 },
+      { kind: "buoy", x: 36, y: 48 },
+      { kind: "buoy", x: 60, y: 48 },
     ];
-  } else if (id === "megacontinent") {
-    // Eurasia Supertheater (128x128 — 4x area! 8-player twin continents + central navigable sea strait + supply highways!)
-    addRect(waterSet, 52, 0, 24, H);
-    // Keep north/south mid-spawns (slots 4, 5) on fortified bridgehead peninsulas!
-    for (const sp of getSpawns(W, H)) {
-      clearRect(waterSet, Math.max(0, sp.x - 7), Math.max(0, sp.y - 7), 18, 18);
-    }
-    // 4 wide strategic land highways across the grand central sea strait
-    clearRect(waterSet, 50, 22, 28, 6);
-    clearRect(waterSet, 50, 61, 28, 6);
-    clearRect(waterSet, 50, 100, 28, 6);
-    // Coastal harbors near west/east spawns for Naval Shipyards
-    addRect(waterSet, 16, 0, 16, 12);
-    addRect(waterSet, 96, 0, 16, 12);
-    addRect(waterSet, 16, 116, 16, 12);
-    addRect(waterSet, 96, 116, 16, 12);
-    // Continental mountain ranges
-    addRect(cliffSet, 28, 32, 6, 16);
-    addRect(cliffSet, 94, 32, 6, 16);
-    addRect(cliffSet, 28, 80, 6, 16);
-    addRect(cliffSet, 94, 80, 6, 16);
-    addRect(cliffSet, 36, 61, 8, 6);
-    addRect(cliffSet, 84, 61, 8, 6);
+
+  } else if (id === "arctic_front") {
+    // Polar Sea Front (native 96x96): a frozen ocean — interior ice-sheet spawn shelves
+    // chained by icebreaker causeways around the contested central polar fortress,
+    // wide dark-water channels for wolfpacks & carriers.
+    addRectRaw(waterSet, 0, 0, W, H);
+    const xiles: [number, number, number][] = [
+      [11, 11, 9], [85, 85, 9], [85, 11, 9], [11, 85, 9],
+      [48, 10.5, 10], [48, 85.5, 10], [10.5, 48, 10], [85.5, 48, 10],
+    ];
+    xiles.forEach(([ix, iy, r], i) => paintPoly(waterSet, noiseRing(ix, iy, r + 0.5, r, 961 + i * 29, 0.17), false));
+    // central polar fortress ice mass
+    paintPoly(waterSet, noiseRing(48, 48, 12, 11, 969, 0.12), false);
+    // icebreaker causeway chain (unclosed) + one polar spoke
+    const xchain: [number, number][][] = [
+      [[18, 12], [30, 10], [39, 11]],
+      [[57, 11], [68, 10], [77, 12]],
+      [[85, 18], [86, 30], [86, 39]],
+      [[86, 57], [86, 68], [85, 77]],
+      [[78, 85], [66, 86], [57, 86]],
+      [[39, 86], [28, 86], [18, 84]],
+      [[11, 77], [10, 66], [11, 57]],
+      [[48, 20], [48, 29], [48, 37]],
+    ];
+    for (const leg of xchain) paintLine(waterSet, chaikin(leg, false, 2), 3.4, false);
+    // scattered ice floes (sea hazards)
+    addRectRaw(cliffSet, 30, 34, 2, 2);
+    addRectRaw(cliffSet, 66, 62, 2, 2);
+    addRectRaw(cliffSet, 34, 66, 2, 2);
+    addRectRaw(cliffSet, 62, 30, 2, 2);
+    addRectRaw(cliffSet, 44, 44, 3, 3);
+    addRectRaw(cliffSet, 52, 52, 3, 3);
     derricks = [
-      [63, 24],
-      [56, 63],
-      [63, 102],
-      [22, 63],
-      [104, 63],
+      [46, 43],
+      [46, 53],
+      [24, 24],
+      [70, 70],
     ];
     coalmines = [
-      [38, 28],
-      [88, 28],
-      [38, 98],
-      [88, 98],
+      [42, 48],
+      [54, 48],
+    ];
+    extraOre = [
+      [48, 48, 4],
+      [25, 71, 3],
+      [71, 25, 3],
+    ];
+    artifacts = [
+      { kind: "lighthouse", x: 40, y: 40, scale: 1.05 },
+      { kind: "lighthouse", x: 57, y: 57, scale: 1.05 },
+      { kind: "shipwreck", x: 48, y: 24, rot: 0.2, scale: 1.3 },
+      { kind: "shipwreck", x: 48, y: 72, rot: -2.9, scale: 1.3 },
+      { kind: "seastack", x: 24, y: 48, scale: 1.2 },
+      { kind: "seastack", x: 72, y: 48, scale: 1.2 },
+      { kind: "buoy", x: 36, y: 30 },
+      { kind: "buoy", x: 60, y: 66 },
+    ];
+
+  } else if (id === "megacontinent") {
+    // Eurasia Supertheater (128x128): twin colossal continents west & east, a true
+    // central sea between them wrapping the open northern end — the southern causeway
+    // highways are the only land crossings of the strait.
+    addRectRaw(waterSet, 0, 0, W, H);
+    paintPoly(waterSet, noiseRing(28, 64, 24, 61, 971, 0.08), false); // west continent (Europe)
+    paintPoly(waterSet, noiseRing(100, 64, 24, 61, 972, 0.08), false); // east continent (Asia)
+    // mid-edge peninsula capes for N/S spawns
+    paintPoly(waterSet, noiseRing(64, 13, 14, 10, 973, 0.13), false);
+    paintPoly(waterSet, noiseRing(64, 115, 14, 10, 974, 0.13), false);
+    addRectRaw(waterSet, 56, 4, 18, 120);
+    paintPoly(waterSet, noiseRing(44, 28, 17, 14, 968, 0.06), true); // european gulf
+    paintPoly(waterSet, noiseRing(86, 100, 17, 14, 967, 0.06), true); // asian gulf
+    paintPoly(waterSet, noiseRing(65, 64, 15, 22, 970, 0.1), true);
+    // stepping-stone islets in the strait
+    paintPoly(waterSet, noiseRing(64, 48, 6, 5, 975, 0.15), false);
+    paintPoly(waterSet, noiseRing(63, 82, 5.5, 5, 976, 0.15), false);
+    // cape links into the continents
+    paintLine(waterSet, chaikin([[52, 16], [47, 22], [43, 30]], false, 1), 3.6, false);
+    paintLine(waterSet, chaikin([[76, 16], [81, 22], [85, 30]], false, 1), 3.6, false);
+    paintLine(waterSet, chaikin([[52, 112], [47, 106], [43, 98]], false, 1), 3.6, false);
+    paintLine(waterSet, chaikin([[76, 112], [81, 106], [85, 98]], false, 1), 3.6, false);
+    // two grand southern causeway highways shore -> islet -> shore
+    paintLine(waterSet, chaikin([[48, 52], [54, 50], [59, 49]], false, 1), 4, false);
+    paintLine(waterSet, chaikin([[69, 47], [75, 45], [81, 42]], false, 1), 4, false);
+    paintLine(waterSet, chaikin([[49, 86], [55, 84], [59, 83]], false, 1), 4, false);
+    paintLine(waterSet, chaikin([[68, 81], [75, 79], [82, 76]], false, 1), 4, false);
+    // continental mountain ranges
+    addRectRaw(cliffSet, 24, 48, 6, 14);
+    addRectRaw(cliffSet, 98, 66, 6, 14);
+    addRectRaw(cliffSet, 24, 96, 6, 12);
+    addRectRaw(cliffSet, 98, 18, 6, 12);
+    addRectRaw(cliffSet, 40, 64, 7, 5);
+    addRectRaw(cliffSet, 82, 60, 7, 5);
+    derricks = [
+      [63, 47],
+      [62, 81],
+      [26, 64],
+      [100, 60],
+    ];
+    coalmines = [
+      [30, 40],
+      [96, 88],
+      [30, 104],
+      [96, 30],
     ];
     extraOre = [
       [64, 64, 5],
       [30, 64, 4],
-      [98, 64, 4],
+      [98, 60, 4],
       [34, 34, 3],
       [94, 94, 3],
-      [94, 34, 3],
-      [34, 94, 3],
     ];
     artifacts = [
-      { kind: "lighthouse", x: 51, y: 22, scale: 1.2 },
-      { kind: "lighthouse", x: 77, y: 106, scale: 1.2 },
-      { kind: "shipwreck", x: 64, y: 42, rot: 0.4, scale: 1.6 },
-      { kind: "shipwreck", x: 64, y: 84, rot: -2.7, scale: 1.6 },
-      { kind: "oilrig_tower", x: 64, y: 12, scale: 1.25 },
-      { kind: "oilrig_tower", x: 64, y: 116, scale: 1.25 },
-      { kind: "buoy", x: 58, y: 36 },
-      { kind: "buoy", x: 70, y: 92 },
+      { kind: "lighthouse", x: 62, y: 46, scale: 1.2 },
+      { kind: "lighthouse", x: 65, y: 84, scale: 1.2 },
+      { kind: "shipwreck", x: 64, y: 32, rot: 0.4, scale: 1.6 },
+      { kind: "shipwreck", x: 64, y: 98, rot: -2.7, scale: 1.6 },
+      { kind: "oilrig_tower", x: 64, y: 14, scale: 1.25 },
+      { kind: "oilrig_tower", x: 64, y: 114, scale: 1.25 },
+      { kind: "buoy", x: 58, y: 64 },
+      { kind: "buoy", x: 70, y: 64 },
     ];
+
+  } else if (id === "english_channel") {
+    // English Channel (native 256x192): Britain holds the north, France the south, with
+    // a true blue-water channel between — wrapping the open North Sea gap in the NE.
+    // The Dover chokepoint causeway chain is the only land crossing.
+    addRectRaw(waterSet, 0, 0, W, H);
+    paintPoly(waterSet, noiseRing(126, 25, 120, 23, 1201, 0.07), false); // Britain (spawns 0,4,2-ish north)
+    paintPoly(waterSet, noiseRing(126, 168, 118, 22, 1202, 0.07), false); // France (spawns 1,5,3 south)
+    // mid-channel Isle-of-Wight-style stepping islets + the Dover chain
+    paintPoly(waterSet, noiseRing(22, 95, 21, 24, 1207, 0.1), false); // Ireland — west-mid spawn landmass
+    paintPoly(waterSet, noiseRing(238, 120, 17, 30, 1208, 0.1), false); // Low Countries — east-mid, chained to France
+    paintLine(waterSet, chaikin([[24, 74], [22, 60], [20, 50]], false, 1), 3.6, false); // irish sea crossing to Britain
+    paintPoly(waterSet, noiseRing(200, 78, 7, 6, 1203, 0.15), false);
+    paintPoly(waterSet, noiseRing(214, 100, 6, 5.5, 1204, 0.15), false);
+    paintPoly(waterSet, noiseRing(88, 110, 6, 5, 1205, 0.15), false);
+    paintPoly(waterSet, noiseRing(52, 92, 5, 4.5, 1206, 0.15), false);
+    // Dover causeway chain: Britain -> islet -> islet -> France
+    paintLine(waterSet, chaikin([[196, 48], [198, 62], [200, 72]], false, 1), 4, false);
+    paintLine(waterSet, chaikin([[202, 84], [208, 92], [213, 97]], false, 1), 4, false);
+    paintLine(waterSet, chaikin([[216, 106], [218, 122], [218, 146]], false, 1), 4, false);
+    // western chain spur toward the mid isles (unclosed — sea flows free)
+    paintLine(waterSet, chaikin([[84, 50], [86, 68], [88, 104]], false, 1), 3.6, false);
+    // coastal cliffs — Dover white cliffs & Normandy bluffs
+    addRectRaw(cliffSet, 180, 34, 8, 4);
+    addRectRaw(cliffSet, 196, 148, 8, 4);
+    addRectRaw(cliffSet, 60, 30, 8, 4);
+    addRectRaw(cliffSet, 70, 152, 8, 4);
+    derricks = [
+      [198, 77],
+      [212, 99],
+      [86, 108],
+      [50, 91],
+    ];
+    coalmines = [
+      [60, 24],
+      [180, 24],
+      [70, 166],
+      [190, 166],
+    ];
+    extraOre = [
+      [120, 24, 4],
+      [124, 166, 4],
+      [88, 110, 3],
+    ];
+    artifacts = [
+      { kind: "lighthouse", x: 199, y: 76, scale: 1.2 },
+      { kind: "lighthouse", x: 87, y: 109, scale: 1.1 },
+      { kind: "shipwreck", x: 150, y: 100, rot: 0.5, scale: 1.6 },
+      { kind: "shipwreck", x: 100, y: 70, rot: -2.4, scale: 1.4 },
+      { kind: "buoy", x: 160, y: 80 },
+      { kind: "buoy", x: 120, y: 120 },
+      { kind: "seastack", x: 52, y: 130, scale: 1.2 },
+    ];
+  } else if (id === "persian_gulf") {
+    // Persian Gulf (native 224x224): Iran's mountainous NE shore faces the Arabian
+    // peninsula SW across a wide open gulf. The Hormuz chokepoint chain guards the
+    // narrow SE outlet; the rest is true blue water.
+    addRectRaw(waterSet, 0, 0, W, H);
+    // Iran — NE arc
+    paintPoly(waterSet, noiseRing(112, 18, 104, 16, 1211, 0.09), false);
+    paintPoly(waterSet, noiseRing(200, 60, 22, 40, 1212, 0.09), false);
+    // Arabia — SW arc
+    paintPoly(waterSet, noiseRing(112, 206, 104, 16, 1213, 0.09), false);
+    paintPoly(waterSet, noiseRing(24, 150, 22, 40, 1214, 0.09), false);
+    // gulf island chain (Qeshm/Abu Musa analogs) + Hormuz chokepoint causeways
+    paintPoly(waterSet, noiseRing(170, 150, 7, 6, 1215, 0.15), false);
+    paintPoly(waterSet, noiseRing(184, 168, 6, 5, 1216, 0.15), false);
+    paintPoly(waterSet, noiseRing(60, 100, 6, 5, 1217, 0.15), false);
+    paintLine(waterSet, chaikin([[196, 100], [188, 124], [176, 144]], false, 1), 4, false);
+    paintLine(waterSet, chaikin([[166, 156], [172, 162], [180, 166]], false, 1), 4, false);
+    paintLine(waterSet, chaikin([[186, 174], [192, 186], [196, 196]], false, 1), 4, false);
+    // Zagros mountain cliffs along the Iranian shore
+    addRectRaw(cliffSet, 60, 22, 8, 4);
+    addRectRaw(cliffSet, 130, 20, 8, 4);
+    addRectRaw(cliffSet, 196, 48, 4, 8);
+    derricks = [
+      [168, 148],
+      [58, 98],
+      [182, 166],
+      [130, 40],
+    ];
+    coalmines = [
+      [112, 26],
+      [112, 196],
+      [196, 60],
+      [28, 156],
+    ];
+    extraOre = [
+      [112, 26, 4],
+      [112, 198, 4],
+      [184, 168, 3],
+    ];
+    artifacts = [
+      { kind: "oilrig_tower", x: 110, y: 112, scale: 1.5 },
+      { kind: "oilrig_tower", x: 140, y: 90, scale: 1.3 },
+      { kind: "lighthouse", x: 169, y: 149, scale: 1.1 },
+      { kind: "shipwreck", x: 90, y: 140, rot: 0.9, scale: 1.4 },
+      { kind: "buoy", x: 120, y: 120 },
+      { kind: "buoy", x: 150, y: 170 },
+      { kind: "buoy", x: 80, y: 80 },
+    ];
+  } else if (id === "panama") {
+    // Panama Isthmus (native 224x192): North America anchors the NW, South America the
+    // SE — oceans dominate the NE (Caribbean) & SW (Pacific). The isthmus land bridge
+    // crosses the center, cut by the canal channel that keeps both oceans one sea.
+    addRectRaw(waterSet, 0, 0, W, H);
+    // North America — NW continental mass
+    paintPoly(waterSet, noiseRing(86, 26, 84, 25, 1221, 0.06), false);
+    // South America — SE continental mass
+    paintPoly(waterSet, noiseRing(138, 166, 84, 25, 1222, 0.06), false);
+    // the isthmus land bridge connecting the continents (interior, unclosed)
+    paintLine(waterSet, chaikin([[86, 64], [104, 84], [120, 104], [136, 122]], false, 2), 12, false);
+    // THE CANAL: water cut straight through the isthmus — narrow but ship-passable
+    paintLine(waterSet, chaikin([[104, 82], [112, 94], [120, 104], [128, 114]], false, 1), 5, true);
+    // pearl-island stepping stones in the pacific gulf
+    paintPoly(waterSet, noiseRing(208, 16, 26, 15, 1227, 0.08), false); // NE cape (spawn 2)
+    paintPoly(waterSet, noiseRing(16, 176, 25, 15, 1228, 0.08), false); // SW cape (spawn 3)
+    paintLine(waterSet, chaikin([[186, 18], [160, 22], [138, 24]], false, 1), 4, false); // NE cape chain to N.America
+    paintLine(waterSet, chaikin([[36, 174], [60, 170], [84, 168]], false, 1), 4, false); // SW cape chain to S.America
+    paintPoly(waterSet, noiseRing(206, 95, 16, 13, 1225, 0.12), false); // Cuba — east-mid spawn isle
+    paintPoly(waterSet, noiseRing(16, 95, 15, 12, 1226, 0.12), false); // Cocos — west-mid spawn isle
+    paintLine(waterSet, chaikin([[192, 90], [176, 84], [150, 72], [128, 66]], false, 2), 3.6, false); // cuba-caribbean chain to the mainland
+    paintPoly(waterSet, noiseRing(120, 150, 6, 5, 1223, 0.15), false);
+    paintPoly(waterSet, noiseRing(100, 120, 5, 4.5, 1224, 0.15), false);
+    // continental divide cliffs along the isthmus spine
+    addRectRaw(cliffSet, 96, 74, 4, 5);
+    addRectRaw(cliffSet, 130, 112, 4, 5);
+    addRectRaw(cliffSet, 40, 20, 6, 4);
+    addRectRaw(cliffSet, 180, 160, 6, 4);
+    derricks = [
+      [118, 148],
+      [98, 118],
+      [60, 34],
+      [164, 146],
+    ];
+    coalmines = [
+      [30, 24],
+      [196, 168],
+    ];
+    extraOre = [
+      [60, 40, 4],
+      [164, 150, 4],
+      [112, 92, 3],
+    ];
+    artifacts = [
+      { kind: "lighthouse", x: 119, y: 149, scale: 1.15 },
+      { kind: "lighthouse", x: 99, y: 119, scale: 1.05 },
+      { kind: "shipwreck", x: 150, y: 60, rot: -0.4, scale: 1.5 },
+      { kind: "buoy", x: 112, y: 96 },
+      { kind: "buoy", x: 170, y: 100 },
+      { kind: "buoy", x: 60, y: 110 },
+      { kind: "seastack", x: 80, y: 160, scale: 1.2 },
+    ];
+  } else if (id === "fulda_gap") {
+    // Fulda Gap (native 192x192, pure land): rolling german hill country — two great
+    // north-south ridge lines split the theater into three armored corridors, with
+    // pass chokepoints cut through each ridge. No water: a pure mechanized land war.
+    const ridge1: [number, number][] = [[70, 8], [74, 50], [68, 96], [74, 140], [70, 184]];
+    const ridge2: [number, number][] = [[124, 8], [120, 50], [126, 96], [120, 140], [124, 184]];
+    for (const [rx, ry] of ridge1) paintPoly(cliffSet, noiseRing(rx, ry, 7, 16, 1231 + ry, 0.2), false);
+    for (const [rx, ry] of ridge2) paintPoly(cliffSet, noiseRing(rx, ry, 7, 16, 1241 + ry, 0.2), false);
+    // carve the pass chokepoints through both ridges (the gaps the war is fought over)
+    paintLine(cliffSet, chaikin([[72, 48], [72, 54], [72, 60]], false, 1), 9, true);
+    paintLine(cliffSet, chaikin([[70, 128], [71, 134], [72, 140]], false, 1), 9, true);
+    paintLine(cliffSet, chaikin([[123, 86], [123, 92], [123, 98]], false, 1), 9, true);
+    paintLine(cliffSet, chaikin([[122, 150], [122, 156], [122, 162]], false, 1), 9, true);
+    // scattered hill country & forests (cliff mesas)
+    addRectRaw(cliffSet, 30, 90, 5, 4);
+    addRectRaw(cliffSet, 100, 30, 5, 4);
+    addRectRaw(cliffSet, 98, 160, 5, 4);
+    addRectRaw(cliffSet, 160, 90, 5, 4);
+    addRectRaw(cliffSet, 30, 150, 4, 4);
+    addRectRaw(cliffSet, 160, 30, 4, 4);
+    derricks = [
+      [96, 96],
+      [48, 48],
+      [144, 144],
+      [48, 144],
+    ];
+    coalmines = [
+      [96, 30],
+      [96, 162],
+      [30, 96],
+      [162, 96],
+    ];
+    extraOre = [
+      [96, 96, 4],
+      [48, 96, 3],
+      [144, 96, 3],
+      [96, 60, 3],
+      [96, 132, 3],
+    ];
+    artifacts = [];
   } else {
     addRect(cliffSet, 24, 15, 16, 2);
     addRect(cliffSet, 24, 47, 16, 2);
@@ -1485,35 +1986,117 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     ];
   }
 
-  // Ensure all 8 perimeter spawns on every map sit on solid dry land and bridge cleanly across any adjacent water channel
+  // Ensure all 8 perimeter spawns on every map sit on solid dry land. Then, for any
+  // spawn NOT already land-connected to the largest landmass, lay a narrow causeway
+  // across the SHORTEST water crossing to the mainland — but only when that crossing
+  // is narrow: genuine open-ocean separation is an intentional feature of oceanic
+  // naval maps (crossed in-game by engineer pontoon bridges, never by auto-carved
+  // land strips), so crossings longer than the cap are never paved at all.
   // (this pass works in REAL map coordinates — hence the Raw rect ops, not the design-grid scaled ones)
-  const cx = Math.floor(W / 2),
-    cy = Math.floor(H / 2);
   for (const sp of getSpawns(W, H)) {
     clearRectRaw(cliffSet, sp.x - 1, sp.y - 1, 5, 5);
     clearRectRaw(waterSet, sp.x - 2, sp.y - 2, 7, 7);
-    let tx = sp.x + 1,
-      ty = sp.y + 1;
-    let enteredWater = false;
-    let steps = 0;
-    while ((tx !== cx || ty !== cy) && steps++ < Math.max(W, H)) {
-      const dx = tx < cx ? 1 : tx > cx ? -1 : 0;
-      const dy = ty < cy ? 1 : ty > cy ? -1 : 0;
-      tx += dx;
-      ty += dy;
-      const k = ty * W + tx;
-      if (waterSet.has(k)) {
-        enteredWater = true;
-        // Clear perpendicular 3-tile bridge width WITHOUT clearing ahead along (dx, dy)
-        if (dx === 0) clearRectRaw(waterSet, tx - 1, ty, 3, 1);
-        else if (dy === 0) clearRectRaw(waterSet, tx, ty - 1, 1, 3);
-        else {
-          clearRectRaw(waterSet, tx - 1, ty, 3, 1);
-          clearRectRaw(waterSet, tx, ty - 1, 1, 3);
+  }
+  if (waterSet.size > 0) {
+    const landCompOf = () => {
+      // 4-connected land components; comp id per tile (-1 = water/cliff)
+      const comp = new Int32Array(W * H).fill(-1);
+      let nc = 0;
+      const sizes: number[] = [];
+      for (let s = 0; s < W * H; s++) {
+        if (comp[s] !== -1 || waterSet.has(s) || cliffSet.has(s)) continue;
+        const q = [s];
+        comp[s] = nc;
+        let size = 0;
+        while (q.length) {
+          const t = q.pop()!;
+          size++;
+          const x = t % W,
+            y = (t / W) | 0;
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+            const nx = x + dx,
+              ny = y + dy,
+              ni = ny * W + nx;
+            if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+            if (comp[ni] !== -1 || waterSet.has(ni) || cliffSet.has(ni)) continue;
+            comp[ni] = nc;
+            q.push(ni);
+          }
         }
-      } else if (enteredWater && !cliffSet.has(k)) {
-        break; // reached mainland on far side of channel
+        sizes.push(size);
+        nc++;
       }
+      return { comp, sizes };
+    };
+    // longest water crossing the pass may auto-bridge — narrow channels/fords only.
+    // (engineer pontoon bridges reach much further in-game: maxSpan is W/4 in world.ts)
+    const cap = Math.max(9, Math.round(Math.min(W, H) / 10));
+    const spawnList = getSpawns(W, H);
+    for (let round = 0; round < 4; round++) {
+      const { comp, sizes } = landCompOf();
+      let ref = 0;
+      for (let i = 1; i < sizes.length; i++) if (sizes[i] > sizes[ref]) ref = i;
+      let anyCarved = false;
+      for (const sp of spawnList) {
+        const startComp = comp[sp.y * W + sp.x];
+        if (startComp === ref || startComp < 0) continue; // already on the mainland
+        // multi-source BFS from every land tile of the spawn's component, stepping
+        // over water only, depth-capped — finds the narrowest crossing to ANY larger
+        // or equal landmass. Wide open ocean simply yields no path within the cap.
+        const prev = new Int32Array(W * H).fill(-2); // -2 unvisited, -1 source
+        const depth = new Int32Array(W * H).fill(-1);
+        const q: number[] = [];
+        for (let t = 0; t < W * H; t++) {
+          if (comp[t] === startComp) {
+            prev[t] = -1;
+            depth[t] = 0;
+            q.push(t);
+          }
+        }
+        let goal = -1;
+        for (let qi = 0; qi < q.length && goal < 0; qi++) {
+          const t = q[qi];
+          if (depth[t] > cap) break; // BFS order — nothing narrower beyond
+          const x = t % W,
+            y = (t / W) | 0;
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+            const nx = x + dx,
+              ny = y + dy,
+              ni = ny * W + nx;
+            if (nx < 0 || ny < 0 || nx >= W || ny >= H || prev[ni] !== -2) continue;
+            if (comp[ni] === startComp) continue;
+            if (!waterSet.has(ni) && !cliffSet.has(ni)) {
+              if (comp[ni] >= 0 && comp[ni] !== startComp && sizes[comp[ni]] >= sizes[startComp]) {
+                goal = t; // water tile adjacent to a bigger/equal landmass
+                prev[ni] = t;
+                break;
+              }
+              continue;
+            }
+            if (cliffSet.has(ni)) continue; // can't bridge through rock
+            prev[ni] = t;
+            depth[ni] = depth[t] + 1;
+            q.push(ni);
+          }
+        }
+        if (goal < 0) continue; // oceanic separation — intended, leave isolated
+        // backtrack & lay a 3-wide causeway along the crossing
+        for (let t = goal; t >= 0; t = prev[t]) {
+          const x = t % W,
+            y = (t / W) | 0;
+          for (const [ox, oy] of [[0, 0], [1, 0], [0, 1], [-1, 0], [0, -1]] as const) {
+            const nx = x + ox,
+              ny = y + oy,
+              ni = ny * W + nx;
+            if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+            if (waterSet.has(ni)) {
+              waterSet.delete(ni);
+              anyCarved = true;
+            }
+          }
+        }
+      }
+      if (!anyCarved) break;
     }
   }
 
@@ -1525,7 +2108,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
   // disconnected bodies — trapped ships make naval play useless. Flood-fill components,
   // keep the largest as "the sea", then Dijkstra-carve a narrow canal from every stray
   // body back to the sea (spawn zones are high-cost so canals skirt bases).
-  if (waterSet.size > 0) {
+  if (waterSet.size > 0 && !MAP_DEBUG.noCanalPass) {
     const spawns = getSpawns(W, H);
     const nearSpawn = new Uint8Array(W * H);
     for (const sp of spawns) {
@@ -1628,6 +2211,33 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     if (extraOre) extraOre = extraOre.map(([x, y, r]): [number, number, number] => [px(x), py(y), pr(r)]);
     if (artifacts) artifacts = artifacts.map((a) => ({ ...a, x: a.x * sx, y: a.y * sy }));
   }
+
+  // Organic coastlines jitter deterministically but unpredictably — snap every neutral
+  // resource site to the nearest dry 2x2 footing within a short spiral search so no
+  // derrick/coalmine ever ends up swimming or perched on rock.
+  const dryFooting = (x: number, y: number): boolean => {
+    for (let dy = 0; dy < 2; dy++)
+      for (let dx = 0; dx < 2; dx++) {
+        const tx = x + dx,
+          ty = y + dy;
+        if (tx < 0 || ty < 0 || tx >= W || ty >= H) return false;
+        const k = ty * W + tx;
+        if (waterSet.has(k) || cliffSet.has(k)) return false;
+      }
+    return true;
+  };
+  const snapSite = ([x, y]: [number, number]): [number, number] => {
+    if (dryFooting(x, y)) return [x, y];
+    for (let r = 1; r <= 12; r++)
+      for (let dy = -r; dy <= r; dy++)
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          if (dryFooting(x + dx, y + dy)) return [x + dx, y + dy];
+        }
+    return [x, y];
+  };
+  derricks = derricks.map(snapSite);
+  if (coalmines) coalmines = coalmines.map(snapSite);
 
   const cliffs: [number, number][] = [];
   for (const k of cliffSet) cliffs.push([k % W, (k / W) | 0]);

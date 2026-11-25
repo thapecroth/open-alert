@@ -52,6 +52,7 @@ interface PersistedCore {
   map: MapId;
   config: GameConfig;
   players: PlayerRec[];
+  hostId?: string | null;
   world: Omit<ReturnType<World["serialize"]>, "ore">;
 }
 
@@ -103,6 +104,7 @@ export class GameRoom extends Server<Env> {
   config: GameConfig = { ...DEFAULT_CONFIG };
   players = new Map<string, PlayerRec>(); // by player id (client token)
   connPlayer = new Map<string, string>(); // conn id -> player id
+  private hostId: string | null = null;
   world: World | null = null;
   alarmActive = false;
   alarmTarget = 0; // ideal-timeline timestamp the alarm loop schedules against
@@ -154,6 +156,7 @@ export class GameRoom extends Server<Env> {
         this.phase = "playing";
         this.map = rec.map;
         this.config = rec.config;
+        this.hostId = typeof rec.hostId === "string" ? rec.hostId : null;
         this.paused = false;
         this.endSent = false;
         for (const p of rec.players) {
@@ -182,6 +185,7 @@ export class GameRoom extends Server<Env> {
       map: this.map,
       config: this.config,
       players: [...this.players.values()],
+      hostId: this.hostId,
       world: worldCore,
     };
     const writeOre = !!ore && now - this.lastOrePersistAt >= PERSIST_ORE_MS;
@@ -328,6 +332,15 @@ export class GameRoom extends Server<Env> {
           if (target && target.bot) {
             this.players.delete(m.id);
             this.bots.delete(m.id);
+            this.broadcastLobby();
+          }
+        }
+        return;
+      case "transferHost":
+        if (me && this.isHost(me) && typeof m.id === "string") {
+          const target = this.players.get(m.id);
+          if (target && target !== me && target.connected && !target.spectator && !target.bot) {
+            this.hostId = target.id;
             this.broadcastLobby();
           }
         }
@@ -542,17 +555,24 @@ export class GameRoom extends Server<Env> {
     this.broadcastLobby();
   }
 
-  private isHost(p: PlayerRec) {
+  private resolveHostId(): string | undefined {
     // host is always a connected human — a bot must never hold the start button
-    const humans = [...this.players.values()].filter((x) => x.connected && !x.spectator && !x.bot);
-    if (!humans.length) return false;
-    humans.sort((a, b) => a.slot - b.slot);
-    return humans[0].id === p.id;
+    const humans = [...this.players.values()]
+      .filter((x) => x.connected && !x.spectator && !x.bot)
+      .sort((a, b) => a.slot - b.slot);
+    if (!humans.length) return undefined;
+    const v = humans.find((x) => x.name === "v");
+    if (v) return v.id;
+    if (this.hostId && humans.some((x) => x.id === this.hostId)) return this.hostId;
+    return humans[0].id;
+  }
+
+  private isHost(p: PlayerRec) {
+    return this.resolveHostId() === p.id;
   }
 
   private lobbyList(): LobbyPlayer[] {
-    const connected = [...this.players.values()].filter((x) => x.connected && !x.spectator && !x.bot);
-    const hostId = connected.sort((a, b) => a.slot - b.slot)[0]?.id;
+    const hostId = this.resolveHostId();
     return [...this.players.values()].map((p) => ({
       id: p.id,
       name: p.name,
@@ -901,6 +921,7 @@ export class GameRoom extends Server<Env> {
     this.phase = "lobby";
     this.map = "crossroads";
     this.config = { ...DEFAULT_CONFIG };
+    this.hostId = null;
     this.endSent = false;
     this.players.clear();
     this.bots.clear();
@@ -923,14 +944,26 @@ export class GameRoom extends Server<Env> {
     const ownBuildings: { x: number; y: number }[] = [];
     let anchorX = spawns[slot]?.x ?? 8;
     let anchorY = spawns[slot]?.y ?? 8;
+    let sawConyard = false;
+    let hubAnchor: { x: number; y: number } | null = null;
     for (const e of w.ents.values()) {
       if (e.o === slot && hasOwn(BUILDINGS, e.k)) {
-        ownBuildings.push({ x: Math.floor(e.x), y: Math.floor(e.y) });
+        const pt = { x: Math.floor(e.x), y: Math.floor(e.y) };
+        ownBuildings.push(pt);
         if (e.k === "conyard") {
-          anchorX = Math.floor(e.x);
-          anchorY = Math.floor(e.y);
+          sawConyard = true;
+          anchorX = pt.x;
+          anchorY = pt.y;
+        } else if (e.k === "supplyhub" && !hubAnchor) {
+          hubAnchor = pt;
         }
       }
+    }
+    // With the ConYard gone, automated placement should search outward from the
+    // backup forward base rather than the long-dead original spawn anchor.
+    if (!sawConyard && hubAnchor) {
+      anchorX = hubAnchor.x;
+      anchorY = hubAnchor.y;
     }
     const maxRadius = d.waterOnly ? SHIPYARD_BUILD_DIST + 6 : d.forwardRange ? d.forwardRange + 2 : 16;
     for (let r = 1; r <= maxRadius; r++) {

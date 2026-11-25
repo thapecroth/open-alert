@@ -8,6 +8,7 @@
 // stream; 1/legacy exercises the backward-compatible full-snapshot fanout.
 // opts.onmsg(m, st): hook invoked with the EFFECTIVE message (reassembled full
 // snapshot for snap frames, raw message otherwise; dropped deltas never reach it).
+// opts.spectate: join explicitly as a spectator instead of taking a player slot.
 
 import { registerHooks, createRequire } from "node:module";
 const require = createRequire(new URL("../package.json", import.meta.url));
@@ -95,6 +96,7 @@ export function wsconn(url, name, token, opts = {}) {
   ws.onopen = () => {
     const join = { t: "join", name, token };
     if (opts.v !== 1) join.v = 2;
+    if (opts.spectate) join.spectate = true;
     ws.send(JSON.stringify(join));
     opts.onopen?.(st);
   };

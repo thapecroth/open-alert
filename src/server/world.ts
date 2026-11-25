@@ -79,10 +79,18 @@ import type {
 import { findPath, nearestPassable } from "./path";
 
 const MAX_WAYPOINTS = 16;
+// Production tuning lives here rather than shared/gamedefs.ts: these are sim
+// pacing constants, not unit/building definitions. The unit queue cap is
+// mirrored by the client sidebar (display-only); cmdTrain remains authoritative.
+const MAX_TRAIN_QUEUE = 30;
+const PROD_BOOST_PER_EXTRA = 0.25; // duplicate producer speed gain (+25% per extra)
+const PROD_BOOST_CAP = 2.0;
 const CRATE_KINDS: readonly CrateKind[] = ["cash", "vet", "heal", "unit"];
 
 const hasOwn = (o: object, k: unknown): boolean =>
   typeof k === "string" && Object.prototype.hasOwnProperty.call(o, k);
+const multiProducerBoost = (count: number): number =>
+  Math.min(PROD_BOOST_CAP, 1 + Math.max(0, count - 1) * PROD_BOOST_PER_EXTRA);
 
 interface Order {
   kind: OrderKind;
@@ -1245,7 +1253,7 @@ export class World {
     // verify the engineer can actually reach the approach — otherwise the order stalls forever
     if (
       (Math.floor(e.x) !== ax || Math.floor(e.y) !== ay) &&
-      !findPath(Math.floor(e.x), Math.floor(e.y), ax, ay, this.passable, this.w >= 96 ? 4500 : 2400, this.w, this.h)
+      !findPath(Math.floor(e.x), Math.floor(e.y), ax, ay, this.passable, Math.max(2400, this.w * this.h), this.w, this.h)
     )
       return "can't reach the shore";
     e.bTiles = tiles;
@@ -1410,7 +1418,7 @@ export class World {
       if (count >= d.limit) return "limit reached";
     }
     if (p.credits < d.cost) return "insufficient funds";
-    if (!this.hasBuilding(slot, "conyard")) return "need a construction yard";
+    if (!this.hasConstructionCapability(slot)) return "need a construction yard or forward supply hub";
     p.credits -= d.cost;
     if (cat === "defense") p.dq.push({ kind, left: d.buildTicks, total: d.buildTicks });
     else p.bq.push({ kind, left: d.buildTicks, total: d.buildTicks });
@@ -1634,7 +1642,7 @@ export class World {
     if (d.requires && !this.hasBuilding(slot, d.requires)) return `need a ${d.requires}`;
     if (p.credits < d.cost) return "insufficient funds";
     const arr = (p.queues[d.trainsAt] ??= []);
-    if (arr.length >= 12) return "queue full";
+    if (arr.length >= MAX_TRAIN_QUEUE) return "queue full";
     p.credits -= d.cost;
     arr.push({ unit, left: d.buildTicks, total: d.buildTicks });
     return null;
@@ -1859,8 +1867,20 @@ export class World {
   }
 
   private prodBoostOf(slot: number, cat: ProdCat): number {
-    const cnt = this.buildingsOf(slot, cat).length;
-    return Math.min(2.0, 1 + Math.max(0, cnt - 1) * 0.25);
+    return multiProducerBoost(this.buildingsOf(slot, cat).length);
+  }
+
+  // Forward Supply Hubs are the buildable backup construction crews: one can
+  // keep construction unlocked after the ConYard dies, while duplicate hubs
+  // parallelize building fabrication with the same diminishing boost curve as
+  // unit-production structures. The ConYard itself is the baseline 1× producer
+  // and intentionally does not count toward the forward-hub duplicate bonus.
+  private constructionBoostOf(slot: number): number {
+    return multiProducerBoost(this.buildingsOf(slot, "supplyhub").length);
+  }
+
+  private hasConstructionCapability(slot: number): boolean {
+    return this.hasBuilding(slot, "conyard") || this.hasBuilding(slot, "supplyhub");
   }
 
   private recomputePower(slot: number) {
@@ -2235,16 +2255,17 @@ export class World {
       }
       const rate = p.lowPower ? 0.5 : 1;
       const bh = p.bq[0];
+      const dh = p.dq[0];
+      const buildRate = bh || dh ? rate * this.constructionBoostOf(p.slot) : rate;
       if (bh) {
-        bh.left -= rate;
+        bh.left -= buildRate;
         if (bh.left <= 0) {
           p.awaiting.push(bh.kind);
           p.bq.shift();
         }
       }
-      const dh = p.dq[0];
       if (dh) {
-        dh.left -= rate;
+        dh.left -= buildRate;
         if (dh.left <= 0) {
           p.awaitingDef.push(dh.kind);
           p.dq.shift();
@@ -2267,7 +2288,7 @@ export class World {
         if (!arr?.length) continue;
         const head = arr[0];
         const blds = this.buildingsOf(p.slot, cat);
-        const boost = Math.min(2.0, 1 + Math.max(0, blds.length - 1) * 0.25);
+        const boost = multiProducerBoost(blds.length);
         head.left -= rate * boost;
         if (head.left <= 0) {
           // losing the tech prerequisite mid-queue halts production with a refund
@@ -2331,7 +2352,7 @@ export class World {
             e.repath = 12;
             if (this.astarBudget > 0) {
               this.astarBudget--;
-              const maxExpand = this.w >= 96 ? 4500 : 2400;
+              const maxExpand = Math.max(2400, this.w * this.h);
               e.path =
                 findPath(Math.floor(e.x), Math.floor(e.y), Math.floor(o.x), Math.floor(o.y), this.passable, maxExpand, this.w, this.h) ?? [];
               // unreachable approach — don't burn an A* every 12 ticks forever
@@ -2751,7 +2772,7 @@ export class World {
             e.order = { kind: "harvest", x: e.oreIdx % this.w, y: (e.oreIdx / this.w) | 0 };
             if (this.astarBudget > 0) {
               this.astarBudget--;
-              const maxExpand = this.w >= 96 ? 4500 : 2400;
+              const maxExpand = Math.max(2400, this.w * this.h);
               e.path = findPath(
                 e.x | 0,
                 e.y | 0,
@@ -2840,7 +2861,7 @@ export class World {
       const g = goal ?? { x: e.oreIdx % this.w, y: (e.oreIdx / this.w) | 0 };
       if (this.astarBudget <= 0) return;
       this.astarBudget--;
-      const maxExpand = this.w >= 96 ? 4500 : 2400;
+      const maxExpand = Math.max(2400, this.w * this.h);
       e.path = findPath(e.x | 0, e.y | 0, g.x, g.y, this.passable, maxExpand, this.w, this.h);
       e.order = { kind: "harvest", x: g.x, y: g.y };
       if (!e.path) {
@@ -3234,7 +3255,7 @@ export class World {
       return;
     }
     this.astarBudget--;
-    const maxExpand = this.w >= 96 ? 4500 : 2400;
+    const maxExpand = Math.max(2400, this.w * this.h);
     e.path = findPath(e.x | 0, e.y | 0, spot.x, spot.y, pass, maxExpand, this.w, this.h);
     // null path = "needs compute" → stepAlong would immediately run a SECOND budgeted
     // search at the stale order coords. Mark hard failure as gave-up instead.
@@ -3282,7 +3303,7 @@ export class World {
     }
     const pass = dom === "sea" ? this.passableSea : this.passable;
     const searchR = dom === "sea" ? 24 : 12;
-    const maxExpand = this.w >= 96 ? 4500 : 2400;
+    const maxExpand = Math.max(2400, this.w * this.h);
     if (e.path === null) {
       const o = e.order;
       if (!o) {

@@ -724,6 +724,13 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
       foliage: 0x264b30,
       trunk: 0x4a3525,
     },
+    fulda_gap: {
+      wall: 0x4b4a45,
+      cap: 0x7b7868,
+      boulder: 0x5c5b55,
+      foliage: 0x264b30,
+      trunk: 0x4a3525,
+    },
     canyon: {
       wall: 0x86442c,
       cap: 0xc2794e,
@@ -949,6 +956,32 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
       accent: 0x38ba54,
       water: 0x14b4c8,
     },
+    panama: {
+      // Coral Sea: dark volcanic basalt atoll crags, vivid tropical emerald palms & turquoise coral sea
+      wall: 0x2d3238,
+      cap: 0x46584a,
+      boulder: 0x3c4347,
+      foliage: 0x249c42,
+      trunk: 0x6b4c30,
+      wallRough: 0.84,
+      capRough: 0.78,
+      wallMetal: 0.08,
+      accent: 0x38ba54,
+      water: 0x14b4c8,
+    },
+    english_channel: {
+      // Coral Sea: dark volcanic basalt atoll crags, vivid tropical emerald palms & turquoise coral sea
+      wall: 0x2d3238,
+      cap: 0x46584a,
+      boulder: 0x3c4347,
+      foliage: 0x249c42,
+      trunk: 0x6b4c30,
+      wallRough: 0.84,
+      capRough: 0.78,
+      wallMetal: 0.08,
+      accent: 0x38ba54,
+      water: 0x14b4c8,
+    },
     arctic_front: {
       // Polar War: ice-blue glacial ridges, snow-frosted caps & icy steel-blue polar ocean
       wall: 0x5786ad,
@@ -964,6 +997,19 @@ export function getCliffRockMaterials(mapId: MapId): CliffBiomeMats {
       water: 0x16547c,
     },
     megacontinent: {
+      // Eurasia Grand Theater: alpine granite peaks, snow-dusted crests, steppe pines & deep azure sea strait
+      wall: 0x4a4f58,
+      cap: 0x9aa4a8,
+      boulder: 0x5b6066,
+      foliage: 0x285834,
+      trunk: 0x4c3726,
+      wallRough: 0.78,
+      capRough: 0.72,
+      wallMetal: 0.1,
+      accent: 0xdbe6ee,
+      water: 0x125e94,
+    },
+    persian_gulf: {
       // Eurasia Grand Theater: alpine granite peaks, snow-dusted crests, steppe pines & deep azure sea strait
       wall: 0x4a4f58,
       cap: 0x9aa4a8,
@@ -1224,6 +1270,19 @@ interface BiomePalette {
 
 const BIOMES: Record<MapId, BiomePalette> = {
   crossroads: {
+    // Olive-ochre European steppe
+    seedA: 1337,
+    seedB: 7331,
+    base: [84, 82, 56],
+    altDelta: [-20, 16, -8],
+    noiseAmp: [24, 22, 14],
+    road: [120, 106, 82],
+    spawn: [94, 96, 90],
+    cliff: [56, 54, 50],
+    talus: [68, 64, 54],
+    trackStroke: "rgba(42, 36, 26, 0.15)",
+  },
+  fulda_gap: {
     // Olive-ochre European steppe
     seedA: 1337,
     seedB: 7331,
@@ -1516,6 +1575,38 @@ const BIOMES: Record<MapId, BiomePalette> = {
     seabedShallow: [36, 188, 194],
     seabedDeep: [10, 74, 112],
   },
+  panama: {
+    // Coral Sea: vivid tropical turquoise ocean, golden sandy shores & lush volcanic emerald atolls
+    seedA: 9623,
+    seedB: 4871,
+    base: [60, 126, 62],
+    altDelta: [22, 24, -6],
+    noiseAmp: [16, 22, 14],
+    road: [184, 160, 112],
+    spawn: [124, 136, 106],
+    cliff: [44, 48, 54],
+    talus: [78, 84, 68],
+    trackStroke: "rgba(48, 44, 28, 0.15)",
+    beach: [228, 198, 132],
+    seabedShallow: [36, 188, 194],
+    seabedDeep: [10, 74, 112],
+  },
+  english_channel: {
+    // Coral Sea: vivid tropical turquoise ocean, golden sandy shores & lush volcanic emerald atolls
+    seedA: 9623,
+    seedB: 4871,
+    base: [60, 126, 62],
+    altDelta: [22, 24, -6],
+    noiseAmp: [16, 22, 14],
+    road: [184, 160, 112],
+    spawn: [124, 136, 106],
+    cliff: [44, 48, 54],
+    talus: [78, 84, 68],
+    trackStroke: "rgba(48, 44, 28, 0.15)",
+    beach: [228, 198, 132],
+    seabedShallow: [36, 188, 194],
+    seabedDeep: [10, 74, 112],
+  },
   arctic_front: {
     // Polar War: crisp blue-white arctic snowfields, icy steel-blue polar ocean & glacial ridges
     seedA: 4937,
@@ -1533,6 +1624,22 @@ const BIOMES: Record<MapId, BiomePalette> = {
     seabedDeep: [10, 36, 64],
   },
   megacontinent: {
+    // Eurasia Grand Theater: sweeping warm steppe & alpine peaks split by a deep azure sea strait
+    seedA: 7529,
+    seedB: 3187,
+    base: [96, 94, 62],
+    altDelta: [-16, 18, -8],
+    noiseAmp: [24, 22, 14],
+    road: [134, 118, 88],
+    spawn: [104, 104, 94],
+    cliff: [62, 66, 72],
+    talus: [84, 82, 74],
+    trackStroke: "rgba(44, 38, 26, 0.16)",
+    beach: [192, 172, 126],
+    seabedShallow: [26, 110, 152],
+    seabedDeep: [9, 40, 82],
+  },
+  persian_gulf: {
     // Eurasia Grand Theater: sweeping warm steppe & alpine peaks split by a deep azure sea strait
     seedA: 7529,
     seedB: 3187,

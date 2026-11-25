@@ -34,13 +34,21 @@ import { Renderer } from "./render";
 import type { FpvTelemetry } from "./fpv";
 import { fpvStreakName, type FpvStoryState } from "./story";
 
+// Mirrors the authoritative sim constants in src/server/world.ts. Kept local
+// because the client bundle must not import the server simulation.
+const TRAIN_QUEUE_MAX = 30;
+const PROD_BOOST_PER_EXTRA = 0.25;
+const PROD_BOOST_CAP = 2.0;
+const multiProducerBoost = (count: number): number =>
+  Math.min(PROD_BOOST_CAP, 1 + Math.max(0, count - 1) * PROD_BOOST_PER_EXTRA);
+
 const TOOLTIPS: Record<string, string> = {
   conyard: "Construction Yard — the heart of your base.",
   power: "Power Plant — generates +100⚡ power. Click to upgrade in-place → Thermal Coal Plant (+200⚡) → Fusion Reactor (+420⚡).",
   coalplant: "Thermal Coal Plant (Tier II) — generates +200⚡ power. Click to upgrade in-place → Fusion Reactor (+420⚡) once Tech Lab is built.",
   fusion: "Fusion Reactor (Tier III) — apex clean-energy Tokamak generating +420⚡ power.",
   refinery: "Ore Refinery — unlocks harvesters; deploys one free.",
-  supplyhub: "Forward Supply Hub — extends build zone (26 tiles) & refills Fuel, Ammo + light repair in 12-tile aura",
+  supplyhub: "Forward Supply Hub — backup construction yard if your ConYard dies; extends build zone (26 tiles), refills Fuel/Ammo + light repair in 12-tile aura. Each extra hub speeds building construction.",
   barracks: "Barracks — trains Riflemen, Combat Engineers, AT / MANPADS & FPV Suicide Drones. Upgrade to MKII for Veteran ★ troops.",
   barracks2: "Barracks II — elite infantry command; trains Veteran ★ troops faster.",
   radar: "Radar Tower — reveals the minimap & detects cloaked B-21 Stealth Bombers. Unlocks Anti-Air Turret, Jammer Drone & HIMARS.",
@@ -100,7 +108,8 @@ const MAP_PREVIEW_PALETTES: Record<
   MapId,
   { bg: string; grid: string; cliff: string; cliffEdge: string; water?: string; waterGlint?: string; accentGrid?: string }
 > = {
-  crossroads: { bg: "#2b3926", grid: "rgba(180,210,160,0.08)", cliff: "#5a6257", cliffEdge: "#768072" }, // Steppe (olive)
+  crossroads: { bg: "#2b3926", grid: "rgba(180,210,160,0.08)", cliff: "#5a6257", cliffEdge: "#768072" },
+  fulda_gap: { bg: "#2b3926", grid: "rgba(180,210,160,0.08)", cliff: "#5a6257", cliffEdge: "#768072" }, // Steppe (olive)
   canyon: { bg: "#4a2c20", grid: "rgba(235,175,140,0.08)", cliff: "#82523c", cliffEdge: "#a16a50" }, // Canyon (rust)
   basin: { bg: "#28323c", grid: "rgba(170,200,225,0.08)", cliff: "#576574", cliffEdge: "#748494" }, // Alpine (slate)
   tundra: { bg: "#2e4656", grid: "rgba(210,240,255,0.1)", cliff: "#88b3ca", cliffEdge: "#b0d5e8" }, // Arctic (icy)
@@ -207,6 +216,22 @@ const MAP_PREVIEW_PALETTES: Record<
     cliffEdge: "#766c61",
     water: "#11668a",
     waterGlint: "rgba(130, 238, 255, 0.36)",
+  },
+  panama: {
+    bg: "#345937",
+    grid: "rgba(180, 238, 204, 0.08)",
+    cliff: "#4e4740",
+    cliffEdge: "#766c61",
+    water: "#11668a",
+    waterGlint: "rgba(130, 238, 255, 0.36)",
+  },
+  english_channel: {
+    bg: "#345937",
+    grid: "rgba(180, 238, 204, 0.08)",
+    cliff: "#4e4740",
+    cliffEdge: "#766c61",
+    water: "#11668a",
+    waterGlint: "rgba(130, 238, 255, 0.36)",
   }, // Coral Sea Theatre (96x96 grand ocean)
   arctic_front: {
     bg: "#334d5e",
@@ -217,6 +242,14 @@ const MAP_PREVIEW_PALETTES: Record<
     waterGlint: "rgba(176, 228, 255, 0.34)",
   }, // Polar Sea Front (96x96 arctic sea channels)
   megacontinent: {
+    bg: "#314232",
+    grid: "rgba(195, 224, 184, 0.08)",
+    cliff: "#5c6158",
+    cliffEdge: "#878f82",
+    water: "#144b6d",
+    waterGlint: "rgba(136, 212, 246, 0.3)",
+  },
+  persian_gulf: {
     bg: "#314232",
     grid: "rgba(195, 224, 184, 0.08)",
     cliff: "#5c6158",
@@ -288,6 +321,19 @@ function fmtTris(n: number): string {
 
 function fmtBoost(mult: number): string {
   return `×${Number(mult.toFixed(2))}`;
+}
+
+// Production items store remaining *work* in base ticks; the sim consumes that
+// work at the current speed multiplier. Convert work back to whole sim ticks
+// before displaying seconds, otherwise boosted/underpowered queues overstate
+// or understate their real remaining time.
+function fmtSimSeconds(ticks: number): string {
+  return `${Number((ticks / 10).toFixed(1))}s`;
+}
+
+function fmtWorkTime(workTicks: number, speed = 1): string {
+  const simTicks = Math.ceil(Math.max(0, workTicks) / speed - 1e-9);
+  return fmtSimSeconds(simTicks);
 }
 
 const SHORT_BUILDING_NAMES: Record<BuildingKind, string> = {
@@ -413,6 +459,7 @@ export class Hud {
   onAddBot: (diff: BotDiff, profile: BotProfile) => void = () => {};
   onSetBotConfig: (id: string, diff?: BotDiff, profile?: BotProfile) => void = () => {};
   onKickBot: (id: string) => void = () => {};
+  onTransferHost: (id: string) => void = () => {};
   onSetMap: (map: MapId) => void = () => {};
   onSetConfig: (cfg: Partial<GameConfig>) => void = () => {};
   onSetTeam: (team: number, id?: string) => void = () => {};
@@ -773,7 +820,7 @@ export class Hud {
       b.dataset.kind = kind;
       b.dataset.cat = cat;
       b.title = this.buildTooltip(kind);
-      b.innerHTML = `<span class="icon" data-kind="${kind}"></span><span class="slabel"><span class="sname">${BUILDING_NAMES[kind]}</span><span class="req-tag"></span></span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span><span class="qcount hidden"></span><span class="qpos hidden"></span>`;
+      b.innerHTML = `<span class="icon" data-kind="${kind}"></span><span class="slabel"><span class="sname">${BUILDING_NAMES[kind]}</span><span class="req-tag"></span></span><span class="cost">$${d.cost}</span><span class="btime">${d.buildTicks / 10}s</span><span class="prog"></span><span class="qcount hidden"></span><span class="qpos hidden"></span><span class="owncount hidden"></span>`;
       b.addEventListener("click", () => this.clickBuild(kind));
       b.addEventListener("contextmenu", (e) => {
         e.preventDefault();
@@ -1647,10 +1694,18 @@ export class Hud {
     }
   }
 
-  private buildTooltip(kind: BuildingKind, missing?: BuildingKind[]) {
+  private buildTooltip(kind: BuildingKind, missing?: BuildingKind[], constructionBoost = 1, powerRate = 1) {
     const d = BUILDINGS[kind];
     const pwr = d.power !== 0 ? `${d.power > 0 ? "+" : ""}${d.power}⚡ · ` : "";
-    const base = `${TOOLTIPS[kind] ?? BUILDING_NAMES[kind]} · ${pwr}${d.buildTicks / 10}s to build`;
+    const baseSecs = d.buildTicks / 10;
+    const effective = constructionBoost * powerRate;
+    const notes: string[] = [];
+    if (constructionBoost > 1.01) notes.push(`${fmtBoost(constructionBoost)} hub construction`);
+    if (powerRate < 0.99) notes.push(`low power ${fmtBoost(powerRate)}`);
+    const timeText = notes.length
+      ? `${fmtWorkTime(d.buildTicks, effective)} (base ${baseSecs}s, ${notes.join(", ")})`
+      : `${baseSecs}s`;
+    const base = `${TOOLTIPS[kind] ?? BUILDING_NAMES[kind]} · ${pwr}${timeText} to build`;
     if (missing?.length) return `${base} · Requires: ${missing.map((m) => BUILDING_NAMES[m]).join(", ")}`;
     return base;
   }
@@ -1833,6 +1888,16 @@ export class Hud {
         const out = p.eliminated ? " · out" : "";
         meta.textContent = `${role} ${conn}${out}`.trim();
         li.appendChild(meta);
+      }
+
+      if (isHost && p.connected && !p.spectator && !p.bot && p.id !== you) {
+        const hostBtn = document.createElement("button");
+        hostBtn.type = "button";
+        hostBtn.className = "host-btn";
+        hostBtn.title = `Make ${p.name} host`;
+        hostBtn.textContent = "⇑";
+        hostBtn.addEventListener("click", () => this.onTransferHost(p.id));
+        li.appendChild(hostBtn);
       }
 
       if (isHost && p.bot) {
@@ -2541,7 +2606,10 @@ export class Hud {
         d.power !== 0
           ? `<span class="${d.power > 0 ? "si-pwr-pos" : "si-pwr-neg"}">${d.power > 0 ? "+" : ""}${d.power}⚡</span>`
           : "";
-      chipsHtml = `<span class="si-cost">${fmtCost(d.cost)}</span><span class="si-time">${d.buildTicks / 10}s</span>${pwrHtml}`;
+      const baseTime = `${d.buildTicks / 10}s`;
+      const shownTime = btn.querySelector<HTMLElement>(".btime")?.textContent ?? "";
+      const timeLabel = /^\d+(?:\.\d+)?s$/.test(shownTime) ? shownTime : baseTime;
+      chipsHtml = `<span class="si-cost">${fmtCost(d.cost)}</span><span class="si-time">${timeLabel}</span>${pwrHtml}`;
       desc = TOOLTIPS[kind] ?? title;
     } else if (unit) {
       const d = UNITS[unit];
@@ -2615,6 +2683,16 @@ export class Hud {
       else delete b.dataset.statusText;
     };
 
+    // Forward Supply Hubs are visible own entities, so the client can predict
+    // the deterministic construction-speed multiplier exactly without another
+    // snapshot field. The server remains authoritative for the actual tick rate.
+    const constructionBoost = multiProducerBoost(countOf?.("supplyhub") ?? 0);
+    const powerRate = state?.lowPower ? 0.5 : 1;
+    const buildSpeed = constructionBoost * powerRate;
+    const buildTimeText = (ticks: number) => fmtWorkTime(ticks, buildSpeed);
+    const buildTip = (kind: BuildingKind, missing?: BuildingKind[]) =>
+      this.buildTooltip(kind, missing, constructionBoost, powerRate);
+    const canConstruct = has("conyard") || has("supplyhub");
 
     for (const [kind, b] of this.buildBtns) {
       const d = BUILDINGS[kind];
@@ -2637,13 +2715,38 @@ export class Hud {
         qpos.classList.toggle("hidden", queueIdx < 0);
         qpos.classList.toggle("head", queueIdx === 0);
       }
+      // Owned-count chip — how many of this building you ALREADY have on the
+      // field, so nobody queues an accidental duplicate. Upgraded tiers count
+      // toward their base kind (a Fusion Reactor is still a power plant you
+      // own); in-production / awaiting-placement items append as "+N" since the
+      // queue is exactly the accidental-duplicate path. Hidden when you own
+      // none (zero is the default state — no visual noise) or when spectating.
+      const ownBadge = b.querySelector<HTMLElement>(".owncount");
+      if (ownBadge) {
+        let owned = 0;
+        if (state && countOf) {
+          let cur: BuildingKind | undefined = kind;
+          const seen = new Set<BuildingKind>();
+          while (cur && !seen.has(cur)) {
+            seen.add(cur);
+            owned += countOf(cur);
+            cur = UPGRADE_PATHS[cur]?.to;
+          }
+        }
+        const show = state != null && owned > 0;
+        ownBadge.textContent = show ? `${owned}${totalQueued > 0 ? `+${totalQueued}` : ""}` : "";
+        ownBadge.classList.toggle("hidden", !show);
+        ownBadge.title = show
+          ? `You own ${owned} ${BUILDING_NAMES[kind]}${owned > 1 ? "s" : ""}${totalQueued > 0 ? ` (+${totalQueued} in production)` : ""}`
+          : "";
+      }
       b.classList.remove("ready", "locked");
       delete b.dataset.busy;
       b.disabled = false;
       const prog = b.querySelector<HTMLElement>(".prog")!;
       const bt = b.querySelector<HTMLElement>(".btime")!;
       prog.style.width = "0%";
-      bt.textContent = `${d.buildTicks / 10}s`;
+      bt.textContent = buildTimeText(d.buildTicks);
       if (kind === "superweapon" && !config.superweapons) {
         b.classList.add("locked");
         b.disabled = true;
@@ -2659,30 +2762,30 @@ export class Hud {
         bt.textContent = "NO WATER";
         const detail =
           "Naval Shipyard requires navigable water — pick a naval map marked with ⚓ (Bridgehead Crossing, Pacific Atoll, Storm Coast, Sunken Atlantis, Titan Graveyard, Caldera Forge, Offshore Megarig, Coral Sea Theatre, Polar Sea Front, Eurasia Supertheater).";
-        b.title = `${this.buildTooltip(kind)} · ${detail}`;
+        b.title = `${buildTip(kind)} · ${detail}`;
         applyReason(b, "No water", detail, "lock", "blocked");
         continue;
       }
       if (!state) {
         b.disabled = true;
-        b.title = this.buildTooltip(kind);
+        b.title = buildTip(kind);
         applyReason(b, "", "", "", "blocked");
         continue;
       }
-      if (!has("conyard")) {
+      if (!canConstruct) {
         b.classList.add("locked");
         b.disabled = true;
         const detail = isDef
-          ? "Lost Construction Yard — cannot build defenses."
-          : "Lost Construction Yard — cannot build structures.";
-        b.title = `${this.buildTooltip(kind)} · ${detail}`;
-        applyReason(b, "Need ConYard", detail, "busy", "blocked");
+          ? "Lost Construction Yard and no Forward Supply Hub — cannot build defenses."
+          : "Lost Construction Yard and no Forward Supply Hub — cannot build structures.";
+        b.title = `${buildTip(kind)} · ${detail}`;
+        applyReason(b, "Need ConYard/Hub", detail, "busy", "blocked");
         continue;
       }
       if (readyCount > 0) {
         b.classList.add("ready");
         bt.textContent = "READY";
-        b.title = this.buildTooltip(kind);
+        b.title = buildTip(kind);
         applyReason(
           b,
           "Click to place",
@@ -2698,25 +2801,25 @@ export class Hud {
         const head = queueArr[queueIdx];
         if (queueIdx === 0) {
           prog.style.width = `${(1 - head.left / head.total) * 100}%`;
-          bt.textContent = `${(head.left / 10).toFixed(1)}s`;
+          bt.textContent = fmtWorkTime(head.left, buildSpeed);
           applyReason(b, "", "", "", "building", `Constructing (×${queueCount} queued) — right-click to cancel & refund.`);
         } else {
           bt.textContent = ""; // position now shown by .qpos badge
           applyReason(b, "", "", "", "building", `Queued #${queueIdx + 1} — right-click to cancel & refund.`);
         }
-        b.title = this.buildTooltip(kind);
+        b.title = buildTip(kind);
         continue;
       }
       if (d.limit !== undefined && countOf && countOf(kind) + totalQueued >= d.limit) {
         b.disabled = true;
         bt.textContent = "MAX";
         const detail = `Limit reached — you can only have ${d.limit} ${BUILDING_NAMES[kind]} at a time.`;
-        b.title = `${this.buildTooltip(kind)} · ${detail}`;
+        b.title = `${buildTip(kind)} · ${detail}`;
         applyReason(b, `Max ${d.limit} built`, detail, "limit", "blocked");
         continue;
       }
       const missing = d.requires?.filter((r) => !has(r)) ?? [];
-      b.title = this.buildTooltip(kind, missing);
+      b.title = buildTip(kind, missing);
       if (missing.length) {
         const chain = missingPrereqChain(d.requires ?? [], has);
         const detail = `Locked — Build first: ${formatChainSteps(chain).join(" → ")}.`;
@@ -2759,7 +2862,7 @@ export class Hud {
       }
     }
 
-    // Multi-factory production speed badge on ARMY header (all 4 production categories)
+    // Multi-producer speed badge on ARMY header (construction + all 4 unit categories)
     const boostEl = document.getElementById("prod-boost");
     const bBoost = state?.prodBoost?.barracks ?? 1;
     const fBoost = state?.prodBoost?.factory ?? 1;
@@ -2767,6 +2870,9 @@ export class Hud {
     const sBoost = state?.prodBoost?.shipyard ?? 1;
     if (boostEl) {
       const active: { short: string; key: string; name: string; mult: number }[] = [];
+      if (constructionBoost > 1.01) {
+        active.push({ short: "BLD", key: "C", name: "Forward Supply Hub construction", mult: constructionBoost });
+      }
       if (bBoost > 1.01) active.push({ short: "INF", key: "B", name: "Barracks", mult: bBoost });
       if (fBoost > 1.01) active.push({ short: "VEH", key: "F", name: "War Factory", mult: fBoost });
       if (aBoost > 1.01) active.push({ short: "AIR", key: "A", name: "Air Command", mult: aBoost });
@@ -2826,9 +2932,17 @@ export class Hud {
         applyReason(b, "No water", detail, "lock", "blocked");
         continue;
       }
-      const baseTitle = `${TOOLTIPS[unit] ?? label(unit)} · ${d.buildTicks / 10}s to train · Shift+click = ×5`;
+      const trainSpeed = mult * powerRate;
+      const trainNotes: string[] = [];
+      if (mult > 1.01) trainNotes.push(`${fmtBoost(mult)} production`);
+      if (powerRate < 0.99) trainNotes.push(`low power ${fmtBoost(powerRate)}`);
+      const baseTrainSecs = d.buildTicks / 10;
+      const trainTimeText = trainNotes.length
+        ? `${fmtWorkTime(d.buildTicks, trainSpeed)} (base ${baseTrainSecs}s, ${trainNotes.join(", ")})`
+        : `${baseTrainSecs}s`;
+      const baseTitle = `${TOOLTIPS[unit] ?? label(unit)} · ${trainTimeText} to train · Shift+click = ×5`;
       b.title = baseTitle;
-      bt.textContent = mult > 1.01 ? `${(d.buildTicks / 10 / mult).toFixed(1)}s` : `${d.buildTicks / 10}s`;
+      bt.textContent = fmtWorkTime(d.buildTicks, trainSpeed);
       if (!state) {
         applyReason(b, "", "", "", "blocked");
         continue;
@@ -2874,12 +2988,12 @@ export class Hud {
         const head = arr[0];
         if (myIdx === 0) {
           prog.style.width = `${(1 - head.left / head.total) * 100}%`;
-          bt.textContent = `${(head.left / 10).toFixed(1)}s`;
+          bt.textContent = fmtWorkTime(head.left, trainSpeed);
         } else {
           bt.textContent = ""; // position now shown by .qpos badge
         }
-        if (arr.length >= 12) {
-          applyReason(b, "Queue full", "Production queue full (max 12).", "busy", "blocked");
+        if (arr.length >= TRAIN_QUEUE_MAX) {
+          applyReason(b, "Queue full", `Production queue full (max ${TRAIN_QUEUE_MAX}).`, "busy", "blocked");
           continue;
         }
         if (state.credits < d.cost) {
@@ -2894,12 +3008,12 @@ export class Hud {
           "",
           "",
           "training",
-          `Training (×${myCount}, queue ${arr.length}/12) — click to queue more · Shift+click ×5 · Right-click to cancel.`,
+          `Training (×${myCount}, queue ${arr.length}/${TRAIN_QUEUE_MAX}) — click to queue more · Shift+click ×5 · Right-click to cancel.`,
         );
         continue;
       }
-      if (arr?.length && arr.length >= 12) {
-        applyReason(b, "Queue full", "Production queue full (max 12).", "busy", "blocked");
+      if (arr?.length && arr.length >= TRAIN_QUEUE_MAX) {
+        applyReason(b, "Queue full", `Production queue full (max ${TRAIN_QUEUE_MAX}).`, "busy", "blocked");
         continue;
       }
       if (state.credits < d.cost) {
