@@ -1,171 +1,194 @@
 # Open Alert
 
-A real-time, multiplayer, browser-based strategy game — harvest ore, build your base, tech up, and crush your friends. Original work inspired by classic RTS gameplay loops; no affiliation with any existing franchise.
+**A real-time, multiplayer RTS that runs entirely in the browser** — harvest ore, build your base, tech up through land, air, and naval trees, crush your friends or the ruthless CABAL — then drop into first-person and fight the war yourself. Original work inspired by classic RTS gameplay loops; no affiliation with any existing franchise.
 
-**Play it live:** https://open-alert.thapecroth.workers.dev — share the link, join the same room, hit start.
+**[▶ Play now](https://open-alert.thapecroth.workers.dev)** — share the link, join the same room, hit start. No install, no signup.
+**[⚔ Units encyclopedia](https://open-alert.thapecroth.workers.dev/units)** — every unit and defense, with stats, counters, and live gameplay footage generated from the real game definitions.
+**[📺 Spectator dashboard](https://open-alert.thapecroth.workers.dev/?watch=1)** — watch live multiplayer and AI-vs-AI matches in 3D.
 
-![a three-way CABAL war — tank columns, beam fire, base under siege](docs/img/gameplay.gif)
+![A three-way war — tank columns, beam fire, a base under siege](docs/img/gameplay.gif)
 
-![lobby](docs/screenshots/lobby.png)
-![gameplay](docs/screenshots/gameplay.png)
-![battle](docs/screenshots/battle.png)
+| Lobby & map select | Base close-up | Mid-game base, fog of war |
+| --- | --- | --- |
+| ![Lobby with map browser, bot difficulty and match settings](test/shots/tech-01-lobby.png) | ![Tech-tier base buildings — procedural Three.js models](test/shots/tech-11-units.png) | ![Overhead view of a developing base inside fog of war](test/shots/tech-08-mid-base.png) |
 
 ## Features
 
-- **Multiplayer rooms** over WebSockets — host a room, share the link, up to **8 players** + live spectators, on **19 maps** from cramped crossroads to 128×128 ocean theaters
-- **Authoritative server sim** — 10 Hz fixed-step simulation in a Cloudflare Durable Object; clients only render and send commands
-- **Full economy loop** — ore fields that regrow and spread, harvesters, refineries, oil derricks, coal mines, an ore purifier bonus, and supply-convoy logistics (fuel + ammunition)
-- **Upgradable power** — start with a basic Power Plant, upgrade it in place to a Thermal Coal Plant and finally a Fusion Reactor; low power halves production and disables defenses
-- **Three theaters of war** — land armies, full air wings (Reaper UCAVs, helicopter gunships, A-10s, AC-130 gunships, B-21 stealth bombers, Fury wingmen, Mach-9 hypersonics), and blue-water navies (gunboats, destroyers, submarines, cruisers, carriers)
-- **Modern drone warfare** — $45 FPV kamikazes, Shahed-style delta drones, sea drones, and EW jammers, priced and countered the way real battlefields do
-- **Covert ops** — disguised Spies slip past auto-defenses and sabotage power, radar, production, or superweapons; only powered radar blows their cover
-- **Strategic missile game** — mobile Ballistic Missile TELs outrange everything, defeated only by Anti-Nuke batteries at ~80% odds — bait the interceptors, then fire the nuke
-- **Deep defense tree** — Vulcan turrets, anti-air nests, Iron Dome, Anti-Nuke shields, Helios lasers, Arc Spires — every tier has a real counter
-- **First-person mode** — jump into *any* unit with `F`: 30 bespoke cockpits, sprint/boost, aircraft altitude control, ADS/crouch, AC-130 weapon select, guided lock-on, kill feed, medals, objectives, and radio chatter
-- **Pause in solo games** — freeze the sim mid-match when it's just you vs bots (one click, honest freeze — nothing moves, earns, or burns while paused)
-- **CABAL AI opponents** — phase-aware server bots (easy → brutal) that play through the same command API as humans, and will happily sabotage you back
-- **Adaptive graphics governor** — real-time quality scaling (raytracing → shadows → bloom → low path) driven by your FPS and the live entity count, so 800-unit battles stay smooth
-- **RL gym** (`src/server/gym.ts`) — `GymEnv` with structured obs + **visual obs** (`featureMaps()` 6×64×64 channels, `rgbFrame()` rendered minimap), shaped rewards, scripted/idle/mirror opponents — **1:1 state parity with live MCP** so models finetuned in `GymEnv` can drop straight into live AI-vs-AI matches
-- **LLM player & AI-vs-AI MCP Arena** (`test/llmbot.mjs`, `/mcp`) — pit any MCP-connected AI or finetuned model against another live while spectators watch in 3D on `/?watch=1`
-- **3D renderer** — Three.js with ACES tone mapping, optional raytraced shadows, bloom, HDR environment, PBR terrain with per-biome water palettes, and procedural art
+**Multiplayer, the way RTS should feel**
+
+- Rooms over WebSockets — host, share the link, up to **8 players** (FFA or teams 1–4) plus live spectators
+- **29 hand-authored maps** from 192×192 up to colossal **256×256** theaters — including real-world battlegrounds: the Strait of Hormuz, English Channel, Persian Gulf, Panama Isthmus, Fulda Gap, Mediterranean, Nordic fjords, Bering Strait, Mekong Delta, and a full Blue Planet earth map
+- **Authoritative server sim** — 10 Hz fixed-step simulation inside a Cloudflare Durable Object per room; clients only render and send intents. Matches checkpoint to Durable Object storage every ~3 s, so a reload mid-war rejoins seamlessly
+- Match rules configurable in the lobby: starting credits, game speed, superweapons, crates, derricks, fog of war, fuel & ammo logistics
+- **Pause in solo games** — an honest freeze when it's just you vs bots: nothing moves, earns, or burns while paused
+
+**Three theaters of war, one combined arms problem**
+
+- **26 unit types across land, air, and sea** — infantry, engineers and spies; main battle tanks, HIMARS, railgun MBTs and ballistic-missile TELs; Reaper UCAVs, helicopter gunships, A-10s, AC-130s, B-21 stealth bombers and Mach-9 hypersonics; hydrofoils, destroyers, submarines, cruiser dreadnoughts and drone carriers
+- **Modern drone warfare** — $45 FPV kamikazes, Shahed-style delta drones, stealth sea-drone USVs, and EW jammer drones, priced and countered the way real battlefields do
+- **Deep defense tree** — Vulcan turrets, anti-air nests, Arc Spires, Iron Dome active interception, Helios lasers, and THAAD anti-nuke batteries; every tier has a real counter
+- **Strategic missile game** — mobile ballistic TELs outrange everything and can only be stopped by THAAD batteries (80% per ready battery in range, then a 45 s reload — bait the interceptors, *then* fire). The Nuclear Silo superweapon plays by the same interception rules
+- **Covert ops** — disguised spies slip past auto-defenses and sabotage power grids, radar, production queues, or superweapon charge; only powered radar blows their cover
+- **Veterancy, crates, and capture** — four experience ranks with real stat growth, periodic supply crates, and engineers that seize enemy buildings or lay pontoon bridges across open water
+
+| Armor | Air wing | Submersible | Expendable |
+| --- | --- | --- | --- |
+| [![Main battle tanks in combat](src/client/public/units/tank.gif)](https://open-alert.thapecroth.workers.dev/units) | [![A-10 Warthog strafing run](src/client/public/units/a10.gif)](https://open-alert.thapecroth.workers.dev/units) | [![Submarine on patrol](src/client/public/units/sub.gif)](https://open-alert.thapecroth.workers.dev/units) | [![FPV kamikaze drone strike](src/client/public/units/fpvdrone.gif)](https://open-alert.thapecroth.workers.dev/units) |
+
+*Real gameplay captures — the full roster with stats and counters lives in the [units encyclopedia](https://open-alert.thapecroth.workers.dev/units).*
+
+**A real economy under the war**
+
+- Ore fields that regrow and spread, harvesters, refineries, captureable oil derricks and coal mines, and an ore purifier bonus
+- **Upgradable power** — Power Plant upgrades in place to a Thermal Coal Plant, then a Fusion Reactor. Low power halves production and takes radar, powered defenses, recon, and superweapons offline
+- **Fuel & ammunition logistics** — armies burn fuel and ammo, resupplied by forward supply hubs, depots, and mobile supply convoys. Deep raids need a supply line
+- Production buildings upgrade in place to MkII tiers, unlocking veteran output and the top-end units
+
+**First-person mode**
+
+- Press `E` on *any* unit you own — soldier, tank, jet, or ship — and you're inside it: bespoke first-person viewmodels per unit, WASD driving, mouse aim, sprint/boost, crouch, aim-down-sights, altitude control for aircraft, three-way weapon select on the AC-130, and hold-to-lock guided missiles
+- A full sortie layer on top: kill feed, medals, an objective ladder, hitmarkers, and radio chatter — inside the same live multiplayer match
+
+**AI everywhere**
+
+- **CABAL bot opponents** — phase-aware server bots (easy / normal / brutal, plus rusher / turtle / tech-boom profiles) that play through the exact same command API as humans. No freebies: they pay for everything and can be denied like you
+- **RL gym** (`src/server/gym.ts`) — `GymEnv` with structured observations, 6-channel feature-map planes sized to the map, rendered RGB minimap frames, shaped rewards, and scripted / idle / mirror opponents
+- **MCP commander API + AI-vs-AI arena** — pit any MCP-connected model against bots, humans, or another model while spectators watch live in 3D. Gym-trained checkpoints drop straight into live matches with 1:1 observation parity (details below)
+
+**A renderer that holds up at war scale**
+
+- Three.js with ACES filmic tone mapping, optional raytraced shadows and contact shadows, half-resolution bloom, HDR sky with PMREM reflections, PBR terrain with per-biome water palettes, and fully procedural unit meshes — no stock assets
+- **Adaptive quality governor** — real-time quality scaling driven by measured FPS and live entity pressure, shedding raytracing, contact shadows, and bloom in steps so huge late-game battles never stutter
 
 ## Quick start
 
 ```bash
 npm install
-npm run dev          # vite dev client + wrangler dev worker
+npm run build     # build the client into dist/client (once, or after client edits)
+npm run dev       # wrangler dev — serves the full game at http://localhost:8787
 ```
 
-Open the printed URL, pick a name, join a room, add a bot or a friend, READY, START.
+Open the printed URL, pick a name, create or join a room, add a bot or a friend, READY, START.
 
-## Play with Claude Code (MCP Server)
+For client work with hot reload, run `npm run dev:client` in a second terminal — the Vite dev server on :5173 automatically talks to the local worker on :8787. No server at all? The client falls back to a browser-local single-player sim running the same `World` and bot code at 0 ms latency.
 
-Let Claude Code command a full RTS army in real time — build a base, tech up, launch air/naval raids, and battle CABAL bots or human players live while you watch in 3D.
+## Controls
 
-### 1. Remote 1-command setup (recommended — zero install)
+| Input | Action |
+| --- | --- |
+| Left-click / drag / `Shift`+click | select · box-select · add/toggle |
+| Double-click unit | select all same-type units on screen |
+| Right-click | move · attack · harvest · set rally point |
+| `Shift`+right-click · minimap right-click | queue waypoints · issue map orders (`Alt`+right-click = ping) |
+| `Shift`+click production icon | queue ×5 units |
+| `Alt`+`1`–`9` / `1`–`9` | assign / recall control groups (double-tap recalls and centers) |
+| `F` or `A` + click | attack-move — `F` in the default WASD-camera mode, `A` in classic-hotkey mode |
+| `P` / `G` / `X` (classic: `S`) | patrol · hold position · stop (classic mode: `X` scatters instead) |
+| `E` | enter / exit first-person POV on the selected unit |
+| `B` | place the next finished building |
+| `Q` / `F1` / `Tab` | select all combat units · next harvester · cycle production buildings |
+| `$` (or `V`) / `R` | sell mode / repair mode — then click your building |
+| `WASD` / arrows · wheel · `+`/`−` · middle-drag | pan & zoom camera (toggle classic hotkeys with the KEYS button) |
+| `[` / `]` · `\` | rotate camera CCW / CW · reset north-up |
+| `H` · `Space` · `C` | jump to base · jump to last alert · center on selection |
+| `Enter` / `Esc` | chat · cancel mode / deselect |
+| `⏸ PAUSE` button | freeze the sim (solo vs bots only) |
+
+**First-person (`E`):** WASD drive, mouse aim, `Shift` sprint/boost, `C` crouch, right-mouse aim-down-sights, pitch input controls aircraft altitude, `1`/`2`/`3` weapon select on multi-gun platforms, hold the reticle on target for guided lock-on, `E`/`Esc` to step out.
+
+## Play with Claude Code (MCP)
+
+Let an AI commander run a full RTS army in real time — build a base, tech up, launch air and naval raids, and fight CABAL bots or human players while you watch in 3D.
+
+**Remote, zero-install** — the production worker exposes a streamable HTTP MCP endpoint:
 
 ```bash
 claude mcp add --transport http open-alert https://open-alert.thapecroth.workers.dev/mcp
 ```
 
-### 2. Local standalone stdio MCP server (Node >= 22, zero npm deps)
-
-Keeps persistent WebSocket sessions per room for instant snapshots and zero-latency orders. Works against live production or a local `npm run dev` server (`OA_URL=http://localhost:8787`):
+**Local stdio server** (Node ≥ 22, zero npm dependencies) — keeps persistent WebSocket sessions per room for instant snapshots and low-latency orders, and adds host transfer. Works against production or a local `npm run dev` server (`OA_URL=http://localhost:8787`):
 
 ```bash
 claude mcp add open-alert -- node /path/to/open-alert/mcp/open-alert-mcp.mjs
-# or test locally with:
+# or try it directly:
 npm run mcp
 ```
 
-**Available MCP Commander Tools (10 tools — HTTP `/mcp` & local stdio):**
-- `list_live_games` — discover active rooms, players, maps, and spectator links
-- `join_game` — join or host a room (`room`, `name`, `map`, `add_bot`, `diff`, `start`, `spectate`) and get a `watch_url`
-- `create_ai_arena` — spin up a live **AI-vs-AI arena** with two external MCP agent seats (`agent_a` slot 0 + `agent_b` slot 1), configurable map/credits/speed, instant live listing on the Spectator Dashboard (`/?watch=1`), and both commander tokens + `watch_url`
-- `get_gym_schema` — fetch the exact RL Gym observation contract (`gym_obs`), `6×64×64` float32 `feature_maps` contract, `64×64×3` uint8 `rgb_frame` contract, and `rts_action` schema for training & finetuning models
-- `get_game_state` — returns **exact RL Gym state parity** (`gym_obs`, plus optional base64 `feature_maps` & `rgb_frame` tensors) alongside LLM-optimized tactical summaries (credits, power, queues, own/enemy forces, derricks, crates, valid build tiles, `done`, `winner`, `watch_url`)
-- `build_structure` / `place_structure` — construct and deploy base buildings
-- `train_unit` — queue land, air, and naval units
-- `command_units` — issue `move`, `amove`, `attack`, `harvest`, `patrol`, `stop`, `hold` by unit IDs or group (`all_combat`, `infantry`, `tanks`, `air`, `sea`, `harvesters`)
-- `special_action` — fire Orbital Ion Cannon (`superweapon`), `recon` scan, `upgrade` War Factory, `sell`, `repair`, `rally`, `chat`, `resign`
+**Commander tools:** `list_live_games` · `join_game` · `get_game_state` · `build_structure` / `place_structure` · `train_unit` · `command_units` (`move`, `amove`, `attack`, `harvest`, `patrol`, `stop`, `hold` — by unit ids or groups like `all_combat`, `air`, `sea`) · `special_action` (superweapon strike, recon scan, upgrade, sell, repair, rally, chat, resign) · `create_ai_arena` — spins up a live AI-vs-AI match with two external agent seats and a spectator link · `get_gym_schema` — the exact RL observation contract.
 
-Models trained or finetuned against `src/server/gym.ts` (`GymEnv`) receive the **exact same `gym_obs` / `feature_maps` / `rgb_frame` representation** over MCP, so you can drop any fine-tuned checkpoint straight into a live `create_ai_arena` match and spectate it in 3D!
+`get_game_state` returns **exact RL-gym parity**: the same `gym_obs` structure the `GymEnv` emits, plus optional base64 `feature_maps` / `rgb_frame` tensors and an LLM-friendly tactical summary (credits, power, queues, forces, valid build tiles, `done`, `winner`, `watch_url`). Models trained or finetuned against `src/server/gym.ts` can drop straight into a live `create_ai_arena` match — then watch them in 3D on the [spectator dashboard](https://open-alert.thapecroth.workers.dev/?watch=1).
 
-Then tell Claude Code: *"Join an Open Alert room against a brutal bot, give me the watch URL, and win the match!"*
-
-## Live Spectator Dashboard
-
-Watch ongoing AI vs. AI, Claude vs. CABAL, and multiplayer matches live in 3D from the browser:
-
-- **Live Dashboard:** https://open-alert.thapecroth.workers.dev/?watch=1
-- **Direct Room Spectate:** `https://open-alert.thapecroth.workers.dev/?room=<room>&spectate=1`
-
-## Commands
-
-| script | what it does |
-|---|---|
-| `npm run dev` | local dev (wrangler dev + vite) |
-| `npm run mcp` | start standalone stdio MCP server (`OA_URL` overrides server URL) |
-| `npm run build` | build client to `dist/` + typecheck |
-| `npm run deploy` | deploy worker + static assets to Cloudflare |
-| `npm test` | RL gym suite — obs, schema, feature maps, RGB frames, upgrade, full episode (no server needed) |
-| `npm run test:ws` | all WebSocket suites (needs `npm run dev`) — regress / bugfix / features / techtree / orderfuzz |
-| `npm run test:browser` | real-Chrome interaction + visual suites (needs `npm run dev` + Chrome) |
-| `npm run test:all` | everything above |
-| `node test/regress.mjs` | protocol regression suite |
-| `node test/features.mjs` | feature checks (sell/repair/chat/resign/bots) |
-| `node test/bugfix.mjs` | targeted regression tests for past bugs |
-| `node test/techtree.mjs` | full tech tree: prereqs, capture, upgrade, purifier, depot, arc |
-| `node test/orderfuzz.mjs` | order fuzzing: malformed/off-map/spoofed/stale/conflicting commands |
-| `node test/interact.mjs` | real-Chrome input e2e: click, drag-select, orders, placement ghost, hotkeys |
-| `node test/techvisual.mjs` | real-Chrome visual pass over the whole roster |
-| `node test/visual.mjs` | headless-Chrome gameplay screenshot pass |
-| `node test/spectate.mjs <room> [secs]` | screenshot a live match as spectator (reload-safe) |
-| `node test/bot.mjs <room>` | run a CABAL bot against a room |
-| `node test/covert.mjs` | covert ops: spy disguise/reveal/sabotage, ballistic interception, pause freeze |
-| `node test/llmbot.mjs <room>` | run an LLM-driven player (set `OA_LLM_URL`/`OA_LLM_MODEL`) |
-| `node test/gym.mjs` | RL environment assertion suite |
-| `node test/gym-client.mjs` | RL environment scripted demo |
-
-## Controls
-
-| input | action |
-|---|---|
-| left-click / drag | select units |
-| right-click | move · attack · harvest |
-| `A` + right-click | attack-move |
-| `P` / `G` / `S` | patrol / hold / stop |
-| `$` / `R` | sell / repair mode |
-| `Shift` + orders | queue waypoints |
-| `F` | enter / exit first-person mode on the selected unit |
-| right-click sidebar item | cancel & refund |
-| wheel / arrows / edge / mid-drag | zoom & pan camera |
-| `⏸ PAUSE` button | freeze the sim (solo vs bots only) |
-| `Enter` | chat |
-| `Esc` | cancel mode |
-| `?` | help overlay |
-
-**First-person (`F`)**: WASD drive, mouse aim, `Shift` sprint/boost, `C` crouch, RMB aim-down-sights, pitch controls aircraft altitude, `1`/`2`/`3` weapon select (AC-130), hold reticle on target for guided lock-on.
+Then tell your agent: *"Join an Open Alert room against a brutal bot, give me the watch URL, and win the match."*
 
 ## Architecture
 
 ```
 src/
-  shared/       gamedefs (tech tree, stats) + protocol (typed C2S/S2C messages)
-  server/       world.ts (authoritative sim), bot.ts (CABAL AI), gym.ts (RL env), path.ts (A*)
-  client/       Three.js renderer, input/picking, HUD, net, icons
-  worker.ts     PartyServer GameRoom — one Durable Object per room
-test/           websocket regression suites + bots + visual harness
+  shared/    gamedefs.ts   tech tree, unit/building stats, map layouts — one source of truth
+             protocol.ts   typed client↔server messages (v2 delta-stream)
+             snapdelta.ts  keyframe+delta snapshot compression, shared by server & client
+  server/    world.ts      authoritative sim: economy, combat, fog, pathing, physics
+             bot.ts        CABAL AI — same public command API as humans
+             gym.ts        RL environment (GymEnv) with exact live-MCP parity
+             path.ts       A* with connectivity-region rejection
+             dispatch.ts   command validation & application
+  client/    Three.js renderer, input/picking, HUD, first-person rigs, net, procedural audio
+  worker.ts  PartyServer GameRoom — one Durable Object per room, plus the HTTP /mcp endpoint
+mcp/         standalone stdio MCP server (zero dependencies)
+tools/       capture pipeline (gameplay GIF harness), map previewer
+test/        websocket regression suites, RL gym suite, real-Chrome interaction harness
 ```
 
-The server owns all truth: entities, economy, combat, fog. Clients send intents
-(`build`, `place`, `train`, `order`, `upgrade`, `sell`, `repair`…) and receive
-5 Hz snapshots + events.
+Engineering notes, for the curious:
+
+- **The server owns all truth.** Entities, economy, combat, fog — everything is simulated at 10 Hz inside one Durable Object per room. Clients send intents (`build`, `place`, `train`, `order`, `upgrade`…) and receive 5 Hz snapshots plus discrete events. The sim, bots, and RL gym share one implementation, so there is no train/serve skew.
+- **Delta-compressed snapshots** (`snapdelta.ts`) — keyframe every ~4 s, then per-entity field-level diffs in between; unchanged entities cost zero bytes. New and reconnecting clients reassemble state through the same pure functions the tests use.
+- **Connectivity-region pathfinding** — every tile is flood-fill labeled by land/sea region. An A* whose goal sits in a different region than the start is *provably* hopeless and fails in O(1) instead of burning the expansion budget; scratch buffers are stamp-qualified per search so repeated searches don't pay clearing passes.
+- **Spatial-grid combat** — entities bucket into 8×8-tile cells rebuilt per tick; targeting, splash, stealth-detection, and interception scans are neighborhood queries instead of O(N²) sweeps, with per-kind weapon stats cached as pure functions of type.
+- **Reload-proof persistence** — gzipped match checkpoints write to Durable Object storage every ~3 s (ore fields, which drift slowly, every 30 s), so a deploy, crash, or browser refresh mid-match is a rejoin, not a surrender.
+- **Adaptive graphics governor** (`graphics.ts`) — the user's preset is a ceiling, not a floor: measured FPS and live entity counts shed VFX density, animation rates, raytracing, contact shadows, and finally the entire composer path in steps — with a crisis fast-path when a battle tanks the frame rate, and slow sustained-headroom recovery so quality never oscillates.
+- **Browser-local fallback** — the exact same `World` + bot code can run inside the client as a 0 ms-latency single-player room when the worker is unreachable or quota-limited.
+- **The tests are the design doc** — protocol regression suites connect real WebSocket clients to a real worker; interaction suites drive real Chrome through Puppeteer; the gym suite runs full episodes with no server at all; order fuzzing throws malformed, off-map, spoofed, stale, and conflicting commands at dispatch.
+
+## Development
+
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | local dev server (wrangler) at :8787 — run `npm run build` first |
+| `npm run dev:client` | Vite dev client with HMR at :5173 (talks to the local worker) |
+| `npm run build` | build the client into `dist/` |
+| `npm run typecheck` | typecheck worker + client tsconfigs |
+| `npm run deploy` | build + deploy worker and assets to Cloudflare |
+| `npm test` | RL gym suite — obs, schema, feature maps, RGB frames, full episode (no server needed) |
+| `npm run test:ws` | all WebSocket suites against a live dev server — regress / bugfix / features / techtree / orderfuzz / gfxgov / fpv / covert / harvest / bridge / trainq / lobby |
+| `npm run test:browser` | real-Chrome interaction + visual suites |
+| `npm run test:mcp` | MCP protocol/definitions checks |
+| `npm run test:all` | everything above |
+| `npm run mcp` | run the standalone stdio MCP server |
+| `npm run capture:units` | re-capture unit gameplay GIFs (spins up real rooms, records real matches) |
+| `node tools/mappreview.mjs <map>` | ASCII preview of any authored map layout |
 
 ## AI build stats
 
-Point-in-time telemetry snapshot: **2026-11-24 16:03 PST** (2026-11-25 00:03 UTC). These are measured API-generation totals from Devin CLI's local `sessions.db` for the only two Devin sessions whose working directory was this repository: `animated-receipt` (the long build session) and `ordinary-hook` (the review/performance session, still active when measured). Each assistant generation is counted once by `request_id`; duplicate copies in Devin's branch tree are ignored. Input context is fresh input + cache-read input. These are per-call usage totals — resent conversation context counts again on every generation — not unique source/code tokens. Figures are rounded to 0.01M: measured, not estimated.
+This project was built almost entirely by AI agents. Point-in-time telemetry snapshot: **2026-11-24** — measured API-generation totals from Devin CLI's local `sessions.db` for the only two sessions whose working directory is this repository (the long build session `animated-receipt` and the review/performance session `ordinary-hook`), deduplicated by `request_id` so retries and branch-tree copies count once.
 
-| model (`generation_model`) | generations | fresh input | cache-read input | output | total input context |
-|---|---:|---:|---:|---:|---:|
+| model | generations | fresh input | cache-read input | output | total input context |
+| --- | ---: | ---: | ---: | ---: | ---: |
 | `gemini-4-neon-high` | 1,726 | 24.52M | 382.04M | 2.77M | 406.56M |
 | `swe-2-max` | 3,799 | 8.86M | 372.63M | 3.19M | 381.49M |
-| `swe-2-1-max` | 1,662 | 3.92M | 169.66M | 0.93M | 173.58M |
+| `swe-2-1-max` | 2,767 | 7.59M | 271.99M | 1.60M | 279.59M |
 | `swe-2-medium` | 47 | 0.40M | 3.04M | 0.08M | 3.45M |
 | `compactor` (internal summarizer) | 17 | 1.30M | 0.00M | 0.10M | 1.30M |
-| **Total** | **7,251** | **39.01M** | **927.36M** | **7.08M** | **966.37M** |
+| **Total** | **8,356** | **42.68M** | **1,029.70M** | **7.75M** | **1,072.38M** |
 
-Scope notes: the rows include main-thread and subagent generations inside those two session records, including internal compaction and cache-keepalive traffic (74 keepalive calls, 16.42M input-context tokens). Eighteen unique generation records had no token-usage payload (empty or aborted calls), so the measured total is a slight lower bound. They are session totals, not per-commit attribution: git history had 119 commits at the snapshot, 54 carrying `Generated with Devin` trailers, but commit metadata does not record token use. Devin transcript JSON files carry `final_metrics` for their exported main-chain view but omit most subagent/branch usage; markdown compaction summaries contain no token metrics. Local Claude Code and Codex transcript searches found no `ra2`/`open-alert` sessions. Because `ordinary-hook` was still running, treat this as a timestamped snapshot — not a final lifetime total.
+These are per-call API usage totals — resent conversation context counts again on every generation, so the ~1.07B input-context tokens are not unique source tokens — and the review session was still running when measured, so treat this as a timestamped lower bound, not a final lifetime total.
 
 ## Assets & credits
 
-- All code, models, names, and artwork are **original** — this project clones
-  broad RTS *mechanics*, not any game's content. Unit/building meshes are
-  procedural Three.js primitives.
+- All code, models, names, and artwork are **original** — this project clones broad RTS *mechanics*, not any game's content. Unit and building meshes are procedural Three.js primitives; unit footage is recorded from real gameplay (`tools/capture-unit-gifs.mjs`).
 - Ground/rock PBR maps + HDRI environment: [Poly Haven](https://polyhaven.com) (CC0)
 - Key art / terrain / sky textures: AI-generated for this project
 
-## Legal
+## License
 
-MIT licensed (see `LICENSE`). Not affiliated with, endorsed by, or connected
-to EA, Westwood, or the Command & Conquer franchise.
+MIT — see [LICENSE](LICENSE). Not affiliated with, endorsed by, or connected to EA, Westwood, or the Command & Conquer franchise.
