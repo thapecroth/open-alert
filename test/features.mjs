@@ -60,12 +60,13 @@ const waitLobby = (s, pred, ms = 2000) => until(() => s.lobby && pred(s.lobby), 
   await waitLobby(ha, (l) => l.players.filter((p) => !p.spectator).every((p) => p.ready));
   const startDenies = denies(ha).length;
   send(ha, { t: "start" });
-  await sleep(450);
-  ok(!ha.msgs.some((m) => m.t === "init") && ha.snaps.length === 0, "old host start does not start the game");
+  // wait for the deny FIRST: the wire is ordered, so once the deny has arrived
+  // any erroneous game-start would already be visible too — checking init/snap
+  // absence before the deny lands is a race, not evidence
   ok(await until(() => denies(ha).length > startDenies, 2000) && denies(ha).at(-1)?.includes("only the host"), "old host start denied with feedback (never silent)");
+  ok(!ha.msgs.some((m) => m.t === "init") && ha.snaps.length === 0, "old host start does not start the game");
   send(hb, { t: "start" });
-  await sleep(1500);
-  ok((lastSnap(ha)?.ents?.length ?? 0) > 0 || ha.msgs.some((m) => m.t === "init"), "new host start permission works");
+  ok(await until(() => (lastSnap(ha)?.ents?.length ?? 0) > 0 || ha.msgs.some((m) => m.t === "init"), 8000), "new host start permission works");
   if (pa) send(hb, { t: "transferHost", id: pa.id });
   ok(!!pa && (await waitLobby(ha, (l) => isHostId(l, pa.id), 5000)), "mid-game transfer is accepted");
   send(ha, { t: "resign" });
@@ -158,33 +159,35 @@ const waitLobby = (s, pred, ms = 2000) => until(() => s.lobby && pred(s.lobby), 
 }
 
 const a = conn("Alice", "tok-A");
-await sleep(700);
+// Poll instead of fixed sleeps everywhere below: the room DO shares a loaded
+// machine, so round-trips that take ~100ms idle can take seconds under load.
+// Every step waits for the previous one to actually land before issuing the
+// next — fixed-sleep cascades were the dominant failure mode of this suite.
+await waitLobby(a, (l) => l.players.length === 1, 4000);
 send(a, { t: "start" });
-await sleep(200);
-ok(denies(a).some((d) => /at least 2/i.test(d)), "solo start denied");
+ok(await until(() => denies(a).some((d) => /at least 2/i.test(d)), 3000), "solo start denied");
 
 send(a, { t: "addbot" });
-await sleep(400);
-ok(a.lobby?.players.length === 2 && a.lobby.players.some((p) => p.name.startsWith("CABAL")), "bot joined lobby");
+ok(await waitLobby(a, (l) => l.players.length === 2 && l.players.some((p) => p.name.startsWith("CABAL")), 4000), "bot joined lobby");
 send(a, { t: "addbot" });
-await sleep(300);
-ok(a.lobby?.players.length === 3, "second bot joined");
+ok(await waitLobby(a, (l) => l.players.length === 3, 4000), "second bot joined");
 
 send(a, { t: "chat", text: "hello <b>world</b>" });
-await sleep(300);
+await until(() => a.msgs.some((m) => m.t === "chat"), 3000);
 const chat = a.msgs.find((m) => m.t === "chat");
 ok(chat && !/[<>]/.test(chat.text) && chat.name === "Alice", `chat broadcast sanitized (${chat?.text})`);
 
 send(a, { t: "ping", x: 30, y: 30 });
-await sleep(200);
-ok(a.msgs.some((m) => m.t === "ping" && m.x === 30), "ping broadcast");
+ok(await until(() => a.msgs.some((m) => m.t === "ping" && m.x === 30), 3000), "ping broadcast");
 send(a, { t: "ping", x: 999, y: 0 });
-await sleep(200);
+// negative check inherently needs a timed window — but the positive ping above
+// already proved the round-trip, so 800ms silence is generous evidence of rejection
+await sleep(800);
 ok(a.msgs.filter((m) => m.t === "ping").length === 1, "out-of-bounds ping rejected");
 
 send(a, { t: "start" });
-await sleep(1200);
-ok(lastSnap(a)?.ents?.length > 0, "game started vs 2 bots");
+ok(await until(() => (lastSnap(a)?.ents?.length ?? 0) > 0, 8000), "game started vs 2 bots");
+await waitLobby(a, (l) => l.players.filter((p) => p.name.startsWith("CABAL")).length === 2, 3000);
 const bots = a.lobby?.players.filter((p) => p.name.startsWith("CABAL"));
 ok(bots?.length === 2 && bots.every((b) => b.slot >= 0), `bots have slots ${bots?.map((b) => b.slot)}`);
 
@@ -195,7 +198,10 @@ ok(botEnts.length >= 7, `bots produced buildings/units (${botEnts.length} ents)`
 
 // sell own conyard-free test: build power, place, sell
 send(a, { t: "build", kind: "power" });
-await sleep(5600); // power buildTicks ~50*... wait for awaiting
+// power is 50 buildTicks = 5s at a perfect 10Hz — but the alarm-driven sim
+// only ever runs SLOWER than nominal under load, never faster, so poll with
+// 3x headroom instead of the old fixed 5.6s sleep (12% margin → guaranteed flake)
+await until(() => me(a)?.awaiting?.includes("power"), 15000);
 const awaiting = me(a)?.awaiting;
 ok(awaiting?.includes("power"), `power plant ready to place (${awaiting})`);
 // find a legal spot next to our conyard (conyard is 3x3 at spawn)
@@ -216,25 +222,23 @@ ok(!!pw, `power plant placed (denies: ${denies(a).slice(-3).join(";") || "none"}
 if (pw) {
   // repair on full hp → deny
   send(a, { t: "repair", id: pw.id });
-  await sleep(300);
-  ok(denies(a).some((d) => /full health/i.test(d)), "repair denied at full hp");
+  ok(await until(() => denies(a).some((d) => /full health/i.test(d)), 3000), "repair denied at full hp");
   send(a, { t: "sell", id: pw.id });
-  await sleep(400);
+  await until(() => (me(a)?.credits ?? 0) > crBefore, 4000);
   const crAfter = me(a)?.credits;
   ok(crAfter > crBefore, `sell refunded credits (${crBefore} -> ${crAfter})`);
-  ok(!lastSnap(a).ents.some((e) => e.id === pw.id), "sold building removed");
+  ok(await until(() => !lastSnap(a).ents.some((e) => e.id === pw.id), 3000), "sold building removed");
 }
 // sell foreign building → deny
 const foe = lastSnap(a).ents.find((e) => e.o !== a.slot && e.o >= 0);
 if (foe) {
   send(a, { t: "sell", id: foe.id });
-  await sleep(300);
-  ok(denies(a).some((d) => /can't sell/i.test(d)), "can't sell enemy building");
+  ok(await until(() => denies(a).some((d) => /can't sell/i.test(d)), 3000), "can't sell enemy building");
 }
 
 // resign → elimination
 send(a, { t: "resign" });
-await sleep(800);
+await until(() => me(a)?.eliminated === true || a.msgs.some((m) => m.t === "end"), 6000);
 const endMsg = a.msgs.find((m) => m.t === "end");
 ok(me(a)?.eliminated === true || !!endMsg, `resign eliminated player (end=${endMsg?.reason ?? "pending"})`);
 
@@ -243,20 +247,30 @@ ok(me(a)?.eliminated === true || !!endMsg, `resign eliminated player (end=${endM
 // Fresh room with a single bot: resign ends the game instantly (bot wins).
 a.ws.close();
 const ROOM2 = ROOM + "r";
-const r = wsconn(`ws://localhost:8787/parties/game-room/${ROOM2}`, "Rex", "tok-R");
-await sleep(700);
+const r = wsconn(`ws://localhost:8787/parties/game-room/${ROOM2}`, "Rex", "tok-R", {
+  onmsg: (m, st) => {
+    if (m.t === "lobby") st.lobby = m;
+  },
+});
+await until(() => r.lobby?.players.length === 1, 4000);
 send(r, { t: "addbot" });
-await sleep(400);
+await until(() => r.lobby?.players.length === 2, 4000);
 send(r, { t: "start" });
-await sleep(1200);
-ok((lastSnap(r)?.ents?.length ?? 0) > 0, "rematch-test game started");
+ok(await until(() => (lastSnap(r)?.ents?.length ?? 0) > 0, 8000), "rematch-test game started");
 send(r, { t: "resign" });
-await sleep(1500);
-ok(r.msgs.some((m) => m.t === "end"), "game ended after resign");
+ok(await until(() => r.msgs.some((m) => m.t === "end"), 8000), "game ended after resign");
 send(r, { t: "rematch" });
-await sleep(500);
+// rematch must land back in the lobby phase before start is meaningful
+await until(() => r.lobby?.phase === "lobby", 4000);
 send(r, { t: "start" });
-await sleep(1800);
+// wait until the second init AND a live frame after it have both arrived —
+// evaluating keyframe-first ordering before the frame exists is a race, not a check
+await until(
+  () =>
+    r.msgs.filter((m) => m.t === "init").length >= 2 &&
+    r.msgs.slice(r.msgs.map((m, i) => (m.t === "init" ? i : -1)).filter((i) => i >= 0).at(-1) + 1).some((m) => m.t === "snap" || m.t === "snapd"),
+  9000
+);
 const initIdxs = r.msgs.map((m, i) => (m.t === "init" ? i : -1)).filter((i) => i >= 0);
 const lastInitIdx = initIdxs[initIdxs.length - 1];
 const firstFrame = r.msgs.slice(lastInitIdx + 1).find((m) => m.t === "snap" || m.t === "snapd");

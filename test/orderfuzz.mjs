@@ -40,6 +40,11 @@ const note = (s) => { notes.push(s); console.log(`note: ${s}`); };
 function conn(name, token) {
   const st = wsconn(URL, name, token, {
     onmsg: (m, st) => {
+      if (m.t === "lobby") st.lobby = m;
+      if (m.t === "init") {
+        st.mapW = m.w;
+        st.mapH = m.h;
+      }
       if (m.t === "snap") {
         st.events.push(...(m.events ?? []));
         const cur = new Set(m.ents.map((x) => x.id));
@@ -113,9 +118,22 @@ async function moveWatch(s, id, p0, ms) {
 const fmt = (p) => (p ? `(${p.x.toFixed(1)},${p.y.toFixed(1)})` : "∅");
 
 // ============================ setup ============================
+// Every valid map is now 192x192+ — corner spawns sit ~253 tiles apart, so a
+// tank needs ~160s of pure walk to reach the enemy and an engineer ~250s,
+// hopeless inside combat-evidence windows written for 96/128 maps. No small
+// valid map exists to pin, so the harness uses two server-supported levers:
+//  - setSlot in the lobby puts Idle on the adjacent north-edge spawn (~90 tiles
+//    away along open ground) — order/combat semantics don't care about big-map
+//    dynamics, and windows below still scale from the MEASURED spawn distance
+//  - gameSpeed 2 doubles the sim clock — tick-domain mechanics are identical,
+//    only wall-clock compresses (the sim never runs faster than nominal, so
+//    every timed window keeps its worst-case direction under load)
 const A = conn("Fuzz", "ofz-A");
+// join ordering is a socket race — Fuzz must be in before Idle connects or Idle
+// can land slot0/host and the host-only start/config below silently no-op
+await waitFor(() => A.lobby?.players.length === 1, 5000);
 const B = conn("Idle", "ofz-B");
-await sleep(800);
+await waitFor(() => A.lobby?.players.length === 2, 6000);
 
 // pre-game order should be dropped without a deny or a crash
 const nPre = A.msgs.length;
@@ -123,10 +141,17 @@ send(A, { t: "order", ids: [1, 2], kind: "move", x: 30, y: 30 });
 await sleep(500);
 check("0 order before game start ignored (no deny, no crash)", deniesSince(A, nPre).length === 0, `denies=${JSON.stringify(deniesSince(A, nPre))}`);
 
+send(B, { t: "setSlot", slot: 4 });
+await waitFor(() => A.lobby?.players.find((p) => p.name === "Idle")?.slot === 4, 5000);
+send(A, { t: "setConfig", config: { gameSpeed: 2 } });
 send(B, { t: "ready", ready: true });
-await sleep(300);
-send(A, { t: "start" });
-const started = await waitFor(() => (lastSnap(A)?.ents?.length ?? 0) > 0 && (lastSnap(B)?.ents?.length ?? 0) > 0, 9000);
+await waitFor(() => A.lobby?.players.find((p) => p.name === "Idle")?.ready === true, 5000);
+// start can race the ready broadcast under load — retry while no snapshot arrives
+for (let tries = 0; tries < 6 && !((lastSnap(A)?.ents?.length ?? 0) > 0); tries++) {
+  send(A, { t: "start" });
+  await waitFor(() => (lastSnap(A)?.ents?.length ?? 0) > 0 && (lastSnap(B)?.ents?.length ?? 0) > 0, 3000, 150);
+}
+const started = (lastSnap(A)?.ents?.length ?? 0) > 0 && (lastSnap(B)?.ents?.length ?? 0) > 0;
 check("0 2-human game started", started, `ents=${lastSnap(A)?.ents?.length ?? 0}`);
 if (!started) {
   console.log("cannot proceed — no snapshots");
@@ -141,7 +166,14 @@ const enemyTank0 = theirs(A, B.slot, "tank")[0];
 const enemyInf0 = theirs(A, B.slot, "infantry")[0];
 const enemyCount0 = theirs(A, B.slot).length;
 const oreCells = (A.msgs.find((m) => m.t === "init")?.ore ?? []).map(([x, y, amt]) => ({ x, y, amt }));
-note(`setup: A slot=${A.slot} cy=${fmt(cyA)} units=${mine(A).length} | B slot=${B.slot} cy=${fmt(cyB)} ents=${enemyCount0} oreCells=${oreCells.length}`);
+const spawnDist = cyA && cyB ? D(cyA.x, cyA.y, cyB.x, cyB.y) : 90;
+note(`setup: A slot=${A.slot} cy=${fmt(cyA)} units=${mine(A).length} | B slot=${B.slot} cy=${fmt(cyB)} ents=${enemyCount0} oreCells=${oreCells.length} map=${A.mapW}x${A.mapH} spawnDist=${spawnDist.toFixed(0)}`);
+// windows that must cover a cross-map walk scale with the measured spawn
+// distance: nominal tiles/sec at gameSpeed 2 (20Hz), padded for the sim only
+// ever running slower than nominal under load. Event-driven waitFors return
+// early when satisfied — the padding is only paid on failure.
+const SPEED2 = { tank: 0.16 * 20, inf: 0.1 * 20 }; // tiles/sec at 20Hz nominal
+const walkMs = (tiles, speed) => (tiles / speed) * 1000 * 2.2 + 15000;
 
 // kick off refinery builds on both sides (harvester + enemy-refinery-tile test)
 send(A, { t: "build", kind: "refinery" });
@@ -166,14 +198,27 @@ send(B, { t: "build", kind: "refinery" });
 
 // ============================ [7a] stop on a moving tank ============================
 {
-  send(A, { t: "order", ids: [tankB.id], kind: "move", x: tankB.x + 4, y: tankB.y + 6 });
-  await sleep(1300); // ~2 tiles at 0.16/tick
-  const pStop = { x: ent(A, tankB.id).x, y: ent(A, tankB.id).y };
+  // far destination + poll for real displacement: at gameSpeed 2 the tank covers
+  // ~4 tiles in the old fixed 1.3s and could arrive before the stop, making the
+  // check vacuous — the stop must land while the tank is verifiably mid-walk
+  const p0 = { x: tankB.x, y: tankB.y };
+  send(A, { t: "order", ids: [tankB.id], kind: "move", x: tankB.x + 12, y: tankB.y + 16 });
+  await waitFor(() => {
+    const e = ent(A, tankB.id);
+    return e && D(p0.x, p0.y, e.x, e.y) > 1.2;
+  }, 6000);
+  const cur = ent(A, tankB.id);
+  const pStop = cur ? { x: cur.x, y: cur.y } : p0;
   send(A, { t: "stop", ids: [tankB.id] });
+  // negative drift check needs a timed window: 2.4s at 20Hz is ~7.7 tiles of
+  // would-be travel for an unstopped tank — far beyond the 0.4 gate
   await sleep(2400);
   const e = ent(A, tankB.id);
   const drift = e ? D(pStop.x, pStop.y, e.x, e.y) : Infinity;
-  check("7a stop halts moving tank", e && drift < 0.4, `drift=${drift.toFixed?.(2)}`);
+  const midwalk = D(p0.x, p0.y, pStop.x, pStop.y);
+  // midwalk>1.0 keeps the check honest: without verified motion beforehand a
+  // vacuous "stop" of an already-idle tank proves nothing
+  check("7a stop halts moving tank", e && drift < 0.4 && midwalk > 1.0, `drift=${drift.toFixed?.(2)} midwalk=${midwalk.toFixed(1)}`);
 }
 
 // ============================ battle kickoff (walk ~40-70s, assert later) ============================
@@ -229,10 +274,22 @@ note(`battle: tankA(${tankA.id})→enemyInf(${enemyInf0.id}) d0=${dA0.toFixed(1)
   check("2 move spam x5 → converges to LAST issued point", ok2, `endDist=${e ? D(e.x, e.y, last.x, last.y).toFixed(2) : "dead"}`);
 }
 
-// infantry pair now marches amove deep into enemy territory (engage evidence later)
-const amoveDest = { x: 62, y: 62 };
+// infantry pair now marches amove deep into enemy territory (engage evidence later).
+// destination is DERIVED, not hardcoded: 8 tiles beyond the enemy conyard along
+// the cyA→cyB axis, so the march crosses the enemy base on any map/geometry
+// (the old fixed (62,62) was midfield-open-ground on a 192 map — the wave never
+// passed through anything)
+const axisLen = Math.max(1, dEnt(cyA, cyB));
+const ux = (cyB.x - cyA.x) / axisLen,
+  uy = (cyB.y - cyA.y) / axisLen;
+const mw = A.mapW ?? 192,
+  mh = A.mapH ?? 192;
+const amoveDest = {
+  x: Math.round(Math.min(mw - 2, Math.max(1, cyB.x + ux * 8))),
+  y: Math.round(Math.min(mh - 2, Math.max(1, cyB.y + uy * 8))),
+};
 send(A, { t: "order", ids: [inf1.id, inf2.id].filter((id) => ent(A, id)), kind: "amove", x: amoveDest.x, y: amoveDest.y });
-note(`amove wave: inf [${inf1.id},${inf2.id}] -> (62,62)`);
+note(`amove wave: inf [${inf1.id},${inf2.id}] -> (${amoveDest.x},${amoveDest.y})`);
 
 // ============================ [9] buildings in order ids ============================
 {
@@ -438,13 +495,14 @@ let engIds = [];
     const dEng = await denyProbe(A, () => send(A, { t: "order", ids: [eng.id], kind: "attack", x: cyA.x, y: cyA.y, target: cyA.id }));
     check("6c engineer attack own building denied", /nothing to order/.test(dEng ?? ""), `deny=${dEng}`);
 
-    // capture march on enemy conyard — assert it paths toward it; capture may follow
+    // capture march on enemy conyard — assert it paths toward it; capture may follow.
+    // window scales with the measured walk (engineers are the slowest unit)
     const dCap0 = dEnt(engs[0], cyB);
     send(A, { t: "order", ids: engIds.filter((id) => ent(A, id)), kind: "attack", x: cyB.x, y: cyB.y, target: cyB.id });
     const approached = await waitFor(() => {
       const alive = engIds.map((id) => ent(A, id)).filter(Boolean);
       return !alive.length || Math.min(...alive.map((e) => dEnt(e, cyB))) < dCap0 - 15;
-    }, 70000);
+    }, walkMs(Math.max(10, dCap0 - 15), SPEED2.inf));
     const closest = Math.min(...engIds.map((id) => dEnt(ent(A, id), cyB)));
     const cap = A.events.some((e) => e.e === "cap" && e.slot === A.slot);
     const deadAll = engIds.every((id) => !ent(A, id));
@@ -459,18 +517,28 @@ let engIds = [];
 
 // ============================ [3a/3b] attack verdicts ============================
 {
+  // windows scale with the measured kickoff distances: a tank must close
+  // d0-(range+2) tiles at 3.2 tiles/sec nominal (20Hz, gameSpeed 2). The old
+  // fixed 70/90s were written for ~117-tile diagonal spawns on 96/128 maps —
+  // hopeless for 253 tiles on 192x192 corner spawns. waitFors are event-driven
+  // and return the moment evidence exists; the scale only bounds the failure case
   const tA = ent(A, tankA.id), tgtInf = ent(A, enemyInf0.id);
-  const approachedA = await waitFor(() => !ent(A, enemyInf0.id) || !ent(A, tankA.id) || dEnt(ent(A, tankA.id), ent(A, enemyInf0.id)) < dA0 - 15, 45000);
+  const winA = walkMs(Math.max(10, dA0 - 7), SPEED2.tank);
+  const approachedA = await waitFor(() => !ent(A, enemyInf0.id) || !ent(A, tankA.id) || dEnt(ent(A, tankA.id), ent(A, enemyInf0.id)) < dA0 - 15, Math.min(winA, 60000));
   check("3a attack enemy unit → homes in", approachedA, `d0=${dA0.toFixed(1)} dNow=${dEnt(ent(A, tankA.id), ent(A, enemyInf0.id)).toFixed(1)}`);
-  const engagedA = await waitFor(() => !ent(A, enemyInf0.id) || ent(A, enemyInf0.id).hp < enemyInf0.mhp || !ent(A, tankA.id) || ent(A, tankA.id).hp < tankA.mhp, 70000);
+  const engagedA = await waitFor(() => !ent(A, enemyInf0.id) || ent(A, enemyInf0.id).hp < enemyInf0.mhp || !ent(A, tankA.id) || ent(A, tankA.id).hp < tankA.mhp, winA);
   check("3a2 attack enemy unit → combat evidence", engagedA,
-    `tgt=${tgtInf ? `hp ${tgtInf.hp}/${tgtInf.mhp}` : "KILLED"} atk=${ent(A, tankA.id) ? `hp ${ent(A, tankA.id).hp}` : "dead"}`);
+    `tgt=${tgtInf ? `hp ${tgtInf.hp}/${tgtInf.mhp}` : "KILLED"} atk=${ent(A, tankA.id) ? `hp ${ent(A, tankA.id).hp}` : "dead"} win=${(winA / 1000).toFixed(0)}s`);
 
-  const approachedB = await waitFor(() => !ent(A, tankB.id) || ent(A, cyB.id)?.hp < cyB.mhp || dEnt(ent(A, tankB.id), ent(A, cyB.id)) < dB0 - 15, 45000);
+  const winB = walkMs(Math.max(10, dB0 - 7), SPEED2.tank);
+  const approachedB = await waitFor(() => !ent(A, tankB.id) || ent(A, cyB.id)?.hp < cyB.mhp || dEnt(ent(A, tankB.id), ent(A, cyB.id)) < dB0 - 15, Math.min(winB, 60000));
   check("3b attack enemy building → homes in", approachedB, `dNow=${dEnt(ent(A, tankB.id), ent(A, cyB.id)).toFixed(1)}`);
-  const engagedB = await waitFor(() => !ent(A, tankB.id) || ent(A, cyB.id)?.hp < cyB.mhp || ent(A, tankB.id).hp < tankB.mhp, 90000);
+  // a dead target building IS combat evidence (mirrors the unit check above):
+  // ent()?.hp < mhp evaluates false for a destroyed building, which used to be
+  // a latent false-negative once attackers could actually finish the walk
+  const engagedB = await waitFor(() => !ent(A, cyB.id) || !ent(A, tankB.id) || ent(A, cyB.id)?.hp < cyB.mhp || ent(A, tankB.id).hp < tankB.mhp, winB);
   check("3b2 attack enemy building → combat evidence", engagedB,
-    `cyHp=${ent(A, cyB.id)?.hp}/${cyB.mhp} atkAlive=${!!ent(A, tankB.id)}`);
+    `cyHp=${ent(A, cyB.id)?.hp ?? "DESTROYED"}/${cyB.mhp} atkAlive=${!!ent(A, tankB.id)} win=${(winB / 1000).toFixed(0)}s`);
 }
 
 // ============================ [3d] attack a dead ent ============================
@@ -490,14 +558,15 @@ let engIds = [];
   send(A, { t: "order", ids: survivors, kind: "amove", x: amoveDest.x, y: amoveDest.y });
   const kills0 = A.deadIds.size;
 
-  const engaged = await waitFor(() => A.deadIds.size > kills0 || theirs(A, B.slot).length < enemyCount0, 120000, 500);
+  const engaged = await waitFor(() => A.deadIds.size > kills0 || theirs(A, B.slot).length < enemyCount0, walkMs(spawnDist, SPEED2.inf), 500);
   check("4a amove through enemy territory engages", engaged, `enemyEnts ${enemyCount0}→${theirs(A, B.slot).length} deadIds=${A.deadIds.size}`);
 
   // resume: after engagement, some amover must make progress to dest (or arrive)
   const destD0 = Math.min(...survivors.map((id) => dEnt(ent(A, id), amoveDest)));
   let resumed = false, stillFighting = false;
   const t0 = Date.now();
-  while (Date.now() - t0 < 90000) {
+  const resumeMs = walkMs(Math.max(20, isFinite(destD0) ? destD0 : spawnDist), SPEED2.inf);
+  while (Date.now() - t0 < resumeMs) {
     const alive = survivors.map((id) => ent(A, id)).filter(Boolean);
     if (!alive.length) break;
     const nearest = Math.min(...alive.map((e) => dEnt(e, amoveDest)));
@@ -512,7 +581,7 @@ let engIds = [];
   const nearestNow = Math.min(...aliveNow.map((id) => dEnt(ent(A, id), amoveDest)));
   if (!aliveNow.length) check("4b amover resumes toward destination after kills", null, "no amovers survived — engagement verified, resume untestable");
   else if (stillFighting && !resumed) check("4b amover resumes toward destination after kills", null, `still engaged at end (nearest=${nearestNow.toFixed(1)} to dest)`);
-  else check("4b amover resumes toward destination after kills", resumed, `nearest=${nearestNow.toFixed(1)} dest=(62,62) alive=${aliveNow.length}`);
+  else check("4b amover resumes toward destination after kills", resumed, `nearest=${nearestNow.toFixed(1)} dest=(${amoveDest.x},${amoveDest.y}) alive=${aliveNow.length}`);
 }
 
 // ============================ capture verdict (late, informational) ============================

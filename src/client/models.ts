@@ -412,6 +412,16 @@ const LITE_TOP_Y: Partial<Record<EntKind, number>> = {
   infantry: 1.0,
   engineer: 0.94,
   rocket: 1.08,
+  // Vehicle instancing uses a lightweight animation rig; preserve the authored
+  // model heights so HP/logistics badges sit exactly where the full rigs put them.
+  tank: 1.2,
+  heavy: 1.44,
+  arty: 1.54,
+  himars: 1.66,
+  ballistic: 1.78,
+  railtank: 1.26,
+  supplytruck: 1.42,
+  harvester: 1.32,
 };
 
 export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene, lite = false): EntVis {

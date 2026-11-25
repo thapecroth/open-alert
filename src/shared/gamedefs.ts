@@ -363,7 +363,7 @@ export const UNITS: Record<UnitKind, UnitDef> = {
   uav: { hp: 130, speed: 0.30, range: 6.5, dmg: 18, rof: 16, cost: 550, buildTicks: 50, trainsAt: "airfield", domain: "air", canHitAir: true, vision: 13 },
   shahed: { hp: 95, speed: 0.28, range: 1.65, dmg: 210, rof: 10, cost: 110, buildTicks: 24, trainsAt: "airfield", domain: "air", kamikaze: true, vision: 9 },
   ewdrone: { hp: 185, speed: 0.24, range: 0, dmg: 0, rof: 0, cost: 280, buildTicks: 40, trainsAt: "airfield", domain: "air", ewJamRadius: 8.5, vision: 12, requires: "radar" },
-  interceptor: { hp: 230, speed: 0.38, range: 8, dmg: 40, rof: 14, cost: 750, buildTicks: 55, trainsAt: "airfield", domain: "air", canHitAir: true, canHitGround: false },
+  interceptor: { hp: 230, speed: 0.38, range: 8, dmg: 80, rof: 14, cost: 750, buildTicks: 55, trainsAt: "airfield", domain: "air", canHitAir: true, canHitGround: false },
   a10: { hp: 460, speed: 0.27, range: 6.8, dmg: 22, rof: 6, cost: 950, buildTicks: 70, trainsAt: "airfield", domain: "air", canHitAir: true, requires: "radar" },
   ac130: { hp: 980, speed: 0.14, range: 8.8, dmg: 74, rof: 20, cost: 2100, buildTicks: 110, trainsAt: "airfield", domain: "air", vision: 13, requires: "airfield2" },
   stealthbomber: { hp: 480, speed: 0.23, range: 6.5, dmg: 850, rof: 200, cost: 13000, buildTicks: 160, trainsAt: "airfield", domain: "air", stealth: true, requires: "airfield2" },
@@ -618,7 +618,12 @@ export const SPY_REVEAL_TICKS = 150; // blown cover lasts 15s once a powered Rad
 export const SPY_POWERCUT_TICKS = 300; // infiltrating a power plant blacks out the grid for 30s
 export const SPY_DISABLE_TICKS = 450; // infiltrating a defense battery disables it for 45s
 export const SPY_RADAR_SCRAMBLE_TICKS = 300; // infiltrating a radar/satellite blinds enemy sensors for 30s
-export const SPY_CAPTURE_RANGE = 0.9;
+// Spy infiltration reach, edge-measured like the engineer's. Must cover the
+// worst diagonal-adjacent approach: corner-tile edge distance 0.707 (for
+// odd-square buildings like the 3x3 conyard) + up to ~0.45 arrival slop from
+// movement tolerance — 0.9 geometrically impossible on diagonal approaches
+// (spy froze next to the target forever), and even orthogonal marginal.
+export const SPY_CAPTURE_RANGE = 1.5;
 
 // Neutral Oil Derricks, Coal Mines & Battlefield Supply Crates
 export const DERRICK_CAPTURE_BONUS = 500;

@@ -77,7 +77,7 @@ import type {
   WeaponFx,
   MatchStats,
 } from "../shared/protocol";
-import { findPath, nearestPassable } from "./path";
+import { findPath, nearestPassable, AstarEngine, PATH_STATS } from "./path";
 
 const MAX_WAYPOINTS = 16;
 // Production tuning lives here rather than shared/gamedefs.ts: these are sim
@@ -97,6 +97,50 @@ const hasOwn = (o: object, k: unknown): boolean =>
   typeof k === "string" && Object.prototype.hasOwnProperty.call(o, k);
 const multiProducerBoost = (count: number): number =>
   Math.min(PROD_BOOST_CAP, 1 + Math.max(0, count - 1) * PROD_BOOST_PER_EXTRA);
+
+// Per-tick A* expansion budget. Searches are budgeted by work done, not count:
+// a single legitimate transcontinental search on a 256×256 map can need ~43k
+// expansions (~15ms), so a per-search-count budget cannot bound tick cost —
+// but incremental (resumable) search plus an expansion budget can. At the
+// measured ~0.3µs/expansion this caps worst-case pathfinding at ~2.5ms/tick;
+// the median tick needs only tens of expansions, so deferred work drains
+// quickly after spike waves.
+const ASTAR_TICK_EXPANSIONS = 8000;
+// Attack-move/patrol target acquisition scans are phased across this many
+// ticks (unit scans when (tick + id) % N === 0). Worst-case added acquisition
+// latency is N-1 ticks (~100ms) — invisible next to weapon cooldowns — while
+// the per-tick scan cost drops ~N-fold. Tracking validation of an already
+// acquired target still runs every tick (it is cheap).
+const SCAN_PHASE_TICKS = 3;
+// Slice of the expansion budget reserved for economy-critical short searches
+// (harvester/bridge, pri=true) whenever any are waiting. Without the reserve,
+// a saturated transcontinental backlog consumes the entire budget in the head
+// search every tick and economy jobs — though only a few hundred expansions
+// each — never get a slice (measured: megacontinent ore income falls to ~0 at
+// high unit counts even though the jobs themselves are tiny).
+const ASTAR_PRI_RESERVE = 3000;
+// Per-search expansion cap for the short atomic harvester/bridge searches —
+// ~1.8ms worst case each, vs up to ~20ms for a full-map search. Targets are
+// close by design (nearest ore/refinery), so this rarely binds.
+const ASTAR_ATOMIC_CAP = 6000;
+
+// A deferred path request. Strictly FIFO: the queue is drained in request
+// order each tick, and at most one job is ever loaded in the incremental
+// engine (necessarily the head) because the scratch is serial-only.
+interface PathJob {
+  e: Ent;
+  ord: Order | null; // order object at request time — staleness validation
+  kind: "move" | "chase";
+  pri: boolean; // economy-critical short hop (harvester/bridge) — jumps the FIFO
+  sea: boolean;
+  targetId: number; // chase only: resolve the goal from the live target at load time
+  gx: number; // requested goal tile (move) or diagnostic target tile (chase)
+  gy: number;
+  searchR: number; // nearestPassable adjustment radius around the goal
+  maxExpand: number;
+  loaded: boolean; // engine state loaded (only ever true for the queue head)
+  cancelled: boolean; // lazy deletion — physically dropped when it reaches the head
+}
 
 interface Order {
   kind: OrderKind;
@@ -153,6 +197,10 @@ export interface Ent {
     lock?: number; // persistent lock-on target id
   };
   fpvAlt?: number; // normalized altitude 0..1 while player-driven (air only)
+  // set while a player-piloted transport is rappelling passengers beneath itself
+  // (FPV unload): the pilot is the navigation, so no positional order exists — the
+  // flag simply drips one passenger every few ticks wherever the transport hovers.
+  fpvDrop?: boolean;
   // troop transport cargo: embarked infantry, stored as FULL ent records (ids never recycle,
   // so a passenger re-enters the world with its identity/veterancy intact on unload).
   // Passengers are NOT in the world ents map while embarked — invisible, untargetable,
@@ -366,11 +414,36 @@ export class World {
   private ore!: Int16Array; // remaining per tile
   private nextId!: number;
   private nextCrateId!: number;
-  private astarBudget!: number; // per-tick A* path budget to prevent Durable Object CPU exhaustion
+  // Incremental A* service: per-tick expansion budget + FIFO queue of deferred
+  // searches. Small searches still complete synchronously inline (zero latency)
+  // whenever nothing is queued; big ones spread across ticks instead of spiking.
+  private astarEngine!: AstarEngine;
+  private astarExpandLeft!: number; // expansions remaining this tick
+  // count budget for short ATOMIC harvester/bridge searches. These are hard to
+  // defer correctly (their state machines consume the result synchronously,
+  // and congestion experiments showed FIFO/queued variants starving the
+  // economy on huge maps), so they run inline like the pre-refactor code —
+  // but each is capped well below the map-size expansion cap, bounding the
+  // worst-case atomic cost per tick. harvester/bridge targets are inherently
+  // near (nearest ore/refinery/shore), so the cap rarely binds; when it does
+  // the existing backoff logic treats it as unreachable, exactly like the
+  // pre-refactor maxExpand cap.
+  private astarAtomicLeft!: number;
+  private pathQ!: PathJob[];
+  private pathQHead!: number;
+  private pathQMap!: Map<number, PathJob>; // ent id -> pending job (dedup/matching)
+  private pathQPri!: number; // live pri jobs waiting (drives the reserve)
   private lastAlert!: Map<number, number>; // slot -> tick of last under-attack alert
   private gridCols!: number;
   private gridRows!: number;
   private grid!: Ent[][]; // dynamic 8x8 tile spatial buckets
+  // dedicated fine (2x2 tile) grid for separation pairs — separation radii
+  // (0.72–1.35 tiles) are far smaller than the coarse 8x8 buckets, so the coarse
+  // neighborhood produced ~16x false-positive pair candidates in dense combat
+  private sepCols!: number;
+  private sepRows!: number;
+  private sepGrid!: Ent[][];
+  private sepUsed!: number[]; // indices of non-empty cells — avoids clearing 16k arrays/tick
   private subDetMask!: Map<number, number>; // sub ent id -> bitmask of slots that detect it this tick
   private gridTick!: number;
   private names: Record<number, string>;
@@ -394,7 +467,13 @@ export class World {
     this.bridges = new Set();
     this.nextId = 1;
     this.nextCrateId = 1;
-    this.astarBudget = 12;
+    this.astarEngine = new AstarEngine();
+    this.astarExpandLeft = 0;
+    this.astarAtomicLeft = 0;
+    this.pathQ = [];
+    this.pathQHead = 0;
+    this.pathQMap = new Map();
+    this.pathQPri = 0;
     this.lastAlert = new Map();
     this.subDetMask = new Map();
     this.gridTick = -1;
@@ -429,6 +508,10 @@ export class World {
     this.gridCols = Math.ceil(this.w / 8);
     this.gridRows = Math.ceil(this.h / 8);
     this.grid = Array.from({ length: this.gridCols * this.gridRows }, () => []);
+    this.sepCols = Math.ceil(this.w / 2);
+    this.sepRows = Math.ceil(this.h / 2);
+    this.sepGrid = Array.from({ length: this.sepCols * this.sepRows }, () => []);
+    this.sepUsed = [];
     this.waterCount = 0;
     for (const [cx, cy] of layout.cliffs) {
       if (this.inBounds(cx, cy)) this.cliff[this.idx(cx, cy)] = 1;
@@ -731,6 +814,19 @@ export class World {
     const ix = Math.floor(x),
       iy = Math.floor(y);
     return this.inBounds(ix, iy) && this.water[this.idx(ix, iy)] === 1;
+  }
+
+  // Land connectivity region id for a tile — 0 when impassable for ground units
+  // (water without a bridge, cliff, or inside a building footprint). Two tiles in
+  // different regions are mutually unreachable for land units: the same lazy flood
+  // fill that gates A* (regionDirty-aware), exposed so bots can tell "across the
+  // water" apart from "a long walk" and commit transports instead of futile orders.
+  landRegion(x: number, y: number): number {
+    if (this.regionDirty) this.recomputeRegions();
+    const ix = Math.floor(x),
+      iy = Math.floor(y);
+    if (!this.inBounds(ix, iy)) return 0;
+    return this.regionLand[iy * this.w + ix];
   }
 
   isStealthed(e: Ent): boolean {
@@ -1151,6 +1247,17 @@ export class World {
       } else if (kind === "unload") {
         // only transports can disembark passengers — other units in the selection are skipped
         if (transportCapOf(e.k) <= 0) continue;
+        // FPV-driven transport: drive packets wipe positional orders every ~55ms and
+        // tickDirect never runs the order state machine, so a queued unload could
+        // never execute. It doesn't need to — the pilot flies the drop zone in
+        // person, so the order collapses to its only meaningful part: rappel the
+        // passengers out beneath the transport. Toggles so a second press cancels.
+        if (e.direct) {
+          if (e.fpvDrop) delete e.fpvDrop;
+          else e.fpvDrop = true;
+          n++;
+          continue;
+        }
         ord = { kind, x: gx, y: gy };
       } else if (kind === "harvest" && e.k !== "harvester") {
         // escorting units in a mixed group follow along as a plain move
@@ -1464,6 +1571,7 @@ export class World {
     if (e && e.o === slot) {
       delete e.direct;
       delete e.fpvAlt;
+      delete e.fpvDrop; // manual rappel stops when the pilot leaves the cockpit
     }
   }
 
@@ -1982,7 +2090,11 @@ export class World {
 
   step() {
     this.tick++;
-    this.astarBudget = 12;
+    this.astarExpandLeft = ASTAR_TICK_EXPANSIONS;
+    this.astarAtomicLeft = 2;
+    // Drain deferred path requests in FIFO order BEFORE the ent loop, so
+    // completions land in e.path in time for the unit's own tick.
+    this.processPathQueue();
     this.oreTakenMap = null;
     this.oreTiles = null;
     this.tickProduction();
@@ -2413,6 +2525,7 @@ export class World {
       if (this.tick > e.direct.until) {
         delete e.direct;
         delete e.fpvAlt;
+        delete e.fpvDrop; // drive session lapsed — manual rappel stops with it
       } else {
         this.tickDirect(e);
         return;
@@ -2434,11 +2547,10 @@ export class World {
           // walk to the shore approach tile first
           if (e.repath-- <= 0) {
             e.repath = 12;
-            if (this.astarBudget > 0) {
-              this.astarBudget--;
-              const maxExpand = Math.max(2400, this.w * this.h);
+            if (this.astarAtomicLeft > 0) {
+              this.astarAtomicLeft--;
               e.path =
-                this.pathfind(Math.floor(e.x), Math.floor(e.y), Math.floor(o.x), Math.floor(o.y), false, maxExpand) ?? [];
+                this.pathfind(Math.floor(e.x), Math.floor(e.y), Math.floor(o.x), Math.floor(o.y), false, ASTAR_ATOMIC_CAP) ?? [];
               // unreachable approach — don't burn an A* every 12 ticks forever
               if (!e.path.length) {
                 if ((e.bFail = (e.bFail ?? 0) + 1) >= 3) {
@@ -2545,11 +2657,18 @@ export class World {
         o.kind === "patrol"
           ? Math.max(w.range + 5, 10)
           : Math.max(w.range + 7, e.k === "engineer" || e.k === "spy" ? 8 : 12);
+      // Acquisition scans are phased over SCAN_PHASE_TICKS ticks — the unit keeps
+      // its tracked target between scans (validated cheaply every tick), and a
+      // lost target is only re-scanned on the unit's phase. Worst-case added
+      // acquisition latency is SCAN_PHASE_TICKS-1 ticks.
+      const scanDue = (this.tick + e.id) % SCAN_PHASE_TICKS === 0;
       const tracked = e.agro != null ? this.ents.get(e.agro) : null;
       const enemy =
         tracked && this.canAttack(e, tracked) && entityDist(e, tracked) <= scanR + 2
           ? tracked
-          : this.nearestEnemy(e, scanR);
+          : scanDue
+            ? this.nearestEnemy(e, scanR)
+            : null;
       if (enemy) {
         if ((e.k === "engineer" || e.k === "spy") && isBuilding(enemy.k)) {
           // attack-moving engineers & spies capture / sabotage buildings they reach
@@ -2576,7 +2695,10 @@ export class World {
           }
         }
       } else {
-        if (e.agro != null) {
+        // no enemy this tick — but only conclude the chase is over on a scan tick:
+        // between scans the unit simply keeps marching along its current path
+        // (avoids clear-then-reacquire path churn within the phasing window)
+        if (e.agro != null && scanDue) {
           // the enemy we were chasing died — resume marching to the real destination
           e.agro = null;
           e.path = null;
@@ -2720,6 +2842,20 @@ export class World {
             e.cargo = 0;
           }
         }
+      }
+    }
+
+    // FPV troop-transport unload: while fpvDrop is set, passengers rappel out
+    // beneath the transport at the same cadence as a positional unload order.
+    // Tiles are validated per drop exactly like disembark-at-order — a passenger
+    // never lands on water/cliff/footprint; if there is no valid landing below
+    // right now they simply stay aboard and the pilot can slide over solid
+    // ground (or press U again to cancel). Flag clears when the bay is empty.
+    if (e.fpvDrop) {
+      if (!e.passengers?.length || transportCapOf(e.k) <= 0) {
+        delete e.fpvDrop;
+      } else if (this.tick % UNLOAD_EVERY === 0) {
+        this.disembarkOne(e, e.x, e.y);
       }
     }
 
@@ -2889,16 +3025,15 @@ export class World {
           // resume at last ore tile — unless another harvester claimed it meanwhile
           if (e.oreIdx >= 0 && this.ore[e.oreIdx] > 0 && !this.oreTaken(e.oreIdx, e.id)) {
             e.order = { kind: "harvest", x: e.oreIdx % this.w, y: (e.oreIdx / this.w) | 0 };
-            if (this.astarBudget > 0) {
-              this.astarBudget--;
-              const maxExpand = Math.max(2400, this.w * this.h);
+            if (this.astarAtomicLeft > 0) {
+              this.astarAtomicLeft--;
               e.path = this.pathfind(
                 e.x | 0,
                 e.y | 0,
                 e.oreIdx % this.w,
                 (e.oreIdx / this.w) | 0,
                 false,
-                maxExpand,
+                ASTAR_ATOMIC_CAP,
               );
             } else {
               e.repath = 1; // budgeted retry next tick
@@ -2976,10 +3111,9 @@ export class World {
         e.order = { kind: "harvest", x: n % this.w, y: (n / this.w) | 0 };
       }
       const g = goal ?? { x: e.oreIdx % this.w, y: (e.oreIdx / this.w) | 0 };
-      if (this.astarBudget <= 0) return;
-      this.astarBudget--;
-      const maxExpand = Math.max(2400, this.w * this.h);
-      e.path = this.pathfind(e.x | 0, e.y | 0, g.x, g.y, false, maxExpand);
+      if (this.astarAtomicLeft <= 0) return;
+      this.astarAtomicLeft--;
+      e.path = this.pathfind(e.x | 0, e.y | 0, g.x, g.y, false, ASTAR_ATOMIC_CAP);
       e.order = { kind: "harvest", x: g.x, y: g.y };
       if (!e.path) {
         // Back off for 5s so an unreachable island ore tile never spins A* every tick
@@ -2997,8 +3131,10 @@ export class World {
         e.order = null;
         return;
       }
-      if (this.astarBudget <= 0) return;
-      this.pathNear(e, ref, Math.max(BUILDINGS.refinery.w, BUILDINGS.refinery.h) / 2 + 0.5);
+      if (this.astarAtomicLeft <= 0) return;
+      this.astarAtomicLeft--;
+      const spot = nearestPassable(ref.x | 0, ref.y | 0, this.passable, 10, this.w, this.h);
+      e.path = spot ? (this.pathfind(e.x | 0, e.y | 0, spot.x, spot.y, false, ASTAR_ATOMIC_CAP) ?? []) : [];
       if (!e.path?.length) {
         e.hstate = null;
         e.order = null;
@@ -3550,32 +3686,232 @@ export class World {
       const rg = region[gy * this.w + gx];
       if (rs > 0 && rg > 0 && rs !== rg) return null;
     }
-    return findPath(sx, sy, gx, gy, sea ? this.passableSea : this.passable, maxExpand, this.w, this.h);
+    // Atomic synchronous search — used by command-time validation and the
+    // short harvester/bridge searches. These still consume the shared per-tick
+    // expansion budget (small overdraw allowed: they are short in practice),
+    // but they use findPath's own scratch, so they never corrupt a paused
+    // incremental search. They are rare enough to not need queue fairness.
+    const e0 = PATH_STATS.expanded;
+    const r = findPath(sx, sy, gx, gy, sea ? this.passableSea : this.passable, maxExpand, this.w, this.h);
+    this.astarExpandLeft -= PATH_STATS.expanded - e0;
+    return r;
   }
 
   private pathNear(e: Ent, tgt: Ent, r = 0) {
     const dom = domainOf(e.k);
     if (dom === "air") return; // aircraft fly directly in stepAlong
     const sea = dom === "sea";
-    const pass = sea ? this.passableSea : this.passable;
-    const gx = tgt.x | 0,
-      gy = tgt.y | 0;
     const searchR = sea ? 24 : 10;
-    const spot = nearestPassable(gx, gy, pass, searchR, this.w, this.h);
-    if (!spot) {
-      e.path = [];
-      return;
-    }
-    if (this.astarBudget <= 0) {
+    const res = this.requestPath("chase", e, e.order, tgt.x | 0, tgt.y | 0, sea, searchR, tgt.id);
+    if (res === null) {
+      // deferred — re-evaluate next tick; the unit keeps its current path/behavior meanwhile
       e.repath = 1;
       return;
     }
-    this.astarBudget--;
-    const maxExpand = Math.max(2400, this.w * this.h);
-    e.path = this.pathfind(e.x | 0, e.y | 0, spot.x, spot.y, sea, maxExpand);
-    // null path = "needs compute" → stepAlong would immediately run a SECOND budgeted
-    // search at the stale order coords. Mark hard failure as gave-up instead.
-    if (!e.path?.length) e.path = [];
+    e.path = res;
+  }
+
+  // ---------- incremental A* service ----------
+  //
+  // Every budgeted path request flows through requestPath. Small searches
+  // complete synchronously inline (identical to the old behavior) whenever the
+  // queue is empty and budget remains; big ones are parked in a strict FIFO
+  // queue and expanded incrementally across ticks — a budget-capped search is
+  // NEVER treated as an unreachable failure, it simply resumes next tick. A
+  // unit waiting on the queue keeps its current behavior: follows its existing
+  // path, or idles in place if it has none (exactly the old "out of budget"
+  // deferral). Starvation is impossible by construction: the head of the queue
+  // always makes progress once per tick, and every entry eventually reaches it.
+
+  private enqueuePathJob(job: PathJob) {
+    if (job.pri) {
+      // Economy-critical searches (harvester/bridge) are short and infrequent,
+      // so letting them jump ahead of the long strategic searches costs those
+      // little and prevents economy starvation when transcontinental demand
+      // saturates the budget (observed: megacontinent income fell to ~0 under
+      // strict FIFO — the backlog of 20k+-expansion searches never drained).
+      // The loaded head is never displaced: it owns the engine state, and
+      // anti-starvation for big searches is preserved because the head always
+      // keeps expanding every tick regardless of what arrives behind it.
+      let pos = this.pathQHead;
+      if (pos < this.pathQ.length && this.pathQ[pos].loaded) pos++;
+      while (pos < this.pathQ.length && this.pathQ[pos].pri) pos++;
+      this.pathQ.splice(pos, 0, job);
+    } else {
+      this.pathQ.push(job);
+    }
+    this.pathQMap.set(job.e.id, job);
+    if (job.pri) this.pathQPri++;
+  }
+
+  private dequeuePathHead() {
+    const job = this.pathQ[this.pathQHead];
+    this.pathQHead++;
+    if (job.pri) this.pathQPri--;
+    if (this.pathQMap.get(job.e.id) === job) this.pathQMap.delete(job.e.id);
+    if (this.pathQHead >= this.pathQ.length) {
+      this.pathQ.length = 0;
+      this.pathQHead = 0;
+    }
+  }
+
+  private cancelPathJob(job: PathJob) {
+    if (!job.cancelled && job.pri) this.pathQPri--;
+    job.cancelled = true;
+    if (this.pathQMap.get(job.e.id) === job) this.pathQMap.delete(job.e.id);
+    // a loaded job owns the engine — abandoning orphans its scratch safely
+    if (job.loaded) this.astarEngine.abandon();
+  }
+
+  // Is this request still worth spending expansions on? Re-validated every
+  // time the job reaches the head, and again at writeback.
+  private pathJobAlive(job: PathJob): boolean {
+    if (job.cancelled) return false;
+    const e = job.e;
+    if (!this.ents.has(e.id)) return false;
+    if (e.order !== job.ord) return false;
+    if (job.kind === "chase" && !this.ents.has(job.targetId)) return false;
+    return true;
+  }
+
+  // Resolve the goal and start the engine. Returns false when the goal is
+  // unresolvable right now (no passable tile near it / provably disconnected /
+  // dead chase target) — a genuine failure answer, identical to what the old
+  // synchronous code produced.
+  private loadPathJob(job: PathJob): boolean {
+    const e = job.e;
+    const pass = job.sea ? this.passableSea : this.passable;
+    let gx = job.gx,
+      gy = job.gy;
+    if (job.kind === "chase") {
+      const tgt = this.ents.get(job.targetId);
+      if (!tgt) return false;
+      gx = tgt.x | 0;
+      gy = tgt.y | 0;
+    }
+    const spot = nearestPassable(gx, gy, pass, job.searchR, this.w, this.h);
+    if (!spot) return false;
+    // region gate — identical to pathfind(): endpoints in different connected
+    // regions are provably unreachable, fail in O(1)
+    if (this.regionDirty) this.recomputeRegions();
+    const region = job.sea ? this.regionSea : this.regionLand;
+    const sx = e.x | 0,
+      sy = e.y | 0;
+    if (sx >= 0 && sy >= 0 && sx < this.w && sy < this.h) {
+      const rs = region[sy * this.w + sx];
+      const rg = region[spot.y * this.w + spot.x];
+      if (rs > 0 && rg > 0 && rs !== rg) return false;
+    }
+    this.astarEngine.start(sx, sy, spot.x, spot.y, pass, job.maxExpand, this.w, this.h);
+    job.loaded = true;
+    return true;
+  }
+
+  // Complete a job: drop it from the queue and write the result back — but only
+  // if the request is still relevant. A stale write must NEVER overwrite the
+  // unit's state: orders are compared by reference (any retask/stop/advance
+  // replaces the object), chase targets must still exist.
+  private finishPathJob(job: PathJob, result: { x: number; y: number }[] | null) {
+    this.dequeuePathHead();
+    const e = job.e;
+    if (!this.ents.has(e.id)) return;
+    if (e.order !== job.ord) return;
+    if (job.kind === "chase" && !this.ents.has(job.targetId)) return;
+    e.path = result ?? [];
+  }
+
+  // FIFO drain at the top of every tick. Expands the head job up to the
+  // remaining expansion budget; a job that doesn't finish stays loaded at the
+  // head and resumes next tick — strict ordering means the biggest search in
+  // the wave can't be starved out by newcomers, and small searches behind it
+  // wait at most a few ticks (they would not have completed this tick anyway).
+  private processPathQueue() {
+    while (this.astarExpandLeft > 0 && this.pathQHead < this.pathQ.length) {
+      const job = this.pathQ[this.pathQHead];
+      if (!this.pathJobAlive(job)) {
+        if (job.loaded) this.astarEngine.abandon();
+        this.dequeuePathHead();
+        continue;
+      }
+      if (!job.loaded && !this.loadPathJob(job)) {
+        // genuine failure (unreachable/unresolvable) — same answer the
+        // synchronous search would have produced
+        this.finishPathJob(job, null);
+        continue;
+      }
+      if (!this.astarEngine.done) {
+        // a non-pri head leaves ASTAR_PRI_RESERVE expansions untouched while
+        // economy jobs wait behind it — they complete in a fraction of that
+        // slice, so this costs big searches almost nothing and guarantees the
+        // economy a minimum service rate no matter how saturated the queue is
+        const reserve = !job.pri && this.pathQPri > 0 ? ASTAR_PRI_RESERVE : 0;
+        const avail = Math.max(0, this.astarExpandLeft - reserve);
+        const used = this.astarEngine.step(avail);
+        this.astarExpandLeft -= used;
+      }
+      if (this.astarEngine.done) {
+        this.finishPathJob(job, this.astarEngine.result);
+        continue;
+      }
+      break; // budget exhausted mid-search — resume at the head next tick
+    }
+  }
+
+  // Entry point for budgeted path requests. Returns the finished path
+  // (possibly empty = gave up, exactly the old `?? []` normalization) when the
+  // search completes synchronously, or null when the request was deferred —
+  // either because it is already pending, the queue is busy, or the search
+  // did not finish within this tick's remaining budget.
+  private requestPath(
+    kind: "move" | "chase",
+    e: Ent,
+    ord: Order | null,
+    gx: number,
+    gy: number,
+    sea: boolean,
+    searchR: number,
+    targetId = 0,
+    pri = false,
+  ): { x: number; y: number }[] | null {
+    const existing = this.pathQMap.get(e.id);
+    if (existing) {
+      if (
+        !existing.cancelled &&
+        existing.kind === kind &&
+        existing.ord === ord &&
+        (kind === "chase" ? existing.targetId === targetId : existing.gx === gx && existing.gy === gy)
+      ) {
+        return null; // already pending — keep waiting (never re-enqueue duplicates)
+      }
+      // the need changed since the request was parked — drop the stale work
+      this.cancelPathJob(existing);
+    }
+    const job: PathJob = {
+      e,
+      ord,
+      kind,
+      pri,
+      sea,
+      targetId,
+      gx,
+      gy,
+      searchR,
+      maxExpand: Math.max(2400, this.w * this.h),
+      loaded: false,
+      cancelled: false,
+    };
+    // fast path: nothing queued, no paused search — try to finish inline
+    if (this.astarExpandLeft > 0 && this.pathQHead >= this.pathQ.length && !this.astarEngine.active) {
+      if (!this.loadPathJob(job)) return []; // genuine failure — synchronous gave-up
+      if (!this.astarEngine.done) {
+        const used = this.astarEngine.step(this.astarExpandLeft);
+        this.astarExpandLeft -= used;
+      }
+      if (this.astarEngine.done) return this.astarEngine.result ?? [];
+      // big search, budget exhausted — park it (queue is empty, so it lands at the head)
+    }
+    this.enqueuePathJob(job);
+    return null;
   }
 
   // advance along path; returns true when arrived (within `arriveR` of final goal).
@@ -3620,17 +3956,15 @@ export class World {
     const sea = dom === "sea";
     const pass = sea ? this.passableSea : this.passable;
     const searchR = sea ? 24 : 12;
-    const maxExpand = Math.max(2400, this.w * this.h);
     if (e.path === null) {
       const o = e.order;
       if (!o) {
         e.path = [];
         return true;
       }
-      if (this.astarBudget <= 0) return false;
-      this.astarBudget--;
-      const goal = nearestPassable(Math.floor(o.x), Math.floor(o.y), pass, searchR, this.w, this.h);
-      e.path = goal ? (this.pathfind(e.x | 0, e.y | 0, goal.x, goal.y, sea, maxExpand) ?? []) : [];
+      const res = this.requestPath("move", e, o, Math.floor(o.x), Math.floor(o.y), sea, searchR);
+      if (res === null) return false; // deferred — idle-in-place/keep behavior, retry next tick
+      e.path = res;
     }
     if (!e.path.length) return true;
     const wp = e.path[0];
@@ -3647,10 +3981,9 @@ export class World {
       // path invalidated by new construction — repath once (budgeted like first-run paths)
       const o = e.order;
       if (!o) return true;
-      if (this.astarBudget <= 0) return false; // out of budget — retry next tick instead of dropping the order
-      this.astarBudget--;
-      const goal = nearestPassable(Math.floor(o.x), Math.floor(o.y), pass, searchR, this.w, this.h);
-      e.path = goal ? (this.pathfind(e.x | 0, e.y | 0, goal.x, goal.y, sea, maxExpand) ?? []) : [];
+      const res = this.requestPath("move", e, o, Math.floor(o.x), Math.floor(o.y), sea, searchR);
+      if (res === null) return false; // deferred — retry next tick instead of dropping the order
+      e.path = res;
       return e.path.length === 0;
     }
     const step = Math.min(speed, d);
@@ -3667,91 +4000,111 @@ export class World {
     // soft separation between units in the SAME domain (spatial 3x3 cell neighborhood); tanks crush enemy infantry
     const isCrusher = (k: EntKind) => k === "tank" || k === "heavy" || k === "railtank";
     const crushable = (k: EntKind) => k === "infantry" || k === "rocket" || k === "engineer";
-    for (let cy = 0; cy < this.gridRows; cy++) {
-      for (let cx = 0; cx < this.gridCols; cx++) {
-        const cellA = this.grid[cy * this.gridCols + cx];
-        for (let i = 0; i < cellA.length; i++) {
-          const a = cellA[i];
-          if (isBuilding(a.k) || !this.ents.has(a.id)) continue;
-          const aDom = domainOf(a.k);
-          const ny0 = Math.max(0, cy - 1),
-            ny1 = Math.min(this.gridRows - 1, cy + 1);
-          const nx0 = Math.max(0, cx - 1),
-            nx1 = Math.min(this.gridCols - 1, cx + 1);
-          let aDead = false;
-          for (let ny = ny0; ny <= ny1 && !aDead; ny++) {
-            for (let nx = nx0; nx <= nx1 && !aDead; nx++) {
-              const cellB = this.grid[ny * this.gridCols + nx];
-              for (let j = 0; j < cellB.length; j++) {
-                const b = cellB[j];
-                if (b.id <= a.id || isBuilding(b.k) || !this.ents.has(b.id)) continue;
-                if (domainOf(b.k) !== aDom) continue;
-                let dx = b.x - a.x,
-                  dy = b.y - a.y;
-                let d2 = dx * dx + dy * dy;
-                if (d2 === 0) {
-                  // perfectly stacked — push apart on a deterministic per-pair angle
-                  const ang = ((a.id * 7 + b.id * 13) % 8) * (Math.PI / 4);
-                  dx = Math.cos(ang) * 0.01;
-                  dy = Math.sin(ang) * 0.01;
-                  d2 = dx * dx + dy * dy;
+    // Rebuild the dedicated fine grid on live positions. Max interaction radius
+    // is 1.35 tiles and cells are 2 tiles wide, so a ±1 cell neighborhood covers
+    // every interacting pair with ~16x less candidate area than the coarse 8x8
+    // grid — the dominant dense-combat cost was almost entirely false-positive
+    // pair tests. Built here (not in rebuildSpatialGrid) so positions are exact.
+    const cols = this.sepCols,
+      rows = this.sepRows,
+      grid = this.sepGrid,
+      used = this.sepUsed;
+    for (let i = 0; i < used.length; i++) grid[used[i]].length = 0;
+    used.length = 0;
+    for (const e of this.ents.values()) {
+      if (isBuilding(e.k)) continue;
+      const gx = Math.max(0, Math.min(cols - 1, (e.x | 0) >> 1));
+      const gy = Math.max(0, Math.min(rows - 1, (e.y | 0) >> 1));
+      const ci = gy * cols + gx;
+      if (grid[ci].length === 0) used.push(ci);
+      grid[ci].push(e);
+    }
+    for (let ui = 0; ui < used.length; ui++) {
+      const ca = used[ui];
+      const cy = (ca / cols) | 0,
+        cx = ca % cols;
+      const cellA = grid[ca];
+      for (let i = 0; i < cellA.length; i++) {
+        const a = cellA[i];
+        if (!this.ents.has(a.id)) continue;
+        const aDom = domainOf(a.k);
+        const ny0 = Math.max(0, cy - 1),
+          ny1 = Math.min(rows - 1, cy + 1);
+        const nx0 = Math.max(0, cx - 1),
+          nx1 = Math.min(cols - 1, cx + 1);
+        let aDead = false;
+        for (let ny = ny0; ny <= ny1 && !aDead; ny++) {
+          for (let nx = nx0; nx <= nx1 && !aDead; nx++) {
+            const cellB = grid[ny * cols + nx];
+            for (let j = 0; j < cellB.length; j++) {
+              const b = cellB[j];
+              if (b.id <= a.id || isBuilding(b.k) || !this.ents.has(b.id)) continue;
+              if (domainOf(b.k) !== aDom) continue;
+              let dx = b.x - a.x,
+                dy = b.y - a.y;
+              let d2 = dx * dx + dy * dy;
+              if (d2 === 0) {
+                // perfectly stacked — push apart on a deterministic per-pair angle
+                const ang = ((a.id * 7 + b.id * 13) % 8) * (Math.PI / 4);
+                dx = Math.cos(ang) * 0.01;
+                dy = Math.sin(ang) * 0.01;
+                d2 = dx * dx + dy * dy;
+              }
+              let minSep: number;
+              if (aDom === "sea") {
+                minSep =
+                  a.k === "dreadnought" || b.k === "dreadnought" || a.k === "carrier" || b.k === "carrier"
+                    ? 1.35
+                    : 1.1;
+              } else if (aDom === "air") {
+                minSep = a.k === "zeppelin" || b.k === "zeppelin" ? 1.25 : 0.9;
+              } else {
+                minSep =
+                  usesVehicleSeparation(a.k) && usesVehicleSeparation(b.k)
+                    ? 1.05
+                    : usesVehicleSeparation(a.k) || usesVehicleSeparation(b.k)
+                      ? 0.85
+                      : 0.72;
+              }
+              if (d2 > minSep * minSep) continue;
+              if (aDom === "land") {
+                if (isCrusher(a.k) && crushable(b.k) && !this.isAlly(a.o, b.o)) {
+                  this.grantXp(a, b.mhp * 0.8);
+                  this.events.push({ e: "kill", src: a.id, id: b.id, x: b.x, y: b.y });
+                  this.destroy(b, a.o);
+                  continue;
                 }
-                let minSep: number;
-                if (aDom === "sea") {
-                  minSep =
-                    a.k === "dreadnought" || b.k === "dreadnought" || a.k === "carrier" || b.k === "carrier"
-                      ? 1.35
-                      : 1.1;
-                } else if (aDom === "air") {
-                  minSep = a.k === "zeppelin" || b.k === "zeppelin" ? 1.25 : 0.9;
-                } else {
-                  minSep =
-                    usesVehicleSeparation(a.k) && usesVehicleSeparation(b.k)
-                      ? 1.05
-                      : usesVehicleSeparation(a.k) || usesVehicleSeparation(b.k)
-                        ? 0.85
-                        : 0.72;
+                if (isCrusher(b.k) && crushable(a.k) && !this.isAlly(a.o, b.o)) {
+                  this.grantXp(b, a.mhp * 0.8);
+                  this.events.push({ e: "kill", src: b.id, id: a.id, x: a.x, y: a.y });
+                  this.destroy(a, b.o);
+                  aDead = true;
+                  break;
                 }
-                if (d2 > minSep * minSep) continue;
-                if (aDom === "land") {
-                  if (isCrusher(a.k) && crushable(b.k) && !this.isAlly(a.o, b.o)) {
-                    this.grantXp(a, b.mhp * 0.8);
-                    this.events.push({ e: "kill", src: a.id, id: b.id, x: b.x, y: b.y });
-                    this.destroy(b, a.o);
-                    continue;
-                  }
-                  if (isCrusher(b.k) && crushable(a.k) && !this.isAlly(a.o, b.o)) {
-                    this.grantXp(b, a.mhp * 0.8);
-                    this.events.push({ e: "kill", src: b.id, id: a.id, x: a.x, y: a.y });
-                    this.destroy(a, b.o);
-                    aDead = true;
-                    break;
-                  }
+              }
+              const d = Math.sqrt(d2) || 0.01;
+              const push = ((minSep - d) / d) * 0.5 * 0.35;
+              const px = dx * push,
+                py = dy * push;
+              // anchored units resist being shoved — held ground & mining harvesters
+              // (a bounced miner otherwise re-approaches forever = visible pileup)
+              const anchored = (u: Ent) => u.hold || (u.k === "harvester" && u.hstate === "mining");
+              const aMult = anchored(a) ? 0.15 : 1;
+              const bMult = anchored(b) ? 0.15 : 1;
+              if (aDom === "air") {
+                a.x = Math.max(0.5, Math.min(this.w - 0.5, a.x - px * aMult));
+                a.y = Math.max(0.5, Math.min(this.h - 0.5, a.y - py * aMult));
+                b.x = Math.max(0.5, Math.min(this.w - 0.5, b.x + px * bMult));
+                b.y = Math.max(0.5, Math.min(this.h - 0.5, b.y + py * bMult));
+              } else {
+                const pass = aDom === "sea" ? this.passableSea : this.passable;
+                if (pass((a.x - px * aMult) | 0, (a.y - py * aMult) | 0)) {
+                  a.x -= px * aMult;
+                  a.y -= py * aMult;
                 }
-                const d = Math.sqrt(d2) || 0.01;
-                const push = ((minSep - d) / d) * 0.5 * 0.35;
-                const px = dx * push,
-                  py = dy * push;
-                // anchored units resist being shoved — held ground & mining harvesters
-                // (a bounced miner otherwise re-approaches forever = visible pileup)
-                const anchored = (u: Ent) => u.hold || (u.k === "harvester" && u.hstate === "mining");
-                const aMult = anchored(a) ? 0.15 : 1;
-                const bMult = anchored(b) ? 0.15 : 1;
-                if (aDom === "air") {
-                  a.x = Math.max(0.5, Math.min(this.w - 0.5, a.x - px * aMult));
-                  a.y = Math.max(0.5, Math.min(this.h - 0.5, a.y - py * aMult));
-                  b.x = Math.max(0.5, Math.min(this.w - 0.5, b.x + px * bMult));
-                  b.y = Math.max(0.5, Math.min(this.h - 0.5, b.y + py * bMult));
-                } else {
-                  const pass = aDom === "sea" ? this.passableSea : this.passable;
-                  if (pass((a.x - px * aMult) | 0, (a.y - py * aMult) | 0)) {
-                    a.x -= px * aMult;
-                    a.y -= py * aMult;
-                  }
-                  if (pass((b.x + px * bMult) | 0, (b.y + py * bMult) | 0)) {
-                    b.x += px * bMult;
-                    b.y += py * bMult;
-                  }
+                if (pass((b.x + px * bMult) | 0, (b.y + py * bMult) | 0)) {
+                  b.x += px * bMult;
+                  b.y += py * bMult;
                 }
               }
             }

@@ -814,6 +814,10 @@ export function buildLandModel(kind: EntKind, colorHex: string, body: THREE.Grou
   const matCopper = getChassisMat(COPPER, 0.28, 0.82);
   const matGold = getChassisMat(GOLD_TRIM, 0.34, 0.72);
   const matAcc = getAccentMat(colorHex);
+  // Faction paint is cache-shared by color. Tag it unconditionally (not only
+  // inside the infantry rig builder) so vehicle instancing can swap in a white
+  // material and carry the exact owner tint in InstancedMesh.instanceColor.
+  matAcc.userData.instAccentVariant = 0;
   const matGlass = getGlassMat("#48bae8");
 
   const add = <T extends THREE.Object3D>(m: T, x = 0, y = 0, z = 0, parent: THREE.Object3D = body): T => {

@@ -13,15 +13,25 @@ function conn(name, token, room = ROOM) {
     },
   });
 }
-const ent = (s, id) => lastSnap(s).ents.find((e) => e.id === id);
-const mine = (s, k) => lastSnap(s).ents.filter((e) => e.o === s.slot && (!k || e.k === k));
+const ent = (s, id) => lastSnap(s)?.ents.find((e) => e.id === id);
+const mine = (s, k) => (lastSnap(s)?.ents ?? []).filter((e) => e.o === s.slot && (!k || e.k === k));
+// poll a condition instead of fixed sleeps — round-trips and sim progress are
+// load-dependent on this shared machine; the sim never runs faster than nominal
+const until = async (pred, ms = 3000) => {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    if (pred()) return true;
+    await sleep(60);
+  }
+  return !!pred();
+};
 
 const a = conn("Alice", "bf-A");
 for (let i = 0; i < 40 && !a.lobby; i++) await sleep(100);
 send(a, { t: "addbot" });
-await sleep(400);
+await until(() => a.lobby?.players.length === 2, 4000);
 send(a, { t: "start" });
-await sleep(1500);
+await until(() => (lastSnap(a)?.ents?.length ?? 0) > 0, 8000);
 
 // --- #4/#5: disconnect all humans → playing room holds 30s reconnect grace (PR #31) ---
 const roomUrl = `http://localhost:8787/parties/game-room/${ROOM}`;
@@ -31,31 +41,45 @@ const st1 = await (await fetch(roomUrl)).json();
 ok(st1.phase === "playing", `bot room holds reconnect grace when humans leave (${JSON.stringify(st1)})`);
 
 // fresh room for sim checks — under the 30s reconnect grace Alice's room stays
-// "playing", so Bob/Carl must use a different room or they'd join as spectators
+// "playing", so Bob/Carl must use a different room or they'd join as spectators.
+// gameSpeed 2 doubles the sim clock (server-supported lobby config): every
+// tick-domain window below halves in wall-clock without changing any mechanic.
 const ROOM2 = ROOM + "x";
 const b = conn("Bob", "bf-B", ROOM2);
+// join ordering is a socket race — Bob MUST be in before Carl connects or Carl
+// can land slot0/host and every host-only command below is silently meaningless
+await until(() => b.lobby?.players.length === 1, 5000);
 const c = conn("Carl", "bf-C", ROOM2);
-await sleep(700);
+await until(() => b.lobby?.players.length === 2, 5000);
+send(b, { t: "setConfig", config: { gameSpeed: 2 } });
 send(c, { t: "ready", ready: true });
-await sleep(300);
-send(b, { t: "start" });
-await sleep(1500);
-ok(lastSnap(b)?.ents?.length > 0, "game with 2 humans started");
+await until(() => b.lobby?.players.find((p) => p.name === "Carl")?.ready === true, 4000);
+// start can race the ready broadcast under load — retry while no snap arrives
+for (let tries = 0; tries < 6 && !(lastSnap(b)?.ents?.length > 0); tries++) {
+  send(b, { t: "start" });
+  await until(() => lastSnap(b)?.ents?.length > 0, 2500);
+}
+ok(
+  lastSnap(b)?.ents?.length > 0,
+  `game with 2 humans started (snaps=${b.snaps.length} msgs=${b.msgs.map((m) => m.t).join(",")} denies=${b.msgs.filter((m) => m.t === "deny").map((m) => m.msg).join("|") || "none"} lobby=${JSON.stringify(b.lobby?.players?.map((p) => [p.name, p.slot, p.ready, p.connected]))})`
+);
 
 // --- #9: place building on a unit must be denied ---
 send(b, { t: "build", kind: "power" });
-await sleep(5600);
-ok(lastSnap(b).players[b.slot]?.awaiting?.includes("power"), "power awaiting");
+// power is 50 buildTicks = 2.5s at 20Hz nominal — poll instead of fixed sleep:
+// the alarm-driven sim only ever runs slower than nominal under load
+await until(() => lastSnap(b)?.players?.[b.slot]?.awaiting?.includes("power"), 12000);
+ok(lastSnap(b)?.players?.[b.slot]?.awaiting?.includes("power"), "power awaiting");
 const tank = mine(b, "tank")[0];
 send(b, { t: "place", tx: Math.floor(tank.x), ty: Math.floor(tank.y) });
-await sleep(400);
+await until(() => b.msgs.some((m) => m.t === "deny" && /units in the way/i.test(m.msg)), 4000);
 const denied = b.msgs.filter((m) => m.t === "deny").map((m) => m.msg);
 ok(denied.some((d) => /units in the way/i.test(d)), `place on unit denied (${denied.at(-1)})`);
-ok(lastSnap(b).players[b.slot]?.awaiting?.includes("power"), "awaiting preserved after deny");
+ok(lastSnap(b)?.players?.[b.slot]?.awaiting?.includes("power"), "awaiting preserved after deny");
 // place legally next to conyard
 const cy = mine(b, "conyard")[0];
 send(b, { t: "place", tx: Math.round(cy.x + 3), ty: Math.round(cy.y - 1) });
-await sleep(500);
+await until(() => mine(b, "power").length > 0, 4000);
 const pw = mine(b, "power")[0];
 ok(!!pw, "legal place works");
 
@@ -63,9 +87,9 @@ ok(!!pw, "legal place works");
 if (pw) {
   const before = lastSnap(b).players[b.slot];
   send(b, { t: "sell", id: pw.id });
-  await sleep(500);
-  const after = lastSnap(b).players[b.slot];
-  ok(after.pwrHave < before.pwrHave, `power recomputed on sell (${before.pwrHave} -> ${after.pwrHave})`);
+  await until(() => lastSnap(b)?.players?.[b.slot]?.pwrHave < before.pwrHave, 4000);
+  const after = lastSnap(b)?.players?.[b.slot];
+  ok(after?.pwrHave < before.pwrHave, `power recomputed on sell (${before.pwrHave} -> ${after?.pwrHave})`);
 }
 
 // wait until a queued building is ready to place (buildTicks at 10Hz)
@@ -114,20 +138,28 @@ if (harv) {
     if ((h?.cargo ?? 0) > 0) break;
   }
   ok((h?.cargo ?? 0) > 0, `harvester loaded cargo (${h?.cargo})`);
+  if (h) {
   const pos = { x: h.x, y: h.y };
   // move to the farthest ore cell — guaranteed passable, unlike building tiles
   const far = ore.reduce((f, p) => (Math.hypot(p.x - h.x, p.y - h.y) > Math.hypot(f.x - h.x, f.y - h.y) ? p : f), ore[0]);
   send(b, { t: "order", ids: [harv.id], kind: "move", x: far.x, y: far.y });
-  await sleep(2500);
+  // displacement, not arrival — poll until the move shows (load-independent)
+  await until(() => {
+    const hh = ent(b, harv.id);
+    return hh && Math.hypot(hh.x - pos.x, hh.y - pos.y) > 1.5;
+  }, 9000);
   const h2 = ent(b, harv.id);
-  const moved = Math.hypot(h2.x - pos.x, h2.y - pos.y);
+  const moved = h2 ? Math.hypot(h2.x - pos.x, h2.y - pos.y) : 0;
   ok(moved > 1.5, `loaded harvester obeys move order (moved ${moved.toFixed(1)})`);
-  const pos2 = { x: h2.x, y: h2.y };
+  const pos2 = h2 ? { x: h2.x, y: h2.y } : pos;
   send(b, { t: "stop", ids: [harv.id] });
+  // negative drift check inherently needs a timed window: 2s at 20Hz is ~4.4
+  // tiles of would-be travel for an unstopped harvester — far beyond the 1.0 gate
   await sleep(2000);
   const h3 = ent(b, harv.id);
-  const moved2 = Math.hypot(h3.x - pos2.x, h3.y - pos2.y);
+  const moved2 = h3 ? Math.hypot(h3.x - pos2.x, h3.y - pos2.y) : Infinity;
   ok(moved2 < 1.0, `stop holds harvester (drift ${moved2.toFixed(2)})`);
+  }
 }
 
 // --- #10: production units don't stack ---
@@ -147,17 +179,23 @@ const distinctTiles = new Set(inf.map((e) => `${Math.floor(e.x)},${Math.floor(e.
 ok(inf.length >= 6 && distinctTiles.size === inf.length, `spawned units spread (${inf.length} inf on ${distinctTiles.size} tiles)`);
 
 // --- #1: amove resumes destination after kill ---
-const enemy = lastSnap(b).ents.find((e) => e.o !== b.slot && e.o >= 0);
+const enemy = lastSnap(b)?.ents.find((e) => e.o !== b.slot && e.o >= 0);
 const tanks = mine(b, "tank");
 if (enemy && tanks.length) {
   const dest = { x: tanks[0].x + 15, y: tanks[0].y };
   send(b, { t: "order", ids: tanks.map((t) => t.id), kind: "amove", x: dest.x, y: dest.y });
-  await sleep(6000);
+  // 15 tiles at 0.16/tick is ~94 ticks of pure walk — 4.7s at 20Hz nominal but
+  // the sim only ever runs slower under load, so poll instead of a fixed 6s
+  // sleep that was marginal even at a perfect tick rate
+  const arrived = await until(() => {
+    const t = ent(b, tanks[0].id);
+    return t && Math.hypot(dest.x - t.x, dest.y - t.y) < 8;
+  }, 25000);
   const t2 = ent(b, tanks[0].id);
   if (t2) {
     const remain = Math.hypot(dest.x - t2.x, dest.y - t2.y);
-    ok(remain < 8, `amove progresses to destination (dist ${remain.toFixed(1)} remaining)`);
-  }
+    ok(arrived && remain < 8, `amove progresses to destination (dist ${remain.toFixed(1)} remaining)`);
+  } else ok(false, "amove progresses to destination (tank gone)");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -177,15 +177,58 @@ async function trainUnit(s, unit, ms = 90000) {
   return "timeout";
 }
 
-// ---------- jogo: Bob (host, slot 0) x Carl (slot 1) ----------
+// ---------- jogo: Bob (host, slot 0) x Carl (slot 4) ----------
+// Todos os mapas válidos agora são 192x192+ — spawns em cantos opostos ficam a
+// ~253 tiles (caminhada de 250s+ para o engenheiro de captura a 0.1 tiles/tick).
+// Como não existe mapa pequeno válido, o harness usa o próprio setSlot do lobby
+// para colocar Carl no spawn norte adjacente (90 tiles) — a mecânica de captura
+// e combate sob teste não depende de mapa grande — e gameSpeed 2 (config oficial
+// do lobby) dobra o relógio do sim sem mudar nenhuma mecânica em ticks.
 const b = conn("Bob", "tt-B");
+// ordem de join é corrida de sockets — Bob precisa entrar antes do Carl conectar,
+// senão Carl pode cair no slot0/host e os comandos de host viram no-op silencioso
+await waitFor(() => b.lobby?.players.length === 1, 5000);
 const c = conn("Carl", "tt-C");
-await sleep(900);
+await waitFor(() => b.lobby?.players.length === 2, 6000);
+const bobAuto = b.lobby?.players.find((p) => p.name === "Bob")?.slot;
+const carlAuto = b.lobby?.players.find((p) => p.name === "Carl")?.slot;
+send(c, { t: "setSlot", slot: 4 });
+await waitFor(() => b.lobby?.players.find((p) => p.name === "Carl")?.slot === 4, 5000);
+send(b, { t: "setConfig", config: { gameSpeed: 2 } });
 send(c, { t: "ready", ready: true });
-await sleep(400);
-send(b, { t: "start" });
-ok(await waitFor(() => lastSnap(b)?.ents?.length > 0, 10000), "partida 1v1 iniciada");
-ok(b.slot === 0 && c.slot === 1, `slots atribuídos (Bob=${b.slot} Carl=${c.slot})`);
+await waitFor(() => b.lobby?.players.find((p) => p.name === "Carl")?.ready === true, 5000);
+// start pode correr atrás do broadcast de ready sob carga — tenta de novo se negado
+for (let tries = 0; tries < 6 && !(lastSnap(b)?.ents?.length > 0); tries++) {
+  send(b, { t: "start" });
+  await waitFor(() => lastSnap(b)?.ents?.length > 0, 3000, 150);
+}
+ok(lastSnap(b)?.ents?.length > 0, "partida 1v1 iniciada");
+ok(bobAuto === 0 && carlAuto === 1 && b.slot === 0 && c.slot === 4, `slots atribuídos (auto Bob=${bobAuto} Carl=${carlAuto}; jogo Bob=${b.slot} Carl=${c.slot})`);
+
+// diagnóstico contínuo (só impresso se algo falhar): progressão de tick, energia
+// do Bob, contagem de unidades do Carl e o tick em que a captura acontece — a
+// captura completando cedo demais congela/encerra a partida no meio do teste se
+// houver qualquer bug de fim-de-jogo, e este trace é o que separa as hipóteses
+const diag = [];
+const t0diag = Date.now();
+let capTickSeen = 0;
+const diagIv = setInterval(() => {
+  const sn = lastSnap(b);
+  if (!sn) return;
+  const pb = sn.players?.[b.slot];
+  if (!capTickSeen && allEvents(b).some((ev) => ev.e === "cap")) capTickSeen = sn.tick;
+  diag.push({
+    el: Math.round((Date.now() - t0diag) / 1000),
+    tick: sn.tick,
+    pwr: `${pb?.pwrHave}/${pb?.pwrUse}${pb?.lowPower ? "LOW" : ""}`,
+    cU: (sn.ents ?? []).filter((e) => e.o === c.slot).length,
+    cElim: sn.players?.[c.slot]?.eliminated ? 1 : 0,
+    bElim: pb?.eliminated ? 1 : 0,
+    closed: b.closed || c.closed ? 1 : 0,
+  });
+  if (diag.length > 200) diag.shift();
+}, 4000);
+diagIv.unref?.();
 
 // ---------- 1) gates de construção (fila vazia, só conyard no mapa) ----------
 let d;
@@ -200,16 +243,22 @@ ok(d && /need a factory/i.test(d), "heavy antes de fábrica negado", d);
 
 // ---------- Carl: prédio-alvo da captura + unidades fora do trajeto ----------
 const cyC = mine(c, "conyard")[0];
+const cyB0 = mine(b, "conyard")[0];
 const cr = await buildAndPlace(c, "power", [cyC.x - 4, cyC.y], 60000);
 ok(!!cr.ent, "Carl: power plant (alvo do engenheiro) colocada", cr.err);
 const capTarget = cr.ent ?? cyC;
 const cUnits = (lastSnap(c)?.ents ?? []).filter((e) => e.o === c.slot && UNITK.has(e.k));
 const cInf = cUnits.find((u) => u.k === "infantry");
-// infantaria caminha p/ o flanco NE da base do Bob (vira alvo do arc depois);
-// o resto do exército do Carl vai p/ um canto fora da diagonal (não intercepta o engenheiro)
-if (cInf) send(c, { t: "order", ids: [cInf.id], kind: "move", x: 30, y: 12 });
+// Com os spawns adjacentes na borda norte, o corredor do engenheiro é a faixa
+// y≈5-12 entre as duas bases. Posições medidas a partir das conyards (não
+// hardcoded): a infantaria espera ao SUL da base do Bob — fora do corredor mas
+// perto o bastante para virar alvo do arc depois; o resto do exército do Carl
+// recua para o sul da própria base, longe do corredor e da power-alvo.
+const infWait = { x: Math.round(cyB0.x + 28), y: Math.round(cyB0.y + 38) };
+const restWait = { x: Math.round(cyC.x - 12), y: Math.round(cyC.y + 42) };
+if (cInf) send(c, { t: "order", ids: [cInf.id], kind: "move", x: infWait.x, y: infWait.y });
 const rest = cUnits.filter((u) => u !== cInf).map((u) => u.id);
-if (rest.length) send(c, { t: "order", ids: rest, kind: "move", x: 38, y: 58 });
+if (rest.length) send(c, { t: "order", ids: rest, kind: "move", x: restWait.x, y: restWait.y });
 
 // ---------- Bob: economia primeiro (power -> refinery -> barracks) ----------
 const cy = mine(b, "conyard")[0];
@@ -303,13 +352,25 @@ if (r.ent) {
     .sort((p, q) => Math.hypot(p.x - arc.x, p.y - arc.y) - Math.hypot(q.x - arc.x, q.y - arc.y))[0];
   const f0 = foe ? { id: foe.id, hp: foe.hp } : null;
   if (foe) send(c, { t: "order", ids: [foe.id], kind: "attack", x: arc.x, y: arc.y, target: arc.id });
-  ok(!!foe, `unidade inimiga ordenada a atacar o arc (#${foe?.id} ${foe?.k})`);
+  ok(!!foe, `unidade inimiga ordenada a atacar o arc (#${foe?.id} ${foe?.k} em ${foe?.x.toFixed(0)},${foe?.y.toFixed(0)} arc@${arc.x.toFixed(1)},${arc.y.toFixed(1)})`);
+  // trace da aproximação: se o zap não vier, o rastro mostra se a vítima andou,
+  // onde travou e se o sim continuou tickando durante a espera
+  const vtrace = [];
+  const zapIv = setInterval(() => {
+    const f = foe ? ent(c, foe.id) : null;
+    const tk = lastSnap(c)?.tick ?? 0;
+    vtrace.push(f ? `${f.x.toFixed(0)},${f.y.toFixed(0)}@${tk}` : `dead@${tk}`);
+    if (vtrace.length > 46) vtrace.shift();
+  }, 4000);
+  zapIv.unref?.();
   const zap = await waitFor(
     () => allEvents(c).some((ev) => ev.e === "shot" && Math.hypot(ev.fx - arc.x, ev.fy - arc.y) < 1.2),
     90000,
     500
   );
-  ok(!!zap, "arc disparou na unidade inimiga", `shots=${allEvents(c).filter((e) => e.e === "shot").length}`);
+  clearInterval(zapIv);
+  ok(!!zap, "arc disparou na unidade inimiga",
+    `shots=${allEvents(c).filter((e) => e.e === "shot").length} vtrace=${vtrace.join(" ")}`);
   const f1 = f0 ? ent(c, f0.id) : null;
   ok(!f1 || f1.hp < f0.hp, `unidade inimiga ${f1 ? "danificada" : "destruída"} pelo arc`, `hp=${f0?.hp} -> ${f1?.hp ?? "morta"}`);
 }
@@ -327,5 +388,9 @@ const capNow = capTarget ? ent(b, capTarget.id) : null;
 ok(capNow && capNow.o === b.slot, `prédio inimigo virou meu (o=${capNow?.o} k=${capNow?.k})`, `o=${capNow?.o}`);
 ok(eng ? !ent(b, eng.id) : true, "engenheiro consumido na captura");
 
+clearInterval(diagIv);
+if (fail > 0) {
+  console.log(`diag: capTick=${capTickSeen || "-"} | ` + diag.map((d) => `${d.el}s:t${d.tick},${d.pwr},cU${d.cU}${d.cElim ? ",CELIM" : ""}${d.bElim ? ",BELIM" : ""}${d.closed ? ",WS-CLOSED" : ""}`).join(" | "));
+}
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

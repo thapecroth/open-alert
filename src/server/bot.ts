@@ -18,7 +18,7 @@
 //   every 36-95 tks: economy/production/rally/assault decisions + ore rescan
 
 import type { Ent, P, World } from "./world";
-import { BUILDINGS, getSpawns, SHIPYARD_BUILD_DIST, UNITS, UPGRADE_PATHS, UPGRADED_OF } from "../shared/gamedefs";
+import { BUILDINGS, getSpawns, isInfantryKind, SHIPYARD_BUILD_DIST, transportCapOf, UNITS, UPGRADE_PATHS, UPGRADED_OF } from "../shared/gamedefs";
 import type { BotDiff, BotProfile, BuildCategory, BuildingKind, EntKind, UnitKind } from "../shared/gamedefs";
 
 const isB = (k: EntKind): k is BuildingKind => k in BUILDINGS;
@@ -33,6 +33,37 @@ const HOME_RADIUS = 30; // "away" = further than this from base center
 // factory yet (economy + scout). mid: factory online, expand + raid enemy eco.
 // late: sustained assault on their base with bigger, more frequent waves.
 type Phase = "early" | "mid" | "late";
+
+// One helicopter troop-transport mission. Ground forces can't cross water, so
+// when the bot's expansion or assault target sits in a different land-connectivity
+// region (world.landRegion — the same flood fill that gates A*), up to 4
+// infantry-class troops ride a chopper instead of walking into the sea.
+//
+// Safety contract (what keeps this non-stupid):
+//  - at most ONE mission at a time, and only while no recent base threat
+//  - mission units are excluded from rally/assault/defend/crate/scout sweeps so
+//    nothing retasks them mid-flight (the wave launch skips them, they still
+//    count as army strength — they ARE attacking, just by air)
+//  - every state has a timeout and a self-cleaning abort: troops with dangling
+//    board orders are stopped, a chopper still carrying passengers is ordered to
+//    unload back home — nothing is ever pinned inside the mission forever
+interface Airlift {
+  kind: "expand" | "raid";
+  chopper: number; // transport ent id
+  troops: number[]; // assigned infantry-class ent ids (shrinks to actual passengers at liftoff)
+  goal: { x: number; y: number }; // drop zone (near the landmark / enemy base)
+  targetId?: number; // expand: landmark the engineer should capture after landing
+  state: "load" | "fly";
+  since: number; // tick the current state was entered
+  born: number; // tick the mission started (global failsafe)
+}
+
+const AIRLIFT_LOAD_TIMEOUT = 380; // troops walk to the chopper — generous for base-radius distances
+const AIRLIFT_FLY_TIMEOUT = 2100; // big-map cross-flight at cruise speed with margin
+const AIRLIFT_MISSION_TIMEOUT = 2600; // absolute failsafe regardless of state
+const AIRLIFT_RESTART_GAP = 300; // minimum ticks between missions — no churn
+const AIRLIFT_HOME_RADIUS = 45; // chopper/troops must start this close to base
+const AIRLIFT_DROP_RADIUS = 14; // post-drop "did they land near the goal" check
 
 // One categorized view of the entity map per think(). All category arrays retain
 // the world Map's insertion order within that category, matching the filtered
@@ -64,6 +95,9 @@ export class RtsBot {
   denies = 0; // unexpected cmd* denials seen
   lastDeny = ""; // message of the most recent unexpected denial
   waves = 0; // assault waves launched
+  airlifts = 0; // completed troop-transport missions (troops actually dropped)
+  airliftBlock = ""; // why the last airlift evaluation bailed (empty = mission active or fired)
+  airliftLog: string[] = []; // ring of recent mission outcomes for post-game analysis
   errors: string[] = []; // swallowed exceptions (should stay empty)
 
   private diff: BotDiff;
@@ -93,6 +127,9 @@ export class RtsBot {
   private turretCap: number;
   private armyCap: number;
   private scanCache: BotScan | null = null;
+  private airlift: Airlift | null = null; // active transport mission (at most one)
+  private missionIds = new Set<number>(); // chopper + troop ids of the active mission — sweep exclusion list
+  private lastAirliftEnd = -1e9; // tick the last mission ended (restart throttle)
 
   // Lazily built at most once per think: cheap idle ticks stay O(1), while
   // placement/defense/slow ticks share one fused pass instead of 8-12 scans.
@@ -698,6 +735,10 @@ export class RtsBot {
         else if (a2 && stealthbombers < 2 && interceptors + a10s + choppers >= 1) unit = "stealthbomber";
         else if (a2 && hypersonics < 2 && interceptors + a10s + choppers >= 1) unit = "hypersonic";
         else if (radar && a10Cap > 0 && a10s < a10Cap && a10s <= interceptors && a10s <= choppers) unit = "a10";
+        // the Hornet is the bot's only way to project infantry across water — guarantee
+        // one airframe before the shahed grinder eats every production slot (the reserved
+        // transport below survives, so this fires at most once per loss)
+        else if (this.diff !== "easy" && choppers < 1) unit = "chopper";
         else if (shaheds < shahedCap && (shaheds <= interceptors + choppers + a10s || this.profile === "rusher")) unit = "shahed";
         else if (interceptors <= choppers) unit = "interceptor";
         else unit = "chopper";
@@ -941,7 +982,7 @@ export class RtsBot {
     if (!base) return;
     let scout: Ent | null = null;
     for (const e of this.scan.myUnits) {
-      if (e.k !== "infantry" || e.order) continue;
+      if (e.k !== "infantry" || e.order || this.missionIds.has(e.id)) continue;
       scout = e;
       break;
     }
@@ -971,27 +1012,307 @@ export class RtsBot {
     return best;
   }
 
+  // ---------- helicopter troop transport ("airlift") ----------
+
+  // Nonzero land-connectivity region near a point. Buildings sit on blocked
+  // tiles, so probe a small spiral around the target for the region its
+  // surroundings belong to; 0 = nothing walkable within reach (not even a
+  // valid drop zone — skip such targets entirely).
+  private regionNear(x: number, y: number): number {
+    const w = this.world;
+    const cx = Math.floor(x),
+      cy = Math.floor(y);
+    for (let r = 0; r <= 3; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const reg = w.landRegion(cx + dx, cy + dy);
+          if (reg > 0) return reg;
+        }
+      }
+    }
+    return 0;
+  }
+
+  // Idle (orderless), healthy, empty transport close enough to home to matter.
+  private idleChopperNear(base: { x: number; y: number }): Ent | null {
+    let best: Ent | null = null,
+      bd = Infinity;
+    for (const e of this.scan.myUnits) {
+      if (transportCapOf(e.k) <= 0 || e.order || (e.passengers?.length ?? 0) > 0) continue;
+      const d = dist(e.x, e.y, base.x, base.y);
+      if (d > AIRLIFT_HOME_RADIUS || d >= bd) continue;
+      bd = d;
+      best = e;
+    }
+    return best;
+  }
+
+  // The dedicated transport: the longest-lived (lowest-id) chopper is reserved from
+  // assault waves so the airlift always has an airframe — everything else the airfield
+  // fields remains wave fodder. Re-resolves each scan, so a loss passes the torch.
+  private reservedTransport(): number {
+    let best = -1;
+    for (const e of this.scan.myUnits) {
+      if (transportCapOf(e.k) <= 0) continue;
+      if (best < 0 || e.id < best) best = e.id;
+    }
+    return best;
+  }
+
+  // Idle infantry-class troops near home, closest-first. `kinds` restricts the mix.
+  // Candidates must share the base's land region — a rifleman on the wrong side of
+  // the bay can never reach the chopper, however close he looks on the ruler.
+  private idleInfantryNear(base: { x: number; y: number }, kinds: readonly EntKind[], cap: number, baseRegion: number): Ent[] {
+    const out: Ent[] = [];
+    for (const e of this.scan.myUnits) {
+      if (!kinds.includes(e.k) || e.order) continue;
+      if (dist(e.x, e.y, base.x, base.y) > AIRLIFT_HOME_RADIUS) continue;
+      if (this.regionNear(e.x, e.y) !== baseRegion) continue;
+      out.push(e);
+    }
+    out.sort((a, b) => dist(a.x, a.y, base.x, base.y) - dist(b.x, b.y, base.x, base.y));
+    return out.slice(0, cap);
+  }
+
+  private manageAirlift(me: P, t: number) {
+    const w = this.world;
+    if (this.diff === "easy") return;
+    const m = this.airlift;
+    if (!m) {
+      this.maybeStartAirlift(me, t);
+      return;
+    }
+
+    // ---- validation & failsafes: nothing may stay pinned inside a mission ----
+    const chop = w.ents.get(m.chopper);
+    if (!chop || chop.o !== this.slot) {
+      this.endAirlift(t, true, "chopper-dead"); // ride dead — board orders auto-clear, landed troops rejoin the pool
+      return;
+    }
+    if (t - m.born > AIRLIFT_MISSION_TIMEOUT) {
+      this.endAirlift(t, true, "mission-timeout");
+      return;
+    }
+
+    if (m.state === "load") {
+      // shrink the troop list to the living: aboard (passenger records) or still walking
+      const aboard = new Set((chop.passengers ?? []).map((p) => p.id));
+      m.troops = m.troops.filter((id) => aboard.has(id) || w.ents.has(id));
+      if (!m.troops.length) {
+        this.endAirlift(t, true, "troops-dead");
+        return;
+      }
+      const walking = m.troops.filter((id) => w.ents.has(id));
+      const liftoff = walking.length === 0 || (t - m.since > AIRLIFT_LOAD_TIMEOUT && aboard.size >= 1);
+      if (liftoff) {
+        if (aboard.size === 0) {
+          this.endAirlift(t, true, "no-boarders"); // nobody made it aboard — cut losses
+          return;
+        }
+        // stragglers forfeit the ride: cancel the chase so they rejoin the pool instead
+        // of pursuing the chopper across the map (and into the sea they can't cross)
+        if (walking.length) w.cmdStop(this.slot, walking); // void — cannot be denied
+        m.troops = m.troops.filter((id) => aboard.has(id));
+        this.missionIds = new Set([m.chopper, ...m.troops]); // forfeited stragglers rejoin the pool NOW
+        const err = w.cmdOrder(this.slot, [m.chopper], "unload", m.goal.x, m.goal.y);
+        if (err) {
+          this.endAirlift(t, true, "unload-denied:" + err.slice(0, 24));
+          return;
+        }
+        m.state = "fly";
+        m.since = t;
+      } else if (t - m.since > AIRLIFT_LOAD_TIMEOUT) {
+        this.endAirlift(t, true, "load-timeout"); // timeout with nobody aboard
+      }
+      return;
+    }
+
+    // state "fly" — the unload order carries the chopper to the drop zone and drips
+    // passengers out; completion is the order going away.
+    if (!chop.order) {
+      const landed = m.troops.filter((id) => {
+        const e = w.ents.get(id);
+        return e && dist(e.x, e.y, m.goal.x, m.goal.y) <= AIRLIFT_DROP_RADIUS;
+      });
+      if (landed.length) {
+        this.finishAirlift(m, landed, chop, t);
+      } else {
+        // drop aborted (no valid landing) or troops died on the beach — either way the
+        // mission is over; a chopper still carrying passengers ferries them home first
+        this.endAirlift(t, true, "no-dropzone");
+      }
+      return;
+    }
+    if (t - m.since > AIRLIFT_FLY_TIMEOUT) this.endAirlift(t, true, "fly-timeout");
+  }
+
+  // Mission success: troops are on the ground at the far shore. Hand them their
+  // real orders, send the chopper home, free everything back into the pool.
+  private finishAirlift(m: Airlift, landed: number[], chop: Ent, t: number) {
+    const w = this.world;
+    const base = this.baseCenter();
+    if (m.kind === "expand") {
+      const lm = m.targetId != null ? w.ents.get(m.targetId) : null;
+      // capture orders only while the landmark is still there for the taking —
+      // if we already own it the job is done, if it died there is nothing to take
+      const stillValid = lm && lm.o !== this.slot;
+      for (const id of landed) {
+        const e = w.ents.get(id);
+        if (!e || e.k !== "engineer" || !stillValid || !lm) continue;
+        this.trycmd(() => w.cmdOrder(this.slot, [id], "attack", lm.x, lm.y, lm.id));
+      }
+      // escorts hold the beachhead — idle infantry auto-fire in range
+    } else {
+      this.trycmd(() => w.cmdOrder(this.slot, landed, "amove", m.goal.x, m.goal.y));
+    }
+    if (base) this.trycmd(() => w.cmdOrder(this.slot, [chop.id], "move", base.x, base.y));
+    this.airlifts++;
+    this.endAirlift(t, false);
+  }
+
+  // Release every mission unit back into the general pool. Self-cleaning by
+  // contract: dangling boarders are stopped, a loaded chopper ferries its
+  // passengers home before rejoining the airforce — nothing is pinned forever.
+  private endAirlift(t: number, abort: boolean, why = "") {
+    const w = this.world;
+    const m = this.airlift;
+    if (m && this.airliftLog.push(`${abort ? "abort" : "done"}:${m.kind}${why ? ":" + why : ""}@t${t}`) > 8) this.airliftLog.shift();
+    if (m && abort) {
+      const chop = w.ents.get(m.chopper);
+      if (chop && chop.o === this.slot) {
+        const base = this.baseCenter();
+        if ((chop.passengers?.length ?? 0) > 0 && base) {
+          this.trycmd(() => w.cmdOrder(this.slot, [chop.id], "unload", base.x, base.y));
+        }
+      }
+      const chasing = m.troops.filter((id) => {
+        const e = w.ents.get(id);
+        return e && e.order?.kind === "board";
+      });
+      if (chasing.length) w.cmdStop(this.slot, chasing); // void — cannot be denied
+    }
+    this.airlift = null;
+    this.missionIds.clear();
+    this.lastAirliftEnd = t;
+  }
+
+  // Evaluate expansion/raid triggers and commit one mission. Expansion (a neutral
+  // derrick/mine across the water) outranks raids — economy first, and it is the
+  // lowest-risk sortie: one engineer plus a couple of escorts.
+  private maybeStartAirlift(me: P, t: number) {
+    const w = this.world;
+    if (t - this.lastAirliftEnd < AIRLIFT_RESTART_GAP) { this.airliftBlock = "restart-gap"; return; }
+    if (t - this.threatAt < 120) { this.airliftBlock = "threat"; return; } // base under pressure — every rifle stays home
+    const base = this.baseCenter();
+    if (!base) { this.airliftBlock = "no-base"; return; }
+    const baseRegion = this.regionNear(base.x, base.y);
+    if (!baseRegion) { this.airliftBlock = "base-region-0"; return; }
+    const chop = this.idleChopperNear(base);
+    if (!chop) { this.airliftBlock = "no-idle-chopper"; return; }
+
+    // ---- expansion: neutral landmark unreachable on foot ----
+    if (w.config.derricks) {
+      // the engineer must be able to walk to the chopper: same region as the base,
+      // close to home — a stranded engineer on a far shore is captureDerricks' problem
+      const engi = this.scan.myUnits.find(
+        (e) => e.k === "engineer" && !e.order && dist(e.x, e.y, base.x, base.y) <= AIRLIFT_HOME_RADIUS && this.regionNear(e.x, e.y) === baseRegion,
+      );
+      if (engi) {
+        let bestLm: Ent | null = null,
+          bd = Infinity;
+        for (const lm of this.scan.landmarks) {
+          if (lm.o !== -1) continue;
+          const lmRegion = this.regionNear(lm.x, lm.y);
+          if (!lmRegion || lmRegion === baseRegion) continue; // walkable ones belong to captureDerricks
+          const d = dist(base.x, base.y, lm.x, lm.y);
+          if (d < bd) {
+            bd = d;
+            bestLm = lm;
+          }
+        }
+        if (bestLm) {
+          const escorts = this.idleInfantryNear(base, ["infantry", "rocket"], 2, baseRegion).map((e) => e.id);
+          this.airliftBlock = "";
+          this.beginAirlift(t, "expand", chop, [engi.id, ...escorts], { x: bestLm.x, y: bestLm.y }, bestLm.id);
+          return;
+        }
+        this.airliftBlock = "no-xregion-landmark";
+      }
+    }
+
+    // ---- raid: the assault goal is across the water — infantry can't walk there ----
+    if (this.phase === "early") { this.airliftBlock = "phase-early"; return; }
+    const goal = this.enemyBasePt(base) ?? this.nearestEnemyEnt(base);
+    if (!goal) { this.airliftBlock = "no-goal"; return; }
+    const goalRegion = this.regionNear(goal.x, goal.y);
+    if (!goalRegion) { this.airliftBlock = "goal-unlandable"; return; }
+    if (goalRegion === baseRegion) { this.airliftBlock = "goal-walkable"; return; }
+    const troops = this.idleInfantryNear(base, ["infantry", "rocket"], 4, baseRegion);
+    if (troops.length < 3) { this.airliftBlock = `troops-${troops.length}`; return; } // a smaller sortie isn't worth pinning the transport
+    this.airliftBlock = "";
+    this.beginAirlift(t, "raid", chop, troops.map((e) => e.id), { x: goal.x, y: goal.y });
+  }
+
+  private beginAirlift(t: number, kind: Airlift["kind"], chop: Ent, troops: number[], goal: { x: number; y: number }, targetId?: number) {
+    const w = this.world;
+    const m: Airlift = { kind, chopper: chop.id, troops: [...troops], goal, targetId, state: "load", since: t, born: t };
+    // staging: the chopper hovers to the squad so boarding is a short walk, not a chase
+    let cx = 0,
+      cy = 0,
+      n = 0;
+    for (const id of troops) {
+      const e = w.ents.get(id);
+      if (e) {
+        cx += e.x;
+        cy += e.y;
+        n++;
+      }
+    }
+    if (!n) return;
+    cx /= n;
+    cy /= n;
+    // staging is best-effort: if the hop order is refused the troops simply walk
+    // to the chopper's parking spot instead — boarding chases a moving ride fine
+    w.cmdOrder(this.slot, [chop.id], "move", cx, cy);
+    const boardErr = w.cmdOrder(this.slot, troops, "board", chop.x, chop.y, chop.id);
+    if (boardErr) {
+      // boarding refused outright — never mind (nothing is pinned yet: no mission state)
+      this.denies++;
+      this.lastDeny = boardErr;
+      return;
+    }
+    this.airlift = m;
+    this.missionIds = new Set([chop.id, ...troops]);
+  }
+
   // Normal & brutal bots send idle Sappers (engineers) to capture nearby neutral Oil Derricks & Coal Mines.
+  // Reachability is per-engineer land-connectivity: landmarks across the water are NOT
+  // walkable — those belong to the airlift — while an engineer already stranded on a
+  // far shore absolutely should capture the derrick next to it.
   private captureDerricks() {
     if (this.diff === "easy") return;
     const w = this.world;
     const base = this.baseCenter();
     if (!base) return;
     const maxDist = this.diff === "brutal" ? 999 : Math.max(42, Math.floor(w.w * 0.65));
-    const targets: Ent[] = [];
-    for (const e of this.scan.landmarks) {
-      if (e.o === -1 || (this.diff === "brutal" && !w.isAlly(this.slot, e.o))) {
-        if (dist(base.x, base.y, e.x, e.y) <= maxDist) targets.push(e);
-      }
-    }
-    if (!targets.length) return;
-    // Prefer neutral landmarks first, then closest to base
-    targets.sort((a, b) => {
-      if ((a.o === -1) !== (b.o === -1)) return a.o === -1 ? -1 : 1;
-      return dist(base.x, base.y, a.x, a.y) - dist(base.x, base.y, b.x, b.y);
-    });
     for (const e of this.scan.myUnits) {
-      if (e.k !== "engineer" || e.order) continue;
+      if (e.k !== "engineer" || e.order || this.missionIds.has(e.id)) continue;
+      const engiRegion = this.regionNear(e.x, e.y);
+      if (!engiRegion) continue;
+      const targets: Ent[] = [];
+      for (const lm of this.scan.landmarks) {
+        if (!(lm.o === -1 || (this.diff === "brutal" && !w.isAlly(this.slot, lm.o)))) continue;
+        if (this.regionNear(lm.x, lm.y) !== engiRegion) continue; // unreachable on foot — the airlift's job
+        if (dist(e.x, e.y, lm.x, lm.y) > maxDist) continue;
+        targets.push(lm);
+      }
+      if (!targets.length) continue;
+      // Prefer neutral landmarks first, then closest to the engineer
+      targets.sort((a, b) => {
+        if ((a.o === -1) !== (b.o === -1)) return a.o === -1 ? -1 : 1;
+        return dist(e.x, e.y, a.x, a.y) - dist(e.x, e.y, b.x, b.y);
+      });
       const d = targets[0];
       this.trycmd(() => w.cmdOrder(this.slot, [e.id], "attack", d.x, d.y, d.id));
       return;
@@ -1007,9 +1328,10 @@ export class RtsBot {
     for (const crate of w.crates.values()) {
       let best: Ent | null = null,
         bd = maxRange;
+      const taxi = this.reservedTransport();
       for (const u of this.scan.myUnits) {
         if (u.k === "harvester" || u.k === "supplytruck" || u.k === "engineer" || isSea(u.k)) continue;
-        if (u.order || assigned.has(u.id)) continue;
+        if (u.order || assigned.has(u.id) || this.missionIds.has(u.id) || u.id === taxi) continue;
         const d = dist(u.x, u.y, crate.x, crate.y);
         if (d < bd) {
           bd = d;
@@ -1083,6 +1405,7 @@ export class RtsBot {
     const ids: number[] = [];
     for (const e of this.scan.myUnits) {
       if (e.k === "harvester" || e.k === "supplytruck" || isSea(e.k) || e.order) continue;
+      if (this.missionIds.has(e.id)) continue; // airlift crews muster with their chopper, not the rally point
       if (dist(e.x, e.y, base.x, base.y) > HOME_RADIUS) continue;
       if (dist(e.x, e.y, mx, my) <= 4.5) continue;
       ids.push(e.id);
@@ -1186,6 +1509,8 @@ export class RtsBot {
     const isDroneThreat = threat.k === "fpvdrone" || threat.k === "shahed" || threat.k === "usv" || threat.k === "uav";
     for (const e of this.scan.myUnits) {
       if (e.k === "harvester" || e.k === "engineer" || e.k === "supplytruck") continue;
+      if (this.missionIds.has(e.id)) continue; // the rest of the army holds the line — the sortie is not recalled
+      if (e.id === this.reservedTransport()) continue; // the taxi is a logistics asset, not a defender
       if (!w.canAttack(e, threat) && !(e.k === "ewdrone" && isDroneThreat)) continue;
       if (dist(e.x, e.y, base.x, base.y) > GUARD_RADIUS) continue;
       ids.push(e.id);
@@ -1219,10 +1544,11 @@ export class RtsBot {
     const army: Ent[] = [],
       awayLandAir: Ent[] = [],
       awaySea: Ent[] = [];
+    const taxiAway = this.reservedTransport();
     for (const e of this.scan.myUnits) {
       if (e.k === "harvester" || e.k === "supplytruck") continue;
       army.push(e);
-      if (!e.order && dist(e.x, e.y, base.x, base.y) > HOME_RADIUS) {
+      if (!e.order && e.id !== taxiAway && dist(e.x, e.y, base.x, base.y) > HOME_RADIUS) {
         if (isSea(e.k)) awaySea.push(e);
         else awayLandAir.push(e);
       }
@@ -1288,9 +1614,12 @@ export class RtsBot {
       // the lone engineer rides along only on big late pushes if idle —
       // don't pull one that is already en route to a neutral Oil Derrick
       const takeEngi = this.phase !== "late" || army.length >= waveMin * 1.5;
+      const taxi = this.reservedTransport(); // the dedicated transport stays out of the grinder
       const landAirIds: number[] = [];
       const seaIds: number[] = [];
       for (const e of army) {
+        if (this.missionIds.has(e.id)) continue; // airlift crews attack by air on their own schedule
+        if (e.id === taxi) continue;
         if (e.k === "engineer" && !(takeEngi && !e.order)) continue;
         if (isSea(e.k)) seaIds.push(e.id);
         else landAirIds.push(e.id);
@@ -1364,6 +1693,9 @@ export class RtsBot {
     this.wakeHarvesters();
     if (w.config.superweapons) this.fireSuperweapon(me, bc);
     if (w.config.derricks) this.captureDerricks();
+    // airlift progress must run before the sweeps so freshly freed units are
+    // pool-visible in the same tick and active crews stay excluded throughout
+    this.manageAirlift(me, t);
     if (w.config.crates) this.grabCrates();
     this.scout(t);
     this.rally();

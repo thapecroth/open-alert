@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
-import { TICK_MS, UNITS, BUILDINGS, EntKind, UnitKind, UnitDomain } from "../shared/gamedefs";
+import { TICK_MS, UNITS, BUILDINGS, EntKind, UnitKind, UnitDomain, transportCapOf } from "../shared/gamedefs";
 import type { GameEvent } from "../shared/protocol";
 import { GameScene } from "./scene";
 import { Renderer } from "./render";
@@ -1990,6 +1990,7 @@ export class FirstPersonController {
   private mouseFire = false;
   private lastFireSent = false;
   private lastDriveSentAt = 0;
+  private fpvDropping = false; // local mirror of the server's unload-while-driven toggle
 
   // Sprint / ADS / crouch / weapon-select / lock-on / altitude state
   private sprint = false;
@@ -2106,6 +2107,7 @@ export class FirstPersonController {
     if (!t) return false;
     if (t.last.o !== this.getSlot()) return false;
     if (isBuildingKind(t.last.k)) return false;
+    this.fpvDropping = false;
 
     // Clean up any previous FPV session cleanly without triggering external exit callback
     if (this.active) {
@@ -2821,6 +2823,15 @@ export class FirstPersonController {
       return;
     }
 
+    if (e.code === "KeyU" && transportCapOf(this.kind) > 0) {
+      // Transports only: rappel passengers beneath the airframe without leaving the
+      // cockpit. The server toggles the drip on each order, so U both starts and cancels.
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (!e.repeat) this.dropTroops();
+      return;
+    }
+
     if (FPV_KEYS.has(e.code)) {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -2838,6 +2849,38 @@ export class FirstPersonController {
         }
       }
     }
+  }
+
+  // U while piloting a transport: ask the server to start/stop rappelling passengers
+  // at the airframe's current position. Positional precision doesn't matter — driven
+  // unloads drop directly below — but the order still needs valid in-bounds coords.
+  private dropTroops(): void {
+    if (this.entId === null) return;
+    const cargo = this.renderer.tracked.get(this.entId)?.last.cargo ?? 0;
+    if (cargo <= 0) {
+      this.fpvDropping = false; // server auto-clears the drip when the cabin empties
+      this.fpvToast("No troops aboard");
+      return;
+    }
+    const x = clamp(this.predX, 0, this.gs.mapW - 1);
+    const y = clamp(this.predY, 0, this.gs.mapH - 1);
+    this.net.send({ t: "order", ids: [this.entId], kind: "unload", x, y });
+    this.fpvDropping = !this.fpvDropping;
+    this.fpvToast(this.fpvDropping ? `Rappelling ${cargo} troop${cargo === 1 ? "" : "s"} — U to cancel` : "Rappel cancelled");
+    this.onSfx("wpn");
+  }
+
+  // Minimal local toast — mirrors HUD.toast without a hard dependency on it (the toasts
+  // container is plain DOM, so a driver-level heads-up needs no HUD plumbing).
+  private fpvToast(msg: string): void {
+    const box = document.getElementById("toasts");
+    if (!box) return;
+    while (box.children.length >= 4) box.firstChild?.remove();
+    const t = document.createElement("div");
+    t.className = "toast info";
+    t.textContent = msg;
+    box.appendChild(t);
+    setTimeout(() => t.remove(), 2600);
   }
 
   private onKeyUp(e: KeyboardEvent): void {

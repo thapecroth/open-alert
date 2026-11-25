@@ -17,10 +17,34 @@
  * Environment:
  *   OA_HTTP=http://localhost:8787  game server base URL
  *   OA_CHROME=/usr/bin/google-chrome
+ *
+ * Capture architecture (rewritten after the empty-gif QA postmortem — see
+ * .tmp/gifcheck/verdicts.md for the failure evidence):
+ *
+ *  1. ALL engagement triggering, camera framing and recording happens INSIDE
+ *     the spectator page, driven off window.__oa.state — the exact data the
+ *     renderer draws. The harness websocket is an independent stream that can
+ *     skew seconds behind under load, and every puppeteer round-trip costs
+ *     100-500ms on a swiftshader box; a kamikaze drone crosses its entire
+ *     trigger-to-impact window (~1.1-1.7s) inside that latency chain. In-page
+ *     the trigger poll is ~5ms of JS and the recorder starts in the same task.
+ *  2. Kamikaze captures are event-driven: the tape rolls at a proximity
+ *     trigger and stops a fixed tail AFTER the impact is observed (star entity
+ *     gone / target hp drop), so the explosion can never fall outside the clip
+ *     no matter how much the sim slow-motions under load.
+ *  3. Timeouts that measure game progress use SIM TICKS (state.tick), not wall
+ *     clock — the sim runs slower than real-time under load and wall-clock
+ *     timeouts were firing mid-approach.
+ *  4. Attack orders are verified: the snapshot serializes each unit's order
+ *     queue as wp waypoints, so the supervisor loop re-issues the order (with
+ *     fresh target selection) whenever the server silently dropped it
+ *     (world.ts drops attack orders when canAttack fails at order time).
+ *  5. ffmpeg encoding never blocks the capture loop: encodes run through an
+ *     async serial queue overlapping the next capture's travel time.
  */
 
 import puppeteer from "puppeteer-core";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, statSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { wsconn, send, lastSnap, sleep } from "../test/wsconn.mjs";
@@ -43,7 +67,7 @@ const FORCE = args.includes("--force");
 const optVal = (name) => args.find((a) => a.startsWith(`--${name}=`))?.split("=").slice(1).join("=") ?? null;
 const unitsFilter = optVal("units")?.split(",").map((s) => s.trim()).filter(Boolean) ?? null;
 const sessionsFilter = optVal("sessions")?.split(",").map((s) => s.trim()).filter(Boolean) ?? null;
-const JOBS = Math.max(1, Math.min(5, Number(optVal("jobs") || 3)));
+const JOBS = Math.max(1, Math.min(5, Number(optVal("jobs") || 1)));
 
 const VW = 900;
 const VH = 650;
@@ -55,6 +79,7 @@ const MAX_GIF_BYTES = 600 * 1024;
 const fmtBytes = (n) => `${(n / 1024).toFixed(0)}KB`;
 const nowId = () => Date.now().toString(36).slice(-6);
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const DEBUG = !!process.env.CAPTURE_DEBUG;
 
 function assertTool(name) {
   try {
@@ -81,6 +106,9 @@ function entList(h, side = "a") {
 function getEnt(h, id, side = "a") {
   return entsOf(h, side).find((e) => Number(e.id) === Number(id)) ?? null;
 }
+function simTickOf(h, side = "a") {
+  return snapOf(h, side)?.tick ?? 0;
+}
 function isBuildingKind(k) {
   return Object.prototype.hasOwnProperty.call(gd.BUILDINGS, k);
 }
@@ -97,6 +125,35 @@ async function waitFor(fn, timeoutMs, label, pollMs = 180) {
     await sleep(pollMs);
   }
   throw new Error(`timeout waiting for ${label}`);
+}
+
+// Sim-time aware wait: the sim slow-motions under load, so a wall-clock budget
+// silently measures less game progress than intended. The primary budget is in
+// sim ticks read off the snapshot stream; wall clock is only a backstop for a
+// truly wedged room (ticks frozen entirely).
+async function waitForSim(h, fn, ticks, label, pollMs = 200, wallBackstopMs = 240000) {
+  const startTick = simTickOf(h);
+  const startWall = Date.now();
+  let last;
+  while (Date.now() - startWall < wallBackstopMs) {
+    if (simTickOf(h) - startTick > ticks) break;
+    try {
+      last = await fn();
+      if (last) return last;
+    } catch {
+      // keep polling
+    }
+    await sleep(pollMs);
+  }
+  // Diagnostic dump on timeout: construction stalls are otherwise invisible.
+  try {
+    for (const side of ["a", "b"]) {
+      const me = meOf(h, side);
+      if (me) console.error(`[waitForSim-timeout] side ${side}: credits=${me.credits} pwr=${me.pwrHave}/${me.pwrUse} lowPower=${me.lowPower} awaiting=${JSON.stringify(me.awaiting)} queue=${JSON.stringify(me.queue ?? me.production ?? null)}`);
+    }
+    console.error(`[waitForSim-timeout] tick=${simTickOf(h)} label=${label}`);
+  } catch {}
+  throw new Error(`timeout waiting for ${label} (sim)`);
 }
 
 async function mcpCall(room, tool, toolArgs) {
@@ -135,7 +192,7 @@ async function openHarness(session) {
     }
     return false;
   };
-  await waitFor(() => inLobby(a, tokenA) && inLobby(b, tokenB), 30000, "both harness players to join lobby");
+  await waitFor(() => inLobby(a, tokenA) && inLobby(b, tokenB), 45000, "both harness players to join lobby");
   send(a, { t: "setMap", map: session.map });
   send(a, {
     t: "setConfig",
@@ -156,15 +213,15 @@ async function openHarness(session) {
   // The host can legitimately race the second player's ready broadcast when several
   // harness rooms are created in parallel. Retry START instead of treating the first
   // "not ready" deny as fatal.
-  const startDeadline = Date.now() + 24000;
+  const startDeadline = Date.now() + 30000;
   while (Date.now() < startDeadline) {
     send(a, { t: "start" });
     await sleep(550);
     if (a.slot !== null && b.slot !== null) break;
   }
-  await waitFor(() => a.slot !== null && b.slot !== null, 20000, "match init slots");
-  await waitFor(() => (snapOf({ conns: { a, b } }, "a")?.ents?.length ?? 0) > 0, 25000, "first world snapshot");
-  return { session, room, tokenA, tokenB, conns: { a, b }, browser: null, page: null, pageErrors: [] };
+  await waitFor(() => a.slot !== null && b.slot !== null, 25000, "match init slots");
+  await waitFor(() => (snapOf({ conns: { a, b } }, "a")?.ents?.length ?? 0) > 0, 30000, "first world snapshot");
+  return { session, room, tokenA, tokenB, conns: { a, b }, browser: null, page: null, pageErrors: [], encodes: [] };
 }
 
 function ownedUnits(h, side, kind = null) {
@@ -185,9 +242,9 @@ async function buildOne(h, side, kind) {
   if (already) return already;
   const data = await mcpCall(h.room, "build_structure", { token, kind });
   if (!data.ok) throw new Error(`build ${kind}: ${data.error}`);
-  await waitFor(() => meOf(h, side)?.awaiting?.includes(kind), 45000, `${kind} ready to place`);
+  await waitForSim(h, () => meOf(h, side)?.awaiting?.includes(kind), 2600, `${kind} ready to place`);
   await mcpCall(h.room, "place_structure", { token, cat: "structure" });
-  return waitFor(() => ownedBuildings(h, side, kind)[0], 12000, `${kind} placed`);
+  return waitFor(() => ownedBuildings(h, side, kind)[0], 15000, `${kind} placed`);
 }
 
 async function upgradeFirst(h, side, fromKind, toKind) {
@@ -195,11 +252,24 @@ async function upgradeFirst(h, side, fromKind, toKind) {
   const bld = ownedBuildings(h, side, fromKind)[0];
   if (!bld) throw new Error(`cannot upgrade missing ${fromKind}`);
   await mcpCall(h.room, "special_action", { token, action: "upgrade", id: bld.id });
-  return waitFor(() => ownedBuildings(h, side, toKind)[0], 10000, `${fromKind} upgrade`);
+  return waitFor(() => ownedBuildings(h, side, toKind)[0], 12000, `${fromKind} upgrade`);
 }
 
 async function buildTech(h, side, tech) {
-  for (const kind of tech.buildings) await buildOne(h, side, kind);
+  // Duplicate kinds in the list mean multiples (power plants, mostly): buildOne
+  // early-returns on the first existing building, so repeated kinds are
+  // deferred to a single buildCounted call at their last occurrence.
+  const totals = {};
+  for (const kind of tech.buildings) totals[kind] = (totals[kind] ?? 0) + 1;
+  const seen = {};
+  for (const kind of tech.buildings) {
+    seen[kind] = (seen[kind] ?? 0) + 1;
+    if (totals[kind] > 1) {
+      if (seen[kind] === totals[kind]) await buildCounted(h, side, kind, totals[kind]);
+    } else {
+      await buildOne(h, side, kind);
+    }
+  }
   for (const [from, to] of tech.upgrades ?? []) await upgradeFirst(h, side, from, to);
 }
 
@@ -240,9 +310,9 @@ async function buildCounted(h, side, kind, count) {
   for (let i = ownedBuildings(h, side, kind).length; i < count; i++) {
     const data = await mcpCall(h.room, "build_structure", { token, kind });
     if (!data.ok) throw new Error(`build ${kind} #${i + 1}: ${data.error}`);
-    await waitFor(() => meOf(h, side)?.awaiting?.includes(kind), 90000, `${kind} #${i + 1} ready to place`);
+    await waitForSim(h, () => meOf(h, side)?.awaiting?.includes(kind), 3200, `${kind} #${i + 1} ready to place`);
     await mcpCall(h.room, "place_structure", { token, cat: "structure" });
-    await waitFor(() => ownedBuildings(h, side, kind).length > i, 15000, `${kind} #${i + 1} placed`);
+    await waitFor(() => ownedBuildings(h, side, kind).length > i, 20000, `${kind} #${i + 1} placed`);
   }
 }
 
@@ -507,7 +577,7 @@ async function ensureTargets(h, domain, min = 2) {
       if (!res) break;
     }
     const pt = steerPoint(h, domain);
-    const deadline = Date.now() + 90000;
+    const deadline = Date.now() + 120000;
     while (Date.now() < deadline) {
       for (const e of alive()) {
         if (h.seenTargets.has(e.id)) continue;
@@ -555,7 +625,7 @@ function startSeaShuffle(h) {
   };
 }
 
-async function waitSpawned(h, side, kind, seen, timeoutMs = 95000) {
+async function waitSpawned(h, side, kind, seen, timeoutMs = 150000) {
   return waitFor(
     () => ownedUnits(h, side, kind).filter((e) => !seen.has(e.id)).sort((x, y) => x.id - y.id)[0] ?? null,
     timeoutMs,
@@ -569,6 +639,11 @@ async function ensureBrowser(h) {
   h.browser = await puppeteer.launch({
     executablePath: CHROME,
     headless: "new",
+    // The in-page capture primitive is a single page.evaluate whose promise
+    // stays pending for the whole approach+engagement — easily minutes when the
+    // sim slow-motions. The default 180s protocol timeout would kill it
+    // mid-approach, so CDP calls get a ten-minute budget instead.
+    protocolTimeout: 600000,
     args: [
       "--no-sandbox",
       "--enable-unsafe-swiftshader",
@@ -579,12 +654,11 @@ async function ensureBrowser(h) {
   });
   const page = await h.browser.newPage();
   page.on("pageerror", (e) => h.pageErrors.push(`${h.room}: ${e.message}`));
-  // Bloom is a per-session decision: mobile-unit clips are mostly tracer fire
-  // at mid camera, where bloom reads as sparkle. Defense close-ups are muzzle
-  // flashes and kill explosions at point blank, and bloom inflates every flash
-  // into a frame-eating white blob (observed: the vulcan close-up hid behind
-  // its own bloom halo for the entire clip).
-  const bloom = h.session.id === "defenses" ? false : true;
+  // Bloom is a per-capture decision (see setBloom): muzzle flashes and kill
+  // explosions at point blank inflate into frame-eating white blobs with bloom
+  // on, while mid-camera tracer fire reads as sparkle. The default-on state is
+  // set here; individual captures toggle it live through the graphics bridge.
+  const bloom = true;
   await page.evaluateOnNewDocument((bloomOn) => {
     try {
       localStorage.setItem("oa-wasd", "0");
@@ -600,7 +674,7 @@ async function ensureBrowser(h) {
     } catch {}
   }, bloom);
   await page.goto(`${HTTP}/?room=${h.room}&spectate=1&name=UnitCam`, { waitUntil: "domcontentloaded", timeout: 30000 });
-  await page.waitForFunction(() => window.__oa && window.__oa.phase === "playing", { timeout: 25000 });
+  await page.waitForFunction(() => window.__oa && window.__oa.phase === "playing", { timeout: 30000 });
   await page.evaluate(() => {
     const st = document.createElement("style");
     st.textContent = "body>*:not(#game){display:none!important} #game{display:block!important;width:100vw!important;height:100vh!important;cursor:none!important}";
@@ -608,6 +682,21 @@ async function ensureBrowser(h) {
   });
   h.page = page;
   return page;
+}
+
+// Live bloom toggle through the client's own graphics bridge — the setting
+// propagates through the official onChange path into the composer's bloom pass.
+// The AC-130 close-up is the standing lesson: its gun flashes at point-blank
+// camera range bloom into a whiteout that hides the star for the whole clip.
+async function setBloom(h, on) {
+  if (!h.page) return;
+  await h.page
+    .evaluate((v) => {
+      try {
+        window.__oa?.gs?.graphics?.setOption?.("bloom", v);
+      } catch {}
+    }, on)
+    .catch(() => {});
 }
 
 async function setCamera(h, x, y, height = 13) {
@@ -624,7 +713,33 @@ async function setCamera(h, x, y, height = 13) {
   );
 }
 
-function ffmpegEncode(webm, out, width = GIF_W, colors = 112, maxDur = 0) {
+// ---------- async ffmpeg encoding pipeline ----------
+//
+// execFileSync inside the capture loop blocks the whole node event loop for
+// seconds per encode — websocket messages, puppeteer round-trips and order
+// supervision all freeze behind it, which is exactly how harness-side entity
+// positions appeared "frozen for minutes" in the skew postmortem. Encoding is
+// pure CPU work with no ordering dependency on the captures, so it runs
+// through a serial async queue that overlaps the next unit's travel time.
+
+function ff(args) {
+  return new Promise((resolve, reject) => {
+    execFile("ffmpeg", args, { stdio: "pipe", maxBuffer: 4 * 1024 * 1024 }, (err, so, se) => {
+      if (err) reject(new Error(`ffmpeg: ${err.message} ${se?.slice(-300) ?? ""}`));
+      else resolve();
+    });
+  });
+}
+function ffprobeDuration(webm) {
+  try {
+    const out = execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", webm]).toString().trim();
+    return Number(out) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function ffmpegEncodeAsync(webm, out, width = GIF_W, colors = 112, maxDur = 0, anchor = "head", tapeDur = 0, trim = null) {
   const pal = webm.replace(/\.webm$/, `-pal-${width}-${colors}.png`);
   // The canvas backing size is NOT guaranteed: swiftshader on a loaded box can
   // drop the dynamic-resolution scaler well below 900x650 (observed 585x422),
@@ -640,28 +755,84 @@ function ffmpegEncode(webm, out, width = GIF_W, colors = 112, maxDur = 0) {
   const cw = Math.max(2, Math.floor((iw * (CROP_W / VW)) / 2) * 2);
   const ch = Math.max(2, Math.floor((ih * (CROP_H / VH)) / 2) * 2);
   const crop = `crop=${cw}:${ch}:(iw-${cw})/2:(ih-${ch})/2`;
-  const dur = maxDur > 0 ? ["-t", String(maxDur)] : [];
-  execFileSync("ffmpeg", ["-hide_banner", "-y", "-v", "error", "-i", webm, ...dur, "-vf", `${crop},fps=12,scale=${width}:-2:flags=lanczos,palettegen=max_colors=${colors}`, pal], { stdio: "pipe" });
-  execFileSync(
-    "ffmpeg",
-    ["-hide_banner", "-y", "-v", "error", "-i", webm, "-i", pal, ...dur, "-lavfi", `${crop},fps=12,scale=${width}:-2:flags=lanczos[x];[x][1:v]paletteuse=dither=sierra2_4a`, "-loop", "0", out],
-    { stdio: "pipe" },
-  );
+  // Window selection, in priority order:
+  //  1. explicit impact-relative trim — the action window is known exactly
+  //  2. tail-anchored truncation — kamikaze tapes are impact-last, so cutting
+  //     the tail would amputate the explosion; shave the approach instead
+  //  3. head-anchored truncation — action-early timed clips shave the tail
+  let seek = [];
+  let dur = [];
+  if (trim && trim.ss != null) {
+    seek = trim.ss > 0.05 ? ["-ss", trim.ss.toFixed(2)] : [];
+    dur = trim.dur > 0 ? ["-t", trim.dur.toFixed(2)] : [];
+  } else {
+    if (maxDur > 0 && tapeDur > maxDur + 0.05 && anchor === "tail") {
+      seek = ["-ss", (tapeDur - maxDur).toFixed(2)];
+    }
+    dur = maxDur > 0 ? ["-t", String(maxDur)] : [];
+  }
+  await ff(["-hide_banner", "-y", "-v", "error", ...seek, "-i", webm, ...dur, "-vf", `${crop},fps=12,scale=${width}:-2:flags=lanczos,palettegen=max_colors=${colors}`, pal]);
+  await ff([
+    "-hide_banner", "-y", "-v", "error", ...seek, "-i", webm, "-i", pal, ...dur,
+    "-lavfi", `${crop},fps=12,scale=${width}:-2:flags=lanczos[x];[x][1:v]paletteuse=dither=sierra2_4a`,
+    "-loop", "0", out,
+  ]);
   rmSync(pal, { force: true });
 }
 
 // Size ladder — noisy combat footage (muzzle flashes, explosions, lots of motion)
 // blows past the web-delivery budget at full quality, so step down width/palette
-// first and only then shave the tail of the clip. Visual quality stays legible
-// far longer than raw byte size suggests because GIF delta compression is what
-// actually hurts here.
+// first and only then shave the clip. Visual quality stays legible far longer
+// than raw byte size suggests because GIF delta compression is what actually
+// hurts here.
 const QUALITY_TIERS = [
   { width: GIF_W, colors: 112, dur: 0, label: "112c/560w" },
   { width: 520, colors: 88, dur: 0, label: "88c/520w" },
   { width: 480, colors: 64, dur: 0, label: "64c/480w" },
-  { width: 480, colors: 64, dur: 3.0, label: "64c/480w/3.0s" },
-  { width: 420, colors: 48, dur: 2.6, label: "48c/420w/2.6s" },
+  { width: 480, colors: 64, dur: 3.6, label: "64c/480w/3.6s" },
+  { width: 420, colors: 48, dur: 3.2, label: "48c/420w/3.2s" },
 ];
+
+// Serial encode queue: one ffmpeg pipeline at a time. Jobs are registered by
+// the capture flow and awaited at session end; capture code itself never waits
+// on an encode before moving on to the next unit.
+// Impact-relative clip window: given the tape's impact offset, choose the gif
+// window — a couple of seconds of inbound action, the impact itself, and a
+// beat of aftermath. Tapes whose impact was never observed fall back to plain
+// anchoring inside the quality ladder.
+function impactTrim(rec, leadSec, tailKeepSec, maxDurSec = 4.6) {
+  if (rec?.impactT == null) return null;
+  const impactSec = rec.impactT / 1000;
+  const ss = Math.max(0, impactSec - leadSec);
+  const end = Math.min(rec.tapeMs / 1000, impactSec + tailKeepSec);
+  const dur = Math.min(maxDurSec, Math.max(1.2, end - ss));
+  return { ss, dur };
+}
+
+function enqueueEncode(h, job) {
+  const run = async () => {
+    const tapeDur = ffprobeDuration(job.webm);
+    let size = 0;
+    let quality = "";
+    for (const tier of QUALITY_TIERS) {
+      await ffmpegEncodeAsync(job.webm, job.out, tier.width, tier.colors, tier.dur, job.anchor ?? "head", tapeDur, job.trim ?? null);
+      size = statSync(job.out).size;
+      quality = tier.label;
+      if (size <= MAX_GIF_BYTES) break;
+    }
+    rmSync(job.webm, { force: true });
+    return { out: job.out, size, quality, durationMs: job.durationMs ?? 0 };
+  };
+  const p = (h.encodeChain ?? Promise.resolve()).then(run, run);
+  h.encodeChain = p.catch(() => {});
+  const entry = { kind: job.kind, promise: p };
+  h.encodes.push(entry);
+  p.then(
+    (r) => console.log(`  [enc] ${job.kind}: ${fmtBytes(r.size)} ${r.quality}`),
+    (err) => console.log(`  [enc] ${job.kind} FAILED: ${err?.message || err}`),
+  );
+  return entry;
+}
 
 // Position of an entity as seen by the SPECTATOR client itself. The harness
 // websocket and the spectator browser are independent streams, and under load
@@ -677,16 +848,398 @@ async function specPos(page, entId) {
     .catch(() => null);
 }
 
+// ---------------------------------------------------------------------------
+// In-page engagement capture — the heart of the pipeline.
+//
+// Everything latency-critical happens inside the spectator page: watching the
+// approach on spectator-side state (the same data the renderer draws), framing
+// the camera at trigger time, starting the MediaRecorder in the same task, and
+// — for kamikaze units — stopping the tape a fixed tail AFTER the impact is
+// observed. The node side only supervises orders while the tape rolls.
+//
+// spec = {
+//   starId, enemySlot,
+//   fodderKinds?: string[]         — target = nearest living enemy of these kinds
+//   targetId?: number              — or a fixed target entity (buildings: spy)
+//   triggerDist: number            — center-distance that starts the camera+recorder
+//   mode: "timed" | "impact"       — timed: fixed window; impact: stop tailMs after kill
+//   durationMs?, tailMs?, maxRecMs — record-phase bounds
+//   maxWaitTicks, maxWaitMs        — trigger-wait bounds (sim ticks + wall backstop)
+//   cameraHeight                   — fixed height, or starting point for autoFrame
+//   minH/maxH/marginPx, autoFrame  — dynamic fit of star+target inside the crop
+//   attackerWeight                 — camera aim blend toward the star (0..1)
+//   preRollMs                      — settle time between camera set and rec start
+//   cropFx/cropFy                  — crop fractions of the viewport
+// }
+// ---------------------------------------------------------------------------
+async function pageCaptureEngagement(h, spec) {
+  const page = await ensureBrowser(h);
+  const promise = page.evaluate(async (spec) => {
+    const oa = window.__oa;
+    if (!oa || !oa.renderer?.tracked) return { error: "client renderer unavailable" };
+    const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+    // Spectator-side entity state: renderer.tracked values carry `.last` — the
+    // exact EntSnap the renderer draws (positions, hp, kind, disguise), updated
+    // every snapshot and deleted promptly when an entity dies. This is the same
+    // data the render shows by definition, so triggers measured here cannot
+    // skew away from what the tape records.
+    const trackedEnts = () => {
+      const out = [];
+      for (const t of oa.renderer.tracked.values()) if (t.last) out.push(t.last);
+      return out;
+    };
+    const ents = trackedEnts;
+    // Sim-time measurement: the HUD game clock renders floor(tick/10) as mm:ss.
+    // Parsed back it yields game-seconds — coarse (10-tick granularity) but
+    // correct under slow-motion, which is all the trigger timeout needs.
+    const tick = () => {
+      const txt = document.getElementById("game-clock")?.textContent ?? "0:00";
+      const parts = txt.split(":").map(Number);
+      return ((parts[0] || 0) * 60 + (parts[1] || 0)) * 10;
+    };
+    const findStar = () => oa.renderer.tracked.get(spec.starId)?.last ?? null;
+    const kindOf = (e) => e.disg ?? e.k;
+    const progress = (obj) => {
+      try {
+        window.__oaCap = { ...(window.__oaCap ?? {}), ...obj, at: performance.now() };
+      } catch {}
+    };
+    const targetOf = (star) => {
+      if (spec.targetId != null) {
+        const t = ents().find((e) => Number(e.id) === spec.targetId);
+        return t ? { ent: t, d: Math.hypot(t.x - star.x, t.y - star.y) } : null;
+      }
+      let best = null;
+      let bd = Infinity;
+      for (const e of ents()) {
+        if (e.o !== spec.enemySlot) continue;
+        if (!spec.fodderKinds.includes(kindOf(e))) continue;
+        if (e.hp !== undefined && e.hp <= 0) continue;
+        const d = Math.hypot(e.x - star.x, e.y - star.y);
+        if (d < bd) {
+          bd = d;
+          best = e;
+        }
+      }
+      return best ? { ent: best, d: bd } : null;
+    };
+
+    // ---- phase 1: wait for the approach trigger, in sim ticks ----
+    const startTick = tick();
+    const t0 = performance.now();
+    let trig = null;
+    let lastD = null;
+    while (true) {
+      const star = findStar();
+      if (!star) return { error: "star died before trigger" };
+      const tgt = targetOf(star);
+      if (tgt) lastD = tgt.d;
+      progress({ phase: "approach", d: lastD, tick: tick() - startTick });
+      if (tick() - startTick > spec.maxWaitTicks) return { error: `trigger timeout (${spec.maxWaitTicks} ticks)`, lastD };
+      if (performance.now() - t0 > spec.maxWaitMs) return { error: "trigger timeout (wall)", lastD };
+      if (tgt && tgt.d <= spec.triggerDist) {
+        trig = {
+          star: { x: star.x, y: star.y },
+          tgt: { x: tgt.ent.x, y: tgt.ent.y, id: Number(tgt.ent.id), hp: tgt.ent.hp },
+          d: tgt.d,
+        };
+        break;
+      }
+      await sleepMs(70);
+    }
+    progress({ phase: "triggered", d: trig.d });
+
+    // ---- phase 2: frame the camera — optionally fitting both parties in crop ----
+    const gs = oa.gs;
+    const canvas = document.getElementById("game");
+    const w = spec.attackerWeight;
+    const aimX = trig.star.x * w + trig.tgt.x * (1 - w);
+    const aimY = trig.star.y * w + trig.tgt.y * (1 - w);
+    const setCam = (x, y, h) => {
+      gs.camTarget.x = x;
+      gs.camTarget.z = y;
+      gs.camHeight = h;
+      gs.updateCamera();
+      gs.camera.updateMatrixWorld(true);
+    };
+    let camH = spec.cameraHeight;
+    if (spec.autoFrame) {
+      // Perspective view: raising the camera zooms out. Pick the LOWEST height
+      // where both parties project inside the crop rectangle (with margin) —
+      // maximum zoom that still keeps the star and the impact zone on screen.
+      const vw = canvas.clientWidth || 900;
+      const vh = canvas.clientHeight || 650;
+      const cw = vw * spec.cropFx;
+      const chh = vh * spec.cropFy;
+      const x0 = (vw - cw) / 2 + spec.marginPx;
+      const x1 = (vw + cw) / 2 - spec.marginPx;
+      const y0 = (vh - chh) / 2 + spec.marginPx;
+      const y1 = (vh + chh) / 2 - spec.marginPx;
+      const inside = (px) => px.x > x0 && px.x < x1 && px.y > y0 && px.y < y1;
+      let chosen = null;
+      for (let hh = spec.minH; hh <= spec.maxH + 0.01; hh += 0.5) {
+        setCam(aimX, aimY, hh);
+        const pa = oa.projectTile(trig.star.x - 0.5, trig.star.y - 0.5);
+        const pb = oa.projectTile(trig.tgt.x - 0.5, trig.tgt.y - 0.5);
+        if (inside(pa) && inside(pb)) {
+          chosen = hh;
+          break;
+        }
+      }
+      camH = chosen ?? spec.maxH;
+    }
+    setCam(aimX, aimY, camH);
+    await sleepMs(spec.preRollMs);
+
+    // ---- phase 3: roll tape ----
+    if (!canvas || !canvas.captureStream) return { error: "canvas.captureStream unavailable" };
+    const stream = canvas.captureStream(15);
+    const mime = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"].find((m) => MediaRecorder.isTypeSupported(m));
+    if (!mime) return { error: "no supported webm MediaRecorder mime type" };
+    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 1800000 });
+    const chunks = [];
+    rec.ondataavailable = (e) => {
+      if (e.data && e.data.size) chunks.push(e.data);
+    };
+    rec.start(250);
+    const recT = performance.now();
+    progress({ phase: "recording" });
+
+    let impactT = null;
+    let impactKind = null;
+    let firstHitT = null;
+    let prevTgtHp = trig.tgt.hp;
+    const deadline = recT + spec.maxRecMs;
+    while (true) {
+      await sleepMs(80);
+      const now = performance.now();
+      const star = findStar();
+      // First-hit tracking runs in EVERY mode: server-side damage lands the
+      // same tick the shot fires, so the target's first hp drop timestamps the
+      // first volley within one snapshot interval. Timed artillery clips use
+      // it post-hoc to place the encode window on the launch.
+      const tgtNow = ents().find((e) => Number(e.id) === trig.tgt.id);
+      if (tgtNow && typeof tgtNow.hp === "number") {
+        if (typeof prevTgtHp === "number" && tgtNow.hp < prevTgtHp && firstHitT == null) {
+          firstHitT = now - recT;
+          progress({ phase: "first-hit" });
+        }
+        prevTgtHp = tgtNow.hp;
+      }
+      if (spec.mode === "impact") {
+        if (!star && impactT == null) {
+          impactT = now;
+          impactKind = "star-gone";
+          progress({ phase: "impact", kind: impactKind });
+        }
+        if (firstHitT != null && impactT == null) {
+          impactT = now;
+          impactKind = "hp-drop";
+          progress({ phase: "impact", kind: impactKind });
+        }
+        if (!tgtNow && impactT == null) {
+          impactT = now;
+          impactKind = "target-gone";
+          progress({ phase: "impact", kind: impactKind });
+        }
+        if (impactT != null && now >= impactT + spec.tailMs) break;
+        if (now >= deadline) break;
+      } else {
+        if (now >= recT + spec.durationMs) break;
+      }
+    }
+    const tapeMs = performance.now() - recT;
+    await new Promise((r) => {
+      rec.onstop = r;
+      rec.stop();
+    });
+    stream.getTracks().forEach((t) => t.stop());
+    const blob = new Blob(chunks, { type: mime });
+    return {
+      bytes: Array.from(new Uint8Array(await blob.arrayBuffer())),
+      size: blob.size,
+      mime,
+      tapeMs,
+      trig,
+      camH,
+      aim: { x: aimX, y: aimY },
+      impactT: impactT == null ? null : impactT - recT,
+      impactKind,
+      firstHitT,
+    };
+  }, spec);
+  return { promise, page };
+}
+
+// Order supervision: the server silently drops attack orders when canAttack
+// fails at order time (world.ts) and never tells the client. The snapshot
+// serializes each unit's live order queue as wp waypoints ([x, y, kind]), so
+// acceptance is observable: within a couple of seconds the star must carry an
+// attack waypoint. While the in-page capture waits for its trigger, this loop
+// re-issues the order with fresh target selection whenever it is missing, and
+// freezes land fodder near the star so artillery doesn't chase instead of fire.
+async function superviseOrders(h, unit, starId, opts, done) {
+  const domain = opts.domain ?? targetDomainFor(unit);
+  let reissues = 0;
+  let lastOrderAt = 0;
+  let froze = false;
+  while (!done()) {
+    await sleep(750);
+    if (done()) break;
+    try {
+      const star = getEnt(h, starId);
+      if (!star) break; // dead — impact or failure, the in-page side knows
+      const wp = star.wp;
+      const attacking = Array.isArray(wp) && wp.length > 0 && wp[0][2] === "attack";
+      if (!attacking && Date.now() - lastOrderAt > 1600) {
+        const target = chooseTarget(h, { targetKind: opts.targetKind, attackerKind: unit, origin: star });
+        if (target) {
+          order(h, "a", [starId], "attack", target.x, target.y, target.id);
+          lastOrderAt = Date.now();
+          reissues++;
+          if (DEBUG) console.log(`  [dbg] ${unit}: (re)issued attack on #${target.id} (${reissues})`);
+        }
+      } else if (attacking && !froze && opts.freezeFodder) {
+        // Artillery chase fix: fodder drifting away from the stage makes the
+        // star pursue instead of firing — its range only closes when the
+        // target holds still. Unarmed land fodder is harmless standing still,
+        // so freeze everything near the star once the attack is on. Sea
+        // fodder is armed and must keep shuffling (moving units never fire).
+        const starT = chooseTarget(h, { targetKind: opts.targetKind, attackerKind: unit, origin: star });
+        if (starT && dist(star, starT) <= UNITS[unit].range + 6) {
+          const flock = ownedUnits(h, "b").filter((e) => e.k === TARGET_TRAINER[domain] && Math.hypot(e.x - star.x, e.y - star.y) < 14);
+          if (flock.length) {
+            stop(h, "b", flock.map((e) => e.id));
+            froze = true;
+            if (DEBUG) console.log(`  [dbg] ${unit}: froze ${flock.length} fodder near star`);
+          }
+        }
+      }
+    } catch {}
+  }
+  return { reissues };
+}
+
+async function captureCombat(h, unit, opts = {}) {
+  const seen = h.seenUnits;
+  h.prequeued ??= new Set();
+  if (h.prequeued.has(unit)) h.prequeued.delete(unit);
+  else await train(h, "a", unit, 1);
+  const ent = await waitSpawned(h, "a", unit, seen, opts.trainTimeoutMs ?? 150000);
+  seen.add(ent.id);
+
+  // Start the next unit cooking while this one is moving into firing position.
+  if (opts.nextUnit && !h.prequeued.has(opts.nextUnit)) {
+    h.prequeued.add(opts.nextUnit);
+    train(h, "a", opts.nextUnit, 1).catch(() => h.prequeued.delete(opts.nextUnit));
+  }
+
+  const domain = targetDomainFor(unit);
+  await ensureTargets(h, domain, 2);
+  const target = await waitForSim(
+    h,
+    () => chooseTarget(h, { targetKind: opts.targetKind, attackerKind: unit, origin: ent }),
+    900,
+    `target for ${unit}`,
+  );
+
+  // Per-unit capture shaping. Kamikaze/strike classes use impact-mode tapes;
+  // sustained-fire units use timed tapes with auto-framing.
+  const spec = {
+    starId: ent.id,
+    enemySlot: h.conns.b.slot,
+    fodderKinds: [TARGET_TRAINER[domain]],
+    triggerDist: opts.triggerDist ?? UNITS[unit].range + (opts.rangePad ?? 2.6),
+    mode: opts.mode ?? "timed",
+    durationMs: opts.durationMs ?? 4400,
+    tailMs: opts.tailMs ?? 1800,
+    maxRecMs: opts.maxRecMs ?? 40000,
+    maxWaitTicks: opts.maxWaitTicks ?? 1100,
+    maxWaitMs: opts.maxWaitMs ?? 170000,
+    cameraHeight: opts.cameraHeight ?? (UNITS[unit].domain === "air" ? 14 : 13),
+    minH: opts.minH ?? 10.5,
+    maxH: opts.maxH ?? 17,
+    marginPx: opts.marginPx ?? 26,
+    autoFrame: opts.autoFrame ?? false,
+    attackerWeight: opts.attackerWeight ?? 0.45,
+    preRollMs: opts.preRollMs ?? 240,
+    cropFx: CROP_W / VW,
+    cropFy: CROP_H / VH,
+  };
+
+  if (opts.bloom === false) await setBloom(h, false);
+  const { promise, page } = await pageCaptureEngagement(h, spec);
+
+  // Attack order goes out immediately after the in-page watcher is live —
+  // ordering before would waste trigger distance on the spawn-to-field walk.
+  order(h, "a", [ent.id], "attack", target.x, target.y, target.id);
+  let finished = false;
+  const supervise = superviseOrders(h, unit, ent.id, { ...opts, domain }, () => finished).catch(() => ({}));
+
+  const rec = await promise;
+  finished = true;
+  await supervise;
+  if (opts.bloom === false) await setBloom(h, true).catch(() => {});
+  if (rec.error) throw new Error(`${unit} capture: ${rec.error}${rec.lastD != null ? ` lastD=${rec.lastD?.toFixed(1)}` : ""}`);
+  if (!rec.bytes?.length) throw new Error(`${unit} capture: empty tape`);
+  if (DEBUG) {
+    await page.screenshot({ path: join(TMP_DIR, `${h.session.id}-${unit}-post.png`) }).catch(() => {});
+    console.log(
+      `  [dbg] ${unit}: tape=${(rec.tapeMs / 1000).toFixed(1)}s trigD=${rec.trig.d.toFixed(1)} camH=${rec.camH} aim=(${rec.aim.x.toFixed(1)},${rec.aim.y.toFixed(1)}) impact=${rec.impactKind ?? "none"}@${rec.impactT == null ? "-" : (rec.impactT / 1000).toFixed(1)}s`,
+    );
+  }
+  const webm = join(TMP_DIR, `${h.session.id}-${unit}.webm`);
+  writeFileSync(webm, Buffer.from(rec.bytes));
+  const out = join(OUT_DIR, `${unit}.gif`);
+  // Window placement. Impact-mode tapes trim around the impact. Timed tapes
+  // trim around the FIRST HIT when one was observed: server damage lands the
+  // tick the shot fires, so the window [hit - lead, hit + tail] always carries
+  // the launch, the flight and the impact — even when sim slow-mo stretched
+  // the approach across most of the tape (the ballistic truncate-the-launch
+  // failure). Without an observed hit the ladder's head anchoring is the
+  // fallback and the frame review catches the miss.
+  let trim = null;
+  if (spec.mode === "impact") {
+    trim = impactTrim(rec, opts.trimLeadSec ?? 2.3, opts.trimTailSec ?? 1.9);
+  } else if (rec.firstHitT != null) {
+    const hitSec = rec.firstHitT / 1000;
+    const ss = Math.max(0, hitSec - (opts.hitLeadSec ?? 1.0));
+    const end = Math.min(rec.tapeMs / 1000, hitSec + (opts.hitTailSec ?? 3.2));
+    trim = { ss, dur: Math.min(4.6, Math.max(1.2, end - ss)) };
+  }
+  const entry = enqueueEncode(h, { webm, out, kind: unit, anchor: spec.mode === "impact" ? "tail" : "head", durationMs: rec.tapeMs, trim });
+
+  // Pull the star off-stage after its close-up. Left in place it keeps
+  // auto-firing through every following train cycle and deprives the remaining
+  // units of anything to shoot at — and parked AT the base it would still be in
+  // range of fodder passing to the stage, so it goes to the far parking lot
+  // with the starting squad. (Kamikaze stars are already dead — harmless no-op.)
+  const park = parkPointFor(h, "a");
+  if (getEnt(h, ent.id)) order(h, "a", [ent.id], "move", park.x, park.y);
+
+  const enc = await entry.promise;
+  return { ...enc, tape: rec };
+}
+
+async function closeHarness(h) {
+  if (h.browser) await h.browser.close().catch(() => {});
+  for (const c of Object.values(h.conns)) {
+    try {
+      c.ws.close();
+    } catch {}
+  }
+}
+
+// ---------- legacy fixed-camera clip recorder (defenses & utility units) ----------
+//
+// The defense lineup films STATIC buildings whose fodder choreography is fully
+// node-driven, so it keeps the original fixed-camera recorder — the engagement
+// timing there is controlled by the flush choreography, not a unit approach.
 async function recordClip(h, kind, entId, durationMs, height = 13, focus = null) {
   const page = await ensureBrowser(h);
   const webm = join(TMP_DIR, `${h.session.id}-${kind}.webm`);
   const out = join(OUT_DIR, `${kind}.gif`);
   const first = getEnt(h, entId);
-  // Camera aim: explicit focus point if given (e.g. attacker/target midpoint so
-  // the impact zone stays framed even when the attacker keeps closing in),
-  // otherwise the unit's own position at record start. When the focus carries a
-  // targetId it is a LIVE blend — recomputed from spectator-side positions right
-  // here at record start, never frozen minutes-stale harness coordinates.
   let aim = null;
   if (focus && focus.targetId != null) {
     const sp = await specPos(page, entId);
@@ -704,27 +1257,7 @@ async function recordClip(h, kind, entId, durationMs, height = 13, focus = null)
     else if (first) aim = { x: first.x, y: first.y };
   }
   if (aim) await setCamera(h, aim.x, aim.y, height);
-  // Diagnostic frame + telemetry: when a clip comes back empty or wrong, this is
-  // what tells camera-pointing mistakes from encoding mistakes — the png shows
-  // exactly what the spectator saw the moment recording began.
-  const camProbe = await page.evaluate((entId) => {
-    const gs = window.__oa.gs;
-    const c = document.getElementById("game");
-    const st = window.__oa.state;
-    const ents = st?.ents ?? [];
-    const star = ents.find((e) => Number(e.id) === Number(entId));
-    const near = ents.filter((e) => Math.abs(e.x - gs.camTarget.x) < 8 && Math.abs(e.y - gs.camTarget.z) < 8).length;
-    return {
-      tx: gs.camTarget.x, tz: gs.camTarget.z, h: gs.camHeight, cw: c?.width, ch: c?.height, dpr: window.devicePixelRatio,
-      specEnts: ents.length, specStar: star ? `${star.k}@${star.x.toFixed(1)},${star.y.toFixed(1)}` : "none", specNear: near,
-      tick: st?.tick, phase: window.__oa.phase,
-    };
-  }, entId);
-  if (process.env.CAPTURE_DEBUG) {
-    await page.screenshot({ path: join(TMP_DIR, `${h.session.id}-${kind}-start.png`) }).catch(() => {});
-    console.log(`  [dbg] ${kind}: aim=(${aim?.x?.toFixed(1)},${aim?.y?.toFixed(1)}) ent=${first ? `${first.x.toFixed(1)},${first.y.toFixed(1)}` : "GONE"} cam=${JSON.stringify(camProbe)}`);
-  }
-  const recPromise = page.evaluate(async (durationMs) => {
+  const rec = await page.evaluate(async (durationMs) => {
     const canvas = document.getElementById("game");
     if (!canvas || !canvas.captureStream) return { error: "canvas.captureStream unavailable" };
     const stream = canvas.captureStream(15);
@@ -745,145 +1278,10 @@ async function recordClip(h, kind, entId, durationMs, height = 13, focus = null)
     const blob = new Blob(chunks, { type: mime });
     return { bytes: Array.from(new Uint8Array(await blob.arrayBuffer())), size: blob.size, mime };
   }, durationMs);
-
-  // Keep the camera fixed during the clip. This is cinematic enough for short
-  // engagement shots and, just as importantly, keeps the background stable so the
-  // GIF delta compression stays small enough for web delivery.
-  if (process.env.CAPTURE_DEBUG) {
-    (async () => {
-      for (let s = 0; s < 4; s++) {
-        await sleep(1000);
-        const star = getEnt(h, entId);
-        const spec = await page
-          .evaluate((id) => {
-            const t = window.__oa.renderer?.tracked?.get(id);
-            const arr = window.__oa.renderer?.tracked ? [...window.__oa.renderer.tracked.values()] : [];
-            return { x: t ? t.last.x : null, y: t ? t.last.y : null, n: arr.length };
-          }, entId)
-          .catch(() => null);
-        console.log(
-          `  [dbg] ${kind} clip+${s + 1}s: harness-star=${star ? `${star.x.toFixed(1)},${star.y.toFixed(1)}` : "DEAD"} spec-star=${spec?.x != null ? `${spec.x.toFixed(1)},${spec.y.toFixed(1)}` : "?"} specEnts=${spec?.n}`,
-        );
-      }
-    })().catch(() => {});
-  }
-  const rec = await recPromise;
   if (rec.error) throw new Error(rec.error);
   writeFileSync(webm, Buffer.from(rec.bytes));
-  let size = 0;
-  let quality = "";
-  for (const tier of QUALITY_TIERS) {
-    ffmpegEncode(webm, out, tier.width, tier.colors, tier.dur);
-    size = statSync(out).size;
-    quality = tier.label;
-    if (size <= MAX_GIF_BYTES) break;
-  }
-  rmSync(webm, { force: true });
-  return { out, size, quality, durationMs };
-}
-
-async function closeHarness(h) {
-  if (h.browser) await h.browser.close().catch(() => {});
-  for (const c of Object.values(h.conns)) {
-    try {
-      c.ws.close();
-    } catch {}
-  }
-}
-
-function queueDistanceOk(h, ent, target, rangePad = 1.2) {
-  if (!ent || !target) return false;
-  const def = UNITS[ent.k];
-  return dist(ent, target) <= Math.max(2, def.range + rangePad);
-}
-
-async function captureCombat(h, unit, opts = {}) {
-  const seen = h.seenUnits;
-  h.prequeued ??= new Set();
-  if (h.prequeued.has(unit)) h.prequeued.delete(unit);
-  else await train(h, "a", unit, 1);
-  const ent = await waitSpawned(h, "a", unit, seen, opts.trainTimeoutMs ?? 100000);
-  seen.add(ent.id);
-
-  // Start the next unit cooking while this one is moving into firing position.
-  if (opts.nextUnit && !h.prequeued.has(opts.nextUnit)) {
-    h.prequeued.add(opts.nextUnit);
-    train(h, "a", opts.nextUnit, 1).catch(() => h.prequeued.delete(opts.nextUnit));
-  }
-
-  // Make sure something attackable actually exists before sending the star out —
-  // earlier sessions starved here because preceding units slaughtered the whole
-  // starting squad while their own clips were still cooling down.
-  await ensureTargets(h, targetDomainFor(unit), 2);
-  let target = await waitFor(
-    () => chooseTarget(h, { targetKind: opts.targetKind, attackerKind: unit, origin: ent }),
-    opts.targetWaitMs ?? 65000,
-    `target for ${unit}`,
-  );
-  order(h, "a", [ent.id], "attack", target.x, target.y, target.id);
-
-  // The engagement trigger reads SPECTATOR-side positions: they are what the
-  // render shows by definition, so a proximity measured there is a proximity the
-  // clip will actually contain. Harness-side positions can skew seconds behind
-  // under load — proven by the empty infantry clips where the trigger "fired" at
-  // a range the star had never truly reached yet.
-  const page = await ensureBrowser(h);
-  const specDist = async () => {
-    const sp = await specPos(page, ent.id);
-    const tp = await specPos(page, target.id);
-    return { sp, tp, d: sp && tp ? dist(sp, tp) : null };
-  };
-  let engTicks = 0;
-  const engaged = await waitFor(
-    async () => {
-      const { sp, tp, d } = await specDist();
-      if (process.env.CAPTURE_DEBUG && ++engTicks % 20 === 0) {
-        const hb = getEnt(h, ent.id);
-        const hbT = target ? getEnt(h, target.id) : null;
-        console.log(
-          `  [dbg] ${unit} poll: harness-star=${hb ? `${hb.x.toFixed(1)},${hb.y.toFixed(1)} ord=${hb.order?.kind ?? "none"}` : "DEAD"} spec-star=${sp ? `${sp.x.toFixed(1)},${sp.y.toFixed(1)}` : "?"} tgt#${target?.id}=${tp ? `${tp.x.toFixed(1)},${tp.y.toFixed(1)}` : "?"} harness-tgt=${hbT ? `${hbT.x.toFixed(1)},${hbT.y.toFixed(1)} hp=${hbT.hp}` : "DEAD/?"} d=${d == null ? "?" : d.toFixed(1)}`,
-        );
-      }
-      if (!sp || !tp) {
-        // target dead or not yet tracked — re-pick and re-order harness-side
-        const hbCur = getEnt(h, ent.id);
-        const repl = chooseTarget(h, { targetKind: opts.targetKind, attackerKind: unit, origin: hbCur ?? ent });
-        if (!repl) return null;
-        target = repl;
-        if (hbCur) order(h, "a", [ent.id], "attack", repl.x, repl.y, repl.id);
-        return null;
-      }
-      if (d != null && d <= Math.max(2, UNITS[unit].range + (opts.rangePad ?? 2.8))) return { cur: sp, tgt: { ...tp, id: target.id } };
-      // Re-issue against a moving/replacement target occasionally.
-      if (Math.random() < 0.18) order(h, "a", [ent.id], "attack", tp.x, tp.y, target.id);
-      return null;
-    },
-    opts.engageTimeoutMs ?? 75000,
-    `${unit} to engage`,
-    240,
-  );
-  await sleep(opts.preRollMs ?? 240);
-  // Frame attacker and target together: the impact zone is the interesting half
-  // of the shot. The blend is computed LIVE inside recordClip from spectator-side
-  // positions — the harness stream can skew seconds behind what the spectator
-  // renders, and frozen trigger-time coordinates are how the empty frames happened.
-  if (process.env.CAPTURE_DEBUG) {
-    console.log(`  [dbg] ${unit}: trigger cur=(${engaged.cur.x.toFixed(1)},${engaged.cur.y.toFixed(1)}) tgt#${engaged.tgt.id}=${engaged.tgt.k}@${engaged.tgt.hp ?? "?"}hp (${engaged.tgt.x.toFixed(1)},${engaged.tgt.y.toFixed(1)}) d=${dist(engaged.cur, engaged.tgt).toFixed(1)}`);
-  }
-  const focus = { targetId: engaged.tgt.id, attackerWeight: opts.attackerWeight ?? 0.45 };
-  // Small infantry-class units fill too little of the crop at the default
-  // height — drop the camera a touch so the star reads as more than a few pixels.
-  const smallUnit = ["infantry", "rocket", "spy", "engineer"].includes(unit);
-  const defaultHeight = UNITS[unit].domain === "air" ? 14 : smallUnit ? 11.5 : 13;
-  const cap = await recordClip(h, unit, ent.id, opts.durationMs ?? 3600, opts.cameraHeight ?? defaultHeight, focus);
-  // Pull the star off-stage after its close-up. Left in place it keeps
-  // auto-firing through every following train cycle and deprives the remaining
-  // units of anything to shoot at — and parked AT the base it would still be in
-  // range of fodder passing to the stage, so it goes to the far parking lot
-  // with the starting squad.
-  const park = parkPointFor(h, "a");
-  if (getEnt(h, ent.id)) order(h, "a", [ent.id], "move", park.x, park.y);
-  return cap;
+  const entry = enqueueEncode(h, { webm, out, kind, anchor: "head", durationMs });
+  return entry.promise;
 }
 
 // The defense-line capture: a single crossroads session films every turret in
@@ -896,11 +1294,6 @@ async function captureCombat(h, unit, opts = {}) {
 async function runDefenseFlow(h, session, wanted, result) {
   const st = parkStarters(h);
 
-  // Tech races in parallel on both sides. Side B needs nothing but power,
-  // barracks, radar, and an airfield — the entire defense line can engage air,
-  // so one unarmed fodder type covers every capture. Side A skips its refinery
-  // (nothing in the defense tech chain needs it) but still needs the factory
-  // for the tech lab.
   const techA = (async () => {
     await buildCounted(h, "a", "power", 3);
     for (const k of ["barracks", "radar", "factory", "techlab"]) await buildOne(h, "a", k);
@@ -910,8 +1303,6 @@ async function runDefenseFlow(h, session, wanted, result) {
     for (const k of ["barracks", "radar", "airfield"]) await buildOne(h, "b", k);
   })();
 
-  // Spectator warmup overlaps construction — the first recordClip must not pay
-  // the keyframe/mesh-warmup cost inside its own window.
   ensureBrowser(h).catch(() => {});
 
   const anchor = defenseAnchor(h);
@@ -920,37 +1311,26 @@ async function runDefenseFlow(h, session, wanted, result) {
   let stopStream = null;
 
   await techB;
-  // Prime the drone pipeline the moment the airfield exists — transit across
-  // the map diagonal dominates the session timeline, never training-time. One
-  // batch of five is plenty: the ewdrone models are large, and past a half
-  // dozen simultaneous bodies the star disappears under the swarm.
   train(h, "b", "ewdrone", 5).catch(() => {});
   stopStream = startDroneStream(h, () => goal);
 
   try {
     await techA;
 
-    // The spectator keyframe can lag the page load by a long stretch on a
-    // loaded box — recordClip must never open on an empty renderer world.
     const warmPage = await ensureBrowser(h);
     await waitFor(
       () => warmPage.evaluate(() => (window.__oa?.renderer?.tracked?.size ?? 0) > 10).catch(() => false),
-      30000,
+      40000,
       "spectator world warmup",
       300,
     );
 
-    // Satlink first: it is the only defense-line star on the STRUCTURE queue,
-    // and thaad needs it to exist at queue time (only). Queue everything before
-    // selling anything.
     await mcpCall(h.room, "build_structure", { token: h.tokenA, kind: "satlink" });
-    await waitFor(() => meOf(h, "a")?.awaiting?.includes("satlink"), 150000, "satlink construction");
+    await waitForSim(h, () => meOf(h, "a")?.awaiting?.includes("satlink"), 4000, "satlink construction");
     await placeNear(h, "a", "satlink", anchorPt.x, anchorPt.y, "structure");
     const satEnt = await waitFor(() => ownedBuildings(h, "a", "satlink")[0], 10000, "satlink placed");
     goal = { x: satEnt.x, y: satEnt.y };
 
-    // Queue every wanted defense in capture order. Requires-checks happen only
-    // at queue time, so the satlink sale afterwards cannot cancel anything.
     const queueOrder = DEFENSE_CAPTURE_ORDER.filter((k) => k !== "satlink" && wanted.includes(k));
     for (const k of queueOrder) {
       try {
@@ -959,8 +1339,6 @@ async function runDefenseFlow(h, session, wanted, result) {
         console.log(`  [def] queue ${k} failed: ${err?.message || err}`);
       }
     }
-    // Partial runs that skip the satlink card must still not leave it standing:
-    // its 15-range beam would steal the fodder stream from every other star.
     if (!wanted.includes("satlink")) await sellBuilding(h, "a", satEnt.id);
 
     for (const kind of wanted) {
@@ -970,69 +1348,45 @@ async function runDefenseFlow(h, session, wanted, result) {
         if (kind === "satlink") {
           ent = satEnt;
         } else {
-          // FIFO defense queue: the next capture must be the head of awaitingDef.
-          await waitFor(() => meOf(h, "a")?.awaitingDef?.[0] === kind, 150000, `${kind} construction`);
+          await waitForSim(h, () => meOf(h, "a")?.awaitingDef?.[0] === kind, 4000, `${kind} construction`);
           await placeNear(h, "a", kind, goal.x, goal.y, "defense");
           ent = await waitFor(() => ownedBuildings(h, "a", kind)[0], 10000, `${kind} placed`);
           goal = { x: ent.x, y: ent.y };
         }
         if (meOf(h, "a")?.lowPower) console.log(`  [def] WARNING low power during ${kind} — defenses offline`);
 
-        // Staging/flush choreography: defenses shred fodder faster than the
-        // map-wide stream replaces it, so a drip-feed engagement reads as an
-        // empty field with an occasional off-screen beam. Instead the flock
-        // first congregates at a staging point just OUTSIDE weapon range on
-        // the enemyward side, then the goal snaps onto the defense itself and
-        // the whole flock descends at once — dense, visible, continuous fire
-        // for the full clip.
         const range = gd.BUILDINGS[kind].range ?? 8;
         const dronesAlive = () => ownedUnits(h, "b").filter((e) => e.k === "ewdrone" && (e.hp === undefined || e.hp > 0));
         const stage = { x: ent.x + anchor.ux * (range + 4.5), y: ent.y + anchor.uy * (range + 4.5) };
         goal = { ...stage };
-        await waitFor(
+        await waitForSim(
+          h,
           () => {
             const near = dronesAlive().filter((d) => Math.hypot(d.x - stage.x, d.y - stage.y) <= 7).length;
             return near >= 4 ? { near } : null;
           },
-          120000,
+          2400,
           `${kind} fodder flock staging`,
           300,
         );
-        // Flush! The flock turns in as a group. The goal lands a few tiles
-        // ENEMYWARD of the structure rather than on top of it: fodder hovering
-        // directly over the star hides it under a dogpile of dark drone bodies
-        // (observed in the first lasertower/irondome takes), while a ring
-        // holding just off the muzzle keeps both parties in the same frame.
         goal = { x: ent.x + anchor.ux * 2.8, y: ent.y + anchor.uy * 2.8 };
-        // Give the stream a full ordering cycle before trusting the trigger.
-        // Consecutive captures share the same patch of ground, so the closest
-        // drone is often ALREADY inside the envelope when the flush starts —
-        // arming the trigger immediately freezes the flock mid-transit toward
-        // the staging point and the clip films empty grass (observed: arc, sam,
-        // thaad all starved this way in the first full run).
         await sleep(2400);
-        await waitFor(
+        await waitForSim(
+          h,
           () => {
             let bd = Infinity;
             for (const d of dronesAlive()) bd = Math.min(bd, Math.hypot(d.x - ent.x, d.y - ent.y));
             return bd <= range * 0.75 ? { bd } : null;
           },
-          20000,
+          600,
           `${kind} flush closing`,
           200,
         );
-        // Freeze fodder orders the moment the flush closes: the stream's
-        // constant re-ordering keeps every drone in motion, and moving aircraft
-        // drag contrail puffs every 26ms — a tight orbiting flock whiteouts the
-        // whole frame. Frozen waypoints let the flock settle onto the defense
-        // and give the contrails a beat to dissipate before the tape rolls.
         const savedGoal = goal;
         goal = null;
         await sleep(900);
         let cap;
         try {
-          // Frame a touch enemyward of the footprint — the frozen flock holds
-          // off the muzzle on that side, so the engagement sits center-frame.
           cap = await recordClip(h, kind, ent.id, cfg.dur, cfg.height, { x: ent.x + anchor.ux * 1.3, y: ent.y + anchor.uy * 1.3 });
         } finally {
           goal = savedGoal;
@@ -1044,9 +1398,6 @@ async function runDefenseFlow(h, session, wanted, result) {
         result.errors[kind] = err?.message || String(err);
         console.log(`FAIL ${kind}: ${result.errors[kind]}`);
       } finally {
-        // Sell the star whether or not the capture worked: a battery left
-        // standing contaminates every following clip with crossfire and kills
-        // fodder meant for the next structure.
         const leftover = ent ?? ownedBuildings(h, "a", kind)[0];
         if (leftover && getEnt(h, leftover.id)) await sellBuilding(h, "a", leftover.id);
       }
@@ -1058,10 +1409,8 @@ async function runDefenseFlow(h, session, wanted, result) {
 
 async function captureHarvester(h) {
   await train(h, "a", "harvester", 1);
-  const ent = await waitSpawned(h, "a", "harvester", h.seenUnits, 100000);
+  const ent = await waitSpawned(h, "a", "harvester", h.seenUnits, 150000);
   h.seenUnits.add(ent.id);
-  // Harvest orders are intrinsic once a refinery exists, but issue a harvest order toward
-  // the richest visible nearby ore/signpost so the clip shows purposeful work.
   order(h, "a", [ent.id], "harvest", ent.x + 4, ent.y + 4);
   await sleep(2600);
   return recordClip(h, "harvester", ent.id, 4300, 13);
@@ -1069,7 +1418,7 @@ async function captureHarvester(h) {
 
 async function captureSupplyTruck(h) {
   await train(h, "a", "supplytruck", 1);
-  const ent = await waitSpawned(h, "a", "supplytruck", h.seenUnits, 100000);
+  const ent = await waitSpawned(h, "a", "supplytruck", h.seenUnits, 150000);
   h.seenUnits.add(ent.id);
   const armor = ownedUnits(h, "a").find((e) => e.k === "tank") ?? ent;
   order(h, "a", [ent.id], "move", armor.x + 2, armor.y + 2);
@@ -1079,98 +1428,142 @@ async function captureSupplyTruck(h) {
 
 async function captureEngineer(h) {
   await train(h, "a", "engineer", 1);
-  const ent = await waitSpawned(h, "a", "engineer", h.seenUnits, 100000);
+  const ent = await waitSpawned(h, "a", "engineer", h.seenUnits, 150000);
   h.seenUnits.add(ent.id);
-  // Nearest capturable, not first-in-list: derricks pepper the whole map and the
-  // engineer crawls at infantry speed — picking arbitrarily added half a minute
-  // of dead walking to the session.
   const neutrals = entList(h).filter((e) => (e.k === "derrick" || e.k === "coalmine") && e.o < 0);
   const neutral = neutrals.length ? nearestTo(neutrals, ent) : null;
   const enemyBld = ownedBuildings(h, "b")[0];
   const target = neutral ?? enemyBld;
   if (!target) throw new Error("engineer: no capturable target");
   order(h, "a", [ent.id], "attack", target.x, target.y, target.id);
-  // Trigger early: the capture IS the clip — engineer walks in, vanishes, the
-  // building converts. Starting the recorder at close range meant the star was
-  // already consumed before the first frame, which is exactly the empty-aftermath
-  // engineer.gif the first full run produced.
-  await waitFor(
-    () => {
-      const cur = getEnt(h, ent.id);
-      const tgt = getEnt(h, target.id);
-      if (!cur || !tgt) return null;
-      return dist(cur, tgt) < 7 ? { cur, tgt } : null;
-    },
-    100000,
-    "engineer near capture target",
-    260,
-  );
-  // Aim at the building, not the engineer: the star is consumed mid-clip and a
-  // dead entity leaves the camera with nothing to track — the conversion flash
-  // on the structure is the money shot.
-  return recordClip(h, "engineer", ent.id, 3900, 12, { x: target.x, y: target.y });
+
+  // In-page trigger + recording: the capture IS the clip — engineer walks in,
+  // vanishes, the building converts. Harness-side proximity triggers fired
+  // minutes-stale in the skew sessions and filmed the aftermath.
+  const spec = {
+    starId: ent.id,
+    enemySlot: h.conns.b.slot,
+    targetId: target.id,
+    triggerDist: 7.5,
+    mode: "timed",
+    durationMs: 4000,
+    maxRecMs: 8000,
+    maxWaitTicks: 1500,
+    maxWaitMs: 200000,
+    cameraHeight: 12,
+    autoFrame: true,
+    minH: 10,
+    maxH: 13.5,
+    marginPx: 24,
+    attackerWeight: 0.35,
+    preRollMs: 200,
+    cropFx: CROP_W / VW,
+    cropFy: CROP_H / VH,
+  };
+  const { promise } = await pageCaptureEngagement(h, spec);
+  const rec = await promise;
+  if (rec.error) throw new Error(`engineer capture: ${rec.error}`);
+  const webm = join(TMP_DIR, `${h.session.id}-engineer.webm`);
+  writeFileSync(webm, Buffer.from(rec.bytes));
+  const entry = enqueueEncode(h, { webm, out: join(OUT_DIR, "engineer.gif"), kind: "engineer", anchor: "head", durationMs: rec.tapeMs });
+  return entry.promise;
 }
 
-// Spy capture runs in two phases because the math is brutal: the only legal
-// sabotage targets are enemy buildings — all the way across a 96×96 map — and
-// the spy is CONSUMED the instant it touches one. Training it first and letting
-// it walk while every other field unit films means it arrives long before the
-// camera is ready and the infiltration happens off-screen. So phase one walks
-// the spy to a staging point a few tiles off the target with a plain move order
-// (no attack — nothing can go wrong, auto-defenses ignore disguised spies), and
-// phase two — run after the rest of the session — issues the attack only once
-// the camera is ready to roll.
-async function launchSpyInfiltration(h) {
+// Spy infiltration — a dedicated-session capture. The only legal sabotage
+// targets are enemy buildings across the map, and the spy is CONSUMED the
+// instant it touches one (edge distance 0.9 vs a conyard half-width of 1.5 —
+// center-distance ~2.4). The old harness-side trigger at 5.5 center-dist left
+// a 2-3s window that the skewed stream burned entirely; the in-page trigger at
+// 8.5 tiles starts the tape with the spy still visibly walking in, covers the
+// consume and the cash-popup aftermath, and can't go stale because it reads
+// the same state the renderer draws.
+async function captureSpy(h) {
   await train(h, "a", "spy", 1);
-  const ent = await waitSpawned(h, "a", "spy", h.seenUnits, 110000);
+  const ent = await waitSpawned(h, "a", "spy", h.seenUnits, 150000);
   h.seenUnits.add(ent.id);
-  const target = ownedBuildings(h, "b").find((e) => e.k === "conyard") ?? ownedBuildings(h, "b")[0];
+  // Victim geometry is destiny: SPY_CAPTURE_RANGE is 0.9 edge-distance, but
+  // nearestPassable's spiral hits a corner-diagonal tile first for ODD-square
+  // footprints (probe-verified: the spy stalls at edge 0.96 outside a conyard
+  // FOREVER — arrival slop 0.35 on top of the corner tile's 0.707 edge
+  // distance). Even 2x2 footprints scan-hit a flat-adjacent tile first (edge
+  // 0.5 at the waypoint, consume certain). supplyhub is the ideal victim:
+  // 2x2, and the default-case cash steal renders the green income popup.
+  const blds = ownedBuildings(h, "b");
+  const even2 = blds.filter((e) => {
+    const d = gd.BUILDINGS[e.k];
+    return d && d.w === 2 && d.h === 2;
+  });
+  const target =
+    even2.find((e) => e.k === "supplyhub") ??
+    even2.find((e) => e.k === "radar") ??
+    even2[0] ??
+    blds.find((e) => e.k === "conyard") ??
+    blds[0];
   if (!target) throw new Error("spy: no enemy building");
-  const home = ownedBuildings(h, "a", "conyard")[0] ?? ent;
-  const dx = target.x - home.x;
-  const dy = target.y - home.y;
-  const len = Math.hypot(dx, dy) || 1;
-  const staging = { x: target.x - (dx / len) * 9, y: target.y - (dy / len) * 9 };
-  order(h, "a", [ent.id], "move", staging.x, staging.y);
-  return { entId: ent.id, targetId: target.id, staging };
-}
-
-async function finishSpyCapture(h, job) {
-  const { entId, targetId, staging } = job;
-  // Wait for the walk to finish — either arrival at staging or already close
-  // enough to the target that the final approach is short.
-  await waitFor(
-    () => {
-      const cur = getEnt(h, entId);
-      const tgt = getEnt(h, targetId);
-      if (!cur || !tgt) return null;
-      return dist(cur, staging) < 3.5 || dist(cur, tgt) < 14 ? { cur, tgt } : null;
-    },
-    150000,
-    "spy to reach infiltration staging",
-    400,
-  );
-  const cur = getEnt(h, entId);
-  const tgt = getEnt(h, targetId);
-  if (!cur || !tgt) throw new Error("spy or target vanished before the attack run");
-  order(h, "a", [entId], "attack", tgt.x, tgt.y, tgt.id);
-  await waitFor(
-    () => {
-      const c = getEnt(h, entId);
-      const t = getEnt(h, targetId);
-      if (!c || !t) return null;
-      return dist(c, t) < 5.5 ? { cur: c, tgt: t } : null;
-    },
-    60000,
-    "spy on final sabotage approach",
-    260,
-  );
-  return recordClip(h, "spy", entId, 4300, 12);
+  const spec = {
+    starId: ent.id,
+    enemySlot: h.conns.b.slot,
+    targetId: target.id,
+    triggerDist: 8,
+    // Event-driven like the kamikazes: the consume IS the money shot — the spy
+    // vanishes into the building and the cash popup plays. A fixed-length tape
+    // gambles on pathing+sim speed and lost that bet in the first take (spy
+    // corner-stuck adjacent to the conyard, tape ended before the entry).
+    mode: "impact",
+    tailMs: 2400,
+    maxRecMs: 30000,
+    maxWaitTicks: 2200,
+    maxWaitMs: 240000,
+    cameraHeight: 12,
+    autoFrame: true,
+    minH: 9.5,
+    maxH: 13,
+    marginPx: 24,
+    attackerWeight: 0.4,
+    preRollMs: 220,
+    cropFx: CROP_W / VW,
+    cropFy: CROP_H / VH,
+  };
+  const { promise } = await pageCaptureEngagement(h, spec);
+  order(h, "a", [ent.id], "attack", target.x, target.y, target.id);
+  let finished = false;
+  const supervise = (async () => {
+    // Same silent-drop workaround as combat captures: spies are dmg-0 units
+    // whose attack orders ride the same canAttack path (buildings only).
+    while (!finished) {
+      await sleep(800);
+      if (finished) break;
+      const star = getEnt(h, ent.id);
+      if (!star) break;
+      const wp = star.wp;
+      const attacking = Array.isArray(wp) && wp.length > 0 && wp[0][2] === "attack";
+      if (!attacking) {
+        const tgt = getEnt(h, target.id);
+        if (tgt) order(h, "a", [ent.id], "attack", tgt.x, tgt.y, tgt.id);
+      }
+    }
+  })().catch(() => {});
+  const rec = await promise;
+  finished = true;
+  await supervise;
+  if (rec.error) throw new Error(`spy capture: ${rec.error}${rec.lastD != null ? ` lastD=${rec.lastD?.toFixed(1)}` : ""}`);
+  if (!rec.bytes?.length) throw new Error("spy capture: empty tape");
+  if (DEBUG) {
+    console.log(
+      `  [dbg] spy: tape=${(rec.tapeMs / 1000).toFixed(1)}s trigD=${rec.trig.d.toFixed(1)} camH=${rec.camH} impact=${rec.impactKind ?? "none"}@${rec.impactT == null ? "-" : (rec.impactT / 1000).toFixed(1)}s`,
+    );
+  }
+  const webm = join(TMP_DIR, `${h.session.id}-spy.webm`);
+  writeFileSync(webm, Buffer.from(rec.bytes));
+  // Sabotage window: the final walk-in beat, the vanish, and the cash popup.
+  const trim = impactTrim(rec, 2.8, 2.0);
+  const entry = enqueueEncode(h, { webm, out: join(OUT_DIR, "spy.gif"), kind: "spy", anchor: "tail", durationMs: rec.tapeMs, trim });
+  return entry.promise;
 }
 
 async function captureEwDrone(h) {
   await train(h, "a", "ewdrone", 1);
-  const ent = await waitSpawned(h, "a", "ewdrone", h.seenUnits, 100000);
+  const ent = await waitSpawned(h, "a", "ewdrone", h.seenUnits, 150000);
   h.seenUnits.add(ent.id);
   const st = stageFor(h, "a");
   order(h, "a", [ent.id], "move", st.x, st.y);
@@ -1178,14 +1571,24 @@ async function captureEwDrone(h) {
   return recordClip(h, "ewdrone", ent.id, 3900, 14);
 }
 
-// Every list carries refinery+factory because fodder supplytrucks require both —
-// even sessions whose stars never touch the factory still need side b churning
-// out cannon fodder.
+// Minimal per-session tech trees. Every list carries exactly what the session's
+// stars and fodder need — full-tech sessions cost minutes of build time each
+// and the QA postmortem showed most of that time is pure waste (the spy needs
+// a barracks+radar, not an airfield).
 const TECH = {
+  spy: { buildings: ["power", "barracks", "radar"] },
+  // Victim base: the supplyhub is the sabotage target (2x2 — flat-adjacent
+  // consume geometry, cash-steal popup), radar blows the spy's cover so the
+  // true spy model renders on the final approach.
+  spyVictim: { buildings: ["power", "barracks", "refinery", "radar", "supplyhub"] },
+  armor: { buildings: ["power", "power", "barracks", "radar", "factory", "techlab"], upgrades: [["factory", "factory2"]] },
+  air: { buildings: ["power", "power", "barracks", "radar", "factory", "techlab", "airfield"], upgrades: [["airfield", "airfield2"]] },
+  naval: { buildings: ["power", "shipyard"] },
+  fodderLand: { buildings: ["power", "refinery", "factory"] },
+  fodderSea: { buildings: ["power", "shipyard"] },
   landeco: { buildings: ["power", "refinery", "barracks", "radar", "factory"] },
-  armor: { buildings: ["power", "refinery", "barracks", "radar", "factory", "techlab"], upgrades: [["factory", "factory2"]] },
-  air: { buildings: ["power", "refinery", "barracks", "radar", "factory", "techlab", "airfield"], upgrades: [["airfield", "airfield2"]] },
-  naval: { buildings: ["power", "refinery", "barracks", "radar", "factory", "techlab", "shipyard"], upgrades: [["shipyard", "shipyard2"]] },
+  airfull: { buildings: ["power", "refinery", "barracks", "radar", "factory", "techlab", "airfield"], upgrades: [["airfield", "airfield2"]] },
+  navalfull: { buildings: ["power", "refinery", "barracks", "radar", "factory", "techlab", "shipyard"], upgrades: [["shipyard", "shipyard2"]] },
 };
 
 const SESSIONS = [
@@ -1195,35 +1598,42 @@ const SESSIONS = [
     derricks: true,
     tech: TECH.landeco,
     enemyTech: true,
-    units: ["spy", "engineer", "infantry", "rocket", "fpvdrone", "harvester", "supplytruck"],
+    units: ["engineer", "infantry", "rocket", "fpvdrone", "harvester", "supplytruck"],
+  },
+  {
+    id: "spyop",
+    map: "crossroads",
+    tech: TECH.spy,
+    enemyTechTree: TECH.spyVictim,
+    fodder: null,
+    units: ["spy"],
   },
   {
     id: "armor",
     map: "crossroads",
     tech: TECH.armor,
-    enemyTech: true,
+    enemyTechTree: TECH.fodderLand,
     units: ["tank", "himars", "railtank", "ballistic"],
   },
   {
     id: "air",
     map: "crossroads",
     tech: TECH.air,
-    enemyTech: true,
-    enemyAirTargets: true,
+    enemyTechTree: TECH.fodderLand,
     units: ["uav", "shahed", "ewdrone", "interceptor", "chopper", "a10", "ac130", "hypersonic"],
   },
   {
     id: "stealth",
     map: "crossroads",
     tech: TECH.air,
-    enemyTech: true,
+    enemyTechTree: TECH.fodderLand,
     units: ["stealthbomber"],
   },
   {
     id: "naval",
     map: "islands",
     tech: TECH.naval,
-    enemyTech: true,
+    enemyTechTree: TECH.fodderSea,
     naval: true,
     units: ["usv", "gunboat", "destroyer", "sub", "dreadnought", "carrier"],
   },
@@ -1236,8 +1646,79 @@ const SESSIONS = [
 ];
 
 function unitSession(unit) {
-  for (const s of SESSIONS) if (s.units.includes(unit)) return s.id;
+  // spyop shadows field for the spy: it is the lean dedicated session.
+  if (unit === "spy") return "spyop";
+  for (const s of SESSIONS) if (s.units.includes(unit) && s.id !== "spyop") return s.id;
   return null;
+}
+
+// Per-unit capture shaping for the in-page engagement recorder.
+function combatOptsFor(unit) {
+  const o = {};
+  if (unit === "shahed" || unit === "fpvdrone") {
+    // Kamikaze: impact-event tape. Trigger distance is computed from closing
+    // speed — 0.28 tiles/tick at 20 ticks/s = 5.6 tiles/s nominal, so ~11
+    // tiles buys ~1.7s of inbound dive before the boom even at full sim speed.
+    o.mode = "impact";
+    o.triggerDist = 11;
+    o.tailMs = 1900;
+    o.attackerWeight = 0.3;
+    o.cameraHeight = 13;
+  }
+  if (unit === "usv") {
+    o.mode = "impact";
+    o.triggerDist = 12;
+    o.tailMs = 1900;
+    o.attackerWeight = 0.3;
+    o.cameraHeight = 13;
+  }
+  if (unit === "hypersonic") {
+    // Mach-9: 1.25 tiles/tick = 25 tiles/s nominal. Even 26 tiles of trigger
+    // distance is barely a second of inbound — the strike flash IS the clip.
+    o.mode = "impact";
+    o.triggerDist = 27;
+    o.tailMs = 2000;
+    o.attackerWeight = 0.15;
+    o.cameraHeight = 14;
+  }
+  if (unit === "stealthbomber") {
+    o.durationMs = 4800;
+    o.cameraHeight = 13;
+    o.autoFrame = true;
+    o.minH = 11;
+    o.maxH = 15.5;
+    o.attackerWeight = 0.5;
+    o.trainTimeoutMs = 200000;
+    o.freezeFodder = true;
+  }
+  if (unit === "ac130") {
+    o.durationMs = 4600;
+    o.autoFrame = true;
+    o.minH = 11;
+    o.maxH = 15;
+    o.attackerWeight = 0.5;
+    // The gunship's own muzzle flashes at point-blank range bloom into a
+    // whiteout that hid the star for the entire first capture — bloom off.
+    o.bloom = false;
+    o.freezeFodder = true;
+  }
+  if (unit === "himars" || unit === "ballistic") {
+    // Long tapes + first-hit windowing: the sim slow-motions under load and a
+    // 5s wall-clock tape can end before the first volley even leaves the tube.
+    // The trim window is placed on the observed hp drop post-hoc, so length
+    // here is pure insurance — the gif itself is cut tight around the launch.
+    o.durationMs = unit === "ballistic" ? 8000 : 7000;
+    o.maxRecMs = 12000;
+    o.autoFrame = true;
+    o.minH = 10.5;
+    o.maxH = 17.5;
+    o.marginPx = 44;
+    o.attackerWeight = 0.5;
+    o.freezeFodder = true;
+    o.cameraHeight = unit === "ballistic" ? 15 : 13.5;
+  }
+  if (unit === "dreadnought" || unit === "carrier") o.cameraHeight = 15;
+  return o;
 }
 
 async function runSession(session, wantedUnits) {
@@ -1273,71 +1754,34 @@ async function runSession(session, wantedUnits) {
     }
     const st = parkStarters(h);
     const builds = [buildTech(h, "a", session.tech)];
-    if (session.enemyTech) builds.push(buildTech(h, "b", session.tech));
+    const enemyTree = session.enemyTechTree ?? (session.enemyTech ? session.tech : null);
+    if (enemyTree) builds.push(buildTech(h, "b", enemyTree));
     await Promise.all(builds);
     if (session.naval) stopSeaShuffle = startSeaShuffle(h);
-    // Open the spectator browser NOW, not lazily at the first recordClip: the
-    // client needs its keyframe, mesh warmup and a few rendered frames before the
-    // canvas is worth sampling, and the first capture of a session must not pay
-    // that price inside its own 3.6 s window.
+    // Open the spectator browser NOW, not lazily at the first capture: the
+    // client needs its keyframe, mesh warmup and a few rendered frames before
+    // the canvas is worth sampling, and the first capture of a session must
+    // not pay that price inside its own window.
     ensureBrowser(h).catch(() => {});
 
-    // The spy walks first and films last: launched immediately so the long cross-map
-    // hike overlaps every other capture, then finished once the camera is free —
-    // see launchSpyInfiltration for why it must not attack on its own.
-    let spyJob = null;
-    let spyLaunchError = null;
-    const wantSpy = wantedUnits.includes("spy");
-    if (wantSpy) {
-      spyJob = launchSpyInfiltration(h).catch((err) => {
-        spyLaunchError = err?.message || String(err);
-        return null;
-      });
-    }
-
-    // Warm up target flocks for every domain this session will need, floating in
-    // the background — the first capture's just-in-time ensureTargets call then
-    // finds them already trained or well on the way.
+    // Warm up target flocks for every domain this session will need, floating
+    // in the background — the first capture's just-in-time ensureTargets call
+    // then finds them already trained or well on the way.
     const neededDomains = [...new Set(wantedUnits.filter((u) => u in UNITS && UNITS[u].dmg > 0).map((u) => targetDomainFor(u)))];
     for (const dom of neededDomains) ensureTargets(h, dom, 2).catch(() => {});
 
     for (let i = 0; i < wantedUnits.length; i++) {
       const unit = wantedUnits[i];
       const nextUnit = wantedUnits[i + 1];
-      if (unit === "spy") continue; // handled around the main loop — see above
       try {
         let cap;
-        if (unit === "harvester") cap = await captureHarvester(h);
+        if (unit === "spy") cap = await captureSpy(h);
+        else if (unit === "harvester") cap = await captureHarvester(h);
         else if (unit === "supplytruck") cap = await captureSupplyTruck(h);
         else if (unit === "engineer") cap = await captureEngineer(h);
         else if (unit === "ewdrone") cap = await captureEwDrone(h);
         else {
-          const special = {};
-          if (unit === "shahed" || unit === "fpvdrone" || unit === "usv") {
-            special.durationMs = 4300;
-            // Kamikaze units die on impact: the proximity trigger must fire while
-            // the dive is still well short of the target, or the poll never catches
-            // the sub-second in-range window and the star is dead before recording.
-            special.rangePad = 10;
-            // The impact point is the action — weight the frame toward the target,
-            // not the inbound attacker.
-            special.attackerWeight = 0.3;
-          }
-          if (unit === "hypersonic") {
-            special.durationMs = 4000;
-            // Mach-9: the strike closes ~20 tiles per real second at gameSpeed 2,
-            // so the pad must be deep or the impact flash eats the whole clip
-            // before the screencast pipeline is even warm.
-            special.rangePad = 30;
-            special.attackerWeight = 0.2;
-          }
-          if (unit === "ballistic" || unit === "dreadnought" || unit === "carrier") special.cameraHeight = 15;
-          if (unit === "stealthbomber") {
-            special.cameraHeight = 14;
-            special.durationMs = 4300;
-            special.trainTimeoutMs = 130000;
-          }
-          cap = await captureCombat(h, unit, { ...special, nextUnit });
+          cap = await captureCombat(h, unit, { ...combatOptsFor(unit), nextUnit });
         }
         result.captured[unit] = { ...cap, stage: st };
         console.log(`PASS ${unit} (${fmtBytes(cap.size)}, ${cap.quality}) room=${h.room}`);
@@ -1347,26 +1791,16 @@ async function runSession(session, wantedUnits) {
         console.log(`FAIL ${unit}: ${result.errors[unit]}`);
       }
     }
-
-    if (wantSpy) {
-      try {
-        const job = await spyJob;
-        if (!job) throw new Error(spyLaunchError ?? "spy infiltration launch failed");
-        const cap = await finishSpyCapture(h, job);
-        result.captured.spy = { ...cap, stage: st };
-        console.log(`PASS spy (${fmtBytes(cap.size)}, ${cap.quality}) room=${h.room}`);
-      } catch (err) {
-        result.ok = false;
-        result.errors.spy = err?.message || String(err);
-        console.log(`FAIL spy: ${result.errors.spy}`);
-      }
-    }
     result.pageErrors = h.pageErrors;
   } catch (err) {
     result.ok = false;
     result.errors.session = err?.message || String(err);
     console.log(`FAIL session ${session.id}: ${result.errors.session}`);
   } finally {
+    // Drain pending encodes before tearing down — gifs must be complete on disk.
+    try {
+      await h.encodeChain;
+    } catch {}
     result.seconds = Math.round((Date.now() - started) / 1000);
     if (stopSeaShuffle) stopSeaShuffle();
     await closeHarness(h);
