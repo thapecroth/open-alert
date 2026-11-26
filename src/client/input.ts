@@ -296,8 +296,9 @@ export class Input {
     // All command/toggle hotkeys below must ignore OS key auto-repeat so holding a key never flickers state or spams server
     if (e.repeat) return;
 
-    // Control groups: Alt+1..9 assign, 1..9 recall (double-tap centers), Shift+N adds group N
-    // (Ctrl+1..9 is a browser tab-switch accelerator that preventDefault cannot override)
+    // Control groups: Alt+1..9 or Ctrl/Cmd+1..9 assign, 1..9 recall (double-tap centers), Shift+N adds group N
+    // (Ctrl/Cmd+number is a browser tab accelerator — captured for the game via the
+    // Keyboard Lock API while fullscreen; outside fullscreen the browser still wins)
     if (/^Digit[1-9]$/.test(e.code)) {
       const n = Number(e.code.slice(5));
       if (e.altKey || ((e.ctrlKey || e.metaKey) && e.shiftKey)) {
@@ -306,7 +307,9 @@ export class Input {
         return;
       }
       if (e.ctrlKey || e.metaKey) {
-        // browser will switch tabs anyway — still assign so nothing silently breaks
+        // keyboard lock (fullscreen) delivers these to us; outside fullscreen the
+        // browser switches tabs anyway — still assign so nothing silently breaks
+        e.preventDefault();
         this.assignGroup(n);
         return;
       }

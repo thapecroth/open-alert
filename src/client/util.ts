@@ -23,6 +23,24 @@ export function toggleFullscreen() {
   else void document.documentElement.requestFullscreen().catch(() => {});
 }
 
+// Keyboard Lock (Chromium, fullscreen-only): captures browser accelerators like
+// Ctrl/Cmd+1..9, Ctrl+W, Ctrl+Tab so they reach the game instead of the browser.
+// Escape is never capturable (always exits fullscreen) per spec.
+interface KeyboardLockCapable {
+  lock?: (keyCodes?: string[]) => Promise<void>;
+  unlock?: () => void;
+}
+
+export function syncKeyboardLock() {
+  const kb = (navigator as unknown as { keyboard?: KeyboardLockCapable }).keyboard;
+  if (!kb?.lock) return;
+  if (document.fullscreenElement) {
+    void kb.lock().catch(() => {});
+  } else {
+    kb.unlock?.();
+  }
+}
+
 export function fmtCost(n: number) {
   return "$" + n.toLocaleString();
 }

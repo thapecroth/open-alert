@@ -298,10 +298,10 @@ const SECTIONS: SectionDef[] = [
       },
       // input.ts:298-313 — Alt+1..9 is the primary assign chord; Ctrl/Cmd+Shift+1..9 is also accepted because plain Ctrl+number belongs to browser tabs.
       {
-        binding: "`Alt` + `1`–`9`",
+        binding: "`Alt` + `1`–`9` or `Ctrl`/`Cmd` + `1`–`9`",
         action: "Assign control group",
-        note: "Stores the currently selected owned entities. Ctrl/Cmd+Shift+number also assigns; plain Ctrl/Cmd+number is a browser tab shortcut and cannot be reliably overridden.",
-        source: "input.ts:298-313, 478-488",
+        note: "Stores the currently selected owned entities. Ctrl/Cmd+number reaches the game in fullscreen (Keyboard Lock captures the browser's tab shortcut); in a normal window the browser still switches tabs, so prefer Alt or fullscreen.",
+        source: "input.ts:298-313, 478-488; util.ts syncKeyboardLock",
       },
       // input.ts:312 and 490-508 — number recalls, Shift adds, and a fast second tap centers.
       {
