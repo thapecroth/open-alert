@@ -492,6 +492,32 @@ export class LocalSimHost {
     }
   }
 
+  // Test-only debug escape hatch used by the render-performance harness
+  // (test/perfbattle.mjs lineage), which needs to seed a deterministic battle,
+  // fast-forward the sim and read entity counts now that the World lives
+  // inside a Web Worker and cannot be reached from page JavaScript directly.
+  //
+  // `src` is the body of a function invoked as (host, world) — world is the
+  // host's current authoritative World (or null while in the lobby), exactly
+  // the object the harness used to reach via net.local.world. The body runs
+  // synchronously to completion inside the sim's own thread context, so the
+  // interval timer cannot fire mid-execution — the same atomicity the
+  // in-process harness relied on. TS-private members (spawnUnit, ents, tick)
+  // are runtime properties and remain reachable, again as before.
+  //
+  // Never throws: syntax/runtime errors come back as { error }. The result
+  // must stay structured-cloneable when the host runs inside the worker —
+  // returning live sim objects (ents, the world itself) is rejected at the
+  // postMessage boundary there, so return plain JSON-ish data.
+  debugExec(src: string): { result?: unknown; error?: string } {
+    try {
+      const fn = new Function("host", "world", src) as (host: LocalSimHost, world: World | null) => unknown;
+      return { result: fn(this, this.world) };
+    } catch (err) {
+      return { error: String((err as Error)?.message ?? err) };
+    }
+  }
+
   close() {
     this.stopTimer();
     this.world = null;

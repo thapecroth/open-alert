@@ -19,13 +19,21 @@
 import type { C2S, S2C } from "../shared/protocol";
 import type { MapId } from "../shared/gamedefs";
 import { LocalSimHost } from "./sim-host";
-import type { SimIn } from "./sim-worker";
+import type { DbgOut, SimIn } from "./sim-worker";
+
+interface DbgPending {
+  resolve: (v: unknown) => void;
+  reject: (e: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
 
 export class LocalRoom {
   onMsg: (m: S2C) => void = () => {};
   private spectateOnly = false;
   private worker: Worker | null = null;
   private host: LocalSimHost | null = null;
+  private dbgSeq = 0;
+  private dbgPending = new Map<number, DbgPending>();
 
   constructor(room: string) {
     let w: Worker | null = null;
@@ -43,7 +51,15 @@ export class LocalRoom {
     if (w) {
       this.worker = w;
       w.onmessage = (ev: MessageEvent) => {
-        this.onMsg(ev.data as S2C);
+        const data = ev.data as S2C | DbgOut;
+        // Debug-channel replies are intercepted and matched to their pending
+        // debugExec() promise — they never reach the game client's onMsg,
+        // whose switch would not understand the non-S2C type.
+        if ((data as DbgOut)?.t === "dbg") {
+          this.settleDbg(data as DbgOut);
+          return;
+        }
+        this.onMsg(data as S2C);
       };
       w.onerror = (ev: ErrorEvent) => {
         console.error("sim-worker error:", ev.message ?? ev);
@@ -85,6 +101,40 @@ export class LocalRoom {
     else this.host?.send(m);
   }
 
+  // Test-only debug escape hatch (render-performance harness): run `src` as
+  // the body of a function (host, world) inside the sim's own thread context
+  // — worker or in-process fallback, identical semantics either way — and
+  // await its JSON-ish return value. Rejects on execution error, on a
+  // non-cloneable result (worker mode), after close(), or after 5s without a
+  // reply so a wedged worker cannot hang a test silently.
+  debugExec(src: string): Promise<unknown> {
+    const id = ++this.dbgSeq;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.dbgPending.delete(id);
+        reject(new Error(`debugExec(${id}) timed out after 5s — sim worker wedged?`));
+      }, 5000);
+      this.dbgPending.set(id, { resolve, reject, timer });
+      if (this.worker) {
+        this.post({ k: "dbgExec", id, src });
+      } else if (this.host) {
+        // In-process fallback: same outcome shape, executed synchronously.
+        this.settleDbg({ t: "dbg", id, ...this.host.debugExec(src) });
+      } else {
+        this.settleDbg({ t: "dbg", id, error: "room is closed" });
+      }
+    });
+  }
+
+  private settleDbg(m: DbgOut) {
+    const pending = this.dbgPending.get(m.id);
+    if (!pending) return;
+    this.dbgPending.delete(m.id);
+    clearTimeout(pending.timer);
+    if (m.error !== undefined) pending.reject(new Error(m.error));
+    else pending.resolve(m.result);
+  }
+
   close() {
     if (this.worker) {
       // terminate() kills the worker thread outright — the tick interval and
@@ -97,5 +147,12 @@ export class LocalRoom {
       this.host.close();
       this.host = null;
     }
+    // A terminated worker can never answer — fail pending debug calls fast
+    // instead of letting them run into the 5s timeout.
+    for (const [, pending] of this.dbgPending) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("room closed before debugExec completed"));
+    }
+    this.dbgPending.clear();
   }
 }

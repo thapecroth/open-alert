@@ -26,10 +26,25 @@ import { LocalSimHost } from "./sim-host";
 //   init     — first message, carries the room name for lobby broadcasts
 //   c2s      — a client->server wire message for the host (same as in-process)
 //   spectate — enter AI-spectate mode (the host API that is not a C2S message)
+//   dbgExec  — test-only debug escape hatch: src is a function body run once
+//              against the host (see LocalSimHost.debugExec); the outcome is
+//              posted back as a DbgOut carrying the same id
 export type SimIn =
   | { k: "init"; room: string }
   | { k: "c2s"; m: C2S }
-  | { k: "spectate"; map?: MapId; botCount?: number };
+  | { k: "spectate"; map?: MapId; botCount?: number }
+  | { k: "dbgExec"; id: number; src: string };
+
+// Debug-channel reply. Deliberately NOT part of the S2C union (`t: "dbg"`
+// cannot collide with any game message): the LocalRoom proxy intercepts it
+// and matches it to the pending debugExec() promise instead of forwarding it
+// to the game client's onMsg, which would choke on the unknown type.
+export interface DbgOut {
+  t: "dbg";
+  id: number;
+  result?: unknown;
+  error?: string;
+}
 
 interface WorkerScope {
   onmessage: ((ev: MessageEvent) => void) | null;
@@ -51,6 +66,17 @@ scope.onmessage = (ev: MessageEvent) => {
     if (!host) return;
     if (msg.k === "c2s") host.send(msg.m);
     else if (msg.k === "spectate") host.startAiSpectate(msg.map, msg.botCount);
+    else if (msg.k === "dbgExec") {
+      const out = host.debugExec(msg.src);
+      try {
+        scope.postMessage({ t: "dbg", id: msg.id, ...out } satisfies DbgOut);
+      } catch {
+        // The body returned live sim objects or other uncloneable values —
+        // report that as a normal error instead of vanishing silently
+        // (nothing was queued: postMessage clone failure is atomic).
+        scope.postMessage({ t: "dbg", id: msg.id, error: "dbgExec result is not structured-cloneable" } satisfies DbgOut);
+      }
+    }
   } catch (err) {
     // Contained to this one message — the interval timer and later messages
     // are independent tasks, so one bad command must not wedge the sim.
