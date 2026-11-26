@@ -13,6 +13,7 @@ import {
   getGroundMicroDetail,
 } from "./textures";
 import { GraphicsManager } from "./graphics";
+import { SHADOW_PROXY_LAYER } from "./models";
 import { RaytracePass } from "./raytrace";
 
 interface BiomeAtmosphere {
@@ -890,6 +891,11 @@ export class GameScene {
     this.sunLight.shadow.camera.far = 165;
     this.sunLight.shadow.bias = -0.0003;
     this.sunLight.shadow.normalBias = 0.024;
+    // Keep ordinary layer-0 casters active and additionally admit depth-only
+    // simplified proxy meshes. Because the mask now has a non-zero bit outside
+    // layer 0, three.js uses exactly this mask for the shadow pass; the main
+    // camera still renders only layer 0, so proxies cost no main-pass draws.
+    this.sunLight.shadow.camera.layers.enable(SHADOW_PROXY_LAYER);
     this.scene.add(this.sunLight, this.sunLight.target);
 
     // Crisp cool counter-rim light so shaded metallic facets & silhouettes stay razor-sharp

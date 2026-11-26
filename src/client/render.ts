@@ -9,7 +9,19 @@ import {
   type CrateKind,
   type UnitKind,
 } from "../shared/gamedefs";
-import { makeEntVis, makeCrateVis, setVetBadge, setGroupTag, tagEntity, applyFacing, makeRangeRing, EntVis, CrateVis } from "./models";
+import {
+  makeEntVis,
+  makeCrateVis,
+  setVetBadge,
+  setGroupTag,
+  tagEntity,
+  applyFacing,
+  makeRangeRing,
+  EntVis,
+  CrateVis,
+  SHADOW_PROXY_LAYER,
+  simplifyShadowProxyGeometry,
+} from "./models";
 import { createAnimState, stepEntityAnim, triggerFireAnim, triggerHitFlash, AnimState } from "./anim";
 import { VfxSystem, WaypointOverlay } from "./vfx";
 import { BUILDINGS, isBuildingKind, type BuildingKind, type EntKind } from "./util";
@@ -142,6 +154,7 @@ interface VehiclePartDef {
   pulse: boolean; // scale-pulsed glow mesh
   bin: boolean; // harvester ore-load mesh (scale.y is cargo-driven)
   baseScale: THREE.Vector3;
+  shadowProxied?: boolean; // rigid geometry represented by the consolidated depth-only proxy
 }
 
 interface VehicleRigSpec {
@@ -159,8 +172,14 @@ interface VehicleRigSpec {
   cullRadius: number;
 }
 
+interface VehicleShadowPartDef {
+  geometry: THREE.BufferGeometry; // position-only, baked into anchor space
+  anchor: VehicleAnchorKind;
+}
+
 interface VehicleTemplate {
   parts: VehiclePartDef[];
+  shadowParts: VehicleShadowPartDef[];
   rig: VehicleRigSpec;
 }
 
@@ -168,9 +187,14 @@ interface VehicleInstPart {
   im: THREE.InstancedMesh;
   def: VehiclePartDef;
 }
+interface VehicleShadowInstPart {
+  im: THREE.InstancedMesh;
+  def: VehicleShadowPartDef;
+}
 interface VehicleInstPool {
   template: VehicleTemplate;
   parts: VehicleInstPart[];
+  shadowParts: VehicleShadowInstPart[];
   owners: Int32Array;
   used: number;
   // Conservative union of live instance positions. InstancedMesh cannot cull
@@ -217,6 +241,28 @@ const _vehScaleM = new THREE.Matrix4();
 const _vehFlashColor = new THREE.Color(2.4, 2.15, 1.65);
 const vehRigDummyGeo = new THREE.BufferGeometry();
 const vehRigDummyMat = new THREE.MeshBasicMaterial();
+const vehShadowProxyMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
+
+// Position-only clone used exclusively for depth rendering. Dropping normals,
+// UVs and vertex colors lets every rigid visual material in one articulated
+// anchor collapse into a single shadow draw without changing the main pass.
+function vehicleShadowGeometry(src: THREE.BufferGeometry, transform: THREE.Matrix4): THREE.BufferGeometry {
+  const nonIndexed = src.index ? src.toNonIndexed() : null;
+  const posSrc = (nonIndexed ?? src).attributes.position as THREE.BufferAttribute | undefined;
+  const out = new THREE.BufferGeometry();
+  if (posSrc) {
+    const arr = new Float32Array(posSrc.count * 3);
+    for (let i = 0; i < posSrc.count; i++) {
+      arr[i * 3] = posSrc.getX(i);
+      arr[i * 3 + 1] = posSrc.getY(i);
+      arr[i * 3 + 2] = posSrc.getZ(i);
+    }
+    out.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+    out.applyMatrix4(transform);
+  }
+  nonIndexed?.dispose();
+  return out;
+}
 
 function touchVehicleInstanceMatrix(im: THREE.InstancedMesh, used: number): void {
   if (used <= 0) return;
@@ -1168,6 +1214,34 @@ export class Renderer {
       parts.push(...mergedParts, ...keep);
     }
 
+    // Depth-pass collapse: visual material/UV/color distinctions are irrelevant
+    // to the shadow depth material. Bake every rigid caster in each articulated
+    // anchor into one position-only geometry. Pulse/bin parts stay on their
+    // original instanced meshes because their per-instance scale animation is
+    // part of the authored silhouette; everything they do not cover keeps its
+    // exact rigid transform and occlusion while costing one draw per anchor.
+    const shadowParts: VehicleShadowPartDef[] = [];
+    {
+      const byAnchor = new Map<VehicleAnchorKind, VehiclePartDef[]>();
+      for (const def of parts) {
+        if (!def.castShadow || def.pulse || def.bin || def.isBar) continue;
+        let g = byAnchor.get(def.anchor);
+        if (!g) byAnchor.set(def.anchor, (g = []));
+        g.push(def);
+      }
+      for (const [anchor, group] of byAnchor) {
+        if (!group.length) continue;
+        const geos = group.map((def) => vehicleShadowGeometry(def.geometry, def.local));
+        const merged = mergeGeometries(geos, false);
+        for (const g of geos) g.dispose();
+        if (!merged) continue;
+        merged.computeBoundingSphere();
+        merged.computeBoundingBox();
+        shadowParts.push({ geometry: merged, anchor });
+        for (const def of group) def.shadowProxied = true;
+      }
+    }
+
     const pickBox = new THREE.Box3().setFromObject(body);
     const pickSize = pickBox.getSize(new THREE.Vector3());
     const pickCenter = pickBox.getCenter(new THREE.Vector3());
@@ -1180,6 +1254,7 @@ export class Renderer {
 
     const template: VehicleTemplate = {
       parts,
+      shadowParts,
       rig: {
         bodyPosition: body.position.clone(),
         bodyRotation: body.rotation.clone(),
@@ -1222,7 +1297,7 @@ export class Renderer {
       im.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
       im.instanceColor.setUsage(THREE.DynamicDrawUsage);
       im.frustumCulled = true;
-      im.castShadow = def.castShadow;
+      im.castShadow = def.castShadow && !def.shadowProxied;
       im.receiveShadow = def.receiveShadow;
       im.renderOrder = def.renderOrder;
       _instM.makeScale(0, 0, 0);
@@ -1231,15 +1306,36 @@ export class Renderer {
       this.instGroup.add(im);
       parts.push({ im, def });
     }
+    const shadowParts: VehicleShadowInstPart[] = [];
+    for (const def of template.shadowParts) {
+      const im = new THREE.InstancedMesh(def.geometry, vehShadowProxyMat, VEHICLE_INSTANCE_CAP);
+      im.name = "vehicle-shadow-proxy";
+      im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      im.frustumCulled = true;
+      im.castShadow = true;
+      im.receiveShadow = false;
+      im.layers.set(SHADOW_PROXY_LAYER);
+      im.raycast = () => {};
+      _instM.makeScale(0, 0, 0);
+      for (let i = 0; i < VEHICLE_INSTANCE_CAP; i++) im.setMatrixAt(i, _instM);
+      im.count = 0;
+      simplifyShadowProxyGeometry(im, (geometry) => {
+        def.geometry = geometry;
+      });
+      this.instGroup.add(im);
+      shadowParts.push({ im, def });
+    }
     const pool: VehicleInstPool = {
       template,
       parts,
+      shadowParts,
       owners: new Int32Array(VEHICLE_INSTANCE_CAP).fill(-1),
       used: 0,
       bounds: new THREE.Sphere(new THREE.Vector3(), 0),
       boundsFrame: -1,
     };
     for (const part of parts) part.im.boundingSphere = pool.bounds;
+    for (const part of shadowParts) part.im.boundingSphere = pool.bounds;
     this.vehiclePools.set(key, pool);
     return pool;
   }
@@ -1250,6 +1346,7 @@ export class Renderer {
     const idx = pool.used < VEHICLE_INSTANCE_CAP ? pool.used++ : -1;
     if (idx < 0) return null;
     for (const part of pool.parts) if (part.im.count < pool.used) part.im.count = pool.used;
+    for (const part of pool.shadowParts) if (part.im.count < pool.used) part.im.count = pool.used;
     pool.owners[idx] = e.id;
     return { pool, idx, colorHex };
   }
@@ -1373,11 +1470,20 @@ export class Renderer {
           part.im.instanceColor.needsUpdate = true;
         }
       }
+      for (const part of pool.shadowParts) {
+        part.im.getMatrixAt(last, _instP);
+        part.im.setMatrixAt(slot.idx, _instP);
+      }
       pool.owners[slot.idx] = movedId;
       if (movedT?.vehInst) movedT.vehInst.idx = slot.idx;
     }
     _instM.makeScale(0, 0, 0);
     for (const part of pool.parts) {
+      part.im.setMatrixAt(last, _instM);
+      part.im.count = last;
+      part.im.instanceMatrix.needsUpdate = true;
+    }
+    for (const part of pool.shadowParts) {
       part.im.setMatrixAt(last, _instM);
       part.im.count = last;
       part.im.instanceMatrix.needsUpdate = true;
@@ -1398,6 +1504,10 @@ export class Renderer {
       if (slot.lvis) {
         _instM.makeScale(0, 0, 0);
         for (const part of pool.parts) {
+          part.im.setMatrixAt(slot.idx, _instM);
+          touchVehicleInstanceMatrix(part.im, pool.used);
+        }
+        for (const part of pool.shadowParts) {
           part.im.setMatrixAt(slot.idx, _instM);
           touchVehicleInstanceMatrix(part.im, pool.used);
         }
@@ -1563,9 +1673,35 @@ export class Renderer {
       }
       touchVehicleInstanceMatrix(part.im, pool.used);
     }
+    if (rigDirty) {
+      // Proxy geometries are already baked in anchor space, so their instance
+      // matrix is exactly the anchor chain — no per-part local multiply at all.
+      for (const part of pool.shadowParts) {
+        const anchorM =
+          part.def.anchor === "turret" && hasTurret
+            ? _vehTurretM
+            : part.def.anchor === "recoil" && hasRecoil
+              ? _vehRecoilM
+              : part.def.anchor === "spin" && hasSpin
+                ? _vehSpinM
+                : _vehBodyM;
+        (part.im.instanceMatrix.array as Float32Array).set(anchorM.elements, base16);
+        touchVehicleInstanceMatrix(part.im, pool.used);
+      }
+    }
   }
 
   private disposeVis(vis: EntVis) {
+    // Shadow proxies are the one per-vis geometry allocation introduced here;
+    // unlike the shared primitive/model geometries they must be released with
+    // the building visual. The flag also prevents a queued async LOD swap from
+    // reinstalling geometry after teardown.
+    vis.root.traverse((o) => {
+      if (o.userData.shadowProxy) {
+        o.userData.shadowProxyDisposed = true;
+        (o as THREE.Mesh).geometry?.dispose?.();
+      }
+    });
     if (vis.rig.subMats) {
       for (const m of vis.rig.subMats) m?.dispose?.();
     }
@@ -1606,7 +1742,14 @@ export class Renderer {
     this.defenseRangesOn = false;
     for (const p of this.instPools.values()) for (const part of p.parts) part.im.dispose();
     this.instPools.clear();
-    for (const p of this.vehiclePools.values()) for (const part of p.parts) part.im.dispose();
+    for (const p of this.vehiclePools.values()) {
+      for (const part of p.parts) part.im.dispose();
+      for (const part of p.shadowParts) {
+        part.im.userData.shadowProxyDisposed = true;
+        part.im.geometry.dispose();
+        part.im.dispose();
+      }
+    }
     this.vehiclePools.clear();
     this.vehicleTemplates.clear();
     if (this.instGroup) {

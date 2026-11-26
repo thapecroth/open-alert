@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { mergeGeometries, mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import type { CrateKind } from "../shared/gamedefs";
 import { BUILDINGS, EntKind, isBuildingKind } from "./util";
@@ -61,6 +61,106 @@ export interface CrateVis {
 }
 
 // ---------- Shared Overlay & Shadow Assets ----------
+
+// Shadow-only simplified proxy meshes live on a layer the main camera does not
+// render. The directional shadow camera explicitly enables this layer; because
+// layer 0 remains enabled too, ordinary dynamic casters keep exactly their old
+// shadow path while proxies replace only the meshes they cover.
+export const SHADOW_PROXY_LAYER = 2;
+
+const shadowProxyMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
+
+// Depth-only geometry copy. Position is the sole attribute the shadow depth
+// material can consume; stripping normal/uv/color here makes unlike visual
+// materials compatible in one merged shadow mesh and avoids doubling their memory.
+function positionOnlyGeometry(src: THREE.BufferGeometry, transform: THREE.Matrix4): THREE.BufferGeometry {
+  const nonIndexed = src.index ? src.toNonIndexed() : null;
+  const posSrc = ((nonIndexed ?? src).attributes.position as THREE.BufferAttribute | undefined);
+  if (!posSrc) {
+    nonIndexed?.dispose();
+    return new THREE.BufferGeometry();
+  }
+  const arr = new Float32Array(posSrc.count * 3);
+  for (let i = 0; i < posSrc.count; i++) {
+    arr[i * 3] = posSrc.getX(i);
+    arr[i * 3 + 1] = posSrc.getY(i);
+    arr[i * 3 + 2] = posSrc.getZ(i);
+  }
+  nonIndexed?.dispose();
+  const out = new THREE.BufferGeometry();
+  out.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+  out.applyMatrix4(transform);
+  return out;
+}
+
+function mergePositionOnlyGeometries(geos: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
+  if (!geos.length) return null;
+  const merged = mergeGeometries(geos, false);
+  for (const g of geos) g.dispose();
+  if (merged) {
+    merged.computeBoundingSphere();
+    merged.computeBoundingBox();
+  }
+  return merged;
+}
+
+// Meshoptimizer's wasm module is lazily code-split: proxies start exact and are
+// swapped for a conservative LOD once the simplifier is ready. The shadow map is
+// only ~0.04 world units/texel at high quality, while authored bevels and coplanar
+// sculpting carry far more triangles than that depth target can resolve.
+type ShadowSimplifyModifier = import("three/examples/jsm/modifiers/SimplifyModifier.js").SimplifyModifier;
+let shadowSimplifierPromise: Promise<ShadowSimplifyModifier> | null = null;
+function getShadowSimplifier(): Promise<ShadowSimplifyModifier> {
+  if (!shadowSimplifierPromise) {
+    shadowSimplifierPromise = import("three/examples/jsm/modifiers/SimplifyModifier.js").then((m) => new m.SimplifyModifier());
+  }
+  return shadowSimplifierPromise;
+}
+const SHADOW_PROXY_KEEP_RATIO = 0.45;
+const SHADOW_PROXY_MIN_VERTS = 240;
+
+export function simplifyShadowProxyGeometry(mesh: THREE.Mesh, onSwap?: (geometry: THREE.BufferGeometry) => void): void {
+  const source = mesh.geometry;
+  const sourcePos = source.getAttribute("position") as THREE.BufferAttribute | undefined;
+  if (!sourcePos || sourcePos.count < SHADOW_PROXY_MIN_VERTS || mesh.userData.shadowSimplifyQueued) return;
+  mesh.userData.shadowSimplifyQueued = true;
+
+  // The merged proxies are triangle soup. Weld exact/near-exact seam vertices first
+  // so the vertex removal count is relative to the real mesh topology rather than
+  // to the inflated non-indexed vertex count.
+  const welded = mergeVertices(source, 1e-4);
+  const weldedPos = welded.getAttribute("position") as THREE.BufferAttribute | undefined;
+  if (!weldedPos || weldedPos.count < SHADOW_PROXY_MIN_VERTS) {
+    welded.dispose();
+    return;
+  }
+  const removeCount = Math.floor(weldedPos.count * (1 - SHADOW_PROXY_KEEP_RATIO));
+  if (removeCount < 32) {
+    welded.dispose();
+    return;
+  }
+
+  void getShadowSimplifier()
+    .then((simplifier) => simplifier.modify(welded, removeCount))
+    .then((simplified) => {
+      welded.dispose();
+      simplified.computeBoundingSphere();
+      simplified.computeBoundingBox();
+      // If a reset/dispose path replaced or dropped the proxy while the wasm work
+      // was queued, do not resurrect or leak the LOD geometry.
+      if (mesh.geometry !== source || mesh.userData.shadowProxyDisposed) {
+        simplified.dispose();
+        return;
+      }
+      mesh.geometry = simplified;
+      onSwap?.(simplified);
+      source.dispose();
+    })
+    .catch(() => {
+      welded.dispose();
+      // Exact geometry remains installed; simplification is purely opportunistic.
+    });
+}
 
 const geoRing = new THREE.RingGeometry(0.84, 1.0, 28);
 const geoAirShadow = new THREE.CircleGeometry(1, 16);
@@ -232,6 +332,81 @@ function mergeStaticBody(body: THREE.Group, rig: AnimRig): void {
     m.renderOrder = b.renderOrder;
     b.anchor.add(m);
     for (const o of b.owners) o.parent?.remove(o);
+  }
+}
+
+// Buildings keep a few independently articulated nodes (turret/recoil, crane,
+// rotating radar/accelerator groups), but everything inside each node is rigid
+// in the building animation paths. Once visual merging has run, collapse all
+// casters per rigid node into a position-only proxy on SHADOW_PROXY_LAYER and
+// disable shadow casting on the visual meshes it represents. The main camera
+// never renders layer 2, so the color/texture/material look is untouched while
+// the shadow pass stops paying one draw per visual material/part.
+function installBuildingShadowProxies(body: THREE.Group, rig: AnimRig): void {
+  const articulated = new Set<THREE.Object3D>();
+  for (const n of [rig.turret, rig.recoil, rig.crane, rig.spin, rig.spin2]) if (n) articulated.add(n);
+  const independentlyAnimated = new Set<THREE.Object3D>();
+  for (const n of [...(rig.pulse ?? []), rig.flag, rig.bin, rig.shadow]) if (n) independentlyAnimated.add(n);
+
+  interface ShadowGroup {
+    geos: THREE.BufferGeometry[];
+    owners: THREE.Mesh[];
+    inverse: THREE.Matrix4;
+  }
+  const groups = new Map<THREE.Object3D, ShadowGroup>();
+  const rel = new THREE.Matrix4();
+
+  body.updateMatrixWorld(true);
+  body.traverse((o) => {
+    if (!(o instanceof THREE.Mesh) || o instanceof THREE.SkinnedMesh) return;
+    if (!o.visible || !o.castShadow || o.userData.isBar || o.userData.shadowProxy) return;
+    if (independentlyAnimated.has(o)) return;
+
+    let anchor: THREE.Object3D = body;
+    let nestedInIndependent = false;
+    for (let p: THREE.Object3D | null = o.parent; p; p = p.parent) {
+      if (independentlyAnimated.has(p)) {
+        nestedInIndependent = true;
+        break;
+      }
+      if (articulated.has(p)) {
+        anchor = p;
+        break;
+      }
+      if (p === body) break;
+    }
+    if (nestedInIndependent) return;
+
+    let g = groups.get(anchor);
+    if (!g) {
+      g = { geos: [], owners: [], inverse: new THREE.Matrix4().copy(anchor.matrixWorld).invert() };
+      groups.set(anchor, g);
+    }
+    rel.multiplyMatrices(g.inverse, o.matrixWorld);
+    g.geos.push(positionOnlyGeometry(o.geometry, rel));
+    g.owners.push(o);
+  });
+
+  for (const [anchor, g] of groups) {
+    // A singleton caster already costs exactly one shadow draw; replacing it
+    // would only duplicate geometry and scene-graph work. Keep it as-is.
+    if (g.owners.length < 2) {
+      for (const geo of g.geos) geo.dispose();
+      continue;
+    }
+    const merged = mergePositionOnlyGeometries(g.geos);
+    if (!merged) continue;
+    for (const o of g.owners) o.castShadow = false;
+    const proxy = new THREE.Mesh(merged, shadowProxyMat);
+    proxy.name = "building-shadow-proxy";
+    proxy.userData.shadowProxy = true;
+    proxy.castShadow = true;
+    proxy.receiveShadow = false;
+    proxy.layers.set(SHADOW_PROXY_LAYER);
+    // Pick raycasts enable all layers; proxies must never become duplicate hit geometry.
+    proxy.raycast = () => {};
+    simplifyShadowProxyGeometry(proxy);
+    anchor.add(proxy);
   }
 }
 
@@ -578,7 +753,10 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
     });
   }
 
-  if (!lite) mergeStaticBody(body, rig);
+  if (!lite) {
+    mergeStaticBody(body, rig);
+    if (isBuildingKind(kind)) installBuildingShadowProxies(body, rig);
+  }
 
   return {
     root,
