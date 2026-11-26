@@ -828,6 +828,7 @@ export class GameScene {
 
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private groundMat!: THREE.MeshStandardMaterial;
+  private groundTextureMapId: MapId | null = null;
   private microRepeatUniform = { value: MAP_W * 0.5 };
   private gridHelper!: THREE.GridHelper;
   private skirtMesh!: THREE.Mesh;
@@ -921,6 +922,7 @@ export class GameScene {
     canvas.addEventListener("webglcontextrestored", () => {
       this.contextLost = false;
       this.applyGraphicsSettings();
+      this.groundTextureMapId = null;
       this.loadMap(this.mapId);
     });
 
@@ -1777,17 +1779,20 @@ export class GameScene {
     const prevMap = this.groundMat.map;
     const prevNormal = this.groundMat.normalMap;
     const prevBump = this.groundMat.bumpMap;
-    const { map, bumpMap, normalMap } = createBattlefieldTextures(mapId);
-    bumpMap.dispose();
-    this.groundMat.map = map;
-    this.groundMat.normalMap = normalMap;
-    this.groundMat.bumpMap = null;
+    if (this.groundTextureMapId !== mapId || !prevMap || !prevNormal) {
+      const { map, bumpMap, normalMap } = createBattlefieldTextures(mapId);
+      bumpMap.dispose();
+      this.groundMat.map = map;
+      this.groundMat.normalMap = normalMap;
+      this.groundMat.bumpMap = null;
+      prevMap?.dispose();
+      prevNormal?.dispose();
+      prevBump?.dispose();
+      this.groundTextureMapId = mapId;
+    }
     this.groundMat.roughness = atm.groundRoughness;
     this.groundMat.envMapIntensity = atm.groundEnv;
     this.groundMat.needsUpdate = true;
-    prevMap?.dispose();
-    prevNormal?.dispose();
-    prevBump?.dispose();
 
     this.applyBiomeAtmosphere(atm);
 

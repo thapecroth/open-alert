@@ -8,6 +8,7 @@ import { AudioEngine } from "./audio";
 import type { FirstPersonController } from "./fpv";
 import { FpvStory } from "./story";
 import { generateIcons } from "./icons";
+import { whenModelTexturesReady } from "./textures";
 import { isBuildingKind, el } from "./util";
 import * as THREE from "three";
 import {
@@ -739,24 +740,28 @@ net.onMsg = (m: S2C) => {
       const color = mySlot >= 0 ? PLAYER_COLORS[mySlot] : "#45d6ff";
       if (iconColor !== color) {
         iconColor = color;
-        generateIcons(
-          gs,
-          [
-            "conyard",
-            "coalplant",
-            "fusion",
-            "barracks2",
-            "factory2",
-            "airfield2",
-            "shipyard2",
-            "derrick",
-            "coalmine",
-            ...BUILD_ORDER,
-            ...DEFENSE_ORDER,
-            ...TRAIN_ORDER.map((t) => t.unit),
-          ],
-          color,
-        ).then((icons) => hud.setIcons(icons));
+        whenModelTexturesReady()
+          .then(() =>
+            generateIcons(
+              gs,
+              [
+                "conyard",
+                "coalplant",
+                "fusion",
+                "barracks2",
+                "factory2",
+                "airfield2",
+                "shipyard2",
+                "derrick",
+                "coalmine",
+                ...BUILD_ORDER,
+                ...DEFENSE_ORDER,
+                ...TRAIN_ORDER.map((t) => t.unit),
+              ],
+              color,
+            ),
+          )
+          .then((icons) => hud.setIcons(icons));
       }
       hud.toast(mySlot >= 0 ? "battle control online — good luck, commander" : "spectating", true);
       break;
