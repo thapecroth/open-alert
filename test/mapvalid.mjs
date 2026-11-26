@@ -46,6 +46,13 @@ function analyze(id) {
   for (const [x, y] of layout.water) if (x >= 0 && y >= 0 && x < W && y < H) water[idx(x, y)] = 1;
   const landPass = (x, y) => x >= 0 && y >= 0 && x < W && y < H && !water[idx(x, y)] && !cliff[idx(x, y)];
   const seaPass = (x, y) => x >= 0 && y >= 0 && x < W && y < H && water[idx(x, y)] === 1;
+  // findPath takes baked passability masks (mirrors of the closures, pre-A*-mask interface)
+  const landMask = new Uint8Array(W * H);
+  const seaMask = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    landMask[i] = !water[i] && !cliff[i] ? 1 : 0;
+    seaMask[i] = water[i] === 1 ? 1 : 0;
+  }
 
   const totalTiles = W * H;
   const waterTiles = layout.water.length;
@@ -180,7 +187,7 @@ function analyze(id) {
   if (landLinked === maxP) {
     // check the diagonal corner pair (longest haul)
     const a = spawns[0], b = spawns[1];
-    const p = findPath(a.x, a.y, b.x, b.y, landPass, maxExpand, W, H);
+    const p = findPath(a.x, a.y, b.x, b.y, landMask, maxExpand, W, H);
     if (!p) { astarOk = false; astarNote = "corner A* exhausted"; }
     // sea lane A* for naval
     if (meta.naval) {
@@ -189,7 +196,7 @@ function analyze(id) {
       for (let s = 0; s < W * H; s++) if (water[s] && wcomp[s] >= 0) seaTiles.push(s);
       if (seaTiles.length > 10) {
         const s0 = seaTiles[0], s1 = seaTiles[seaTiles.length - 1];
-        const ps = findPath(s0 % W, (s0 / W) | 0, s1 % W, (s1 / W) | 0, seaPass, maxExpand, W, H);
+        const ps = findPath(s0 % W, (s0 / W) | 0, s1 % W, (s1 / W) | 0, seaMask, maxExpand, W, H);
         if (!ps) { astarOk = false; astarNote += " sea A* exhausted"; }
       }
     }
