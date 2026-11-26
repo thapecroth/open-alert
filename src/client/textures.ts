@@ -477,13 +477,22 @@ export function getTreadTexture(): THREE.CanvasTexture {
 
 // ---------- Next-Gen 2026 PBR Material Caches ----------
 
+// Materials minted by the armor/chassis/accent/glass factories share one texture
+// set and differ only in uniform-valued shading parameters. Tagging them lets
+// the static-body merger collapse dozens of per-part materials into a single
+// vertex-attribute-driven unified material with zero visual change.
+function tagUnifiedArmor(m: THREE.MeshStandardMaterial): THREE.MeshStandardMaterial {
+  m.userData.unifiedArmor = true;
+  return m;
+}
+
 const chassisMatCache = new Map<string, THREE.MeshStandardMaterial>();
 export function getChassisMat(hex = "#3d4752", roughness = 0.44, metalness = 0.62): THREE.MeshStandardMaterial {
   ensureArmorDetail();
   const key = `${hex}|${roughness}|${metalness}`;
   let m = chassisMatCache.get(key);
   if (!m) {
-    m = new THREE.MeshStandardMaterial({
+    m = tagUnifiedArmor(new THREE.MeshStandardMaterial({
       color: new THREE.Color(hex),
       map: armorDetailTex!,
       normalMap: armorNormalTex!,
@@ -492,7 +501,7 @@ export function getChassisMat(hex = "#3d4752", roughness = 0.44, metalness = 0.6
       roughness,
       metalness,
       envMapIntensity: 1.12,
-    });
+    }));
     chassisMatCache.set(key, m);
   }
   return m;
@@ -511,7 +520,7 @@ export function getAccentMat(hex: string): THREE.MeshStandardMaterial {
     hsl.l = hsl.l > 0.4 ? hsl.l * 0.91 : hsl.l * 0.96;
     c.setHSL(hsl.h, hsl.s, hsl.l);
 
-    m = new THREE.MeshStandardMaterial({
+    m = tagUnifiedArmor(new THREE.MeshStandardMaterial({
       color: c,
       map: armorDetailTex!,
       normalMap: armorNormalTex!,
@@ -520,7 +529,7 @@ export function getAccentMat(hex: string): THREE.MeshStandardMaterial {
       metalness: 0.38,
       roughness: 0.42,
       envMapIntensity: 1.05,
-    });
+    }));
     accentMatCache.set(hex, m);
   }
   return m;
@@ -531,15 +540,169 @@ export function getGlassMat(tint = "#66d4ff"): THREE.MeshStandardMaterial {
   let m = glassMatCache.get(tint);
   if (!m) {
     const c = new THREE.Color(tint);
-    m = new THREE.MeshStandardMaterial({
+    m = tagUnifiedArmor(new THREE.MeshStandardMaterial({
       color: c,
       roughness: 0.1,
       metalness: 0.85,
       emissive: c.clone().multiplyScalar(0.28),
       envMapIntensity: 1.45,
-    });
+    }));
     glassMatCache.set(tint, m);
   }
+  return m;
+}
+
+// ---------- Unified Vertex-Attribute Armor Material ----------
+//
+// Every tagged factory material shares the armor detail/normal/roughness
+// texture set and differs only in scalar uniforms (color, roughness, metalness,
+// normalScale, envMapIntensity, emissive). This singleton reproduces all of them
+// exactly with per-vertex attributes, letting the static-body merger collapse
+// what used to be 5-15 separate material draw calls per articulated anchor into
+// ONE. Baked per-vertex layout:
+//   color      (vec3, native)  — base diffuse color (white on faction-accent verts
+//                                of instancing donors; the instance tint supplies it)
+//   aShading   (vec4)          — roughness, metalness, normalScale, envMapIntensity
+//   aEmissive  (vec3)          — emissive × emissiveIntensity (pre-multiplied)
+//   aTexMix    (float)         — 1 = full armor texture set, 0 = untextured (glass)
+//   aAccent    (float)         — 0 none, 1/2/3 faction accent variant (instanced only)
+// Per-instance inputs on instanced pools: instanceColor stays the hit-flash
+// channel (white normally, flash tint while flashing — exactly as before) and
+// aAccV0/1/2 carry the final per-variant faction accent colors.
+let unifiedArmorMat: THREE.MeshStandardMaterial | null = null;
+export function getUnifiedArmorMat(): THREE.MeshStandardMaterial {
+  if (unifiedArmorMat) return unifiedArmorMat;
+  ensureArmorDetail();
+  const m = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    vertexColors: true,
+    map: armorDetailTex!,
+    normalMap: armorNormalTex!,
+    normalScale: new THREE.Vector2(1, 1),
+    roughnessMap: armorRoughTex!,
+    roughness: 1,
+    metalness: 1,
+    emissive: 0xffffff,
+    emissiveIntensity: 1,
+    envMapIntensity: 1,
+  });
+  m.userData.unifiedArmorSingleton = true;
+  m.customProgramCacheKey = () => "unified-armor-v2";
+  m.onBeforeCompile = (shader) => {
+    // CRITICAL three.js pipeline fact: onBeforeCompile receives the shader with
+    // `#include` statements UNRESOLVED (resolution happens later inside
+    // WebGLProgram). Replacements targeting text inside a chunk silently no-op.
+    // So every chunk patch below first resolves the include line against
+    // THREE.ShaderChunk — guaranteeing an exact match with the pinned three
+    // version — and rewrites the chunk content itself.
+    const patchChunk = (
+      src: string,
+      includeName: keyof typeof THREE.ShaderChunk,
+      patch: (chunk: string) => string,
+    ): string => {
+      const chunk = (THREE.ShaderChunk as Record<string, string>)[includeName as string];
+      if (!chunk) return src;
+      return src.replace(`#include <${includeName as string}>`, patch(chunk));
+    };
+
+    // ---- vertex: fetch per-vertex shading, resolve faction accent tint ----
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        "#include <common>",
+        `#include <common>
+attribute vec4 aShading;
+attribute vec3 aEmissive;
+attribute float aTexMix;
+attribute float aAccent;
+#ifdef USE_INSTANCING
+attribute vec3 aAccV0;
+attribute vec3 aAccV1;
+attribute vec3 aAccV2;
+#endif
+varying vec4 vAShading;
+varying vec3 vAEmissive;
+varying float vATexMix;
+varying vec3 vATint;`,
+      )
+      .replace(
+        "#include <color_vertex>",
+        `#include <color_vertex>
+vAShading = aShading;
+vAEmissive = aEmissive;
+vATexMix = aTexMix;
+vATint = vec3( 1.0 );
+#ifdef USE_INSTANCING
+if ( aAccent > 0.5 ) {
+  vATint = aAccent < 1.5 ? aAccV0 : aAccent < 2.5 ? aAccV1 : aAccV2;
+}
+#endif`,
+      );
+
+    // ---- fragment: apply per-vertex shading at the exact uniform use sites ----
+    let frag = shader.fragmentShader.replace(
+      "#include <common>",
+      `#include <common>
+varying vec4 vAShading;
+varying vec3 vAEmissive;
+varying float vATexMix;
+varying vec3 vATint;`,
+    );
+    // envMapIntensity is consumed inside the IBL helpers; scale per-vertex.
+    frag = patchChunk(frag, "envmap_physical_pars_fragment", (chunk) =>
+      chunk.replace(
+        /envMapColor\.rgb \* envMapIntensity/g,
+        "envMapColor.rgb * envMapIntensity * vAShading.w",
+      ),
+    );
+    // Diffuse texture: untextured (glass) verts must not sample the armor detail.
+    frag = patchChunk(frag, "map_fragment", (chunk) =>
+      chunk.replace(
+        "diffuseColor *= sampledDiffuseColor;",
+        "diffuseColor *= mix( vec4( 1.0 ), sampledDiffuseColor, vATexMix );",
+      ),
+    );
+    // Roughness: per-vertex scalar × conditional texel (exactly the factory materials).
+    frag = patchChunk(frag, "roughnessmap_fragment", (chunk) =>
+      chunk
+        .replace(
+          "float roughnessFactor = roughness;",
+          "float roughnessFactor = roughness * vAShading.x;",
+        )
+        .replace(
+          "roughnessFactor *= texelRoughness.g;",
+          "roughnessFactor *= mix( 1.0, texelRoughness.g, vATexMix );",
+        ),
+    );
+    // Metalness: no metalnessMap exists in the armor family — per-vertex scalar only.
+    frag = patchChunk(frag, "metalnessmap_fragment", (chunk) =>
+      chunk.replace(
+        "float metalnessFactor = metalness;",
+        "float metalnessFactor = metalness * vAShading.y;",
+      ),
+    );
+    // Normal map: per-vertex scale; untextured verts blend to the exact neutral
+    // normal (0,0,1), reproducing the no-normalMap glass materials through the TBN.
+    frag = patchChunk(frag, "normal_fragment_maps", (chunk) =>
+      chunk.replace(
+        "mapN.xy *= normalScale;",
+        `mapN.xy *= normalScale * vAShading.z;
+	mapN = mix( vec3( 0.0, 0.0, 1.0 ), mapN, vATexMix );`,
+      ),
+    );
+    shader.fragmentShader = frag
+      .replace(
+        "#include <color_fragment>",
+        `#include <color_fragment>
+diffuseColor.rgb *= vATint;`,
+      )
+      // emissive premultiply: the uniform stays white×1, per-vertex carries the
+      // original emissive×intensity — this line IS in the meshphysical main body.
+      .replace(
+        "vec3 totalEmissiveRadiance = emissive;",
+        "vec3 totalEmissiveRadiance = emissive * vAEmissive;",
+      );
+  };
+  unifiedArmorMat = m;
   return m;
 }
 

@@ -735,6 +735,51 @@ function tileHash(x: number, y: number, salt: number): number {
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }
 
+interface ShadowObjectWatch {
+  obj: THREE.Object3D;
+  inst: THREE.InstancedMesh | null;
+  dynamicInstances: boolean;
+  // Approximate caster radius in world units, estimated once. Rotation/scale
+  // thresholds derive from it: what reaches the shadowmap is silhouette EDGE
+  // motion (radius × angle, radius × scaleDelta), so a uniform angular threshold
+  // would be needlessly strict for small decorations and too lax for buildings.
+  radius: number;
+  // Anchors are captured when the shadowmap is actually rendered. The cache
+  // invalidates on ACCUMULATED DRIFT since that render rather than on quantized
+  // absolute state; plain quantization cannot absorb oscillating idle animation
+  // (a sine straddling a quantum boundary flips the hash every frame), while
+  // drift semantics both absorb oscillation and self-regulate the update rate in
+  // proportion to real silhouette motion measured in depth texels.
+  anchored: boolean;
+  ax: number;
+  ay: number;
+  az: number;
+  arx: number;
+  ary: number;
+  arz: number;
+  asx: number;
+  asy: number;
+  asz: number;
+  am: Float32Array | null; // frozen local-matrix snapshot for matrixAutoUpdate=false objects
+  // Discrete structural signature — exact compare, no thresholds.
+  sigVisible: boolean;
+  sigCastShadow: boolean;
+  sigLayers: number;
+  sigGeoId: number;
+  sigMatIds: number[];
+  // Dynamic instance-buffer snapshot (copied at render time so drift can be
+  // measured against what the shadowmap actually contains).
+  instSnap: Float32Array | null;
+  instSnapCount: number;
+  instSnapVersion: number;
+}
+
+// Shared depth-pass stand-in for environment shadow proxies. The colorWrite flag
+// is irrelevant while three.js substitutes MeshDepthMaterial, but keeping this
+// colorless material mirrors the vehicle/building proxy convention and makes the
+// objects unambiguous in frame captures even if accidentally exposed to layer 0.
+const ENV_SHADOW_PROXY_MAT = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
+
 export class GameScene {
   canvas: HTMLCanvasElement;
   renderer: THREE.WebGLRenderer;
@@ -766,6 +811,20 @@ export class GameScene {
   private bloomPass: UnrealBloomPass;
   private contextLost = false;
   private frameCount = 0;
+
+  // Shadow invalidation/cache state. The texel-snapped frustum makes static-camera
+  // shadowmaps bit-exactly reusable; these watchers let us skip the whole depth pass
+  // until either that quantized frustum key changes or a caster drifts far enough
+  // from what the rendered shadowmap actually contains.
+  private shadowSceneChildren: THREE.Object3D[] = [];
+  private shadowSceneChildCounts: number[] = [];
+  private shadowStructureSafetyFrame = -1000;
+  private shadowWatches: ShadowObjectWatch[] = [];
+  private shadowRenderedFrustumKey = "";
+  private shadowFramesSinceUpdate = 1_000_000;
+  private shadowForceDirty = true;
+  private shadowForceImmediate = true;
+  private shadowCasterMembershipLost = false;
 
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private groundMat!: THREE.MeshStandardMaterial;
@@ -973,7 +1032,7 @@ export class GameScene {
         this.sunLight.shadow.map = null;
       }
     }
-    this.renderer.shadowMap.needsUpdate = true;
+    this.invalidateSunShadows(true);
 
     this.raytracePass.enabled = s.raytracing || s.contactShadows;
     this.raytracePass.setQuality(s.preset, s.raytracing, s.contactShadows);
@@ -1086,6 +1145,318 @@ export class GameScene {
     this.sunLight.target.position.set(tx, 0, tz);
     this.sunLight.position.set(tx + sx * sunScale, sy * sunScale, tz + sz * sunScale);
     this.sunLight.target.updateMatrixWorld();
+  }
+
+  // ---------- shadow invalidation & texel-keyed reuse ----------
+
+  private invalidateSunShadows(immediate = false): void {
+    this.shadowForceDirty = true;
+    if (immediate) this.shadowForceImmediate = true;
+  }
+
+  private materialIdsOf(obj: THREE.Object3D): number[] {
+    const mesh = obj as THREE.Mesh;
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    const ids: number[] = [];
+    for (const mat of mats) ids.push(mat?.id ?? 0);
+    return ids;
+  }
+
+  private estimateShadowRadius(obj: THREE.Object3D): number {
+    let r = 0;
+    const consider = (m: THREE.Object3D): void => {
+      if (!(m instanceof THREE.Mesh)) return;
+      const geo = m.geometry as THREE.BufferGeometry | undefined;
+      if (!geo) return;
+      if (!geo.boundingSphere) geo.computeBoundingSphere();
+      const br = geo.boundingSphere?.radius ?? 0;
+      if (br > r) r = br;
+    };
+    consider(obj);
+    if (r === 0) {
+      // Groups (radar pedestals, turret shells, crate spinners) have no geometry of
+      // their own; the silhouette that matters is their largest caster descendant.
+      obj.traverse((m) => {
+        if (m.castShadow) consider(m);
+      });
+    }
+    if (r === 0) r = 1;
+    const s = obj.scale;
+    r *= Math.max(Math.abs(s.x), Math.abs(s.y), Math.abs(s.z), 0.001);
+    return Math.min(4, Math.max(0.25, r));
+  }
+
+  private captureShadowWatchAnchor(w: ShadowObjectWatch): void {
+    const obj = w.obj;
+    w.anchored = true;
+    if (w.radius === 0) w.radius = this.estimateShadowRadius(obj);
+    w.ax = obj.position.x;
+    w.ay = obj.position.y;
+    w.az = obj.position.z;
+    w.arx = obj.rotation.x;
+    w.ary = obj.rotation.y;
+    w.arz = obj.rotation.z;
+    w.asx = obj.scale.x;
+    w.asy = obj.scale.y;
+    w.asz = obj.scale.z;
+    if (!obj.matrixAutoUpdate) {
+      if (!w.am) w.am = new Float32Array(16);
+      w.am.set(obj.matrix.elements);
+    }
+    w.sigVisible = obj.visible;
+    w.sigCastShadow = obj.castShadow;
+    w.sigLayers = obj.layers.mask;
+    if (obj instanceof THREE.Mesh) {
+      w.sigGeoId = obj.geometry?.id ?? 0;
+      w.sigMatIds = this.materialIdsOf(obj);
+    } else {
+      w.sigGeoId = 0;
+      w.sigMatIds = [];
+    }
+    if (w.inst && w.dynamicInstances) {
+      const im = w.inst;
+      const live = Math.max(0, Math.min(im.count, Math.floor(im.instanceMatrix.array.length / 16)));
+      const n = live * 16;
+      if (!w.instSnap || w.instSnap.length < n) w.instSnap = new Float32Array(n);
+      w.instSnap.set((im.instanceMatrix.array as Float32Array).subarray(0, n));
+      w.instSnapCount = im.count;
+      w.instSnapVersion = im.instanceMatrix.version;
+    }
+  }
+
+  // Returns true when the object (or its instance buffer) has diverged from the
+  // rendered shadowmap by more than the supplied silhouette thresholds. Discrete
+  // structural state compares exactly; continuous transform state uses drift.
+  private shadowWatchDrifted(w: ShadowObjectWatch, posQ: number): boolean {
+    const obj = w.obj;
+    if (!w.anchored) return true;
+    // Rotation/scale thresholds in edge-motion units: a drift is significant only
+    // when it can move the silhouette by more than posQ world units at the
+    // object's own radius. Small pulsing decorations (radius ~0.3) thus tolerate
+    // several percent of scale oscillation while building-scale motion stays strict.
+    const radius = w.radius > 0 ? w.radius : 1;
+    const rotQ = Math.min(0.09, Math.max(0.012, posQ / radius));
+    const scaleQ = Math.min(0.12, Math.max(0.015, posQ / radius));
+    if (
+      obj.visible !== w.sigVisible ||
+      obj.castShadow !== w.sigCastShadow ||
+      obj.layers.mask !== w.sigLayers
+    ) {
+      return true;
+    }
+    if (obj instanceof THREE.Mesh) {
+      if ((obj.geometry?.id ?? 0) !== w.sigGeoId) return true;
+      const ids = w.sigMatIds;
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      if (mats.length !== ids.length) return true;
+      for (let i = 0; i < mats.length; i++) {
+        if ((mats[i]?.id ?? 0) !== ids[i]) return true;
+      }
+      // Bone texture mutation has no CPU-side version we can inspect cheaply.
+      // Treat skinned casters as continuously animated; there are currently no
+      // skinned battlefield units, but this keeps the invalidation conservative.
+      if (obj instanceof THREE.SkinnedMesh) return true;
+    }
+    if (
+      Math.abs(obj.position.x - w.ax) > posQ ||
+      Math.abs(obj.position.y - w.ay) > posQ ||
+      Math.abs(obj.position.z - w.az) > posQ ||
+      Math.abs(obj.rotation.x - w.arx) > rotQ ||
+      Math.abs(obj.rotation.y - w.ary) > rotQ ||
+      Math.abs(obj.rotation.z - w.arz) > rotQ ||
+      Math.abs(obj.scale.x - w.asx) > scaleQ ||
+      Math.abs(obj.scale.y - w.asy) > scaleQ ||
+      Math.abs(obj.scale.z - w.asz) > scaleQ
+    ) {
+      return true;
+    }
+    if (!obj.matrixAutoUpdate) {
+      // Frozen objects can be moved by direct matrix writes, so the matrix itself
+      // is the source of truth for that small subset.
+      if (!w.am) return true;
+      const e = obj.matrix.elements;
+      for (let i = 0; i < 16; i++) {
+        const q = i >= 12 && i <= 14 ? posQ : rotQ;
+        if (Math.abs(e[i] - w.am[i]) > q) return true;
+      }
+    }
+    if (w.inst && w.dynamicInstances) {
+      const im = w.inst;
+      if (im.count !== w.instSnapCount) return true;
+      const attr = im.instanceMatrix;
+      if (attr.version !== w.instSnapVersion) {
+        // The buffer was rewritten since the render; scan for drift beyond the
+        // thresholds rather than assuming the rewrite matters (idle suspension
+        // rewrite noise is the common case and stays sub-texel).
+        if (!w.instSnap) return true;
+        const arr = attr.array as Float32Array;
+        const live = Math.max(0, Math.min(im.count, Math.floor(arr.length / 16)));
+        const n = live * 16;
+        for (let i = 0; i < n; i++) {
+          const slot = i & 15;
+          const q = slot >= 12 && slot <= 14 ? posQ : rotQ;
+          if (Math.abs(arr[i] - w.instSnap[i]) > q) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private rebuildShadowWatches(): void {
+    const shadowLayers = this.sunLight.shadow.camera.layers;
+    const needed = new Set<THREE.Object3D>();
+    this.scene.traverse((obj) => {
+      const renderable = obj instanceof THREE.Mesh || obj instanceof THREE.Line || obj instanceof THREE.Points;
+      if (!renderable || !obj.castShadow || !obj.layers.test(shadowLayers)) return;
+      needed.add(obj);
+      // Parent transforms/visibility control the shadow even though the parent
+      // itself may be a non-rendering Group. Watch the whole ancestor chain.
+      for (let p = obj.parent; p && p !== this.scene; p = p.parent) needed.add(p);
+    });
+
+    // Preserve anchor state by object identity across rebuilds: vfx/overlay churn
+    // in the direct child list must not discard accumulated drift bookkeeping for
+    // the casters that stayed in the scene.
+    const prev = new Map<THREE.Object3D, ShadowObjectWatch>();
+    for (const w of this.shadowWatches) prev.set(w.obj, w);
+    const watches: ShadowObjectWatch[] = [];
+    this.scene.traverse((obj) => {
+      if (!needed.has(obj)) return;
+      const existing = prev.get(obj);
+      if (existing) {
+        prev.delete(obj);
+        watches.push(existing);
+        return;
+      }
+      const inst = obj instanceof THREE.InstancedMesh ? obj : null;
+      watches.push({
+        obj,
+        inst,
+        dynamicInstances: inst !== null && obj.userData.staticShadowInstances !== true,
+        radius: 0,
+        anchored: false,
+        ax: 0, ay: 0, az: 0,
+        arx: 0, ary: 0, arz: 0,
+        asx: 0, asy: 0, asz: 0,
+        am: null,
+        sigVisible: true,
+        sigCastShadow: true,
+        sigLayers: -1,
+        sigGeoId: -1,
+        sigMatIds: [],
+        instSnap: null,
+        instSnapCount: -1,
+        instSnapVersion: -1,
+      });
+    });
+    this.shadowWatches = watches;
+    this.shadowStructureSafetyFrame = this.frameCount;
+    // Anything left in prev is a caster that vanished from the scene (sell/destroy)
+    // or stopped casting. Drift scanning cannot notice a watch that no longer exists,
+    // so latch the loss until the next shadow render: a stale building-shaped hole
+    // in the depth map is exactly the failure this must prevent.
+    if (prev.size > 0) this.shadowCasterMembershipLost = true;
+  }
+
+  private syncShadowCasterStructure(): boolean {
+    const children = this.scene.children;
+    let changed = children.length !== this.shadowSceneChildren.length;
+    if (!changed) {
+      for (let i = 0; i < children.length; i++) {
+        if (children[i] !== this.shadowSceneChildren[i]) {
+          changed = true;
+          break;
+        }
+      }
+    }
+    // One level deeper catches lazily-created instance pools (they are added
+    // inside the shared instGroup/vehicle-group children rather than as direct
+    // scene children) and construction/upgrade mesh swaps on building rigs.
+    if (!changed) {
+      for (let i = 0; i < children.length; i++) {
+        if (children[i].children.length !== (this.shadowSceneChildCounts[i] ?? -1)) {
+          changed = true;
+          break;
+        }
+      }
+    }
+    // Cheap safety net: deeper graph mutations not covered above (a mesh swapped
+    // for a same-count caster three levels down) are picked up within a quarter
+    // second. Anchor preservation makes these rebuilds drift-neutral.
+    if (!changed && this.frameCount - this.shadowStructureSafetyFrame < 15) return false;
+    this.shadowSceneChildren = children.slice();
+    this.shadowSceneChildCounts = children.map((c) => c.children.length);
+    this.rebuildShadowWatches();
+    return changed;
+  }
+
+  private currentSunShadowFrustumKey(): string {
+    const sc = this.sunLight.shadow.camera;
+    const p = this.sunLight.position;
+    const t = this.sunLight.target.position;
+    const vals = [
+      sc.left,
+      sc.right,
+      sc.top,
+      sc.bottom,
+      sc.near,
+      sc.far,
+      p.x,
+      p.y,
+      p.z,
+      t.x,
+      t.y,
+      t.z,
+      this.sunLight.shadow.mapSize.x,
+      this.sunLight.shadow.mapSize.y,
+    ];
+    // 1/4096 world-unit quantization is orders of magnitude below one texel; it
+    // only removes floating-point noise from the repeated texel-snap calculation.
+    return vals.map((v) => Math.round(v * 4096).toString(36)).join(",");
+  }
+
+  private scheduleSunShadowUpdate(): void {
+    this.shadowFramesSinceUpdate++;
+    const structureChanged = this.syncShadowCasterStructure();
+    const frustumKey = this.currentSunShadowFrustumKey();
+
+    const sc = this.sunLight.shadow.camera;
+    const texel = Math.max(0.001, (sc.right - sc.left) / Math.max(1, this.sunLight.shadow.mapSize.x));
+    // Position drift threshold in shadow-texel units. The floor absorbs the
+    // ±0.005 idle-suspension oscillation that vehicles play continuously: it can
+    // never accumulate past the floor, while genuinely moving units cross it
+    // within a frame or two. Rotation/scale thresholds are derived per watch from
+    // the caster radius inside shadowWatchDrifted.
+    const posQ = Math.max(0.011, texel * 0.5);
+
+    let casterDirty = this.shadowCasterMembershipLost;
+    if (!casterDirty) {
+      for (const w of this.shadowWatches) {
+        if (this.shadowWatchDrifted(w, posQ)) {
+          casterDirty = true;
+          break;
+        }
+      }
+    }
+
+    const frustumDirty = frustumKey !== this.shadowRenderedFrustumKey;
+    const dirty = this.shadowForceDirty || casterDirty || frustumDirty;
+    if (!dirty) return;
+
+    // Structural caster changes (place/sell/destroy/upgrade) jump the stride queue:
+    // they are rare, and a stale building shadow even for one cadence is a visible bug.
+    const structuralCasterChange = (structureChanged || this.shadowCasterMembershipLost) && casterDirty;
+    const immediate = this.shadowForceImmediate || structuralCasterChange || frustumDirty;
+    const stride = Math.max(1, Math.round(this.graphics.getShadowUpdateStride()));
+    if (!immediate && this.shadowFramesSinceUpdate < stride) return;
+
+    this.renderer.shadowMap.needsUpdate = true;
+    this.shadowFramesSinceUpdate = 0;
+    for (const w of this.shadowWatches) this.captureShadowWatchAnchor(w);
+    this.shadowRenderedFrustumKey = frustumKey;
+    this.shadowForceDirty = false;
+    this.shadowForceImmediate = false;
+    this.shadowCasterMembershipLost = false;
   }
 
   private applyBiomeAtmosphere(atm: BiomeAtmosphere) {
@@ -1470,6 +1841,7 @@ export class GameScene {
       castShadow: boolean,
       receiveShadow: boolean,
       renderOrder = 0,
+      shadowGeometry?: THREE.BufferGeometry,
     ): void => {
       if (matrices.length === 0) return;
       const buckets = new Map<number, THREE.Matrix4[]>();
@@ -1486,13 +1858,37 @@ export class GameScene {
         const inst = new THREE.InstancedMesh(geometry, material, list.length);
         for (let i = 0; i < list.length; i++) inst.setMatrixAt(i, list[i]);
         inst.instanceMatrix.needsUpdate = true;
-        inst.castShadow = castShadow;
+        const useShadowProxy = castShadow && shadowGeometry !== undefined;
+        inst.castShadow = castShadow && !useShadowProxy;
         inst.receiveShadow = receiveShadow;
         inst.renderOrder = renderOrder;
+        // Instances never move after map construction. The invalidation watcher uses
+        // this tag to trust their instance buffers instead of rehashing thousands of
+        // static matrix floats every frame (fog hiding is unrelated to these meshes).
+        inst.userData.staticShadowInstances = true;
         // Instances never move after map construction, so pay the tight bounding
         // sphere union once here; the renderer then gets real per-sector culling.
         inst.computeBoundingSphere();
         group.add(inst);
+
+        if (useShadowProxy) {
+          const proxy = new THREE.InstancedMesh(shadowGeometry, ENV_SHADOW_PROXY_MAT, list.length);
+          proxy.name = "env-shadow-proxy";
+          for (let i = 0; i < list.length; i++) proxy.setMatrixAt(i, list[i]);
+          proxy.instanceMatrix.needsUpdate = true;
+          proxy.castShadow = true;
+          proxy.receiveShadow = false;
+          proxy.layers.set(SHADOW_PROXY_LAYER);
+          proxy.raycast = () => {};
+          proxy.userData.staticShadowInstances = true;
+          proxy.computeBoundingSphere();
+          if (inst.boundingSphere) {
+            // Use the visual union as a conservative culling bound: the simplified
+            // silhouette may be a few percent smaller but must never vanish early.
+            proxy.boundingSphere = inst.boundingSphere.clone();
+          }
+          group.add(proxy);
+        }
       }
     };
 
@@ -1521,6 +1917,14 @@ export class GameScene {
         ? new THREE.BoxGeometry(1.02, 1, 1.02)
         : new THREE.CylinderGeometry(isIslands ? 0.56 : 0.67, isIslands ? 0.78 : 0.82, 1, 4);
       if (!isArchitectural) wallGeo.rotateY(Math.PI / 4);
+      // Shadow-only cliff walls: the same four-sided silhouette with no top/bottom
+      // cap triangles. Caps/decks are almost entirely contained in this wall volume
+      // at ground-shadow scale, so they stay visual receivers but do not rasterize
+      // redundant caster geometry (see the addChunkedInstances calls below).
+      const wallShadowGeo = isArchitectural
+        ? new THREE.CylinderGeometry(0.722, 0.722, 1, 4, 1, true)
+        : new THREE.CylinderGeometry(isIslands ? 0.56 : 0.67, isIslands ? 0.78 : 0.82, 1, 4, 1, true);
+      wallShadowGeo.rotateY(Math.PI / 4);
       const wallMatrices: THREE.Matrix4[] = [];
 
       // 2) Sunlit terraced weathered cap plateau
@@ -1745,7 +2149,11 @@ export class GameScene {
           }
         }
       }
-      addChunkedInstances(wallGeo, mats.wall, wallMatrices, true, true);
+      addChunkedInstances(wallGeo, mats.wall, wallMatrices, true, true, 0, wallShadowGeo);
+      // Cap/deck silhouette is redundant with the wall blocks for GROUND shadows,
+      // but their self-shadowing is what shades the mesa panel grooves — removing
+      // it measurably brightened the whole plateau in A/B pixel comparison, so they
+      // keep casting with their exact (already minimal) geometry.
       addChunkedInstances(capGeo, mats.cap, capMatrices, true, true);
       addChunkedInstances(deckGeo, mats.cap, deckMatrices, true, true);
       if (cliffWaterGeo && mats.water) {
@@ -1763,6 +2171,9 @@ export class GameScene {
           d.updateMatrix();
           boulderMatrices.push(d.matrix.clone());
         });
+        // Scree boulders keep their exact dodecahedral caster: the octahedral
+        // stand-in produced visibly different shadow spikes at cliff bases in A/B
+        // comparison, and boulder counts are too low for the tri saving to matter.
         addChunkedInstances(bGeo, mats.boulder, boulderMatrices, true, true);
       }
 
@@ -1866,10 +2277,42 @@ export class GameScene {
           d.updateMatrix();
           treeMatrices.push(d.matrix.clone());
         });
-        addChunkedInstances(trunkGeo, mats.trunk, treeMatrices, true, false);
-        addChunkedInstances(canopyGeo, mats.foliage, treeMatrices, true, true);
-        if (snowCapGeo && mats.accent) {
-          addChunkedInstances(snowCapGeo, mats.accent, treeMatrices, true, true);
+
+        // Tree shadow geometry is the EXACT visual geometry merged into a single
+        // instanced mesh. An earlier iteration of this lane used simplified crown
+        // primitives; A/B pixel comparison showed measurable silhouette and
+        // self-shadowing drift on the canopy, so simplification was rejected. The
+        // remaining win is structural: trunk+canopy(+snowcap) rasterize as one
+        // depth-pass draw per sector instead of two or three separate ones, with
+        // zero silhouette change.
+        const treeParts: THREE.BufferGeometry[] = [trunkGeo, canopyGeo];
+        if (snowCapGeo && mats.accent) treeParts.push(snowCapGeo);
+        // mergeGeometries requires uniform indexing; palm/jungle canopies are
+        // already non-indexed soup while cones/cylinders are indexed.
+        const anyNonIndexed = treeParts.some((g) => !g.index);
+        const mergeParts = anyNonIndexed
+          ? treeParts.map((g) => {
+              if (!g.index) return g;
+              const ni = g.toNonIndexed();
+              return ni;
+            })
+          : treeParts;
+        const treeShadowGeo = treeParts.length > 1 ? mergeGeometries(mergeParts) : null;
+        if (anyNonIndexed) {
+          mergeParts.forEach((g, i) => {
+            if (g !== treeParts[i]) g.dispose();
+          });
+        }
+
+        if (treeShadowGeo) {
+          addChunkedInstances(trunkGeo, mats.trunk, treeMatrices, false, false);
+          addChunkedInstances(canopyGeo, mats.foliage, treeMatrices, true, true, 0, treeShadowGeo);
+          if (snowCapGeo && mats.accent) {
+            addChunkedInstances(snowCapGeo, mats.accent, treeMatrices, false, true);
+          }
+        } else {
+          addChunkedInstances(trunkGeo, mats.trunk, treeMatrices, true, false);
+          addChunkedInstances(canopyGeo, mats.foliage, treeMatrices, true, true);
         }
       }
     }
@@ -2021,7 +2464,7 @@ export class GameScene {
     this.mapGroup = group;
     this.scene.add(group);
     this.raytracePass.setWaterLevel(0.03, this.hasWater());
-    this.renderer.shadowMap.needsUpdate = true;
+    this.invalidateSunShadows(true);
     this.resetFog();
   }
 
@@ -2996,7 +3439,9 @@ export class GameScene {
       sc.updateProjectionMatrix();
       this.sunLight.shadow.normalBias = 0.016;
     }
-    this.renderer.shadowMap.needsUpdate = true;
+    // FPV uses a continuously player-following tight frustum; preserve its existing
+    // full-rate update semantics rather than adapting it to the RTS texel cache.
+    this.invalidateSunShadows(true);
   }
 
   restoreRtsCamera(targetX?: number, targetZ?: number): void {
@@ -3021,7 +3466,7 @@ export class GameScene {
       this.updateSunShadowFrustum();
       this.sunLight.shadow.normalBias = 0.024;
     }
-    this.renderer.shadowMap.needsUpdate = true;
+    this.invalidateSunShadows(true);
 
     this.updateCamera();
   }
@@ -3145,12 +3590,11 @@ export class GameScene {
     // the last shadowmap render, which stays consistent with the stored depth texture.
     if (!this.fpvActive) this.updateSunShadowFrustum();
 
-    // Shadow update stride: full-rate on High/Ultra, every 2nd frame on Low/Medium (30-40% laptop GPU savings)
-    const stride = this.graphics.getShadowUpdateStride();
-    if (this.frameCount % stride === 0) {
-      this.renderer.shadowMap.needsUpdate = true;
-    }
+    // Dirty-keyed shadow refresh. The quality-system stride is still the cadence
+    // cap for genuinely changing casters, but unchanged texel-snapped shadowmaps
+    // are reused indefinitely instead of being re-rasterized on a blind timer.
     this.frameCount++;
+    this.scheduleSunShadowUpdate();
 
     // Zero-Composer fast path: bypass post-processing render targets whenever the
     // EFFECTIVE settings have all post-FX off (Low preset, manual toggles, or the

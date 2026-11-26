@@ -3,7 +3,7 @@ import { mergeGeometries, mergeVertices } from "three/examples/jsm/utils/BufferG
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import type { CrateKind } from "../shared/gamedefs";
 import { BUILDINGS, EntKind, isBuildingKind } from "./util";
-import { getChassisMat, getContactShadowTex, getGlowMat } from "./textures";
+import { getChassisMat, getContactShadowTex, getGlowMat, getUnifiedArmorMat } from "./textures";
 import { buildLandModel } from "./models-land";
 import { buildAirSeaModel } from "./models-airsea";
 
@@ -119,6 +119,35 @@ function getShadowSimplifier(): Promise<ShadowSimplifyModifier> {
 const SHADOW_PROXY_KEEP_RATIO = 0.45;
 const SHADOW_PROXY_MIN_VERTS = 240;
 
+// LOD warm-up: the simplifier chunk is lazily code-split, and the meshopt wasm
+// inside it compiles at first use. Without a warm-up, the first vehicle pool or
+// building proxy created in a match pays the chunk fetch + wasm compile while
+// its shadow rendering falls back to exact geometry (a transient cost spike on
+// first-contact frames). Fire the import shortly after boot — plus one tiny
+// dummy modify so the wasm instantiation is fully behind us — while the menu is
+// idle. Everything here is opportunistic: failures change nothing.
+export function warmupShadowSimplifier(): void {
+  void getShadowSimplifier()
+    .then(async (simplifier) => {
+      try {
+        const warm = new THREE.BoxGeometry(1, 1, 1, 3, 3, 3).toNonIndexed();
+        warm.computeBoundingSphere();
+        const out = await simplifier.modify(warm, 8);
+        out.dispose();
+        warm.dispose();
+      } catch {
+        // Purely opportunistic warm-up; the lazy path remains as fallback.
+      }
+    })
+    .catch(() => {});
+}
+if (typeof window !== "undefined") {
+  const ric = (window as Window & { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void })
+    .requestIdleCallback;
+  if (ric) ric(() => warmupShadowSimplifier(), { timeout: 4000 });
+  else setTimeout(() => warmupShadowSimplifier(), 1500);
+}
+
 export function simplifyShadowProxyGeometry(mesh: THREE.Mesh, onSwap?: (geometry: THREE.BufferGeometry) => void): void {
   const source = mesh.geometry;
   const sourcePos = source.getAttribute("position") as THREE.BufferAttribute | undefined;
@@ -186,8 +215,136 @@ function getAirShadowMat(): THREE.MeshBasicMaterial {
 // Anything not inside an animated rig subtree never moves independently, so we
 // bake those meshes into one geometry per (material × shadow flags × attribute
 // signature) — ~55 draw calls per unit collapse to ~6-10 with identical pixels.
+//
+// Cross-material consolidation: every tagged armor-family standard material
+// (chassis/accent/glass — same texture set, differing only in uniform scalars)
+// collapses into the shared vertex-attribute unified material, and every opaque
+// unmapped glow basic material collapses into one vertex-colored basic. What
+// used to be one draw per material per anchor becomes one draw per anchor.
 
-function mergeStaticBody(body: THREE.Group, rig: AnimRig): void {
+// Shared vertex-colored basic material for merged glow parts. Glow materials
+// differ only in color (intensity pre-multiplied); MeshBasicMaterial shading is
+// color × (no map), so per-vertex color reproduces them exactly.
+let mergedGlowMat: THREE.MeshBasicMaterial | null = null;
+export function getMergedGlowMat(): THREE.MeshBasicMaterial {
+  if (!mergedGlowMat) {
+    mergedGlowMat = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true });
+    mergedGlowMat.userData.mergedGlowSingleton = true;
+  }
+  return mergedGlowMat;
+}
+
+export function isUnifiedArmorEligible(m: THREE.Material): m is THREE.MeshStandardMaterial {
+  return (
+    m instanceof THREE.MeshStandardMaterial &&
+    m.userData.unifiedArmor === true &&
+    !m.transparent &&
+    m.opacity === 1 &&
+    m.side === THREE.FrontSide &&
+    !m.flatShading &&
+    !m.emissiveMap &&
+    !m.metalnessMap &&
+    !m.aoMap &&
+    !m.alphaMap &&
+    !(m as THREE.MeshStandardMaterial).bumpMap &&
+    !((m as unknown as { displacementMap?: THREE.Texture }).displacementMap)
+  );
+}
+
+export function isMergedGlowEligible(m: THREE.Material): m is THREE.MeshBasicMaterial {
+  return (
+    m instanceof THREE.MeshBasicMaterial &&
+    !m.map &&
+    !m.transparent &&
+    m.opacity === 1 &&
+    m.side === THREE.FrontSide &&
+    m.toneMapped === true &&
+    m.fog === true
+  );
+}
+
+// Bake the unified armor per-vertex attribute set onto a cloned geometry.
+// donorMode swaps faction-accent verts to white + variant mask so instanced
+// pools can carry the exact per-player tint in instance attributes; otherwise
+// the material's own (already faction-correct) color is baked and the accent
+// channel stays inert.
+export function bakeUnifiedGeometry(
+  gIn: THREE.BufferGeometry,
+  mat: THREE.MeshStandardMaterial,
+  accentVariant: number | undefined,
+  donorMode: boolean,
+): THREE.BufferGeometry {
+  // Normalize to non-indexed: mergeGeometries requires uniform indexness, and
+  // the authored parts mix indexed (cylinders/spheres) with non-indexed
+  // (rounded boxes/extrudes) freely. De-indexing costs a little vertex memory
+  // on these small parts but unlocks the cross-part merge — the draw-call win
+  // dominates by orders of magnitude. The input is always a throwaway clone.
+  let g = gIn;
+  if (g.index) {
+    const ni = g.toNonIndexed();
+    g.dispose();
+    g = ni;
+  }
+  const n = g.attributes.position.count;
+  const useMask = donorMode && accentVariant !== undefined;
+  const c = useMask ? _bakeWhite : mat.color;
+  const col = new Float32Array(n * 3);
+  const shd = new Float32Array(n * 4);
+  const emi = new Float32Array(n * 3);
+  const tex = new Float32Array(n);
+  const acc = new Float32Array(n);
+  const er = mat.emissive.r * mat.emissiveIntensity;
+  const eg = mat.emissive.g * mat.emissiveIntensity;
+  const eb = mat.emissive.b * mat.emissiveIntensity;
+  const rough = mat.roughness;
+  const metal = mat.metalness;
+  const ns = mat.normalScale?.x ?? 1;
+  const env = mat.envMapIntensity ?? 1;
+  const tm = mat.map ? 1 : 0;
+  const av = useMask ? accentVariant + 1 : 0;
+  for (let i = 0; i < n; i++) {
+    col[i * 3] = c.r;
+    col[i * 3 + 1] = c.g;
+    col[i * 3 + 2] = c.b;
+    shd[i * 4] = rough;
+    shd[i * 4 + 1] = metal;
+    shd[i * 4 + 2] = ns;
+    shd[i * 4 + 3] = env;
+    emi[i * 3] = er;
+    emi[i * 3 + 1] = eg;
+    emi[i * 3 + 2] = eb;
+    tex[i] = tm;
+    acc[i] = av;
+  }
+  g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  g.setAttribute("aShading", new THREE.BufferAttribute(shd, 4));
+  g.setAttribute("aEmissive", new THREE.BufferAttribute(emi, 3));
+  g.setAttribute("aTexMix", new THREE.BufferAttribute(tex, 1));
+  g.setAttribute("aAccent", new THREE.BufferAttribute(acc, 1));
+  return g;
+}
+const _bakeWhite = new THREE.Color(0xffffff);
+
+// Bake flat vertex colors for the merged glow basic path.
+export function bakeGlowGeometry(gIn: THREE.BufferGeometry, c: THREE.Color): THREE.BufferGeometry {
+  let g = gIn;
+  if (g.index) {
+    const ni = g.toNonIndexed();
+    g.dispose();
+    g = ni;
+  }
+  const n = g.attributes.position.count;
+  const col = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    col[i * 3] = c.r;
+    col[i * 3 + 1] = c.g;
+    col[i * 3 + 2] = c.b;
+  }
+  g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  return g;
+}
+
+function mergeStaticBody(body: THREE.Group, rig: AnimRig, donorMode = false): void {
   // Rig subtrees whose parts all move rigidly with the animated root node can be
   // merged *within* that subtree: bake geometry into the animated node's local
   // space and re-parent the merged mesh to it, so the animation (turret yaw,
@@ -257,7 +414,13 @@ function mergeStaticBody(body: THREE.Group, rig: AnimRig): void {
     }
     return m;
   };
-  const bakeColor = (g: THREE.BufferGeometry, c: THREE.Color): THREE.BufferGeometry => {
+  const bakeColor = (gIn: THREE.BufferGeometry, c: THREE.Color): THREE.BufferGeometry => {
+    let g = gIn;
+    if (g.index) {
+      const ni = g.toNonIndexed();
+      g.dispose();
+      g = ni;
+    }
     const n = g.attributes.position.count;
     const col = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
@@ -272,6 +435,7 @@ function mergeStaticBody(body: THREE.Group, rig: AnimRig): void {
     castShadow: boolean;
     receiveShadow: boolean;
     renderOrder: number;
+    converted: boolean;
     geos: THREE.BufferGeometry[];
     owners: THREE.Mesh[];
   }
@@ -284,14 +448,54 @@ function mergeStaticBody(body: THREE.Group, rig: AnimRig): void {
     if (!(o instanceof THREE.Mesh) || o instanceof THREE.SkinnedMesh) return;
     if (!o.visible || o.userData.isBar) return;
     const anchorHit = anchorFor(o);
-    if (anchorHit === "loose") return;
+    if (anchorHit === "loose") {
+      // Loose parts (spin children, pulse glows, bin, flag) can't merge — their
+      // animation is per-part — but nothing stops converting their MATERIAL in
+      // place: bake the same vertex attributes onto a geometry clone and swap to
+      // the singletons. Rendering is identical while the original armor/glow
+      // shader programs disappear from the program cache entirely.
+      const m0 = o.material as THREE.Material;
+      if (!Array.isArray(m0) && !subMats.has(m0)) {
+        if (
+          isUnifiedArmorEligible(m0) &&
+          m0.userData?.unifiedArmorSingleton !== true &&
+          o.geometry.attributes.uv &&
+          o.geometry.attributes.normal &&
+          !(o.geometry.morphAttributes && Object.keys(o.geometry.morphAttributes).length > 0)
+        ) {
+          const accentVariant = typeof m0.userData?.instAccentVariant === "number"
+            ? (m0.userData.instAccentVariant as number)
+            : undefined;
+          o.geometry = bakeUnifiedGeometry(o.geometry.clone(), m0, accentVariant, donorMode);
+          o.material = getUnifiedArmorMat();
+        } else if (isMergedGlowEligible(m0) && m0.userData?.mergedGlowSingleton !== true) {
+          o.geometry = bakeGlowGeometry(o.geometry.clone(), m0.color);
+          o.material = getMergedGlowMat();
+        }
+      }
+      return;
+    }
     const anchor = anchorHit ?? body;
     const g = o.geometry;
     if (!g || (g.morphAttributes && Object.keys(g.morphAttributes).length > 0)) return;
     if (Array.isArray(o.material) || subMats.has(o.material)) return;
     let mat = o.material;
     let g2 = g.clone();
-    if (mat instanceof THREE.MeshStandardMaterial) {
+    if (isUnifiedArmorEligible(mat) && g.attributes.uv && g.attributes.normal) {
+      // Cross-material collapse: every armor-family variant (color/roughness/
+      // metalness/normalScale/envMapIntensity/emissive) becomes one vertex-
+      // attribute-driven mesh per anchor. Faction-accent verts additionally
+      // carry their variant tag for instancing donors. uv/normal are required:
+      // the unified program always samples the armor texture set.
+      const accentVariant = typeof mat.userData?.instAccentVariant === "number"
+        ? (mat.userData.instAccentVariant as number)
+        : undefined;
+      g2 = bakeUnifiedGeometry(g2, mat, accentVariant, donorMode);
+      mat = getUnifiedArmorMat();
+    } else if (isMergedGlowEligible(mat)) {
+      g2 = bakeGlowGeometry(g2, mat.color);
+      mat = getMergedGlowMat();
+    } else if (mat instanceof THREE.MeshStandardMaterial) {
       const bkey = stdBucketKey(mat);
       if (bkey) {
         g2 = bakeColor(g2, mat.color);
@@ -310,6 +514,7 @@ function mergeStaticBody(body: THREE.Group, rig: AnimRig): void {
         castShadow: o.castShadow,
         receiveShadow: o.receiveShadow,
         renderOrder: o.renderOrder,
+        converted: mat !== o.material,
         geos: [],
         owners: [],
       };
@@ -321,8 +526,20 @@ function mergeStaticBody(body: THREE.Group, rig: AnimRig): void {
   });
 
   for (const b of buckets.values()) {
-    const geo = b.geos.length >= 2 ? mergeGeometries(b.geos, false) : null;
-    for (const g of b.geos) g.dispose();
+    // Multi-part buckets merge; single-part buckets are only re-emitted when the
+    // material was converted (unified/glow/std-baked) — conversion itself is the
+    // consolidation win: one shared program everywhere, and converted singletons
+    // become mergeable again in the instanced-template pass. Unconverted
+    // singletons keep their original mesh exactly as before.
+    let geo: THREE.BufferGeometry | null = null;
+    if (b.geos.length >= 2) {
+      geo = mergeGeometries(b.geos, false);
+      for (const g of b.geos) g.dispose();
+    } else if (b.converted) {
+      geo = b.geos[0];
+    } else {
+      for (const g of b.geos) g.dispose();
+    }
     if (!geo) continue;
     geo.computeBoundingSphere();
     geo.computeBoundingBox();
@@ -599,7 +816,7 @@ const LITE_TOP_Y: Partial<Record<EntKind, number>> = {
   harvester: 1.32,
 };
 
-export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene, lite = false): EntVis {
+export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene, lite = false, donorMode = false): EntVis {
   const root = new THREE.Group();
   const body = new THREE.Group();
   root.add(body);
@@ -742,11 +959,17 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
 
   // Sub-detail parts (wheels, antennae, tips) can't cast a readable shadow — disabling
   // them trims ~40-60% of the shadow-pass draw calls per unit for free.
+  // The bounding sphere is computed on demand here, never assumed: module-level
+  // geometries carry a cached boundingSphere across entity builds while freshly
+  // authored geometries start with a null one, so gating on its presence made the
+  // reduction apply inconsistently between first builds and rebuilds — which in
+  // turn fragmented the castShadow-keyed merge buckets differently per scenario.
   {
     root.updateMatrixWorld(true);
     const ws = new THREE.Vector3();
     body.traverse((o) => {
-      if (!(o instanceof THREE.Mesh) || !o.castShadow || !o.geometry.boundingSphere) return;
+      if (!(o instanceof THREE.Mesh) || !o.castShadow) return;
+      if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere();
       o.getWorldScale(ws);
       if (o.geometry.boundingSphere.radius * Math.max(Math.abs(ws.x), Math.abs(ws.y), Math.abs(ws.z)) < 0.2)
         o.castShadow = false;
@@ -754,7 +977,7 @@ export function makeEntVis(kind: EntKind, colorHex: string, _scene?: THREE.Scene
   }
 
   if (!lite) {
-    mergeStaticBody(body, rig);
+    mergeStaticBody(body, rig, donorMode);
     if (isBuildingKind(kind)) installBuildingShadowProxies(body, rig);
   }
 
@@ -789,6 +1012,47 @@ const geoCratePost = new RoundedBoxGeometry(0.11, 0.62, 0.11, 1, 0.02);
 const geoCrateLid = new RoundedBoxGeometry(0.56, 0.08, 0.56, 1, 0.02);
 const geoCrateCore = new THREE.OctahedronGeometry(0.12, 0);
 const geoCrateBeacon = new THREE.CylinderGeometry(0.12, 0.34, 1.35, 12, 1, true);
+
+// Convert every eligible mesh under root to the unified/glow singletons in
+// place (no merging). Baked clones are cached per (source geometry, material,
+// donorMode) so shared module-level geometries bake once no matter how many
+// meshes or builds reference them.
+const bakedGeoCache = new WeakMap<THREE.BufferGeometry, Map<string, THREE.BufferGeometry>>();
+export function convertMeshMaterialsInPlace(root: THREE.Object3D, donorMode = false): void {
+  root.traverse((o) => {
+    if (!(o instanceof THREE.Mesh) || o instanceof THREE.SkinnedMesh) return;
+    if (Array.isArray(o.material)) return;
+    const m0 = o.material as THREE.Material;
+    const src = o.geometry;
+    if (!src || (src.morphAttributes && Object.keys(src.morphAttributes).length > 0)) return;
+    let kind: "uni" | "glow" | null = null;
+    if (
+      isUnifiedArmorEligible(m0) &&
+      m0.userData?.unifiedArmorSingleton !== true &&
+      src.attributes.uv &&
+      src.attributes.normal
+    ) kind = "uni";
+    else if (isMergedGlowEligible(m0) && m0.userData?.mergedGlowSingleton !== true) kind = "glow";
+    if (!kind) return;
+    let perGeo = bakedGeoCache.get(src);
+    if (!perGeo) bakedGeoCache.set(src, (perGeo = new Map()));
+    const key = `${kind}|${m0.uuid}|${donorMode ? 1 : 0}`;
+    let baked = perGeo.get(key);
+    if (!baked) {
+      if (kind === "uni") {
+        const accentVariant = typeof m0.userData?.instAccentVariant === "number"
+          ? (m0.userData.instAccentVariant as number)
+          : undefined;
+        baked = bakeUnifiedGeometry(src.clone(), m0 as THREE.MeshStandardMaterial, accentVariant, donorMode);
+      } else {
+        baked = bakeGlowGeometry(src.clone(), (m0 as THREE.MeshBasicMaterial).color);
+      }
+      perGeo.set(key, baked);
+    }
+    o.geometry = baked;
+    o.material = kind === "uni" ? getUnifiedArmorMat() : getMergedGlowMat();
+  });
+}
 
 export function makeCrateVis(kind: CrateKind): CrateVis {
   const accent = CRATE_ACCENTS[kind] ?? "#ffbe2e";
@@ -827,6 +1091,13 @@ export function makeCrateVis(kind: CrateKind): CrateVis {
   const topCore = new THREE.Mesh(geoCrateCore, getGlowMat(accent, 1.55));
   topCore.position.y = 0.41;
   crateBox.add(topCore);
+
+  // Crates never merge (few parts, shared module geometries) but their factory
+  // materials convert to the singletons exactly like everything else — keeps
+  // the original armor/glow programs out of the shader cache when a drop is on
+  // screen. Baked geometry clones are cached per shared source, so repeat drops
+  // cost nothing.
+  convertMeshMaterialsInPlace(crateBox);
 
   const ring = new THREE.Mesh(
     geoRing,

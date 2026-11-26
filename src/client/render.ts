@@ -21,12 +21,17 @@ import {
   CrateVis,
   SHADOW_PROXY_LAYER,
   simplifyShadowProxyGeometry,
+  isUnifiedArmorEligible,
+  isMergedGlowEligible,
+  bakeUnifiedGeometry,
+  bakeGlowGeometry,
+  getMergedGlowMat,
 } from "./models";
 import { createAnimState, stepEntityAnim, triggerFireAnim, triggerHitFlash, AnimState } from "./anim";
 import { VfxSystem, WaypointOverlay } from "./vfx";
 import { BUILDINGS, isBuildingKind, type BuildingKind, type EntKind } from "./util";
 import { GameScene } from "./scene";
-import { getAccentMat } from "./textures";
+import { getAccentMat, getUnifiedArmorMat } from "./textures";
 
 const INTERP_MS = 250; // 50ms WAN jitter cushion above 200ms (5 Hz) snapshot interval
 const SNAP_KEEP = 8;
@@ -837,6 +842,27 @@ export class Renderer {
     this.emitContrail = (x, y, z, scale) => {
       if (Math.random() <= this.vfxScale) this.vfx.spawnContrail(x, y, z, scale);
     };
+
+    // Boot warm-up: prebuild every vehicle instancing template+pool while the
+    // menu is idle. First-contact frames otherwise pay template construction
+    // (donor build + merge passes), VBO/IBO uploads AND first-use shader
+    // compilation exactly when the battle starts — the classic RTS hitch.
+    // Pools are keyed by kind only, so warming them costs the same memory as
+    // building them lazily; nothing is duplicated. Shadow-proxy simplification
+    // stays async internally and resolves on its own.
+    const warmPools = () => {
+      for (const kind of VEHICLE_INSTANCED_KINDS) {
+        try {
+          this.ensureVehiclePool(kind);
+        } catch {
+          // Opportunistic warm-up — the lazy first-use path remains as fallback.
+        }
+      }
+    };
+    const ric = (window as Window & { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void })
+      .requestIdleCallback;
+    if (ric) ric(warmPools, { timeout: 6000 });
+    else setTimeout(warmPools, 2500);
   }
 
   setPlayerPower(players: Record<number, PlayerState>): void {
@@ -892,24 +918,39 @@ export class Renderer {
       this.instGroup.name = "instanced-swarms";
       this.gs.scene.add(this.instGroup);
     }
-    // Harvest the authored model's mesh parts once; reuse for every instance
-    const probe = makeEntVis(kind, color, this.gs.scene);
+    // Harvest the authored model's mesh parts once; reuse for every instance.
+    // donorMode bakes faction-accent verts white + variant-masked inside the
+    // unified armor merge so per-instance accent colors can flow through the
+    // aAccV0/1/2 instance attributes instead of fixed material colors.
+    const probe = makeEntVis(kind, color, this.gs.scene, false, true);
     probe.root.updateMatrixWorld(true);
     const parts: InstPoolPart[] = [];
     probe.root.traverse((o) => {
       if (!(o instanceof THREE.Mesh) || o.userData.isBar) return;
       const srcMat = o.material as THREE.Material;
+      const unified = srcMat.userData?.unifiedArmorSingleton === true;
       const accentVariant = typeof srcMat.userData?.instAccentVariant === "number"
         ? (srcMat.userData.instAccentVariant as number)
         : undefined;
       const mat = accentVariant !== undefined ? getInstWhiteAccentMat(srcMat) : srcMat;
       const im = new THREE.InstancedMesh(o.geometry, mat, INSTANCE_CAP);
       im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      if (accentVariant !== undefined) {
+      if (accentVariant !== undefined || unified) {
         const colors = new Float32Array(INSTANCE_CAP * 3);
         colors.fill(1);
         im.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
         im.instanceColor.setUsage(THREE.DynamicDrawUsage);
+      }
+      if (unified) {
+        // Per-instance final accent colors for the three variant shadings. The
+        // vertex mask picks which (if any) of these tints each vertex reads.
+        for (const attrName of ["aAccV0", "aAccV1", "aAccV2"]) {
+          const arr = new Float32Array(INSTANCE_CAP * 3);
+          arr.fill(1);
+          const attr = new THREE.InstancedBufferAttribute(arr, 3);
+          attr.setUsage(THREE.DynamicDrawUsage);
+          im.geometry.setAttribute(attrName, attr);
+        }
       }
       im.frustumCulled = false;
       im.castShadow = false;
@@ -925,6 +966,36 @@ export class Renderer {
     return p;
   }
 
+  // Write the three per-variant faction accent colors into a unified armor
+  // part's instance attributes (or white them out during hit flash — the flash
+  // multiplication then reaches accent verts exactly like the old per-part
+  // instanceColor flash did).
+  private writeUnifiedAccentColors(im: THREE.InstancedMesh, idx: number, colorHex: string, suppress: boolean): void {
+    for (let v = 0; v < 3; v++) {
+      const attr = im.geometry.getAttribute(`aAccV${v}`) as THREE.InstancedBufferAttribute | undefined;
+      if (!attr) continue;
+      if (suppress) {
+        attr.setXYZ(idx, 1, 1, 1);
+      } else {
+        const accent = getAccentMat(accentHexForVariant(colorHex, v)).color;
+        attr.setXYZ(idx, accent.r, accent.g, accent.b);
+      }
+      attr.needsUpdate = true;
+    }
+  }
+
+  private copyUnifiedAccentColors(im: THREE.InstancedMesh, fromIdx: number, toIdx: number): boolean {
+    let touched = false;
+    for (let v = 0; v < 3; v++) {
+      const attr = im.geometry.getAttribute(`aAccV${v}`) as THREE.InstancedBufferAttribute | undefined;
+      if (!attr) continue;
+      attr.setXYZ(toIdx, attr.getX(fromIdx), attr.getY(fromIdx), attr.getZ(fromIdx));
+      attr.needsUpdate = true;
+      touched = true;
+    }
+    return touched;
+  }
+
   private makeInstProxy(e: EntSnap): InstSlot | null {
     const colorHex = this.slotColors.get(e.o) ?? "#888888";
     const pool = this.ensureInstPool(e.k, colorHex);
@@ -936,6 +1007,13 @@ export class Renderer {
         const accent = getAccentMat(accentHexForVariant(colorHex, part.accentVariant)).color;
         part.im.setColorAt(idx, accent);
         if (part.im.instanceColor) part.im.instanceColor.needsUpdate = true;
+      }
+      if ((part.im.material as THREE.Material).userData?.unifiedArmorSingleton === true) {
+        this.writeUnifiedAccentColors(part.im, idx, colorHex, false);
+        if (part.im.instanceColor) {
+          part.im.setColorAt(idx, _instWhite);
+          part.im.instanceColor.needsUpdate = true;
+        }
       }
     }
     const proxy = new THREE.Group();
@@ -969,6 +1047,7 @@ export class Renderer {
           part.im.setColorAt(slot.idx, _instColor);
           part.im.instanceColor.needsUpdate = true;
         }
+        this.copyUnifiedAccentColors(part.im, last, slot.idx);
       }
       pool.owners[slot.idx] = movedId;
       if (movedT?.inst) movedT.inst.idx = slot.idx;
@@ -1053,7 +1132,10 @@ export class Renderer {
     // Build one fully-authored, fully-mergeStaticBody-collapsed donor rig. It is
     // never scene-added: geometries/materials become the shared instancing assets,
     // while the hierarchy tells us exactly which animated anchor owns each mesh.
-    const probe = makeEntVis(kind, "#ffffff", this.gs.scene, false);
+    // donorMode: faction-accent verts bake white + variant-masked inside the
+    // unified armor merge so per-instance aAccV0/1/2 attributes carry the exact
+    // per-player tint (matching what accentVariant instance colors did before).
+    const probe = makeEntVis(kind, "#ffffff", this.gs.scene, false, true);
     const rig = probe.rig;
     const body = rig.body;
     probe.root.updateMatrixWorld(true);
@@ -1146,9 +1228,28 @@ export class Renderer {
     // Pulse/bin parts are excluded: their per-part scale animation is anchored at
     // each part's own origin, which a merged geometry could not reproduce.
     {
+      // Loose parts (spin children — harvester scoop wheels etc.) never passed
+      // through mergeStaticBody, so they still carry their original per-variant
+      // armor/glow materials. Convert them here — donor-mode baking, same as the
+      // body merge — so they join the unified singleton and collapse across
+      // material variants instead of surviving as one instanced draw each.
+      const convertLooseDef = (def: VehiclePartDef): VehiclePartDef => {
+        const m = def.material;
+        if (m.userData?.unifiedArmorSingleton === true || m.userData?.mergedGlowSingleton === true) return def;
+        if (isUnifiedArmorEligible(m) && def.geometry.attributes.uv && def.geometry.attributes.normal) {
+          const g2 = bakeUnifiedGeometry(def.geometry.clone(), m, def.accentVariant, true);
+          return { ...def, geometry: g2, material: getUnifiedArmorMat(), accentVariant: undefined };
+        }
+        if (isMergedGlowEligible(m)) {
+          const g2 = bakeGlowGeometry(def.geometry.clone(), m.color);
+          return { ...def, geometry: g2, material: getMergedGlowMat(), accentVariant: undefined };
+        }
+        return def;
+      };
       const groups = new Map<string, VehiclePartDef[]>();
       const keep: VehiclePartDef[] = [];
-      for (const def of parts) {
+      for (const rawDef of parts) {
+        const def = convertLooseDef(rawDef);
         if (def.pulse || def.bin) {
           keep.push(def);
           continue;
@@ -1289,6 +1390,7 @@ export class Renderer {
     const template = this.getVehicleTemplate(kind);
     const parts: VehicleInstPart[] = [];
     for (const def of template.parts) {
+      const unified = def.material.userData?.unifiedArmorSingleton === true;
       const mat = def.accentVariant !== undefined ? getInstWhiteAccentMat(def.material) : def.material;
       const im = new THREE.InstancedMesh(def.geometry, mat, VEHICLE_INSTANCE_CAP);
       im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -1296,6 +1398,18 @@ export class Renderer {
       colors.fill(1);
       im.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
       im.instanceColor.setUsage(THREE.DynamicDrawUsage);
+      if (unified) {
+        // Per-instance final accent colors for the three variant shadings. The
+        // baked vertex mask (aAccent) picks which of these tints a vertex reads;
+        // non-accent verts use none of them.
+        for (const attrName of ["aAccV0", "aAccV1", "aAccV2"]) {
+          const arr = new Float32Array(VEHICLE_INSTANCE_CAP * 3);
+          arr.fill(1);
+          const attr = new THREE.InstancedBufferAttribute(arr, 3);
+          attr.setUsage(THREE.DynamicDrawUsage);
+          im.geometry.setAttribute(attrName, attr);
+        }
+      }
       im.frustumCulled = true;
       im.castShadow = def.castShadow && !def.shadowProxied;
       im.receiveShadow = def.receiveShadow;
@@ -1394,8 +1508,13 @@ export class Renderer {
   private writeVehicleColors(slot: VehicleInstSlot): void {
     for (const part of slot.pool.parts) {
       const def = part.def;
+      const unified = (part.im.material as THREE.Material).userData?.unifiedArmorSingleton === true;
       if (slot.flash && !def.isBar) {
         part.im.setColorAt(slot.idx, _vehFlashColor);
+      } else if (unified) {
+        // Unified parts carry their faction tint in the aAccV* attributes; the
+        // instanceColor channel is reserved for the hit-flash multiplication.
+        part.im.setColorAt(slot.idx, _instWhite);
       } else if (def.accentVariant !== undefined) {
         const accent = getAccentMat(accentHexForVariant(slot.accentHex, def.accentVariant)).color;
         part.im.setColorAt(slot.idx, accent);
@@ -1405,6 +1524,12 @@ export class Renderer {
       if (part.im.instanceColor) {
         part.im.instanceColor.addUpdateRange(slot.idx * 3, 3);
         part.im.instanceColor.needsUpdate = true;
+      }
+      if (unified) {
+        // Flash suppresses the accent tint so the flash multiplication reaches
+        // accent verts exactly like the pre-unification per-part instanceColor
+        // flash did; otherwise each variant channel gets its final faction color.
+        this.writeUnifiedAccentColors(part.im, slot.idx, slot.accentHex, slot.flash && !def.isBar);
       }
     }
   }
@@ -1469,6 +1594,7 @@ export class Renderer {
           part.im.setColorAt(slot.idx, _instColor);
           part.im.instanceColor.needsUpdate = true;
         }
+        this.copyUnifiedAccentColors(part.im, last, slot.idx);
       }
       for (const part of pool.shadowParts) {
         part.im.getMatrixAt(last, _instP);
