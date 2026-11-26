@@ -2651,7 +2651,7 @@ export class Renderer {
     fgBatch.begin();
     for (const b of this.overlayTextureBatches.values()) b.begin();
     for (const [id, t] of this.tracked) {
-      if (t.inst || id === this.hiddenEntityId || !t.vis.root.visible) continue;
+      if (id === this.hiddenEntityId || !t.vis.root.visible) continue;
       const x = t.visX;
       const z = t.visY;
       this.cullSphere.center.set(x, t.cullY, z);
