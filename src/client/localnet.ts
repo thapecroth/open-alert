@@ -1,487 +1,101 @@
-// Browser-local single-player room engine running the exact same World + RtsBot simulation
-// at 0ms latency with zero Cloudflare Durable Objects quota usage.
+// Browser-local single-player room — thin proxy for the sim running inside a
+// dedicated Web Worker (src/client/sim-worker.ts), so the authoritative World +
+// RtsBot simulation and its 10-15 Hz tick no longer compete with
+// requestAnimationFrame on the render thread.
+//
+// The public interface is unchanged: constructor(room), onMsg, send(),
+// startAiSpectate(), isSpectate(), close(). Internally:
+//   - C2S wire messages are posted into the worker, which runs a LocalSimHost
+//     (src/client/sim-host.ts — the exact room engine that used to execute
+//     in-process here) and posts back the same S2C messages it used to emit
+//     synchronously. Ordering is preserved: postMessage is FIFO in both
+//     directions, and worker-side message tasks interleave with the interval
+//     ticks exactly the way synchronous sends interleaved with ticks before.
+//   - When module workers are unavailable (very old browsers, or non-browser
+//     runtimes such as the Node test harnesses) the same LocalSimHost runs
+//     in-process as a fallback — behavior is then literally the pre-worker
+//     synchronous implementation.
 
-import {
-  DEFAULT_CONFIG,
-  MAP_LIST,
-  MAP_W,
-  MAP_H,
-  MAX_PLAYERS,
-  PLAYER_COLORS,
-  getSpawns,
-  SNAP_EVERY,
-  TICK_MS,
-  type BotDiff,
-  type BotProfile,
-  type GameConfig,
-  type MapId,
-} from "../shared/gamedefs";
-import type { C2S, LobbyPlayer, S2C } from "../shared/protocol";
-import { World } from "../server/world";
-import { RtsBot } from "../server/bot";
-import { applyGameCommand } from "../server/dispatch";
-
-const VALID_MAPS = new Set<MapId>(MAP_LIST.map((m) => m.id));
-const VALID_DIFFS = new Set<BotDiff>(["easy", "normal", "brutal"]);
-const VALID_PROFILES = new Set<BotProfile>(["balanced", "rusher", "turtle", "tech"]);
-
-interface LocalRec {
-  id: string;
-  name: string;
-  slot: number;
-  ready: boolean;
-  team: number;
-  bot?: boolean;
-  diff?: BotDiff;
-  profile?: BotProfile;
-}
+import type { C2S, S2C } from "../shared/protocol";
+import type { MapId } from "../shared/gamedefs";
+import { LocalSimHost } from "./sim-host";
+import type { SimIn } from "./sim-worker";
 
 export class LocalRoom {
   onMsg: (m: S2C) => void = () => {};
-  private room: string;
-  private phase: "lobby" | "playing" | "ended" = "lobby";
-  private map: MapId = "crossroads";
-  private config: GameConfig = { ...DEFAULT_CONFIG };
-  private players = new Map<string, LocalRec>();
-  private bots = new Map<string, RtsBot>();
-  private world: World | null = null;
-  private timer: ReturnType<typeof setInterval> | null = null;
-  private endSent = false;
-  private myId = "local-host";
   private spectateOnly = false;
-  private aiBotCount = 3;
+  private worker: Worker | null = null;
+  private host: LocalSimHost | null = null;
 
   constructor(room: string) {
-    this.room = room;
+    let w: Worker | null = null;
+    // typeof window guard keeps non-browser runtimes (Node test harnesses load
+    // this module directly) on the in-process path even if a global Worker
+    // shim exists — Node's worker_threads Worker could not execute the
+    // TypeScript worker entry anyway.
+    if (typeof window !== "undefined" && typeof Worker === "function") {
+      try {
+        w = new Worker(new URL("./sim-worker.ts", import.meta.url), { type: "module" });
+      } catch {
+        w = null; // worker construction blocked — fall back to in-process sim
+      }
+    }
+    if (w) {
+      this.worker = w;
+      w.onmessage = (ev: MessageEvent) => {
+        this.onMsg(ev.data as S2C);
+      };
+      w.onerror = (ev: ErrorEvent) => {
+        console.error("sim-worker error:", ev.message ?? ev);
+      };
+      // Messages posted before the worker script finishes evaluating are
+      // queued by the platform and delivered in order once it starts, so the
+      // init handshake cannot be lost and always arrives first.
+      this.post({ k: "init", room });
+    } else {
+      const host = new LocalSimHost(room);
+      host.onMsg = (m) => this.onMsg(m);
+      this.host = host;
+    }
+  }
+
+  private post(msg: SimIn) {
+    try {
+      this.worker?.postMessage(msg);
+    } catch (err) {
+      console.error("sim-worker post error:", err);
+    }
   }
 
   isSpectate(): boolean {
+    // spectate-only is a lifetime invariant of a room instance (net.ts builds a
+    // fresh LocalRoom when switching modes), so this proxy-side flag is exact
+    // even though the real state lives in the worker.
     return this.spectateOnly;
   }
 
   startAiSpectate(map: MapId = "archipelago", botCount?: number) {
-    const chosenMap: MapId = VALID_MAPS.has(map) ? map : "archipelago";
-    const meta = MAP_LIST.find((m) => m.id === chosenMap);
-    const defaultBots = (meta?.w ?? 64) >= 96 ? 6 : 4;
-    const count = Math.max(2, Math.min(MAX_PLAYERS, Math.floor(botCount ?? defaultBots)));
-    this.stopTimer();
-    this.players.clear();
-    this.bots.clear();
     this.spectateOnly = true;
-    this.aiBotCount = count;
-    this.map = chosenMap;
-    this.config = { ...DEFAULT_CONFIG, gameSpeed: 1.5 };
-
-    const profiles: BotProfile[] = ["rusher", "balanced", "tech", "turtle"];
-    const diffs: BotDiff[] = ["brutal", "normal", "brutal", "normal"];
-    const callsigns = [
-      "CABAL-ALPHA",
-      "CABAL-OMEGA",
-      "CABAL-PRIME",
-      "CABAL-APEX",
-      "CABAL-VORTEX",
-      "CABAL-TITAN",
-      "CABAL-NEXUS",
-      "CABAL-ZERO",
-    ];
-
-    for (let s = 0; s < count; s++) {
-      const id = `bot-${s}`;
-      this.players.set(id, {
-        id,
-        name: callsigns[s] ?? `CABAL-${s + 1}`,
-        slot: s,
-        ready: true,
-        team: 0,
-        bot: true,
-        diff: diffs[s % diffs.length],
-        profile: profiles[s % profiles.length],
-      });
-    }
-
-    const actives = [...this.players.values()];
-    const slots = actives.map((p) => p.slot).sort((a, b) => a - b);
-    const teams: Record<number, number> = {};
-    const names: Record<number, string> = {};
-    for (const p of actives) {
-      teams[p.slot] = p.team;
-      names[p.slot] = p.name;
-    }
-
-    const w = new World(slots, { map: this.map, teams, names, config: this.config });
-    this.world = w;
-    for (const p of actives) {
-      this.bots.set(p.id, new RtsBot(w, p.slot, { diff: p.diff ?? "normal", profile: p.profile ?? "balanced" }));
-    }
-    this.phase = "playing";
-    this.endSent = false;
-
-    this.emit({
-      t: "init",
-      you: "local-spectator",
-      slot: -1,
-      w: w.w,
-      h: w.h,
-      map: this.map,
-      config: this.config,
-      players: actives.map((p) => ({
-        id: p.id,
-        name: p.name,
-        slot: p.slot,
-        team: p.team,
-      })),
-      ore: w.oreSnapshot(),
-    });
-
-    const tickMs = Math.max(40, Math.round(TICK_MS / (this.config.gameSpeed || 1.5)));
-    this.timer = setInterval(() => this.tick(), tickMs);
-  }
-
-  private emit(m: S2C) {
-    this.onMsg(m);
-  }
-
-  private broadcastLobby() {
-    const players: LobbyPlayer[] = [...this.players.values()].map((p) => ({
-      id: p.id,
-      name: p.name,
-      slot: p.slot,
-      ready: p.ready,
-      connected: true,
-      spectator: false,
-      host: p.id === this.myId,
-      bot: p.bot,
-      diff: p.diff,
-      profile: p.profile,
-      team: p.team,
-      eliminated: this.world?.players.get(p.slot)?.eliminated,
-    }));
-    this.emit({
-      t: "lobby",
-      players,
-      you: this.myId,
-      room: this.room + " (LOCAL)",
-      map: this.map,
-      phase: this.phase,
-      config: this.config,
-    });
-  }
-
-  private mapSlotLimit(map: MapId = this.map): number {
-    const meta = MAP_LIST.find((m) => m.id === map);
-    return Math.max(
-      1,
-      Math.min(MAX_PLAYERS, meta?.maxPlayers ?? MAX_PLAYERS, getSpawns(meta?.w ?? MAP_W, meta?.h ?? MAP_H).length),
-    );
-  }
-
-  private freeSlot(): number {
-    const used = new Set([...this.players.values()].map((p) => p.slot));
-    const limit = this.mapSlotLimit();
-    for (let i = 0; i < limit; i++) if (!used.has(i)) return i;
-    return -1;
-  }
-
-  private playerAtSlot(slot: number, exceptId?: string): LocalRec | undefined {
-    for (const p of this.players.values()) if (p.id !== exceptId && p.slot === slot) return p;
-    return undefined;
+    if (this.worker) this.post({ k: "spectate", map, botCount });
+    else this.host?.startAiSpectate(map, botCount);
   }
 
   send(m: C2S) {
-    if (m.t === "hb") return;
-    if (this.spectateOnly) {
-      if (m.t === "rematch" && this.phase === "ended") {
-        this.startAiSpectate(this.map, this.aiBotCount);
-        return;
-      }
-      if (m.t === "chat") {
-        this.emit({
-          t: "chat",
-          name: "Spectator",
-          color: "#45d6ff",
-          text: String(m.text || "").slice(0, 200),
-        });
-      } else if (m.t === "ping") {
-        this.emit({ t: "ping", x: m.x, y: m.y, slot: -1 });
-      }
-      return;
-    }
-    if (m.t === "join") {
-      const clean = String(m.name || "Commander").slice(0, 16).trim() || "Commander";
-      if (!this.players.has(this.myId)) {
-        this.players.set(this.myId, {
-          id: this.myId,
-          name: clean,
-          slot: 0,
-          ready: true,
-          team: 0,
-        });
-      } else {
-        this.players.get(this.myId)!.name = clean;
-      }
-      this.broadcastLobby();
-      return;
-    }
-
-    const me = this.players.get(this.myId);
-    if (!me) return;
-
-    if (this.phase === "lobby") {
-      switch (m.t) {
-        case "ready":
-          me.ready = !!m.ready;
-          this.broadcastLobby();
-          return;
-        case "setName":
-          me.name = String(m.name || "Commander").slice(0, 16).trim() || "Commander";
-          this.broadcastLobby();
-          return;
-        case "setMap":
-          if (VALID_MAPS.has(m.map)) {
-            const limit = this.mapSlotLimit(m.map);
-            const blocked = [...this.players.values()].find((p) => p.slot >= limit);
-            if (blocked) {
-              this.emit({ t: "deny", msg: `${blocked.name} occupies slot ${blocked.slot + 1}; that map supports only ${limit} spawn slots` });
-            } else {
-              this.map = m.map;
-              this.broadcastLobby();
-            }
-          }
-          return;
-        case "setConfig": {
-          const c = m.config ?? {};
-          if (typeof c.startCredits === "number" && [3000, 5000, 10000, 20000].includes(c.startCredits))
-            this.config.startCredits = c.startCredits;
-          if (typeof c.gameSpeed === "number" && [0.75, 1, 1.5, 2].includes(c.gameSpeed))
-            this.config.gameSpeed = c.gameSpeed;
-          if (typeof c.superweapons === "boolean") this.config.superweapons = c.superweapons;
-          if (typeof c.crates === "boolean") this.config.crates = c.crates;
-          if (typeof c.derricks === "boolean") this.config.derricks = c.derricks;
-          if (typeof c.fog === "boolean") this.config.fog = c.fog;
-          if (typeof c.logistics === "boolean") this.config.logistics = c.logistics;
-          this.broadcastLobby();
-          return;
-        }
-        case "addbot": {
-          const slot = this.freeSlot();
-          if (slot < 0) return this.emit({ t: "deny", msg: `room is full (${this.mapSlotLimit()} players on this map)` });
-          const diff: BotDiff = m.diff && VALID_DIFFS.has(m.diff) ? m.diff : "normal";
-          const profile: BotProfile = m.profile && VALID_PROFILES.has(m.profile) ? m.profile : "balanced";
-          const id = `bot-${slot}-${Date.now().toString(36)}`;
-          this.players.set(id, {
-            id,
-            name: `CABAL-${slot + 1}`,
-            slot,
-            ready: true,
-            team: 0,
-            bot: true,
-            diff,
-            profile,
-          });
-          this.broadcastLobby();
-          return;
-        }
-        case "setBotConfig": {
-          const b = this.players.get(m.id);
-          if (b && b.bot) {
-            if (m.diff && VALID_DIFFS.has(m.diff)) b.diff = m.diff;
-            if (m.profile && VALID_PROFILES.has(m.profile)) b.profile = m.profile;
-            this.broadcastLobby();
-          }
-          return;
-        }
-        case "kickbot":
-          if (this.players.get(m.id)?.bot) {
-            this.players.delete(m.id);
-            this.broadcastLobby();
-          }
-          return;
-        case "setTeam": {
-          const target = m.id ? this.players.get(m.id) : me;
-          if (target) {
-            target.team = Math.max(0, Math.min(4, m.team | 0));
-            this.broadcastLobby();
-          }
-          return;
-        }
-        case "setSlot": {
-          const target = m.id ? this.players.get(m.id) : me;
-          const limit = this.mapSlotLimit();
-          if (!target) return this.emit({ t: "deny", msg: "target player has no spawn slot" });
-          if (!Number.isInteger(m.slot) || m.slot < 0 || m.slot >= limit) {
-            return this.emit({ t: "deny", msg: `invalid spawn slot for this map (0-${limit - 1})` });
-          }
-          if (target.slot === m.slot) return;
-          if (this.playerAtSlot(m.slot, target.id)) {
-            return this.emit({ t: "deny", msg: `slot ${m.slot + 1} is occupied — use swap` });
-          }
-          target.slot = m.slot;
-          this.broadcastLobby();
-          return;
-        }
-        case "swapSlot": {
-          const first = this.players.get(m.id);
-          if (!first) return this.emit({ t: "deny", msg: "target player has no spawn slot" });
-          let a = me;
-          let b = first;
-          if (typeof m.id2 === "string") {
-            const second = this.players.get(m.id2);
-            if (!second) return this.emit({ t: "deny", msg: "second target player has no spawn slot" });
-            if (second.id === first.id) return this.emit({ t: "deny", msg: "cannot swap a player with themselves" });
-            a = first;
-            b = second;
-          } else if (first.id === me.id) {
-            return this.emit({ t: "deny", msg: "cannot swap slots with yourself" });
-          }
-          const limit = this.mapSlotLimit();
-          if (a.slot >= limit || b.slot >= limit) return this.emit({ t: "deny", msg: "spawn slot is not valid for this map" });
-          const slot = a.slot;
-          a.slot = b.slot;
-          b.slot = slot;
-          this.broadcastLobby();
-          return;
-        }
-        case "start": {
-          if (this.players.size < 2) {
-            this.emit({ t: "deny", msg: "need at least 2 players — add a bot!" });
-            return;
-          }
-          const limit = this.mapSlotLimit();
-          const invalid = [...this.players.values()].find((p) => p.slot >= limit);
-          if (invalid) {
-            this.emit({ t: "deny", msg: `${invalid.name} is in slot ${invalid.slot + 1}, outside this map's ${limit} spawn slots` });
-            return;
-          }
-          this.startGame();
-          return;
-        }
-      }
-      return;
-    }
-
-    if (m.t === "rematch" && this.phase === "ended") {
-      this.stopTimer();
-      this.world = null;
-      this.bots.clear();
-      this.paused = false;
-      this.phase = "lobby";
-      this.endSent = false;
-      this.broadcastLobby();
-      return;
-    }
-
-    const w = this.world;
-    if (!w || this.phase !== "playing") return;
-    const slot = me.slot;
-    // validation + application shared with the authoritative worker — see src/server/dispatch.ts
-    let err = applyGameCommand(w, slot, m);
-    if (err === undefined) {
-      // not a world command — pause/chat/ping are local-transport side effects
-      err = null;
-      switch (m.t) {
-        case "pause":
-          this.paused = !!m.paused;
-          this.emit({ t: "paused", paused: this.paused });
-          break;
-        case "chat":
-          this.emit({
-            t: "chat",
-            name: me.name,
-            color: PLAYER_COLORS[slot] ?? "#45d6ff",
-            text: String(m.text || "").slice(0, 200),
-          });
-          break;
-        case "ping":
-          this.emit({ t: "ping", x: m.x, y: m.y, slot });
-          break;
-      }
-    }
-    if (err) this.emit({ t: "deny", msg: err });
-  }
-
-  private startGame() {
-    const actives = [...this.players.values()];
-    const slots = actives.map((p) => p.slot).sort((a, b) => a - b);
-    const teams: Record<number, number> = {};
-    const names: Record<number, string> = {};
-    for (const p of actives) {
-      teams[p.slot] = p.team;
-      names[p.slot] = p.name;
-    }
-    const w = new World(slots, { map: this.map, teams, names, config: this.config });
-    this.world = w;
-    this.bots.clear();
-    for (const p of actives) {
-      if (p.bot) this.bots.set(p.id, new RtsBot(w, p.slot, { diff: p.diff ?? "normal", profile: p.profile ?? "balanced" }));
-    }
-    this.phase = "playing";
-    this.endSent = false;
-    this.emit({
-      t: "init",
-      you: this.myId,
-      slot: this.players.get(this.myId)?.slot ?? 0,
-      w: w.w,
-      h: w.h,
-      map: this.map,
-      config: this.config,
-      players: actives.map((p) => ({
-        id: p.id,
-        name: p.name,
-        slot: p.slot,
-        team: p.team,
-      })),
-      ore: w.oreSnapshot(),
-    });
-    this.stopTimer();
-    const tickMs = Math.max(40, Math.round(TICK_MS / (this.config.gameSpeed || 1)));
-    this.timer = setInterval(() => this.tick(), tickMs);
-  }
-
-  paused = false;
-
-  private tick() {
-    const w = this.world;
-    if (!w || this.paused) return;
-    for (const bot of this.bots.values()) {
-      try {
-        bot.think();
-      } catch {
-        /* isolate bot error */
-      }
-    }
-    w.step();
-    if (w.tick % SNAP_EVERY === 0) {
-      this.emit({ t: "snap", tick: w.tick, ...w.snapshot() });
-    }
-    if (w.winner !== null && !this.endSent) {
-      this.endSent = true;
-      const names: Record<number, string> = {};
-      for (const p of this.players.values()) names[p.slot] = p.name;
-      const wp = [...this.players.values()].find((p) => p.slot === w.winner);
-      const reason =
-        w.winnerTeam && w.winnerTeam > 0 ? `Team ${w.winnerTeam} wins!` : wp ? `${wp.name} wins!` : "draw";
-      this.emit({
-        t: "end",
-        winner: w.winner,
-        winnerTeam: w.winnerTeam,
-        reason,
-        durationSec: Math.round((w.tick * TICK_MS) / 1000),
-        stats: w.getStats(names),
-      });
-      this.stopTimer();
-      this.phase = "ended";
-    }
-  }
-
-  private stopTimer() {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
+    if (this.worker) this.post({ k: "c2s", m });
+    else this.host?.send(m);
   }
 
   close() {
-    this.stopTimer();
-    this.world = null;
+    if (this.worker) {
+      // terminate() kills the worker thread outright — the tick interval and
+      // all sim state die with it, so no timer can leak past mode switches
+      // or page teardown.
+      this.worker.terminate();
+      this.worker = null;
+    }
+    if (this.host) {
+      this.host.close();
+      this.host = null;
+    }
   }
 }
