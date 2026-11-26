@@ -26,6 +26,15 @@ const mainCanvasFactory: CanvasFactory = (w, h) => makeCanvas(w, h);
 
 const NEUTRAL_NORMAL_FILL = "rgb(128, 128, 255)";
 
+// Drive a sliceable bake job to completion in one synchronous run. Scene map
+// construction still uses this for geometry assembly; battlefield pixel generation
+// itself now runs in the texture worker instead of a main-thread generator.
+export function driveBakeJob<T>(job: Generator<undefined, T, undefined>): T {
+  let r = job.next();
+  while (!r.done) r = job.next();
+  return r.value;
+}
+
 function makePlaceholderTexture(w: number, h: number, fill: string): THREE.CanvasTexture {
   const [c, ctx] = makeCanvas(w, h);
   ctx.fillStyle = fill;
@@ -1141,15 +1150,21 @@ export function createOceanWaterMaterial(mapId: MapId): THREE.MeshStandardMateri
 
 // ---------- Procedural Battlefield Terrain Map ----------
 
-export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
+export interface BattlefieldTextures {
   map: THREE.CanvasTexture;
   bumpMap: THREE.CanvasTexture;
   normalMap: THREE.CanvasTexture;
-} {
+}
+
+export function createBattlefieldTextures(mapId: MapId = "crossroads"): BattlefieldTextures {
   const S = 1024;
   const map = makePlaceholderTexture(S, S, "rgb(84, 82, 56)");
   map.colorSpace = THREE.SRGBColorSpace;
   map.anisotropy = 8;
+  let mapDisposed = false;
+  map.addEventListener("dispose", () => {
+    mapDisposed = true;
+  });
 
   const bumpMap = makePlaceholderTexture(S, S, "rgb(124, 124, 124)");
   bumpMap.anisotropy = 4;
@@ -1163,6 +1178,10 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
 
   const normalMap = makePlaceholderTexture(S, S, NEUTRAL_NORMAL_FILL);
   normalMap.anisotropy = 8;
+  let normalMapDisposed = false;
+  normalMap.addEventListener("dispose", () => {
+    normalMapDisposed = true;
+  });
 
   const fallback = () => {
     const g = generateBattlefieldTextures(mainCanvasFactory, mapId);
@@ -1177,12 +1196,15 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
   } else {
     job
       .then((result) => {
-        paintTextureFromPixels(map, result.textures.map);
+        if (!mapDisposed) paintTextureFromPixels(map, result.textures.map);
         if (!bumpMapDisposed) paintTextureFromPixels(bumpMap, result.textures.bumpMap);
-        paintTextureFromPixels(normalMap, result.textures.normalMap);
+        if (!normalMapDisposed) paintTextureFromPixels(normalMap, result.textures.normalMap);
       })
       .catch((err) => {
-        if (!isTextureJobCancelled(err)) fallback();
+        // A cancelled prewarm disposes its placeholder textures without spawning
+        // a replacement job. Do not pay the synchronous fallback for such an
+        // orphaned build; real worker failures on live textures still fall back.
+        if (!isTextureJobCancelled(err) && !(mapDisposed && normalMapDisposed)) fallback();
       });
   }
 

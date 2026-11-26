@@ -92,6 +92,8 @@ interface BattlefieldSession {
   worker: Worker;
   cleanup: () => void;
   reject: (err: Error) => void;
+  mapId: MapId;
+  promise?: Promise<TextureJobResult>;
 }
 
 let battlefieldSession: BattlefieldSession | null = null;
@@ -106,6 +108,11 @@ export function cancelBattlefieldTextureJob(): void {
 }
 
 export function requestBattlefieldTextureJob(mapId: MapId): Promise<TextureJobResult> | null {
+  // Lobby prewarm and the synchronous init path can request the same theater in
+  // quick succession. Share the in-flight job in that case instead of throwing
+  // away a nearly complete 1024x1024 bake and restarting it.
+  const existing = battlefieldSession;
+  if (existing?.mapId === mapId && existing.promise) return existing.promise;
   cancelBattlefieldTextureJob();
   if (!textureWorkersSupported()) return null;
 
@@ -147,7 +154,7 @@ export function requestBattlefieldTextureJob(mapId: MapId): Promise<TextureJobRe
     };
     worker.addEventListener("message", onMessage);
     worker.addEventListener("error", onError);
-    battlefieldSession = { worker, cleanup, reject };
+    battlefieldSession = { worker, cleanup, reject, mapId };
     try {
       worker.postMessage({ id, kind: "battlefield", mapId });
     } catch (err) {
@@ -156,5 +163,6 @@ export function requestBattlefieldTextureJob(mapId: MapId): Promise<TextureJobRe
       reject(err instanceof Error ? err : new Error(String(err)));
     }
   });
+  if (battlefieldSession?.worker === worker) battlefieldSession.promise = promise;
   return promise;
 }

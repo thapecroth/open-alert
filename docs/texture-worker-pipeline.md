@@ -15,6 +15,8 @@ The battlefield diffuse, bump, and normal maps run in a dedicated worker because
 
 `createBattlefieldTextures` still returns the same texture object shape as before. The scene currently discards the legacy bump texture, so the main thread skips painting that channel if the texture was disposed before the worker result arrived.
 
+Lobby map prewarm starts the battlefield texture job at the beginning of its sliced offline scene build, so pixel generation overlaps the cliff/water/artifact geometry work. Repeated requests for the same in-flight theater share the job rather than restarting a nearly complete bake. If a prewarm is abandoned before its atomic scene commit, the placeholder textures are disposed; disposal guards prevent stale worker results or worker-failure fallbacks from doing main-thread work for that orphaned build.
+
 ## Fallback and cancellation
 
 If workers or `OffscreenCanvas` are unavailable, or a worker job fails for a reason other than cancellation, the same core generator runs synchronously on the main thread and the generated canvas is adopted by the placeholder texture. Cancellation is different: a canceled battlefield texture belongs to a map that is no longer current, so it intentionally does not run the fallback.
