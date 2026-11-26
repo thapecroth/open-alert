@@ -450,6 +450,14 @@ const SECTIONS: SectionDef[] = [
     title: "Support Powers, Chat & UI",
     desc: "Strategic powers are deliberately click-targeted rather than hotkeyed. Global UI keys are context-sensitive and never fire while you are typing.",
     rows: [
+      // input.ts:243-252 — Alt+Enter is intercepted before the plain-Enter chat focus.
+      {
+        binding: "`Alt` + `Enter`",
+        action: "Toggle fullscreen",
+        note: "Also available as the ⛶ button in the top bar. Esc exits fullscreen at the browser level.",
+        source: "input.ts:243-252; util.ts toggleFullscreen; hud.ts fs-btn",
+        kind: "ui",
+      },
       // input.ts:410-466 arms support modes; input.ts:709-729 fires on the battlefield, and 975-990 handles minimap targets.
       {
         binding: "Click `RECON` pill, then `Left-click` battlefield or `Right-click` minimap",

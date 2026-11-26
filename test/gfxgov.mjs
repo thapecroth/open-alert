@@ -72,7 +72,7 @@ function makeGfx() {
 {
   const gm = new GraphicsManager(makeStubRenderer());
   ok(gm.gpu.recommended === "medium", `Intel iGPU recommends medium (got ${gm.gpu.recommended})`);
-  ok(gm.settings.preset === "medium", `no saved settings -> recommended preset (got ${gm.settings.preset})`);
+  ok(gm.settings.preset === "ultra", `no saved settings -> highest-quality-first default (got ${gm.settings.preset})`);
   ok(gm.settings.autoQuality === true, "autoQuality defaults ON");
   const rt = new GraphicsManager(makeStubRenderer("NVIDIA GeForce RTX 4090", true));
   ok(rt.gpu.recommended === "ultra", `RTX dGPU recommends ultra (got ${rt.gpu.recommended})`);
@@ -86,10 +86,15 @@ function makeGfx() {
   gm.applyPreset("high"); // user ceiling: rt + contactShadows + bloom
   ok(gm.autoTier === 0 && gm.getEffectiveSettings().raytracing === true, "tier0 keeps user raytracing");
 
-  // ~30fps sustained -> tier 1
+  // ~30fps sustained is ACCEPTABLE under the fps-lock policy — no shedding
   gm.lowMs = 1400;
   gm.sampleFrame(33, makeStubRenderer());
-  ok(gm.autoTier === 1, `low fps sheds to tier 1 (got ${gm.autoTier})`);
+  ok(gm.autoTier === 0, `30fps holds full quality (got ${gm.autoTier})`);
+  // ~20fps sustained (sub-25 floor) -> tier 1
+  gm.lowMs = 1400;
+  gm.emaFrameMs = 50; // seed EMA — one sample can't pull it below the floor by itself
+  gm.sampleFrame(50, makeStubRenderer());
+  ok(gm.autoTier === 1, `sub-25fps sheds to tier 1 (got ${gm.autoTier})`);
   const e1 = gm.getEffectiveSettings();
   ok(e1.raytracing === false && e1.contactShadows === true && e1.bloom === true, "tier1 drops SSR raytracing only");
   ok(gm.settings.raytracing === true, "user ceiling preset stays untouched");
@@ -97,7 +102,8 @@ function makeGfx() {
   // tier 2
   gm.lastTierChangeMs = -1e9;
   gm.lowMs = 1400;
-  gm.sampleFrame(33, makeStubRenderer());
+  gm.emaFrameMs = 50;
+  gm.sampleFrame(50, makeStubRenderer());
   ok(gm.autoTier === 2, `continued low fps sheds to tier 2 (got ${gm.autoTier})`);
   const e2 = gm.getEffectiveSettings();
   ok(e2.raytracing === false && e2.contactShadows === false && e2.bloom === true, "tier2 also drops contact shadows");
@@ -106,7 +112,8 @@ function makeGfx() {
   // tier 3 = effective LOW: all post-FX off -> direct render path + low budgets
   gm.lastTierChangeMs = -1e9;
   gm.lowMs = 1400;
-  gm.sampleFrame(33, makeStubRenderer());
+  gm.emaFrameMs = 50;
+  gm.sampleFrame(50, makeStubRenderer());
   ok(gm.autoTier === 3, `continued low fps sheds to tier 3 (got ${gm.autoTier})`);
   const e3 = gm.getEffectiveSettings();
   ok(!e3.raytracing && !e3.contactShadows && !e3.bloom, "tier3 kills all post-FX (direct render path)");
@@ -168,18 +175,20 @@ function makeGfx() {
 {
   const gm = makeGfx();
   gm.applyPreset("ultra");
-  // Sustained sub-28fps crisis sheds a tier immediately even inside the dwell window
+  // Sustained sub-18fps crisis sheds a tier immediately even inside the dwell window
   gm.lastTierChangeMs = performance.now(); // dwell fully closed
   gm.crisisMs = 450;
-  gm.sampleFrame(50, makeStubRenderer());
+  gm.emaFrameMs = 70;
+  gm.sampleFrame(70, makeStubRenderer());
   ok(gm.autoTier === 1, `crisis sheds tier despite closed dwell (got ${gm.autoTier})`);
-  // 30fps is degraded but NOT a crisis: no bypass, normal dwell applies
+  // 22fps is below the 25 floor but NOT a crisis: no bypass, normal dwell applies
   const gm2 = makeGfx();
   gm2.applyPreset("ultra");
   gm2.lastTierChangeMs = performance.now();
   gm2.crisisMs = 0;
   gm2.lowMs = 1400;
-  gm2.sampleFrame(33, makeStubRenderer());
+  gm2.emaFrameMs = 45;
+  gm2.sampleFrame(45, makeStubRenderer());
   ok(gm2.autoTier === 0, `non-crisis low fps respects downshift dwell (got ${gm2.autoTier})`);
   // Crisis accumulation resets when fps recovers
   gm.crisisMs = 300;

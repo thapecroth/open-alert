@@ -36,17 +36,17 @@ const WHITE_GLOW = "#d8f4ff";
 const HEAL_GLOW = "#3ce080";
 
 // ---------- Shared Sculpted & Beveled Geometries ----------
-const geoRBox = new RoundedBoxGeometry(1, 1, 1, 2, 0.085);
-const geoRBoxSharp = new RoundedBoxGeometry(1, 1, 1, 2, 0.045);
-const geoRBoxSoft = new RoundedBoxGeometry(1, 1, 1, 3, 0.16);
-const geoCyl = new THREE.CylinderGeometry(0.5, 0.5, 1, 16);
+const geoRBox = new RoundedBoxGeometry(1, 1, 1, 1, 0.085);
+const geoRBoxSharp = new RoundedBoxGeometry(1, 1, 1, 1, 0.045);
+const geoRBoxSoft = new RoundedBoxGeometry(1, 1, 1, 2, 0.16);
+const geoCyl = new THREE.CylinderGeometry(0.5, 0.5, 1, 10);
 const geoCylOct = new THREE.CylinderGeometry(0.5, 0.5, 1, 8);
-const geoCylTaper = new THREE.CylinderGeometry(0.36, 0.52, 1, 18);
-const geoSph = new THREE.SphereGeometry(0.5, 16, 12);
-const geoCap = new THREE.CapsuleGeometry(0.25, 0.5, 5, 10);
-const geoCone = new THREE.ConeGeometry(0.5, 1, 12);
-const geoTorus = new THREE.TorusGeometry(0.5, 0.08, 10, 28);
-const geoTorusThin = new THREE.TorusGeometry(0.5, 0.046, 8, 28);
+const geoCylTaper = new THREE.CylinderGeometry(0.36, 0.52, 1, 10);
+const geoSph = new THREE.SphereGeometry(0.5, 10, 7);
+const geoCap = new THREE.CapsuleGeometry(0.25, 0.5, 3, 8);
+const geoCone = new THREE.ConeGeometry(0.5, 1, 10);
+const geoTorus = new THREE.TorusGeometry(0.5, 0.08, 6, 14);
+const geoTorusThin = new THREE.TorusGeometry(0.5, 0.046, 5, 14);
 
 const geoContactDisc = new THREE.PlaneGeometry(2, 2);
 geoContactDisc.rotateX(-Math.PI / 2);
@@ -68,7 +68,7 @@ function makeSlopedHullGeo(len: number, height: number, width: number, bevel = 0
     bevelEnabled: true,
     bevelThickness: bevel,
     bevelSize: bevel,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateY(-Math.PI / 2);
@@ -94,7 +94,7 @@ function makeFacetedTurretGeo(w: number, h: number, l: number): THREE.BufferGeom
     bevelEnabled: true,
     bevelThickness: 0.048,
     bevelSize: 0.042,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   // Rotate +PI/2 around X so +Y of 2D shape maps directly to +Z (forward)!
@@ -119,7 +119,7 @@ function makeSlopedCabGeo(len: number, height: number, width: number): THREE.Buf
     bevelEnabled: true,
     bevelThickness: 0.036,
     bevelSize: 0.032,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateY(-Math.PI / 2);
@@ -142,7 +142,7 @@ function makeSpiderCarapaceGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.055,
     bevelSize: 0.045,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -162,7 +162,7 @@ function makeHorseheadGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.022,
     bevelSize: 0.02,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateY(-Math.PI / 2);
@@ -184,7 +184,7 @@ function makeCoolingTowerGeo(): THREE.BufferGeometry {
   pts.push(new THREE.Vector2(0.32, 1.0));
   pts.push(new THREE.Vector2(0.29, 0.76));
   pts.push(new THREE.Vector2(0.002, 0.74));
-  return new THREE.LatheGeometry(pts, 24);
+  return new THREE.LatheGeometry(pts, 14);
 }
 
 // Solid double-walled curved concave parabolic dish (LatheGeometry, y=0 at bottom apex)
@@ -201,7 +201,7 @@ function makeParabolicDishGeo(): THREE.BufferGeometry {
     new THREE.Vector2(0.18, 0.042),
     new THREE.Vector2(0.002, 0.015),
   ];
-  return new THREE.LatheGeometry(pts, 28);
+  return new THREE.LatheGeometry(pts, 15);
 }
 
 // Industrial pressurized refinery / derrick storage silo (LatheGeometry, base y=0, height=1)
@@ -221,7 +221,7 @@ function makeSiloGeo(): THREE.BufferGeometry {
     new THREE.Vector2(0.12, 0.995),
     new THREE.Vector2(0.002, 1.0),
   ];
-  return new THREE.LatheGeometry(pts, 22);
+  return new THREE.LatheGeometry(pts, 13);
 }
 
 // High-tech mineral enrichment centrifuge vessel (LatheGeometry, base y=0, height=1)
@@ -238,7 +238,7 @@ function makeCentrifugeGeo(): THREE.BufferGeometry {
     new THREE.Vector2(0.16, 1.0),
     new THREE.Vector2(0.002, 1.0),
   ];
-  return new THREE.LatheGeometry(pts, 22);
+  return new THREE.LatheGeometry(pts, 13);
 }
 
 // Aerodynamic ogive missile warhead cone (LatheGeometry, base y=-0.5, tip y=0.5)
@@ -264,7 +264,7 @@ function makeIonApertureGeo(): THREE.BufferGeometry {
     new THREE.Vector2(0.32, 0.64),
     new THREE.Vector2(0.002, 0.6),
   ];
-  return new THREE.LatheGeometry(pts, 24);
+  return new THREE.LatheGeometry(pts, 14);
 }
 
 // Billowing faction flag anchored at x = 0 so flag.rotation.y waves smoothly from the mast
@@ -361,7 +361,7 @@ function makeFusionDomeGeo(): THREE.BufferGeometry {
     const y = 0.14 + Math.sin(ang) * 0.86;
     pts.push(new THREE.Vector2(r, y));
   }
-  return new THREE.LatheGeometry(pts, 24);
+  return new THREE.LatheGeometry(pts, 14);
 }
 
 const geoTankHull = makeSlopedHullGeo(1.78, 0.36, 0.98, 0.042);
@@ -388,9 +388,9 @@ const geoFusionDome = makeFusionDomeGeo();
 const geoFlag = makeFlagGeo();
 const geoOreLoad = makeOreLoadGeo(1.02, 0.42, 0.92);
 const geoCoalHeap = makeOreLoadGeo(0.86, 0.46, 0.86);
-const geoFusionPlasma = new THREE.TorusGeometry(0.68, 0.135, 14, 36);
-const geoFusionPlasmaCore = new THREE.TorusGeometry(0.68, 0.062, 10, 32);
-const geoSatOrbitTrack = new THREE.TorusGeometry(0.64, 0.018, 8, 36);
+const geoFusionPlasma = new THREE.TorusGeometry(0.68, 0.135, 8, 18);
+const geoFusionPlasmaCore = new THREE.TorusGeometry(0.68, 0.062, 6, 16);
+const geoSatOrbitTrack = new THREE.TorusGeometry(0.64, 0.018, 5, 18);
 
 // ---------- Lazily Cached Contact Shadow Material ----------
 let contactShadowMatCache: THREE.MeshBasicMaterial | null = null;

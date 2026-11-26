@@ -30,7 +30,7 @@ import {
   MAP_H,
   transportCapOf,
 } from "../shared/gamedefs";
-import { el, fmtCost, isBuildingKind } from "./util";
+import { el, fmtCost, isBuildingKind, toggleFullscreen } from "./util";
 import { Renderer } from "./render";
 import type { FpvTelemetry } from "./fpv";
 import { fpvStreakName, type FpvStoryState } from "./story";
@@ -784,6 +784,11 @@ export class Hud {
     el("wasd-btn")?.addEventListener("click", () => this.onToggleWasd?.());
     document.getElementById("mute-btn")?.addEventListener("click", () => this.onToggleMute?.());
     document.getElementById("music-btn")?.addEventListener("click", () => this.onToggleMusic?.());
+    document.getElementById("fs-btn")?.addEventListener("click", () => toggleFullscreen());
+    document.addEventListener("fullscreenchange", () => {
+      const fs = document.getElementById("fs-btn");
+      if (fs) fs.classList.toggle("on", !!document.fullscreenElement);
+    });
     document.getElementById("sw-hud")?.addEventListener("click", () => this.onSuperweaponClick());
     document.getElementById("recon-hud")?.addEventListener("click", () => this.onReconClick());
     document.getElementById("fpv-exit")?.addEventListener("click", () => this.onExitFpv?.());

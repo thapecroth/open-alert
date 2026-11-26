@@ -62,8 +62,8 @@ export interface CrateVis {
 
 // ---------- Shared Overlay & Shadow Assets ----------
 
-const geoRing = new THREE.RingGeometry(0.84, 1.0, 44);
-const geoAirShadow = new THREE.CircleGeometry(1, 24);
+const geoRing = new THREE.RingGeometry(0.84, 1.0, 28);
+const geoAirShadow = new THREE.CircleGeometry(1, 16);
 geoAirShadow.rotateX(-Math.PI / 2);
 
 let airShadowMat: THREE.MeshBasicMaterial | null = null;
@@ -605,10 +605,10 @@ const CRATE_ACCENTS: Record<CrateKind, string> = {
   unit: "#ff5436",
 };
 
-const geoCrateHull = new RoundedBoxGeometry(0.68, 0.56, 0.68, 2, 0.06);
-const geoCrateBand = new RoundedBoxGeometry(0.73, 0.14, 0.73, 2, 0.025);
-const geoCratePost = new RoundedBoxGeometry(0.11, 0.62, 0.11, 2, 0.02);
-const geoCrateLid = new RoundedBoxGeometry(0.56, 0.08, 0.56, 2, 0.02);
+const geoCrateHull = new RoundedBoxGeometry(0.68, 0.56, 0.68, 1, 0.06);
+const geoCrateBand = new RoundedBoxGeometry(0.73, 0.14, 0.73, 1, 0.025);
+const geoCratePost = new RoundedBoxGeometry(0.11, 0.62, 0.11, 1, 0.02);
+const geoCrateLid = new RoundedBoxGeometry(0.56, 0.08, 0.56, 1, 0.02);
 const geoCrateCore = new THREE.OctahedronGeometry(0.12, 0);
 const geoCrateBeacon = new THREE.CylinderGeometry(0.12, 0.34, 1.35, 12, 1, true);
 

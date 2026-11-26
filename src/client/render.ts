@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { CrateSnap, EntSnap, GameEvent, OrderKind, PlayerState } from "../shared/protocol";
 import {
   UNITS,
@@ -191,6 +192,18 @@ interface VehicleInstSlot {
   accentHex: string;
   flash: boolean;
   lvis: boolean;
+  // Last-composed rig state fingerprint. Parked vehicles (the common case in
+  // base defenses, siege lines, and any formation waiting for orders) skip the
+  // per-part matrix fan-out entirely while nothing animated.
+  sigX: number;
+  sigY: number;
+  sigYaw: number;
+  sigBody: number;
+  sigTurret: number;
+  sigRecoil: number;
+  sigSpin: number;
+  sigPulse: number;
+  sigBin: number;
 }
 
 const _vehRootM = new THREE.Matrix4();
@@ -1078,6 +1091,83 @@ export class Renderer {
       });
     });
 
+    // Draw-call collapse pass for the instanced representation: anything sharing
+    // (material, anchor, shadow flags, render order, tint variant) is baked into a
+    // single geometry in anchor space. The donor build already merges what it can,
+    // but rigidified spin children (harvester scoop wheels), multi-part recoil pods
+    // and per-material one-off plates still arrive as separate instanced draws —
+    // each costing a draw call in BOTH the main and shadow passes every frame.
+    // Pulse/bin parts are excluded: their per-part scale animation is anchored at
+    // each part's own origin, which a merged geometry could not reproduce.
+    {
+      const groups = new Map<string, VehiclePartDef[]>();
+      const keep: VehiclePartDef[] = [];
+      for (const def of parts) {
+        if (def.pulse || def.bin) {
+          keep.push(def);
+          continue;
+        }
+        const attrSig = `${def.geometry.index ? 1 : 0}|${Object.keys(def.geometry.attributes).sort().join(",")}`;
+        const key = [
+          def.material.uuid,
+          def.anchor,
+          def.accentVariant ?? "-",
+          def.castShadow ? 1 : 0,
+          def.receiveShadow ? 1 : 0,
+          def.renderOrder,
+          def.isBar ? 1 : 0,
+          attrSig,
+        ].join("|");
+        let g = groups.get(key);
+        if (!g) groups.set(key, (g = []));
+        g.push(def);
+      }
+      const mergedParts: VehiclePartDef[] = [];
+      for (const group of groups.values()) {
+        if (group.length < 2) {
+          mergedParts.push(group[0]);
+          continue;
+        }
+        const geos: THREE.BufferGeometry[] = [];
+        let ok = true;
+        for (const def of group) {
+          const g2 = def.geometry.clone();
+          g2.applyMatrix4(def.local);
+          geos.push(g2);
+        }
+        const merged = mergeGeometries(geos, false);
+        for (const g of geos) g.dispose();
+        if (!merged) {
+          ok = false;
+        }
+        if (!ok || !merged) {
+          mergedParts.push(...group);
+          continue;
+        }
+        merged.computeBoundingSphere();
+        merged.computeBoundingBox();
+        const first = group[0];
+        mergedParts.push({
+          geometry: merged,
+          material: first.material,
+          local: new THREE.Matrix4(),
+          localMode: 0,
+          localPos: new THREE.Vector3(),
+          anchor: first.anchor,
+          accentVariant: first.accentVariant,
+          castShadow: first.castShadow,
+          receiveShadow: first.receiveShadow,
+          renderOrder: first.renderOrder,
+          isBar: first.isBar,
+          pulse: false,
+          bin: false,
+          baseScale: new THREE.Vector3(1, 1, 1),
+        });
+      }
+      parts.length = 0;
+      parts.push(...mergedParts, ...keep);
+    }
+
     const pickBox = new THREE.Box3().setFromObject(body);
     const pickSize = pickBox.getSize(new THREE.Vector3());
     const pickCenter = pickBox.getCenter(new THREE.Vector3());
@@ -1246,7 +1336,24 @@ export class Renderer {
     ring.visible = false;
     proxy.add(pick, ring);
     tagEntity(proxy, e.id);
-    const slot: VehicleInstSlot = { pool, idx, proxy, ring, accentHex: colorHex, flash: false, lvis: false };
+    const slot: VehicleInstSlot = {
+      pool,
+      idx,
+      proxy,
+      ring,
+      accentHex: colorHex,
+      flash: false,
+      lvis: false,
+      sigX: NaN,
+      sigY: NaN,
+      sigYaw: NaN,
+      sigBody: NaN,
+      sigTurret: NaN,
+      sigRecoil: NaN,
+      sigSpin: NaN,
+      sigPulse: NaN,
+      sigBin: NaN,
+    };
     this.writeVehicleColors(slot);
     return slot;
   }
@@ -1368,9 +1475,49 @@ export class Renderer {
       ? rig.bin.scale.y / spec.binScale.y
       : 1;
 
+    // Idle fast-path: skip matrix writes for parts that cannot have moved.
+    // Rigid (non-pulse, non-bin) parts depend only on the body/turret/recoil/spin
+    // anchor chain and entity transform — parked vehicles reproduce bit-identical
+    // fingerprints and skip the whole fan-out. Pulse/bin parts carry continuous
+    // scale animation and rewrite every frame regardless.
+    const bodySig = rig.body.rotation.x * 7.13 + rig.body.rotation.y * 3.71 + rig.body.rotation.z * 1.97 + rig.body.position.y * 5.23;
+    const turretSig = rig.turret ? rig.turret.rotation.y + rig.turret.rotation.x * 2.1 + rig.turret.rotation.z * 4.3 : 0;
+    const recoilSig = rig.recoil ? rig.recoil.position.z + rig.recoil.position.x * 2.7 + rig.recoil.rotation.x * 1.3 : 0;
+    const spinSig = rig.spin ? rig.spin.rotation.x * 3.1 + rig.spin.rotation.y * 1.9 + rig.spin.rotation.z * 5.7 : 0;
+    const rigDirty = !(
+      slot.lvis &&
+      slot.sigX === t.visX &&
+      slot.sigY === t.visY &&
+      slot.sigYaw === t.visYaw &&
+      slot.sigBody === bodySig &&
+      slot.sigTurret === turretSig &&
+      slot.sigRecoil === recoilSig &&
+      slot.sigSpin === spinSig
+    );
+    // Pulse/bin parts rewrite only when their scale factors actually changed —
+    // glow pulses oscillate continuously while firing but freeze at rest.
+    const pulseDirty = !slot.lvis || pulseScale !== slot.sigPulse || binScaleY !== slot.sigBin;
+    slot.sigX = t.visX;
+    slot.sigY = t.visY;
+    slot.sigYaw = t.visYaw;
+    slot.sigBody = bodySig;
+    slot.sigTurret = turretSig;
+    slot.sigRecoil = recoilSig;
+    slot.sigSpin = spinSig;
+    slot.sigPulse = pulseScale;
+    slot.sigBin = binScaleY;
+    if (!rigDirty && !pulseDirty) {
+      // Absolutely nothing animated, so every matrix is already correct in the
+      // instance buffers.
+      return;
+    }
+
     const base16 = slot.idx * 16;
     for (const part of pool.parts) {
       const def = part.def;
+      const animated = def.pulse || def.bin;
+      if (!rigDirty && !animated) continue;
+      if (!pulseDirty && animated && !rigDirty) continue;
       const anchorM =
         def.anchor === "turret" && hasTurret
           ? _vehTurretM

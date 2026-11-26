@@ -160,7 +160,14 @@ void main() {
       vec3 delta = tapPos - vPos;
       float dLen = length(delta);
       if (dLen > 1e-4) {
-        float horizon = max(0.0, dot(normal, delta / dLen) - 0.14);
+        // Depth-quantization rejection: on near-planar surfaces the 24-bit depth
+        // reconstruction error lifts coplanar taps slightly off the plane in a
+        // screen-periodic pattern; a flat tiny bias lets them through as regular
+        // horizontal scanline bands. The angular error grows with view distance,
+        // so the bias scales with it while true upright occluders (unit hulls,
+        // walls) still exceed it easily.
+        float aoBias = 0.14 + viewDist * 0.0052;
+        float horizon = max(0.0, dot(normal, delta / dLen) - aoBias);
         float rangeCheck = 1.0 - smoothstep(aoWorldRadius * 0.35, aoWorldRadius * 1.45, dLen);
         occ += horizon * rangeCheck;
       }

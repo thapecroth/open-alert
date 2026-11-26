@@ -40,11 +40,11 @@ const EMERALD = "#3af082";
 // ---------- Cached Shared Primitives & Sculpted Geometries ----------
 
 const geoBox = new THREE.BoxGeometry(1, 1, 1);
-const geoCyl = new THREE.CylinderGeometry(0.5, 0.5, 1, 16);
-const geoCylTaper = new THREE.CylinderGeometry(0.35, 0.52, 1, 16);
-const geoSph = new THREE.SphereGeometry(0.5, 16, 12);
-const geoCone = new THREE.ConeGeometry(0.5, 1, 12);
-const geoRotorDisc = new THREE.CircleGeometry(1, 28);
+const geoCyl = new THREE.CylinderGeometry(0.5, 0.5, 1, 10);
+const geoCylTaper = new THREE.CylinderGeometry(0.35, 0.52, 1, 10);
+const geoSph = new THREE.SphereGeometry(0.5, 10, 7);
+const geoCone = new THREE.ConeGeometry(0.5, 1, 10);
+const geoRotorDisc = new THREE.CircleGeometry(1, 16);
 geoRotorDisc.rotateX(-Math.PI / 2);
 
 const rotorDiscMat = new THREE.MeshBasicMaterial({
@@ -55,7 +55,7 @@ const rotorDiscMat = new THREE.MeshBasicMaterial({
   depthWrite: false,
 });
 
-const rotorRingGeo = new THREE.RingGeometry(0.84, 1.0, 28);
+const rotorRingGeo = new THREE.RingGeometry(0.84, 1.0, 16);
 rotorRingGeo.rotateX(-Math.PI / 2);
 const rotorRingMat = new THREE.MeshBasicMaterial({
   color: 0xdca828,
@@ -71,7 +71,7 @@ function getRoundedBoxGeo(w: number, h: number, d: number, r = 0.04): RoundedBox
   const key = `${w.toFixed(3)}|${h.toFixed(3)}|${d.toFixed(3)}|${rad.toFixed(3)}`;
   let g = rboxCache.get(key);
   if (!g) {
-    g = new RoundedBoxGeometry(w, h, d, 2, rad);
+    g = new RoundedBoxGeometry(w, h, d, 1, rad);
     rboxCache.set(key, g);
   }
   return g;
@@ -94,7 +94,7 @@ function makeHangarArchGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.04,
     bevelSize: 0.03,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateY(Math.PI / 2);
@@ -127,7 +127,7 @@ function makeInterceptorPlanformGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.032,
     bevelSize: 0.025,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -174,7 +174,7 @@ function makeChopperHullGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.055,
     bevelSize: 0.035,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateY(-Math.PI / 2);
@@ -227,7 +227,7 @@ function makeBomberWingGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.045,
     bevelSize: 0.035,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -249,7 +249,7 @@ function makeZeppelinHullGeo(): THREE.BufferGeometry {
     const r = Math.max(0.002, maxR * Math.pow(t, 0.72) * fullness);
     pts.push(new THREE.Vector2(r, y));
   }
-  const g = new THREE.LatheGeometry(pts, 28);
+  const g = new THREE.LatheGeometry(pts, 15);
   g.rotateX(Math.PI / 2); // +Y -> +Z (nose points +Z)
   return g;
 }
@@ -282,7 +282,7 @@ function makeZeppelinFinGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.014,
     bevelSize: 0.012,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateY(-Math.PI / 2);
@@ -305,7 +305,7 @@ function makeGunboatHullGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.045,
     bevelSize: 0.03,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -330,7 +330,7 @@ function makeDestroyerHullGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.055,
     bevelSize: 0.04,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -363,7 +363,7 @@ function makeSubHullGeo(): THREE.BufferGeometry {
     }
     pts.push(new THREE.Vector2(Math.max(0.002, r), y));
   }
-  const g = new THREE.LatheGeometry(pts, 24);
+  const g = new THREE.LatheGeometry(pts, 14);
   g.rotateX(Math.PI / 2); // +Y -> +Z
   return g;
 }
@@ -383,7 +383,7 @@ function makeSubSailGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.03,
     bevelSize: 0.02,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -408,7 +408,7 @@ function makeDreadnoughtHullGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.065,
     bevelSize: 0.045,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -428,7 +428,7 @@ function makeNavalTurretGeo(w: number, h: number, l: number): THREE.BufferGeomet
     bevelEnabled: true,
     bevelThickness: 0.04,
     bevelSize: 0.035,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -460,7 +460,7 @@ function makeReaperFuselageGeo(): THREE.BufferGeometry {
     }
     pts.push(new THREE.Vector2(Math.max(0.002, r), y));
   }
-  const g = new THREE.LatheGeometry(pts, 18);
+  const g = new THREE.LatheGeometry(pts, 13);
   g.rotateX(Math.PI / 2); // +Y -> +Z
   return g;
 }
@@ -485,7 +485,7 @@ function makeStealthBomberWingGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.032,
     bevelSize: 0.028,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -514,7 +514,7 @@ function makeHypersonicWedgeGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.038,
     bevelSize: 0.022,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -559,7 +559,7 @@ function makeCarrierHullGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.055,
     bevelSize: 0.04,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -584,7 +584,7 @@ function makeCarrierDeckGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.025,
     bevelSize: 0.025,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -627,7 +627,7 @@ function makeRpgWarheadGeo(): THREE.BufferGeometry {
     new THREE.Vector2(0.022, 0.34), // piezoelectric standoff probe
     new THREE.Vector2(0.002, 0.38),
   ];
-  const g = new THREE.LatheGeometry(pts, 16);
+  const g = new THREE.LatheGeometry(pts, 12);
   g.rotateX(Math.PI / 2); // +Y -> +Z
   return g;
 }
@@ -652,7 +652,7 @@ function makeShahedWingGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.024,
     bevelSize: 0.018,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -701,7 +701,7 @@ function makeEwDroneWingGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.028,
     bevelSize: 0.022,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -724,7 +724,7 @@ function makeUsvHullGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.032,
     bevelSize: 0.022,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -750,7 +750,7 @@ function makeA10FuselageGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.048,
     bevelSize: 0.034,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateY(-Math.PI / 2);
@@ -772,7 +772,7 @@ function makeA10WingGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.018,
     bevelSize: 0.016,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -810,7 +810,7 @@ function makeA10EnginePodGeo(): THREE.BufferGeometry {
     new THREE.Vector2(0.132, 0.33), // rounded intake lip
     new THREE.Vector2(0.105, 0.35),
   ];
-  const g = new THREE.LatheGeometry(pts, 18);
+  const g = new THREE.LatheGeometry(pts, 13);
   g.rotateX(Math.PI / 2);
   return g;
 }
@@ -841,7 +841,7 @@ function makeAc130FuselageGeo(): THREE.BufferGeometry {
     }
     pts.push(new THREE.Vector2(Math.max(0.002, r), y));
   }
-  const g = new THREE.LatheGeometry(pts, 24);
+  const g = new THREE.LatheGeometry(pts, 14);
   g.rotateX(Math.PI / 2);
   return g;
 }
@@ -863,7 +863,7 @@ function makeAc130WingGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.022,
     bevelSize: 0.018,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -884,7 +884,7 @@ function makeAc130TailFinGeo(): THREE.BufferGeometry {
     bevelEnabled: true,
     bevelThickness: 0.014,
     bevelSize: 0.012,
-    bevelSegments: 2,
+    bevelSegments: 1,
   });
   g.center();
   g.rotateY(-Math.PI / 2);
@@ -924,15 +924,15 @@ const geoA10EnginePod = makeA10EnginePodGeo();
 const geoAc130Fuselage = makeAc130FuselageGeo();
 const geoAc130Wing = makeAc130WingGeo();
 const geoAc130TailFin = makeAc130TailFinGeo();
-const geoA10ExhaustRing = new THREE.TorusGeometry(0.095, 0.024, 8, 20);
-const geoPropBlurDisc = new THREE.CircleGeometry(0.28, 22);
-const geoPropBlurRing = new THREE.RingGeometry(0.24, 0.285, 22);
+const geoA10ExhaustRing = new THREE.TorusGeometry(0.095, 0.024, 6, 12);
+const geoPropBlurDisc = new THREE.CircleGeometry(0.28, 12);
+const geoPropBlurRing = new THREE.RingGeometry(0.24, 0.285, 12);
 const geoGunboatTurret = makeNavalTurretGeo(0.36, 0.16, 0.44);
 const geoDestroyerTurret = makeNavalTurretGeo(0.5, 0.22, 0.6);
-const geoSubShroud = new THREE.TorusGeometry(0.17, 0.024, 8, 20);
-const geoEwHaloOuter = new THREE.TorusGeometry(0.76, 0.022, 8, 36);
+const geoSubShroud = new THREE.TorusGeometry(0.17, 0.024, 6, 12);
+const geoEwHaloOuter = new THREE.TorusGeometry(0.76, 0.022, 5, 18);
 geoEwHaloOuter.rotateX(Math.PI / 2);
-const geoEwHaloInner = new THREE.TorusGeometry(0.52, 0.015, 8, 28);
+const geoEwHaloInner = new THREE.TorusGeometry(0.52, 0.015, 5, 14);
 geoEwHaloInner.rotateX(Math.PI / 2);
 const geoEwHaloArc = new THREE.TorusGeometry(0.86, 0.014, 6, 18, Math.PI * 0.45);
 geoEwHaloArc.rotateX(Math.PI / 2);
@@ -975,7 +975,7 @@ const geoZepRingTable: { z: number; geo: THREE.TorusGeometry; isAccent: boolean 
   ] as [number, number, boolean][]
 ).map(([z, rad, isAccent]) => ({
   z,
-  geo: new THREE.TorusGeometry(rad, isAccent ? 0.042 : 0.026, 8, 28),
+  geo: new THREE.TorusGeometry(rad, isAccent ? 0.042 : 0.026, 6, 14),
   isAccent,
 }));
 

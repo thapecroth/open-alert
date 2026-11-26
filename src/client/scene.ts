@@ -847,7 +847,7 @@ export class GameScene {
     this.graphics = new GraphicsManager(this.renderer);
     this.renderer.setPixelRatio(this.graphics.getTargetDpr());
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.shadowMap.autoUpdate = false;
     this.renderer.shadowMap.needsUpdate = true;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -1026,16 +1026,60 @@ export class GameScene {
     return this.mapW > 64 ? 1 + (this.mapW - 64) / 96 : 1;
   }
 
+  // Camera-fitted RTS shadow frustum. Previously the ortho box spanned ±0.62*mapW
+  // (~±119 world units on 192-wide theaters): at 1024px that is ~4.3 texels per
+  // world unit (soft blurry shadows) and the shadow pass rasterized nearly every
+  // static mesh on the map each update. Fitting the box to the visible camera
+  // footprint (~±35 at default zoom) makes shadows ~4x crisper at the same map
+  // size AND lets frustum culling drop most off-screen casters from the shadow pass.
+  // The box center is texel-snapped in the light's ground-plane basis so the
+  // shadowmap grid stays world-locked while panning (no edge crawling).
   private updateSunShadowFrustum(): void {
     if (this.shadowFpvTight) return;
-    const half = Math.max(45, Math.round(this.mapW * 0.62));
     const sc = this.sunLight.shadow.camera;
-    sc.left = -half;
-    sc.right = half;
-    sc.top = half;
-    sc.bottom = -half;
-    sc.far = Math.max(165, Math.round(this.mapW * 2.2));
-    sc.updateProjectionMatrix();
+    const maxHalf = Math.max(45, Math.round(this.mapW * 0.62));
+    const half = Math.min(maxHalf, Math.max(26, this.camHeight * 1.08 + 9));
+    const [sx, sy, sz] = this.curSunOffset;
+    const sunScale = this.getSunScale();
+    const sunDist = Math.hypot(sx, sy, sz) * sunScale;
+    const far = Math.max(140, Math.round(sunDist + half * 1.9 + 24));
+    if (sc.right !== half || sc.far !== far) {
+      sc.left = -half;
+      sc.right = half;
+      sc.top = half;
+      sc.bottom = -half;
+      sc.far = far;
+      sc.updateProjectionMatrix();
+    }
+
+    const cx = Math.max(-6, Math.min(this.mapW + 6, this.camTarget.x));
+    const cz = Math.max(-6, Math.min(this.mapH + 6, this.camTarget.z));
+
+    // Texel snap: project the desired center onto the light basis in the ground
+    // plane and round to whole shadowmap texels.
+    const len = Math.hypot(sx, sy, sz) || 1;
+    const dx = sx / len,
+      dy = sy / len,
+      dz = sz / len;
+    const hxz = Math.hypot(dx, dz);
+    let tx = cx,
+      tz = cz;
+    if (hxz > 1e-4) {
+      const xx = dz / hxz,
+        xz = -dx / hxz;
+      const yx = dy * xz,
+        yz = -dy * xx;
+      const texel = (half * 2) / Math.max(1, this.sunLight.shadow.mapSize.x);
+      const px = cx * xx + cz * xz;
+      const py = cx * yx + cz * yz;
+      const ox = Math.round(px / texel) * texel - px;
+      const oy = Math.round(py / texel) * texel - py;
+      tx = cx + xx * ox + yx * oy;
+      tz = cz + xz * ox + yz * oy;
+    }
+    this.sunLight.target.position.set(tx, 0, tz);
+    this.sunLight.position.set(tx + sx * sunScale, sy * sunScale, tz + sz * sunScale);
+    this.sunLight.target.updateMatrixWorld();
   }
 
   private applyBiomeAtmosphere(atm: BiomeAtmosphere) {
@@ -1151,7 +1195,7 @@ export class GameScene {
     });
     // Dual-UV close-up micro-detail shader: mapW * 0.5 repeats of 256px seamless grain (128 px/tile)
     // fades smoothly with camera distance so 1P eye-level ground stays identically crisp on 64/96/128 maps.
-    this.groundMat.customProgramCacheKey = () => "ground-micro-detail-v1";
+    this.groundMat.customProgramCacheKey = () => "ground-micro-detail-v3";
     this.groundMat.onBeforeCompile = (shader) => {
       shader.uniforms.uMicroMap = { value: microMap };
       shader.uniforms.uMicroNormalMap = { value: microNormalMap };
@@ -1168,11 +1212,21 @@ export class GameScene {
           "#include <map_fragment>",
           `#include <map_fragment>
           #ifdef USE_MAP
-            float microFade = 1.0 - smoothstep(9.0, 26.0, length(vViewPosition));
+            float microDist = length(vViewPosition);
+            float microFade = 1.0 - smoothstep(10.0, 62.0, microDist);
             if (microFade > 0.001) {
               vec3 microSample = texture2D(uMicroMap, vMapUv * uMicroRepeat).rgb;
-              vec3 microContrast = mix(vec3(1.0), 0.84 + microSample * 0.32, microFade);
-              diffuseColor.rgb *= microContrast;
+              // Taper contrast strength with distance so far ground keeps gentle grain
+              // (kills banding/flatness) without visible tiling or moire crawl.
+              float microAmp = mix(0.52, 1.0, 1.0 - smoothstep(12.0, 30.0, microDist));
+              vec3 microContrast = mix(vec3(1.0), 0.84 + microSample * 0.32, microFade * microAmp);
+              // Second, heavily magnified octave of the same tileable grain breaks the
+              // uniform repeat and restores the large-scale soil tonality drift that the
+              // 5px/tile baked terrain texture cannot carry. Costs one cached texel fetch.
+              vec3 macroSample = texture2D(uMicroMap, vMapUv * (uMicroRepeat * 0.059) + vec2(0.37, 0.71)).rgb;
+              float macroFade = 1.0 - smoothstep(20.0, 68.0, microDist);
+              vec3 macroContrast = mix(vec3(1.0), 0.90 + macroSample * 0.20, macroFade);
+              diffuseColor.rgb *= microContrast * macroContrast;
             }
           #endif`,
         )
@@ -1396,6 +1450,46 @@ export class GameScene {
     }
 
     const group = new THREE.Group();
+
+    // Static map dressing is emitted as compact 48x48-tile instanced sectors rather
+    // than single whole-map InstancedMesh objects. Three.js can then frustum-cull
+    // cliffs/foliage/foam outside the camera AND the (now tightened) shadow frustum.
+    // 48 keeps the fully-zoomed-out draw-call overhead small while cutting the bulk
+    // of off-screen vertex work at normal RTS zooms.
+    const STATIC_INSTANCE_CHUNK = 48;
+    const addChunkedInstances = (
+      geometry: THREE.BufferGeometry,
+      material: THREE.Material,
+      matrices: THREE.Matrix4[],
+      castShadow: boolean,
+      receiveShadow: boolean,
+      renderOrder = 0,
+    ): void => {
+      if (matrices.length === 0) return;
+      const buckets = new Map<number, THREE.Matrix4[]>();
+      for (const m of matrices) {
+        const e = m.elements;
+        const cx = Math.max(0, Math.floor(e[12] / STATIC_INSTANCE_CHUNK));
+        const cz = Math.max(0, Math.floor(e[14] / STATIC_INSTANCE_CHUNK));
+        const key = cz * 1024 + cx;
+        let list = buckets.get(key);
+        if (!list) buckets.set(key, (list = []));
+        list.push(m);
+      }
+      for (const list of buckets.values()) {
+        const inst = new THREE.InstancedMesh(geometry, material, list.length);
+        for (let i = 0; i < list.length; i++) inst.setMatrixAt(i, list[i]);
+        inst.instanceMatrix.needsUpdate = true;
+        inst.castShadow = castShadow;
+        inst.receiveShadow = receiveShadow;
+        inst.renderOrder = renderOrder;
+        // Instances never move after map construction, so pay the tight bounding
+        // sphere union once here; the renderer then gets real per-sector culling.
+        inst.computeBoundingSphere();
+        group.add(inst);
+      }
+    };
+
     const cliffs = layout.cliffs;
     if (cliffs.length > 0) {
       const mats = getCliffRockMaterials(mapId);
@@ -1421,40 +1515,30 @@ export class GameScene {
         ? new THREE.BoxGeometry(1.02, 1, 1.02)
         : new THREE.CylinderGeometry(isIslands ? 0.56 : 0.67, isIslands ? 0.78 : 0.82, 1, 4);
       if (!isArchitectural) wallGeo.rotateY(Math.PI / 4);
-      const wallInst = new THREE.InstancedMesh(wallGeo, mats.wall, cliffs.length);
-      wallInst.castShadow = true;
-      wallInst.receiveShadow = true;
+      const wallMatrices: THREE.Matrix4[] = [];
 
       // 2) Sunlit terraced weathered cap plateau
       const capGeo = isArchitectural
         ? new THREE.BoxGeometry(1.06, 1, 1.06)
         : new THREE.CylinderGeometry(isIslands ? 0.44 : 0.58, isIslands ? 0.6 : 0.7, 1, 4);
       if (!isArchitectural) capGeo.rotateY(Math.PI / 4);
-      const capInst = new THREE.InstancedMesh(capGeo, mats.cap, cliffs.length);
-      capInst.castShadow = true;
-      capInst.receiveShadow = true;
+      const capMatrices: THREE.Matrix4[] = [];
 
       // 3) Interior mesa bridge slabs so multi-tile mesas have a solid unified terrace deck
       const deckGeo = new THREE.BoxGeometry(1.06, isArchitectural ? 0.42 : 0.36, 1.06);
-      const deckInst = new THREE.InstancedMesh(deckGeo, mats.cap, cliffs.length);
-      deckInst.castShadow = true;
-      deckInst.receiveShadow = true;
+      const deckMatrices: THREE.Matrix4[] = [];
 
       // Optional river-gorge water slab across impassable channels on Islands
-      let waterInst: THREE.InstancedMesh | null = null;
+      let cliffWaterGeo: THREE.BufferGeometry | null = null;
+      const cliffWaterMatrices: THREE.Matrix4[] = [];
       if (isIslands && mats.water) {
-        const waterGeo = new THREE.BoxGeometry(1.06, 0.14, 1.06);
-        waterInst = new THREE.InstancedMesh(waterGeo, mats.water, cliffs.length);
-        waterInst.receiveShadow = true;
+        cliffWaterGeo = new THREE.BoxGeometry(1.06, 0.14, 1.06);
       }
 
       const boulderTransforms: { x: number; y: number; z: number; sx: number; sy: number; sz: number; ry: number }[] = [];
       const treeTransforms: { x: number; y: number; z: number; s: number; ry: number }[] = [];
       const accentTransforms: { x: number; y: number; z: number; sx: number; sy: number; sz: number; ry: number }[] = [];
 
-      let wallCount = 0;
-      let capCount = 0;
-      let deckCount = 0;
       const d = this.dummy;
       for (let i = 0; i < cliffs.length; i++) {
         const [tx, ty] = cliffs[i];
@@ -1470,12 +1554,12 @@ export class GameScene {
         const cx = tx + 0.5;
         const cz = ty + 0.5;
 
-        if (waterInst) {
+        if (cliffWaterGeo) {
           d.position.set(cx, 0.08, cz);
           d.rotation.set(0, 0, 0);
           d.scale.set(1, 1, 1);
           d.updateMatrix();
-          waterInst.setMatrixAt(i, d.matrix);
+          cliffWaterMatrices.push(d.matrix.clone());
         }
 
         // Biome-appropriate cliff elevation
@@ -1503,7 +1587,7 @@ export class GameScene {
           const sz = isIslands ? 0.78 + h3 * 0.28 : 1.04 + (nN || nS ? 0.06 : 0);
           d.scale.set(sx, baseH, sz);
           d.updateMatrix();
-          wallInst.setMatrixAt(wallCount++, d.matrix);
+          wallMatrices.push(d.matrix.clone());
 
           d.position.set(
             cx + (h2 - 0.5) * (isArchitectural ? 0.01 : 0.05),
@@ -1513,7 +1597,7 @@ export class GameScene {
           d.rotation.set(0, isArchitectural ? 0 : (h1 - 0.5) * 0.1, 0);
           d.scale.set(isIslands ? sx * 0.85 : 0.98, capH, isIslands ? sz * 0.85 : 0.98);
           d.updateMatrix();
-          capInst.setMatrixAt(capCount++, d.matrix);
+          capMatrices.push(d.matrix.clone());
         }
 
         // Unified mesa deck on tiles connected to >= 2 cliff neighbors (skipped on open river channels)
@@ -1522,7 +1606,7 @@ export class GameScene {
           d.rotation.set(0, 0, 0);
           d.scale.set(1, 1, 1);
           d.updateMatrix();
-          deckInst.setMatrixAt(deckCount++, d.matrix);
+          deckMatrices.push(d.matrix.clone());
         }
 
         // Edge scree boulders tucked tightly against exposed cliff flanks
@@ -1655,50 +1739,39 @@ export class GameScene {
           }
         }
       }
-      wallInst.count = wallCount;
-      wallInst.instanceMatrix.needsUpdate = true;
-      capInst.count = capCount;
-      capInst.instanceMatrix.needsUpdate = true;
-      deckInst.count = deckCount;
-      deckInst.instanceMatrix.needsUpdate = true;
-      group.add(wallInst, capInst, deckInst);
-      if (waterInst) {
-        waterInst.instanceMatrix.needsUpdate = true;
-        group.add(waterInst);
+      addChunkedInstances(wallGeo, mats.wall, wallMatrices, true, true);
+      addChunkedInstances(capGeo, mats.cap, capMatrices, true, true);
+      addChunkedInstances(deckGeo, mats.cap, deckMatrices, true, true);
+      if (cliffWaterGeo && mats.water) {
+        addChunkedInstances(cliffWaterGeo, mats.water, cliffWaterMatrices, false, true);
       }
 
       // Scree boulders around cliff bases
       if (boulderTransforms.length > 0) {
         const bGeo = new THREE.DodecahedronGeometry(0.65, 0);
-        const bInst = new THREE.InstancedMesh(bGeo, mats.boulder, boulderTransforms.length);
-        bInst.castShadow = true;
-        bInst.receiveShadow = true;
-        boulderTransforms.forEach((b, idx) => {
+        const boulderMatrices: THREE.Matrix4[] = [];
+        boulderTransforms.forEach((b) => {
           d.position.set(b.x, b.y, b.z);
           d.rotation.set(b.ry * 0.3, b.ry, b.ry * 0.2);
           d.scale.set(b.sx, b.sy, b.sz);
           d.updateMatrix();
-          bInst.setMatrixAt(idx, d.matrix);
+          boulderMatrices.push(d.matrix.clone());
         });
-        bInst.instanceMatrix.needsUpdate = true;
-        group.add(bInst);
+        addChunkedInstances(bGeo, mats.boulder, boulderMatrices, true, true);
       }
 
       // Biome accent architecture / glacier crystal spires
       if (accentTransforms.length > 0 && mats.accent) {
         const accGeo = isTundra ? new THREE.ConeGeometry(0.55, 1, 5) : new THREE.BoxGeometry(1, 1, 1);
-        const accInst = new THREE.InstancedMesh(accGeo, mats.accent, accentTransforms.length);
-        accInst.castShadow = true;
-        accInst.receiveShadow = true;
-        accentTransforms.forEach((aTr, idx) => {
+        const accentMatrices: THREE.Matrix4[] = [];
+        accentTransforms.forEach((aTr) => {
           d.position.set(aTr.x, aTr.y, aTr.z);
           d.rotation.set(0, aTr.ry, 0);
           d.scale.set(aTr.sx, aTr.sy, aTr.sz);
           d.updateMatrix();
-          accInst.setMatrixAt(idx, d.matrix);
+          accentMatrices.push(d.matrix.clone());
         });
-        accInst.instanceMatrix.needsUpdate = true;
-        group.add(accInst);
+        addChunkedInstances(accGeo, mats.accent, accentMatrices, true, true);
       }
 
       // Stylized biome foliage: conifer pines, snow-frosted spruce, desert/tropical palms, lush jungle canopies, or canyon scrub
@@ -1707,8 +1780,7 @@ export class GameScene {
         const trunkH = isPalm ? 0.88 : isJungle ? 0.56 : 0.34;
         const trunkGeo = new THREE.CylinderGeometry(isPalm ? 0.042 : 0.055, isPalm ? 0.078 : 0.085, trunkH, 6);
         trunkGeo.translate(0, trunkH * 0.5, 0);
-        const trunkInst = new THREE.InstancedMesh(trunkGeo, mats.trunk, treeTransforms.length);
-        trunkInst.castShadow = true;
+        const treeMatrices: THREE.Matrix4[] = [];
 
         let canopyGeo: THREE.BufferGeometry;
         let snowCapGeo: THREE.BufferGeometry | null = null;
@@ -1781,26 +1853,17 @@ export class GameScene {
             sc2.dispose();
           }
         }
-        const canopyInst = new THREE.InstancedMesh(canopyGeo, mats.foliage, treeTransforms.length);
-        canopyInst.castShadow = true;
-        canopyInst.receiveShadow = true;
-        const snowInst = snowCapGeo && mats.accent ? new THREE.InstancedMesh(snowCapGeo, mats.accent, treeTransforms.length) : null;
-
-        treeTransforms.forEach((tr, idx) => {
+        treeTransforms.forEach((tr) => {
           d.position.set(tr.x, tr.y, tr.z);
           d.rotation.set(0, tr.ry, 0);
           d.scale.setScalar(tr.s);
           d.updateMatrix();
-          trunkInst.setMatrixAt(idx, d.matrix);
-          canopyInst.setMatrixAt(idx, d.matrix);
-          snowInst?.setMatrixAt(idx, d.matrix);
+          treeMatrices.push(d.matrix.clone());
         });
-        trunkInst.instanceMatrix.needsUpdate = true;
-        canopyInst.instanceMatrix.needsUpdate = true;
-        group.add(trunkInst, canopyInst);
-        if (snowInst) {
-          snowInst.instanceMatrix.needsUpdate = true;
-          group.add(snowInst);
+        addChunkedInstances(trunkGeo, mats.trunk, treeMatrices, true, false);
+        addChunkedInstances(canopyGeo, mats.foliage, treeMatrices, true, true);
+        if (snowCapGeo && mats.accent) {
+          addChunkedInstances(snowCapGeo, mats.accent, treeMatrices, true, true);
         }
       }
     }
@@ -1929,8 +1992,7 @@ export class GameScene {
           opacity: 0.42,
           depthWrite: false,
         });
-        const foamInst = new THREE.InstancedMesh(foamGeo, this.foamMat, foamEdges.length);
-        foamInst.renderOrder = 1;
+        const foamMatrices: THREE.Matrix4[] = [];
         const d = this.dummy;
         for (let i = 0; i < foamEdges.length; i++) {
           const f = foamEdges[i];
@@ -1938,10 +2000,9 @@ export class GameScene {
           d.rotation.set(0, f.ry, 0);
           d.scale.set(1, 1, 1);
           d.updateMatrix();
-          foamInst.setMatrixAt(i, d.matrix);
+          foamMatrices.push(d.matrix.clone());
         }
-        foamInst.instanceMatrix.needsUpdate = true;
-        group.add(foamInst);
+        addChunkedInstances(foamGeo, this.foamMat, foamMatrices, false, false, 1);
       }
     }
 
@@ -3072,6 +3133,11 @@ export class GameScene {
       this.renderer.setPixelRatio(targetDpr);
       this.resize();
     }
+
+    // Camera-fitted shadow frustum: re-fit around the current RTS view each frame.
+    // Safe on non-shadow-update frames because sampling uses the matrix captured at
+    // the last shadowmap render, which stays consistent with the stored depth texture.
+    if (!this.fpvActive) this.updateSunShadowFrustum();
 
     // Shadow update stride: full-rate on High/Ultra, every 2nd frame on Low/Medium (30-40% laptop GPU savings)
     const stride = this.graphics.getShadowUpdateStride();

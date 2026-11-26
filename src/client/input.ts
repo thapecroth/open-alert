@@ -5,7 +5,7 @@ import { GameScene } from "./scene";
 import { Renderer } from "./render";
 import { Net } from "./net";
 import { makePlacementGhost, setGhostColor } from "./models";
-import { isBuildingKind } from "./util";
+import { isBuildingKind, toggleFullscreen } from "./util";
 
 export class Input {
   selection = new Set<number>();
@@ -240,10 +240,11 @@ export class Input {
       return;
     }
 
-    // Enter focuses chat directly
+    // Alt+Enter toggles fullscreen (classic game chord); plain Enter focuses chat directly
     if (e.code === "Enter") {
       e.preventDefault();
-      this.onOpenChat();
+      if (e.altKey) toggleFullscreen();
+      else this.onOpenChat();
       return;
     }
 

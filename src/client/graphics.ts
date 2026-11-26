@@ -65,8 +65,10 @@ const PRESET_BUDGETS: Record<QualityPreset, Omit<RenderBudgets, never>> = {
 // user's chosen preset stays the ceiling. T3 removes all post-FX so the scene
 // hits the zero-composer direct render path regardless of preset.
 const AUTO_TIER_MAX = 3;
-const AUTO_DOWN_FPS = 44;
-const AUTO_UP_FPS = 56;
+// fps-locked adaptive policy: full quality while fps >= 25, progressive shedding
+// only below that floor, recovery once comfortably clear of it.
+const AUTO_DOWN_FPS = 25;
+const AUTO_UP_FPS = 40;
 const AUTO_DOWN_MS = 1400;
 const AUTO_UP_MS = 6000;
 const AUTO_DWELL_MS = 4000;
@@ -75,7 +77,7 @@ const AUTO_DWELL_MS = 4000;
 // Below CRISIS_FPS the dwell is bypassed entirely — a battle that tanks the
 // frame rate must reach the protective tier in ~1-2s, not ~15s.
 const AUTO_DWELL_DOWN_MS = 900;
-const CRISIS_FPS = 28;
+const CRISIS_FPS = 18;
 const CRISIS_DOWN_MS = 450;
 const TIER_VFX = [1, 0.8, 0.55, 0.3];
 const TIER_FX = [1, 0.75, 0.5, 0.35];
@@ -260,7 +262,10 @@ export class GraphicsManager {
     this.gpu = this.probeWebGL(renderer);
 
     const saved = loadSavedSettings();
-    this.settings = saved ?? makePresetSettings(this.gpu.recommended);
+    // Start at the highest quality ceiling: the fps-locked governor sheds tiers
+    // within seconds when hardware can't hold 25fps, so beauty is the default and
+    // adaptation is the safety net — not the other way round.
+    this.settings = saved ?? makePresetSettings("ultra");
     this.eff = this.settings;
 
     this.stats = {
@@ -567,13 +572,13 @@ export class GraphicsManager {
       const floor = this.autoTier >= 3 ? 0.5 : 0.65;
       if (this.govFrameCount >= cadence) {
         this.govFrameCount = 0;
-        if (emaFps < 46 && this.dynamicScale > floor) {
+        if (emaFps < 26 && this.dynamicScale > floor) {
           const next = Math.max(floor, Math.round((this.dynamicScale - 0.1) * 100) / 100);
           if (next !== this.dynamicScale) {
             this.dynamicScale = next;
             scaleChanged = true;
           }
-        } else if (emaFps > 57 && this.dynamicScale < 1.0) {
+        } else if (emaFps > 40 && this.dynamicScale < 1.0) {
           const next = Math.min(1.0, Math.round((this.dynamicScale + 0.05) * 100) / 100);
           if (next !== this.dynamicScale) {
             this.dynamicScale = next;

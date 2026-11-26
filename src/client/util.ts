@@ -17,6 +17,12 @@ export function el<T extends HTMLElement = HTMLElement>(id: string): T {
   return e as T;
 }
 
+
+export function toggleFullscreen() {
+  if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+  else void document.documentElement.requestFullscreen().catch(() => {});
+}
+
 export function fmtCost(n: number) {
   return "$" + n.toLocaleString();
 }
