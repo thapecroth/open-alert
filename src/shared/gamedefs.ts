@@ -701,36 +701,36 @@ export const MAP_LIST: {
   naval?: boolean;
   desc: string;
 }[] = [
-  { id: "crossroads", name: "Twin Crossroads", biome: "Steppe", w: 192, h: 192, maxPlayers: 8, desc: "Balanced flank mesas, twin Oil Derricks & Coal Mines" },
-  { id: "canyon", name: "Iron Canyon", biome: "Canyon", w: 192, h: 192, maxPlayers: 8, desc: "Twin sandstone canyon walls channeling fights across 3 lanes" },
-  { id: "basin", name: "Shattered Basin", biome: "Alpine", w: 192, h: 192, maxPlayers: 8, desc: "Open volcanic ore basin ringed by captureable Oil Derricks & Coal" },
-  { id: "tundra", name: "Frostbite Pass", biome: "Arctic", w: 192, h: 192, maxPlayers: 8, desc: "Frozen glacial divide with wide north/south bypasses & rich center ice field" },
-  { id: "fortress", name: "Citadel Bastion", biome: "Desert", w: 192, h: 192, maxPlayers: 8, desc: "Walled central citadel with 4 gates guarding a mega ore cache" },
-  { id: "jungle", name: "Emerald Valley", biome: "Jungle", w: 192, h: 192, maxPlayers: 8, desc: "Diagonal ridge corridors built for ambushes & flanking raids" },
-  { id: "islands", name: "Bridgehead Crossing", biome: "Riverland", w: 192, h: 192, maxPlayers: 8, naval: true, desc: "Navigable river channels, lighthouses & bridges — Land, Air & Sea" },
-  { id: "oasis", name: "Scorched Oasis", biome: "Sahara", w: 192, h: 192, maxPlayers: 8, desc: "Golden dune ring with fast open flank tank lanes & twin oasis passes" },
-  { id: "archipelago", name: "Pacific Atoll", biome: "Ocean", w: 192, h: 192, maxPlayers: 8, naval: true, desc: "4 corner islands & volcanic atoll with sea-stacks & blinking buoys" },
-  { id: "coastline", name: "Storm Coast", biome: "Coastal", w: 192, h: 192, maxPlayers: 8, naval: true, desc: "Stormy North Sea straits with coastal lighthouses & dreadnought lanes" },
-  { id: "atlantis", name: "Sunken Atlantis", biome: "Mythic Sea", w: 192, h: 192, maxPlayers: 8, naval: true, desc: "Ancient submerged crystal obelisks, glowing sea-gates & golden causeways" },
-  { id: "shipwreck", name: "Titan Graveyard", biome: "Abyssal", w: 192, h: 192, maxPlayers: 8, naval: true, desc: "Colossal sunken dreadnought wrecks, reefs & salvage ore shoals" },
-  { id: "volcano", name: "Caldera Forge", biome: "Volcanic", w: 192, h: 192, maxPlayers: 8, naval: true, desc: "Steaming coastal sea ringing a glowing molten caldera & obsidian bridges" },
-  { id: "oilrig", name: "Offshore Megarig", biome: "Deep Sea", w: 192, h: 192, maxPlayers: 8, naval: true, desc: "Open-ocean platform bridges converging on a giant central oil megastructure" },
-  { id: "cybergrid", name: "Neon Megastructure", biome: "Orbital", w: 192, h: 192, maxPlayers: 8, desc: "High-tech titanium battle deck with floating crystal monoliths & energy trenches" },
-  { id: "hormuz", name: "Strait of Hormuz", biome: "Gulf Strait", w: 192, h: 192, maxPlayers: 8, naval: true, desc: "Persian Gulf chokepoint — twin tanker channels, mid-strait oil islets & contested shore crossings" },
-  { id: "delta", name: "Mekong Delta", biome: "River Delta", w: 192, h: 192, maxPlayers: 8, naval: true, desc: "Braided jungle rivers fanning into a wide bay — ford crossings, mangrove islets & brown-water navy fights" },
-  { id: "bering", name: "Bering Strait (192×192 · 8P)", biome: "Polar Strait", w: 192, h: 192, maxPlayers: 8, naval: true, desc: "Two continents split by an icy strait — Diomede stepping-stone isles, ice floes & carrier-lane dominance" },
-  // HUGE 8-Player Grand Strategy Theaters (192x192 & 256x256 — built for 4v4 / 8P FFA & Real Logistics!)
-  { id: "europa", name: "Iron Frontier (192×192 · 8P)", biome: "Continental", w: 192, h: 192, maxPlayers: 8, desc: "Huge 192×192 European theater — mountain ridges, long supply lines, 4 Oil & 4 Coal" },
-  { id: "pacific_theatre", name: "Coral Sea Theatre (192×192 · 8P)", biome: "Grand Ocean", w: 192, h: 192, maxPlayers: 8, naval: true, desc: "Massive 192×192 8-player naval archipelago with central carrier atoll & sea lanes" },
-  { id: "arctic_front", name: "Polar Sea Front (192×192 · 8P)", biome: "Polar War", w: 192, h: 192, maxPlayers: 8, naval: true, desc: "Huge 192×192 frozen sea channels, icebreaker passages & contested polar fuel hubs" },
-  { id: "megacontinent", name: "Eurasia Supertheater (256×256 · 8P)", biome: "Grand Theater", w: 256, h: 256, maxPlayers: 8, naval: true, desc: "Colossal 256×256 (16× area) 8-player super-map — twin continents, sea strait & real supply logistics!" },
-  { id: "english_channel", name: "English Channel (256×192 · 8P)", biome: "Grand Theater", w: 256, h: 192, maxPlayers: 8, naval: true, desc: "Colossal cross-channel invasion theater — Britain vs France across a true blue-water channel. Dover chokepoint causeways & open North Sea lanes!" },
-  { id: "persian_gulf", name: "Persian Gulf (224×224 · 8P)", biome: "Grand Theater", w: 224, h: 224, maxPlayers: 8, naval: true, desc: "Colossal gulf theater — Iran vs Arabia across wide open water, tanker lanes & the Hormuz chokepoint. True blue-water naval warfare!" },
-  { id: "panama", name: "Panama Isthmus (224×192 · 8P)", biome: "Grand Theater", w: 224, h: 192, maxPlayers: 8, naval: true, desc: "Colossal two-ocean theater — the canal cut links Atlantic & Pacific through the contested isthmus crossing!" },
-  { id: "fulda_gap", name: "Fulda Gap (192×192 · 8P)", biome: "Grand Theater", w: 192, h: 192, maxPlayers: 8, naval: false, desc: "Colossal armored land war — ridge corridors, pass chokepoints & rolling open ground. The Cold War tank battlefield at grand scale!" },
-  { id: "mediterranean", name: "Mediterranean Sea (256×176 · 8P)", biome: "Grand Theater", w: 256, h: 176, maxPlayers: 8, naval: true, desc: "Colossal classical theater — Europe, Africa & Anatolia surround one shining sea. Gibraltar, Sicily, Suez & island-chain naval lanes!" },
-  { id: "scandinavia", name: "Nordic Fjords (192×224 · 8P)", biome: "Grand Theater", w: 192, h: 224, maxPlayers: 8, naval: true, desc: "Colossal fjord theater — Norway's fractured coast, Sweden, Finland, Denmark & the Baltic/North Sea in one cold-war naval labyrinth!" },
-  { id: "terra", name: "Terra — Blue Planet (256×192 · 8P)", biome: "World Theater", w: 256, h: 192, maxPlayers: 8, naval: true, desc: "The Earth from above — Americas, Afro-Eurasia, Australia, island chains & Antarctica separated by Atlantic and Pacific blue-water lanes!" },
+  { id: "crossroads", name: "Twin Crossroads", biome: "Steppe", w: 96, h: 96, maxPlayers: 8, desc: "Balanced flank mesas, twin Oil Derricks & Coal Mines" },
+  { id: "canyon", name: "Iron Canyon", biome: "Canyon", w: 96, h: 96, maxPlayers: 8, desc: "Twin sandstone canyon walls channeling fights across 3 lanes" },
+  { id: "basin", name: "Shattered Basin", biome: "Alpine", w: 96, h: 96, maxPlayers: 8, desc: "Open volcanic ore basin ringed by captureable Oil Derricks & Coal" },
+  { id: "tundra", name: "Frostbite Pass", biome: "Arctic", w: 96, h: 96, maxPlayers: 8, desc: "Frozen glacial divide with wide north/south bypasses & rich center ice field" },
+  { id: "fortress", name: "Citadel Bastion", biome: "Desert", w: 96, h: 96, maxPlayers: 8, desc: "Walled central citadel with 4 gates guarding a mega ore cache" },
+  { id: "jungle", name: "Emerald Valley", biome: "Jungle", w: 96, h: 96, maxPlayers: 8, desc: "Diagonal ridge corridors built for ambushes & flanking raids" },
+  { id: "islands", name: "Bridgehead Crossing", biome: "Riverland", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Navigable river channels, lighthouses & bridges — Land, Air & Sea" },
+  { id: "oasis", name: "Scorched Oasis", biome: "Sahara", w: 96, h: 96, maxPlayers: 8, desc: "Golden dune ring with fast open flank tank lanes & twin oasis passes" },
+  { id: "archipelago", name: "Pacific Atoll", biome: "Ocean", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "4 corner islands & volcanic atoll with sea-stacks & blinking buoys" },
+  { id: "coastline", name: "Storm Coast", biome: "Coastal", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Stormy North Sea straits with coastal lighthouses & dreadnought lanes" },
+  { id: "atlantis", name: "Sunken Atlantis", biome: "Mythic Sea", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Ancient submerged crystal obelisks, glowing sea-gates & golden causeways" },
+  { id: "shipwreck", name: "Titan Graveyard", biome: "Abyssal", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Colossal sunken dreadnought wrecks, reefs & salvage ore shoals" },
+  { id: "volcano", name: "Caldera Forge", biome: "Volcanic", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Steaming coastal sea ringing a glowing molten caldera & obsidian bridges" },
+  { id: "oilrig", name: "Offshore Megarig", biome: "Deep Sea", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Open-ocean platform bridges converging on a giant central oil megastructure" },
+  { id: "cybergrid", name: "Neon Megastructure", biome: "Orbital", w: 96, h: 96, maxPlayers: 8, desc: "High-tech titanium battle deck with floating crystal monoliths & energy trenches" },
+  { id: "hormuz", name: "Strait of Hormuz", biome: "Gulf Strait", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Persian Gulf chokepoint — twin tanker channels, mid-strait oil islets & contested shore crossings" },
+  { id: "delta", name: "Mekong Delta", biome: "River Delta", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Braided jungle rivers fanning into a wide bay — ford crossings, mangrove islets & brown-water navy fights" },
+  { id: "bering", name: "Bering Strait (96×96 · 8P)", biome: "Polar Strait", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Two continents split by an icy strait — Diomede stepping-stone isles, ice floes & carrier-lane dominance" },
+  // HUGE 8-Player Grand Strategy Theaters (96x96 & 128x128 — built for 4v4 / 8P FFA & Real Logistics!)
+  { id: "europa", name: "Iron Frontier (96×96 · 8P)", biome: "Continental", w: 96, h: 96, maxPlayers: 8, desc: "Huge 96×96 European theater — mountain ridges, long supply lines, 4 Oil & 4 Coal" },
+  { id: "pacific_theatre", name: "Coral Sea Theatre (96×96 · 8P)", biome: "Grand Ocean", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Massive 96×96 8-player naval archipelago with central carrier atoll & sea lanes" },
+  { id: "arctic_front", name: "Polar Sea Front (96×96 · 8P)", biome: "Polar War", w: 96, h: 96, maxPlayers: 8, naval: true, desc: "Huge 96×96 frozen sea channels, icebreaker passages & contested polar fuel hubs" },
+  { id: "megacontinent", name: "Eurasia Supertheater (128×128 · 8P)", biome: "Grand Theater", w: 128, h: 128, maxPlayers: 8, naval: true, desc: "Colossal 128×128 (4× area) 8-player super-map — twin continents, sea strait & real supply logistics!" },
+  { id: "english_channel", name: "English Channel (128×96 · 8P)", biome: "Grand Theater", w: 128, h: 96, maxPlayers: 8, naval: true, desc: "Cross-channel invasion theater — Britain vs France across a true blue-water channel. Dover chokepoint causeways & open North Sea lanes!" },
+  { id: "persian_gulf", name: "Persian Gulf (112×112 · 8P)", biome: "Grand Theater", w: 112, h: 112, maxPlayers: 8, naval: true, desc: "Gulf theater — Iran vs Arabia across wide open water, tanker lanes & the Hormuz chokepoint. True blue-water naval warfare!" },
+  { id: "panama", name: "Panama Isthmus (112×96 · 8P)", biome: "Grand Theater", w: 112, h: 96, maxPlayers: 8, naval: true, desc: "Two-ocean theater — the canal cut links Atlantic & Pacific through the contested isthmus crossing!" },
+  { id: "fulda_gap", name: "Fulda Gap (96×96 · 8P)", biome: "Grand Theater", w: 96, h: 96, maxPlayers: 8, naval: false, desc: "Armored land war — ridge corridors, pass chokepoints & rolling open ground. The Cold War tank battlefield!" },
+  { id: "mediterranean", name: "Mediterranean Sea (128×88 · 8P)", biome: "Grand Theater", w: 128, h: 88, maxPlayers: 8, naval: true, desc: "Classical theater — Europe, Africa & Anatolia surround one shining sea. Gibraltar, Sicily, Suez & island-chain naval lanes!" },
+  { id: "scandinavia", name: "Nordic Fjords (96×112 · 8P)", biome: "Grand Theater", w: 96, h: 112, maxPlayers: 8, naval: true, desc: "Fjord theater — Norway's fractured coast, Sweden, Finland, Denmark & the Baltic/North Sea in one cold-war naval labyrinth!" },
+  { id: "terra", name: "Terra — Blue Planet (128×96 · 8P)", biome: "World Theater", w: 128, h: 96, maxPlayers: 8, naval: true, desc: "The Earth from above — Americas, Afro-Eurasia, Australia, island chains & Antarctica separated by Atlantic and Pacific blue-water lanes!" },
 ];
 
 export interface MapLayout {
@@ -777,26 +777,22 @@ const NATIVE_LAYOUT = new Set<MapId>([
   "terra",
 ]);
 
-// Older native-layout theaters were hand-authored at 96x96 (megacontinent at
-// 128x128), then promoted to double-size battlefields. Keep those authored
-// numbers stable and scale the primitive painters by this factor instead of
-// rewriting hundreds of coastline/control-point coordinates. The newer
-// colossal theaters are already authored at their final dimensions and use 1.
-const LEGACY_NATIVE_DOUBLE = new Set<MapId>([
-  "bering",
-  "europa",
-  "pacific_theatre",
-  "arctic_front",
-  "megacontinent",
-  "islands",
-  "archipelago",
-  "coastline",
-  "atlantis",
-  "shipwreck",
-  "volcano",
-  "oilrig",
-  "hormuz",
-  "delta",
+// Native-author coordinate scale. The older ocean/grand-theater branches were
+// hand-authored at 96x96 (megacontinent at 128x128); after the map-size halving
+// those runtime dimensions are once again exactly their author grids, so they
+// use the identity scale and are intentionally absent here. The newer colossal
+// theaters were authored at their former 192-256 dimensions, so their author
+// coordinates scale by 0.5 into the halved runtime grid. `na` is applied by the
+// primitive painters (rects, noise rings, lines, feature positions); keeping it
+// data-driven avoids rewriting hundreds of coastline/control-point constants.
+const HALVED_NATIVE_AUTHOR_SCALE = new Set<MapId>([
+  "english_channel",
+  "persian_gulf",
+  "panama",
+  "fulda_gap",
+  "mediterranean",
+  "scandinavia",
+  "terra",
 ]);
 
 export function getMapLayout(id: MapId = "crossroads"): MapLayout {
@@ -808,15 +804,15 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
   // Design-grid → real-map scale. s = 1 keeps authored-at-native-size maps untouched.
   const sx = NATIVE_LAYOUT.has(id) ? 1 : W / MAP_W;
   const sy = NATIVE_LAYOUT.has(id) ? 1 : H / MAP_H;
-  // Legacy-native author scale: their procedural coordinates below are still the
-  // original 96/128 author grid; na lifts them into the doubled runtime size.
-  const na = LEGACY_NATIVE_DOUBLE.has(id) ? 2 : 1;
+  // Native-author scale: 0.5 for the formerly colossal theaters, 1 for maps whose
+  // author grid already matches the halved runtime dimensions.
+  const na = HALVED_NATIVE_AUTHOR_SCALE.has(id) ? 0.5 : 1;
   const cliffSet = new Set<number>();
   const waterSet = new Set<number>();
   // Native-author rect painter. Despite the historical name, coordinates are in
-  // each branch's author space: na is 2 for legacy doubled theaters and 1 for
-  // modern colossal/native maps. (clearRectRaw remains true-cell because only
-  // post-paint spawn/connectivity passes use it.)
+  // each branch's author space and `na` projects them into runtime cells.
+  // (clearRectRaw remains true-cell because only post-paint spawn/connectivity
+  // passes use it.)
   const addRectRaw = (set: Set<number>, x0: number, y0: number, w: number, h: number) => {
     const ax = Math.round(x0 * na),
       ay = Math.round(y0 * na),
@@ -893,6 +889,15 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       }
     }
   };
+  // Hand-authored polygon rings are stored in the same native-author space as
+  // noiseRing/paintLine control points. paintPoly itself consumes runtime coords
+  // (noiseRing has already applied `na`), so direct authored rings go through
+  // this wrapper. Scaling before or after Chaikin is equivalent because both
+  // transforms are linear.
+  const paintPolyAuth = (set: Set<number>, pts: readonly (readonly [number, number])[], fill: boolean) => {
+    const apts: readonly (readonly [number, number])[] = na === 1 ? pts : pts.map(([x, y]) => [x * na, y * na] as const);
+    paintPoly(set, apts, fill);
+  };
   // Chaikin corner-cutting — smooths a coarse ring/open polyline into organic coastline.
   const chaikin = (pts: readonly (readonly [number, number])[], closed: boolean, iterations = 2): [number, number][] => {
     let cur: [number, number][] = pts.map(([x, y]) => [x, y]);
@@ -933,10 +938,13 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     return chaikin(pts, true, 1);
   };
   // Stamp a wide soft-edged stroke along a polyline (causeways, rivers, canals).
-  // Points/width use the same native author space as noiseRing.
-  const paintLine = (set: Set<number>, pts: readonly (readonly [number, number])[], width: number, fill: boolean) => {
+  // Points/width use the same native author space as noiseRing. minRuntimeWidth
+  // is a gameplay floor in output cells: scaled-down chokepoints may lose a tile
+  // of ideal geometric proportion to keep land causeways continuous and naval
+  // cuts comfortably ship-passable instead of rasterizing into one-cell gaps.
+  const paintLine = (set: Set<number>, pts: readonly (readonly [number, number])[], width: number, fill: boolean, minRuntimeWidth = 0) => {
     const apts: readonly (readonly [number, number])[] = na === 1 ? pts : pts.map(([x, y]) => [x * na, y * na] as const);
-    const r = (width * na) / 2;
+    const r = Math.max(width * na, minRuntimeWidth) / 2;
     for (let i = 0; i + 1 < apts.length; i++) {
       const [ax, ay] = apts[i],
         [bx, by] = apts[i + 1];
@@ -1064,7 +1072,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // Bridgehead Crossing (native 96x96): four riverland continents in open water,
     // parted by wide navigable channels that wrap every coastline. Narrow stone
     // causeways link the quadrants; offshore islets beg for engineer pontoon bridges.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     const quads: [number, number, number, number, number][] = [
       [22, 22, 19, 17, 701], // NW continent (spawns 0 + parts of 4/6)
       [74, 74, 19, 17, 702], // SE continent (spawn 1)
@@ -1138,7 +1146,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // Pacific Atoll (native 96x96): a genuine ocean — 8 volcanic spawn islands rising
     // from open water, linked by a ring of narrow coral causeways around a central
     // lagoon atoll. Wide blue-water lanes dominate the middle of the map.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     // 8 organic spawn islands — INTERIOR (narrow navigable channels run along every
     // map edge, so the sea is one continuous body wrapping the whole theater)
     const isleCenters: [number, number, number][] = [
@@ -1214,7 +1222,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // Storm Coast (native 96x96): twin continents on the west & east seaboards with a
     // wide open strait between — the sea wraps the northern cape while a narrow
     // causeway crosses at the southern chokepoint. Classic contested-shore naval war.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     paintPoly(waterSet, noiseRing(20, 48, 15, 43, 801, 0.12), false); // west continent (spawns 0,3,6)
     paintPoly(waterSet, noiseRing(76, 48, 15, 43, 802, 0.12), false); // east continent (spawns 1,2,7)
     paintPoly(waterSet, noiseRing(48, 12, 13, 9, 803, 0.15), false); // north cape isle (spawn 4)
@@ -1262,7 +1270,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
   } else if (id === "atlantis") {
     // Sunken Atlantis (native 96x96): a drowned kingdom — golden causeway lattice over
     // deep mythic waters, crystal obelisks on interior isles, one connected shining sea.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     const ailes: [number, number, number][] = [
       [11, 11, 9.5], [85, 85, 9.5], [85, 11, 9.5], [11, 85, 9.5],
       [48, 11, 10], [48, 85, 10], [11, 48, 10], [85, 48, 10],
@@ -1314,7 +1322,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
   } else if (id === "shipwreck") {
     // Titan Graveyard (native 96x96): open abyssal water littered with colossal wrecks,
     // interior spawn isles chained by coral shoals around the central graveyard reef.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     const siles: [number, number, number][] = [
       [11, 11, 9], [85, 85, 9], [85, 11, 9], [11, 85, 9],
       [48, 11, 9.5], [48, 85, 9.5], [11, 48, 9.5], [85, 48, 9.5],
@@ -1367,7 +1375,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
   } else if (id === "volcano") {
     // Caldera Forge (native 96x96): a molten caldera isle rising from a steaming ring
     // sea — the perimeter rim is one continuous coast, the ocean lane circles inside it.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     // central volcanic massif
     paintPoly(waterSet, noiseRing(48, 48, 20, 18, 831, 0.13), false);
     // interior spawn capes pushing into the rim shallows
@@ -1415,7 +1423,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
   } else if (id === "oilrig") {
     // Offshore Megarig (native 96x96): deep open ocean — small interior platform isles
     // linked by pontoon causeways converging on the giant central rig superstructure.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     const oiles: [number, number, number][] = [
       [11, 11, 8.5], [85, 85, 8.5], [85, 11, 8.5], [11, 85, 8.5],
       [48, 10.5, 9], [48, 85.5, 9], [10.5, 48, 9], [85.5, 48, 9],
@@ -1492,7 +1500,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // Strait of Hormuz (native 96x96): Iran's northern coast faces Arabia's southern
     // shore across a true blue-water strait. Tanker lanes wrap the open western gulf;
     // the only land crossing is the contested eastern chokepoint causeway.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     paintPoly(waterSet, noiseRing(48, 10, 46, 10, 901, 0.08), false); // northern coast (Iran)
     paintPoly(waterSet, noiseRing(48, 86, 46, 10, 902, 0.08), false); // southern coast (Arabia)
     // mid-strait island chain (the real Abu Musa / Tunbs of the chokepoint)
@@ -1542,7 +1550,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // Mekong Delta (native 96x96): braided jungle rivers fan out of the north into a
     // wide open bay — brown-water navy rules the channels while fords & causeways
     // stitch the mangrove paddies together.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     // three jungle continental fingers reaching down from the north edge
     paintPoly(waterSet, noiseRing(16, 20, 15, 22, 911, 0.13), false); // west finger (spawn 0/6)
     paintPoly(waterSet, noiseRing(48, 16, 14, 18, 912, 0.13), false); // central finger (spawn 4/2?)
@@ -1590,7 +1598,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // Bering Strait (native 96x96): Asia west, America east — a broad icy strait between
     // them wrapping the open northern end, with the Diomede stepping-stone isles and a
     // narrow causeway chain across the southern chokepoint.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     paintPoly(waterSet, noiseRing(21, 48, 15, 42, 921, 0.11), false); // Asia continent (spawns 0,3,6)
     paintPoly(waterSet, noiseRing(75, 48, 15, 42, 922, 0.11), false); // America continent (spawns 1,2,7)
     // narrow ice-shelf causeways carry the corner bases back to their continents
@@ -1681,7 +1689,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // Coral Sea Theatre (native 96x96, 8-player grand ocean): full blue-water theater —
     // 8 interior island bases chained by coral causeways around the central carrier
     // atoll, with wide open carrier lanes everywhere.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     const piles: [number, number, number][] = [
       [10.5, 10.5, 9], [85.5, 85.5, 9], [85.5, 10.5, 9], [10.5, 85.5, 9],
       [48, 10.5, 10], [48, 85.5, 10], [10.5, 48, 10], [85.5, 48, 10],
@@ -1740,7 +1748,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // Polar Sea Front (native 96x96): a frozen ocean — interior ice-sheet spawn shelves
     // chained by icebreaker causeways around the contested central polar fortress,
     // wide dark-water channels for wolfpacks & carriers.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     const xiles: [number, number, number][] = [
       [11, 11, 9], [85, 85, 9], [85, 11, 9], [11, 85, 9],
       [48, 10.5, 10], [48, 85.5, 10], [10.5, 48, 10], [85.5, 48, 10],
@@ -1797,7 +1805,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // Eurasia Supertheater (128x128): twin colossal continents west & east, a true
     // central sea between them wrapping the open northern end — the southern causeway
     // highways are the only land crossings of the strait.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     paintPoly(waterSet, noiseRing(28, 64, 24, 61, 971, 0.08), false); // west continent (Europe)
     paintPoly(waterSet, noiseRing(100, 64, 24, 61, 972, 0.08), false); // east continent (Asia)
     // short corner causeways: at 256x256 the fixed absolute spawn insets sit
@@ -1867,13 +1875,17 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // English Channel (native 256x192): Britain holds the north, France the south, with
     // a true blue-water channel between — wrapping the open North Sea gap in the NE.
     // The Dover chokepoint causeway chain is the only land crossing.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     paintPoly(waterSet, noiseRing(126, 25, 120, 23, 1201, 0.07), false); // Britain (spawns 0,4,2-ish north)
     paintPoly(waterSet, noiseRing(126, 168, 118, 22, 1202, 0.07), false); // France (spawns 1,5,3 south)
     // mid-channel Isle-of-Wight-style stepping islets + the Dover chain
     paintPoly(waterSet, noiseRing(22, 95, 21, 24, 1207, 0.1), false); // Ireland — west-mid spawn landmass
     paintPoly(waterSet, noiseRing(238, 120, 17, 30, 1208, 0.1), false); // Low Countries — east-mid, chained to France
-    paintLine(waterSet, chaikin([[24, 74], [22, 60], [20, 50]], false, 1), 3.6, false); // irish sea crossing to Britain
+    // The Irish Sea crossing keeps a 3-cell runtime deck at halved scale; the
+    // geometrically exact 1.8-cell stroke rasterized with water gaps. Its final
+    // control point also reaches farther into Britain because coarse coastline
+    // rounding otherwise leaves a 12-cell gap at this size.
+    paintLine(waterSet, chaikin([[24, 74], [22, 60], [20, 34]], false, 1), 3.6, false, 2.8); // irish sea crossing to Britain
     paintPoly(waterSet, noiseRing(200, 78, 7, 6, 1203, 0.15), false);
     paintPoly(waterSet, noiseRing(214, 100, 6, 5.5, 1204, 0.15), false);
     paintPoly(waterSet, noiseRing(88, 110, 6, 5, 1205, 0.15), false);
@@ -1919,7 +1931,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // Persian Gulf (native 224x224): Iran's mountainous NE shore faces the Arabian
     // peninsula SW across a wide open gulf. The Hormuz chokepoint chain guards the
     // narrow SE outlet; the rest is true blue water.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     // Iran — NE arc
     paintPoly(waterSet, noiseRing(112, 18, 104, 16, 1211, 0.09), false);
     paintPoly(waterSet, noiseRing(200, 60, 22, 40, 1212, 0.09), false);
@@ -1967,7 +1979,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // Panama Isthmus (native 224x192): North America anchors the NW, South America the
     // SE — oceans dominate the NE (Caribbean) & SW (Pacific). The isthmus land bridge
     // crosses the center, cut by the canal channel that keeps both oceans one sea.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     // North America — NW continental mass
     paintPoly(waterSet, noiseRing(86, 26, 84, 25, 1221, 0.06), false);
     // South America — SE continental mass
@@ -1975,15 +1987,17 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // the isthmus land bridge connecting the continents (interior, unclosed)
     paintLine(waterSet, chaikin([[86, 64], [104, 84], [120, 104], [136, 122]], false, 2), 12, false);
     // THE CANAL: water cut straight through the isthmus — narrow but ship-passable
-    paintLine(waterSet, chaikin([[104, 82], [112, 94], [120, 104], [128, 114]], false, 1), 5, true);
+    paintLine(waterSet, chaikin([[104, 82], [112, 94], [120, 104], [128, 114]], false, 1), 5, true, 3);
     // pearl-island stepping stones in the pacific gulf
     paintPoly(waterSet, noiseRing(208, 16, 26, 15, 1227, 0.08), false); // NE cape (spawn 2)
     paintPoly(waterSet, noiseRing(16, 176, 25, 15, 1228, 0.08), false); // SW cape (spawn 3)
-    paintLine(waterSet, chaikin([[186, 18], [160, 22], [138, 24]], false, 1), 4, false); // NE cape chain to N.America
-    paintLine(waterSet, chaikin([[36, 174], [60, 170], [84, 168]], false, 1), 4, false); // SW cape chain to S.America
+    paintLine(waterSet, chaikin([[186, 18], [160, 22], [138, 24]], false, 1), 4, false, 2.8); // NE cape chain to N.America
+    paintLine(waterSet, chaikin([[36, 174], [60, 170], [84, 168]], false, 1), 4, false, 2.8); // SW cape chain to S.America
     paintPoly(waterSet, noiseRing(206, 95, 16, 13, 1225, 0.12), false); // Cuba — east-mid spawn isle
     paintPoly(waterSet, noiseRing(16, 95, 15, 12, 1226, 0.12), false); // Cocos — west-mid spawn isle
-    paintLine(waterSet, chaikin([[192, 90], [176, 84], [150, 72], [128, 66]], false, 2), 3.6, false); // cuba-caribbean chain to the mainland
+    // The long Cuba-mainland chain needs a 3-cell deck at this size; at the exact
+    // 1.8-cell scaled width its diagonal raster breaks into disconnected stepping stones.
+    paintLine(waterSet, chaikin([[192, 90], [176, 84], [150, 72], [128, 66]], false, 2), 3.6, false, 2.8); // cuba-caribbean chain to the mainland
     paintPoly(waterSet, noiseRing(120, 150, 6, 5, 1223, 0.15), false);
     paintPoly(waterSet, noiseRing(100, 120, 5, 4.5, 1224, 0.15), false);
     // continental divide cliffs along the isthmus spine
@@ -2020,28 +2034,31 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // Africa across the south, with Gibraltar open in the west and the Levant/Sinai
     // land bridge closing the east. Italy, Greece, Sicily, Crete and Cyprus make the
     // classical island chain; the central sea remains one connected blue-water arena.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     const europe: [number, number][] = [
       [0, 0], [150, 0], [152, 14], [145, 25], [158, 31], [178, 28], [190, 36], [184, 47],
       [171, 56], [156, 47], [143, 54], [130, 42], [116, 40], [108, 50], [94, 47], [82, 54],
       [66, 53], [52, 62], [34, 68], [24, 88], [0, 88],
     ];
-    paintPoly(waterSet, chaikin(europe, true, 2), false);
+    paintPolyAuth(waterSet, chaikin(europe, true, 2), false);
     const anatolia: [number, number][] = [
       [146, 0], [255, 0], [255, 112], [244, 114], [232, 101], [224, 86], [207, 78], [193, 75],
       [181, 63], [166, 52], [151, 43], [142, 28],
     ];
-    paintPoly(waterSet, chaikin(anatolia, true, 2), false);
+    paintPolyAuth(waterSet, chaikin(anatolia, true, 2), false);
     const africa: [number, number][] = [
       [0, 114], [22, 111], [42, 126], [70, 139], [100, 147], [128, 154], [154, 148], [181, 139],
       [207, 141], [230, 130], [255, 132], [255, 175], [0, 175],
     ];
-    paintPoly(waterSet, chaikin(africa, true, 2), false);
+    paintPolyAuth(waterSet, chaikin(africa, true, 2), false);
     // Italy's boot, Greek peninsula, and the Sinai/Levant land bridge
     paintLine(waterSet, chaikin([[112, 48], [119, 62], [124, 78], [132, 94], [143, 101]], false, 2), 9, false);
     paintLine(waterSet, chaikin([[132, 94], [146, 96], [153, 91]], false, 1), 6, false);
     paintLine(waterSet, chaikin([[158, 55], [163, 70], [169, 86]], false, 2), 8, false);
-    paintLine(waterSet, chaikin([[226, 92], [235, 102], [244, 116]], false, 1), 12, false);
+    // Extend the Sinai/Levant bridge a little farther down the African coast:
+    // at half resolution the original endpoint stops a few cells short because
+    // the organic coastline raster rounds inward, severing the eastern land bridge.
+    paintLine(waterSet, chaikin([[226, 92], [235, 102], [244, 132]], false, 1), 12, false, 10);
     // Mediterranean islands — strategic stepping stones across the sea
     paintPoly(waterSet, noiseRing(56, 88, 5, 3.5, 1301, 0.14), false); // Balearics
     paintPoly(waterSet, noiseRing(90, 78, 4, 6, 1302, 0.14), false); // Corsica
@@ -2054,7 +2071,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     paintPoly(waterSet, noiseRing(135, 68, 8, 22, 1307, 0.1), true);
     paintPoly(waterSet, noiseRing(181, 69, 16, 18, 1308, 0.1), true);
     paintPoly(waterSet, noiseRing(218, 28, 21, 10, 1309, 0.1), true);
-    paintLine(waterSet, chaikin([[211, 35], [203, 45], [194, 56]], false, 1), 3, true);
+    paintLine(waterSet, chaikin([[211, 35], [203, 45], [194, 56]], false, 1), 3, true, 2.5);
     // Gulf of Sirte bites into the Libyan coast
     paintPoly(waterSet, noiseRing(166, 146, 11, 7, 1310, 0.1), true);
     // Alps, Balkan ridges, Atlas range & Anatolian highlands
@@ -2094,7 +2111,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // Nordic Fjords (native 192x224): the Scandinavian peninsula runs north-south,
     // Finland closes the northeast, Denmark/northern Europe the south. Deep fjord
     // cuts fracture Norway's west coast while the Baltic drains through Danish straits.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     // North Cape + Norwegian coastal strip + Swedish spine
     paintPoly(waterSet, noiseRing(36, 9, 31, 9, 1311, 0.12), false);
     paintPoly(waterSet, noiseRing(19, 84, 15, 68, 1312, 0.15), false);
@@ -2141,6 +2158,10 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [154, 82, 4],
       [102, 184, 3],
       [28, 82, 3],
+      // The fixed starter-ore offset for the south-mid spawn lands east of the
+      // harbor inlet at halved dimensions. Keep a small companion field on the
+      // spawn's own western bank so that base is not economically landlocked.
+      [86, 200, 4],
     ];
     artifacts = [
       { kind: "lighthouse", x: 8, y: 82, scale: 1.1 },
@@ -2157,16 +2178,16 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // Afro-Eurasia east, Australia in the lower-right ocean, and Antarctica rims the
     // south. Continents are hand-shaped polygon coastlines (not noise blobs) with
     // Atlantic/Pacific blue-water separation and a narrow Panama sea cut.
-    addRectRaw(waterSet, 0, 0, W, H);
+    addRectRaw(waterSet, 0, 0, W / na, H / na);
     // North America — Alaska, broad Canada, the eastern seaboard & Mexico waist
     const northAmerica: [number, number][] = [
       [0, 16], [13, 5], [36, 0], [62, 3], [79, 12], [86, 25], [79, 37], [88, 47], [84, 62],
       [91, 73], [84, 86], [74, 94], [66, 107], [57, 101], [51, 88], [43, 80], [32, 75],
       [20, 70], [10, 58], [0, 50],
     ];
-    paintPoly(waterSet, chaikin(northAmerica, true, 2), false);
+    paintPolyAuth(waterSet, chaikin(northAmerica, true, 2), false);
     // Greenland and the Aleutian arc reaching the west-edge Pacific spawn
-    paintPoly(waterSet, chaikin([[94, 5], [115, 2], [120, 12], [115, 27], [104, 33], [92, 21]], true, 2), false);
+    paintPolyAuth(waterSet, chaikin([[94, 5], [115, 2], [120, 12], [115, 27], [104, 33], [92, 21]], true, 2), false);
     paintLine(waterSet, chaikin([[4, 48], [0, 66], [2, 82], [7, 96]], false, 2), 5, false);
     paintPoly(waterSet, noiseRing(6, 96, 14, 10, 1401, 0.13), false);
     // Central America — narrow isthmus into South America, then cut by the canal
@@ -2175,25 +2196,25 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [82, 105], [100, 98], [121, 103], [136, 118], [132, 139], [123, 158], [112, 171],
       [101, 174], [94, 160], [85, 143], [77, 124], [75, 112],
     ];
-    paintPoly(waterSet, chaikin(southAmerica, true, 2), false);
+    paintPolyAuth(waterSet, chaikin(southAmerica, true, 2), false);
     // Panama sea cut — tiny but navigable, the planet's pivotal trans-oceanic passage
-    paintLine(waterSet, chaikin([[79, 96], [84, 101], [90, 107]], false, 1), 3.2, true);
+    paintLine(waterSet, chaikin([[79, 96], [84, 101], [90, 107]], false, 1), 3.2, true, 2.5);
     // Afro-Eurasia — the broad northern supercontinent, with Europe tapering west
     const eurasia: [number, number][] = [
       [126, 0], [255, 0], [255, 82], [245, 91], [232, 82], [218, 77], [205, 70], [191, 62],
       [177, 55], [160, 49], [145, 44], [132, 30],
     ];
-    paintPoly(waterSet, chaikin(eurasia, true, 2), false);
+    paintPolyAuth(waterSet, chaikin(eurasia, true, 2), false);
     // Africa — wide Saharan north, west bulge, tapering southern cone
     const africaTerra: [number, number][] = [
       [148, 59], [165, 52], [186, 55], [199, 67], [204, 87], [197, 109], [188, 132],
       [176, 143], [165, 130], [157, 108], [145, 96], [136, 80], [140, 67],
     ];
-    paintPoly(waterSet, chaikin(africaTerra, true, 2), false);
+    paintPolyAuth(waterSet, chaikin(africaTerra, true, 2), false);
     // Arabia, India & southeast Asia give the Indian Ocean its recognizable peninsulas
-    paintPoly(waterSet, chaikin([[196, 68], [218, 76], [219, 98], [205, 99], [194, 82]], true, 2), false);
-    paintPoly(waterSet, chaikin([[209, 76], [224, 98], [216, 124], [204, 96]], true, 2), false);
-    paintPoly(waterSet, chaikin([[229, 78], [245, 91], [249, 112], [236, 106], [228, 92]], true, 2), false);
+    paintPolyAuth(waterSet, chaikin([[196, 68], [218, 76], [219, 98], [205, 99], [194, 82]], true, 2), false);
+    paintPolyAuth(waterSet, chaikin([[209, 76], [224, 98], [216, 124], [204, 96]], true, 2), false);
+    paintPolyAuth(waterSet, chaikin([[229, 78], [245, 91], [249, 112], [236, 106], [228, 92]], true, 2), false);
     // Mediterranean and Red-sea incisions (kept narrow but connected to the world sea)
     paintLine(waterSet, chaikin([[136, 64], [154, 61], [176, 63], [197, 69]], false, 2), 5, true);
     paintLine(waterSet, chaikin([[199, 74], [205, 86], [208, 99]], false, 1), 3.5, true);
@@ -2201,7 +2222,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     paintPoly(waterSet, noiseRing(54, 28, 10, 12, 1402, 0.1), true);
     paintLine(waterSet, chaikin([[61, 25], [72, 23], [82, 29]], false, 1), 4, true);
     // Australia, Indonesian stepping stones, Japan, Caribbean islands
-    paintPoly(waterSet, chaikin([[208, 137], [225, 130], [244, 135], [250, 149], [244, 163], [225, 168], [209, 160], [203, 148]], true, 2), false);
+    paintPolyAuth(waterSet, chaikin([[208, 137], [225, 130], [244, 135], [250, 149], [244, 163], [225, 168], [209, 160], [203, 148]], true, 2), false);
     paintPoly(waterSet, noiseRing(232, 119, 7, 4, 1403, 0.14), false);
     paintPoly(waterSet, noiseRing(244, 126, 6, 4, 1404, 0.14), false);
     paintPoly(waterSet, noiseRing(250, 79, 4, 9, 1405, 0.14), false);
@@ -2212,7 +2233,7 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [0, 181], [20, 177], [48, 180], [78, 176], [110, 180], [145, 177], [178, 181],
       [210, 178], [236, 181], [255, 179], [255, 191], [0, 191],
     ];
-    paintPoly(waterSet, chaikin(antarctica, true, 1), false);
+    paintPolyAuth(waterSet, chaikin(antarctica, true, 1), false);
     // Great mountain spines: Rockies, Andes, Alps/Himalaya
     paintLine(cliffSet, chaikin([[38, 24], [46, 48], [55, 78]], false, 2), 4, true);
     paintLine(cliffSet, chaikin([[86, 113], [91, 139], [101, 171]], false, 2), 4, true);
@@ -2236,6 +2257,12 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
       [170, 94, 4],
       [219, 45, 4],
       [226, 149, 3],
+      // Fixed absolute starter-ore offsets do not scale with the planet. At the
+      // halved size the east-mid and SE polar starts snap onto offshore/isolated
+      // land; these small fields keep ore on the spawns' own continents without
+      // inflating the central contested fields.
+      [236, 88, 4],
+      [228, 182, 4],
     ];
     artifacts = [
       { kind: "lighthouse", x: 84, y: 82, scale: 1.1 },
