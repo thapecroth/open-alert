@@ -8,6 +8,7 @@ import { AudioEngine } from "./audio";
 import type { FirstPersonController } from "./fpv";
 import { FpvStory } from "./story";
 import { generateIcons } from "./icons";
+import { whenModelTexturesReady } from "./textures";
 import { isBuildingKind, el } from "./util";
 import * as THREE from "three";
 import {
@@ -127,9 +128,14 @@ function ensureIcons(color: string) {
   if (iconRunColor === color) return; // correct-color run already in flight — it applies itself when done
   iconRunColor = color; // any in-flight run for a different color now cancels itself as stale
   const isStale = () => iconRunColor !== color;
-  generateIcons(gs, ICON_KINDS, color, isStale).then((icons) => {
-    if (!isStale()) hud.setIcons(icons);
-  });
+  // Icons are snapshots: wait for the worker-produced shared detail textures so
+  // thumbnails never capture the transient neutral placeholders. The icon bake
+  // itself remains incremental/cancellable through generateIcons.
+  whenModelTexturesReady()
+    .then(() => generateIcons(gs, ICON_KINDS, color, isStale))
+    .then((icons) => {
+      if (!isStale()) hud.setIcons(icons);
+    });
 }
 
 // ---------- lobby idle prewarm pipeline ----------
@@ -150,7 +156,8 @@ function schedulePrewarm(map: MapId) {
   const gen = ++prewarmGen;
   const cancelled = () => gen !== prewarmGen || phase !== "lobby";
   void (async () => {
-    // Stage 1: terrain textures + cliff/water/artifact geometry, fully sliced.
+    // Stage 1: terrain textures (in the texture worker) + cliff/water/artifact
+    // geometry, with the scene-construction portion fully sliced.
     await gs.prewarmMap(map, cancelled);
     if (cancelled()) return;
     // Stage 2: instanced pool templates + incremental shader compilation,

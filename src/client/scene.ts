@@ -6,7 +6,7 @@ import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { MAP_W, MAP_H, MapId, MapArtifact, getMapLayout } from "../shared/gamedefs";
 import {
-  battlefieldTexturesJob,
+  createBattlefieldTextures,
   driveBakeJob,
   type BattlefieldTextures,
   createOceanWaterMaterial,
@@ -1859,10 +1859,10 @@ export class GameScene {
     }
   }
 
-  // Sliceable map construction. Phase one builds terrain textures, cliff/water/
-  // artifact geometry fully offline (the generator yields at row/tile
-  // boundaries); phase two is one atomic synchronous commit that mutates the
-  // live scene. Abandoning the generator before the commit leaves the previous
+  // Sliceable map construction. Phase one starts the terrain-texture worker and
+  // builds cliff/water/artifact geometry fully offline (the generator yields at
+  // tile/geometry boundaries); phase two is one atomic synchronous commit that
+  // mutates the live scene. Abandoning the generator before the commit leaves the previous
   // map intact, and the finally block disposes the orphaned partial build.
   private *mapBuildJob(mapId: MapId): Generator<undefined, void, undefined> {
     const partial = {
@@ -1897,7 +1897,10 @@ export class GameScene {
     const atm = BIOME_ATMOSPHERE[mapId] ?? BIOME_ATMOSPHERE.crossroads;
 
     // ---- offline build phase (no live-scene mutation until the commit) ----
-    partial.textures = yield* battlefieldTexturesJob(mapId);
+    // Placeholder textures return immediately while the worker bakes the real
+    // pixels in parallel; yield here so prewarm slicing still starts cheaply.
+    partial.textures = createBattlefieldTextures(mapId);
+    yield;
 
     const W = layout.w;
     const H = layout.h;
