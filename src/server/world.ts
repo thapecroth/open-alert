@@ -70,6 +70,7 @@ import {
 import type {
   OrderKind,
   EntSnap,
+  EntDelta,
   CrateSnap,
   PlayerState,
   ProdItem,
@@ -77,6 +78,7 @@ import type {
   WeaponFx,
   MatchStats,
 } from "../shared/protocol";
+import { diffEnts } from "../shared/snapdelta";
 import { findPath, nearestPassable, AstarEngine, PATH_STATS } from "./path";
 
 const MAX_WAYPOINTS = 16;
@@ -382,6 +384,44 @@ const copyPlayer = (p: P): P => {
   };
 };
 
+// --- snapshot() memoization element-wise compares (allocation-free) ---
+// production entries are flat records; waypoint comparison lives on the class
+// (it needs target lookup). A true result licenses reusing the previously
+// emitted immutable object.
+// (wire types mark awaitingDef/dq optional though emission always includes them —
+// shared empty stand-ins keep the compare allocation-free without constructing)
+const EMPTY_ARR: readonly unknown[] = [];
+const EMPTY_BQ: { kind: BuildingKind; left: number; total: number }[] = [];
+const scalarArrEq = (a: readonly unknown[], b: readonly unknown[]): boolean => {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+};
+const bqArrEq = (
+  a: { kind: BuildingKind; left: number; total: number }[],
+  b: { kind: BuildingKind; left: number; total: number }[],
+): boolean => {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (x.kind !== y.kind || x.left !== y.left || x.total !== y.total) return false;
+  }
+  return true;
+};
+const prodItemArrEq = (a: ProdItem[], b: ProdItem[]): boolean => {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (x.unit !== y.unit || x.left !== y.left || x.total !== y.total) return false;
+  }
+  return true;
+};
+
 export class World {
   readonly w: number;
   readonly h: number;
@@ -447,6 +487,30 @@ export class World {
   private subDetMask!: Map<number, number>; // sub ent id -> bitmask of slots that detect it this tick
   private gridTick!: number;
   private names: Record<number, string>;
+  // snapshot() memoization caches. Emitted EntSnap/PlayerState/array objects are
+  // immutable by protocol contract (renderers retain them across frames for
+  // interpolation; the worker retains the broadcast baseline), so when every
+  // serialized value still matches, the SAME object reference can be re-emitted —
+  // this is what keeps the 5 Hz snapshot pipeline from allocating per-entity
+  // garbage every frame. Nothing in here may ever be mutated after emission.
+  private snapEntCache!: Map<number, EntSnap>; // ent id -> last emitted immutable EntSnap
+  private snapPlayerCache!: Map<number, PlayerState>; // slot -> last emitted immutable PlayerState
+  private cratesVersion!: number; // bumped on every crates-map mutation
+  private snapCratesVersion!: number; // cratesVersion the cached array was built at
+  private snapCrates!: CrateSnap[]; // last emitted immutable crates array
+  private bridgesVersion!: number; // bumped on every bridges-set mutation
+  private snapBridgesVersion!: number; // bridgesVersion the cached array was built at
+  private snapBridges!: number[]; // last emitted immutable bridges array
+  // Delta metadata collected as a BYPRODUCT of snapshot()'s memoization compare —
+  // exactly what diffSnaps would reconstruct with an O(N) Map per frame. `from`
+  // is the previously returned snapshot object: the metadata is valid iff the
+  // consumer's baseline IS that object (identity), making interleaved snapshot()
+  // callers fall back to diffSnaps safely.
+  snapDelta: {
+    from: object | null;
+    diff: { ents: EntDelta[]; gone?: number[]; crates?: CrateSnap[]; bridges?: number[]; players?: Record<number, PlayerState> };
+  } | null = null;
+  private snapLastRet: object | null = null;
 
   private idx(x: number, y: number): number {
     return y * this.w + x;
@@ -488,6 +552,16 @@ export class World {
     this.ecoIdx = [];
     this.bldDirty = true;
     this.regionDirty = true;
+    this.snapEntCache = new Map();
+    this.snapPlayerCache = new Map();
+    this.cratesVersion = 0;
+    this.snapCratesVersion = -1;
+    this.snapCrates = [];
+    this.bridgesVersion = 0;
+    this.snapBridgesVersion = -1;
+    this.snapBridges = [];
+    this.snapDelta = null;
+    this.snapLastRet = null;
     this.passable = (x: number, y: number) =>
       this.inBounds(x, y) &&
       this.block[this.idx(x, y)] === 0 &&
@@ -2312,6 +2386,7 @@ export class World {
         const kind = CRATE_KINDS[Math.floor(Math.random() * CRATE_KINDS.length)];
         const crate: CrateSnap = { id: this.nextCrateId++, x: cx, y: cy, kind };
         this.crates.set(crate.id, crate);
+        this.cratesVersion++;
         break;
       }
     }
@@ -2330,6 +2405,7 @@ export class World {
       }
       if (!collector) continue;
       this.crates.delete(cid);
+      this.cratesVersion++;
       const p = this.players.get(collector.o);
       let text = "";
       if (crate.kind === "cash") {
@@ -2588,6 +2664,7 @@ export class World {
             } else {
               p.credits -= 40;
               this.bridges.add(t);
+              this.bridgesVersion++;
               this.bridgeMask[t] = 1;
               this.regionDirty = true;
               e.bTiles.shift();
@@ -4142,37 +4219,112 @@ export class World {
     }
   }
 
+  // Allocation-free comparison of an entity's serialized waypoint list against a
+  // cached immutable one. Resolves attack/board pins to their target's CURRENT
+  // position exactly like the tuple-building path in snapshot() — keep the two in sync.
+  private wpOrdMatches(ord: Order, tuple: [number, number, OrderKind] | undefined): boolean {
+    if (!tuple) return false;
+    let ox = ord.x,
+      oy = ord.y;
+    if ((ord.kind === "attack" || ord.kind === "board") && ord.target != null) {
+      const t = this.ents.get(ord.target);
+      if (t) {
+        ox = t.x;
+        oy = t.y;
+      }
+    }
+    return tuple[0] === Math.round(ox * 10) / 10 && tuple[1] === Math.round(oy * 10) / 10 && tuple[2] === ord.kind;
+  }
+
+  private wpMatchesSnap(cached: [number, number, OrderKind][], e: Ent): boolean {
+    let i = 0;
+    if (e.order) {
+      if (!this.wpOrdMatches(e.order, cached[i++])) return false;
+    }
+    for (const q of e.orderQueue) {
+      if (!this.wpOrdMatches(q, cached[i++])) return false;
+    }
+    return i === cached.length;
+  }
+
+  // Serialized snapshots are immutable protocol objects (renderers retain them
+  // across frames for interpolation; the worker retains its diff baseline). Every
+  // output object is therefore memoized per entity/player and reference-reused
+  // while ALL serialized values still match — an unchanged ent costs zero
+  // allocations per frame, and copy-on-write rebuilds only what actually changed.
+  // Nothing anywhere may mutate an emitted snapshot object (see the invariant
+  // comment on the cache fields).
   snapshot(): { ents: EntSnap[]; crates: CrateSnap[]; bridges: number[]; players: Record<number, PlayerState>; events: GameEvent[] } {
-    const ents: EntSnap[] = [];
+    // pre-sized exact-fit backing store — a push-grown array pays doubling-realloc
+    // garbage per frame; every live ent occupies exactly one slot (eviction exactness below)
+    const ents: EntSnap[] = new Array(this.ents.size);
+    let entsLen = 0;
+    const dEnts: EntDelta[] = [];
+    const entCache = this.snapEntCache;
     for (const e of this.ents.values()) {
-      const s: EntSnap = {
-        id: e.id,
-        o: e.o,
-        k: e.k === "spy" && this.tick >= e.spottedUntil ? "infantry" : e.k,
-        x: Math.round(e.x * 100) / 100,
-        y: Math.round(e.y * 100) / 100,
-        hp: Math.max(0, Math.round(e.hp)),
-        mhp: e.mhp,
-        d: Math.round(e.d * 10),
-      };
-      if (e.k === "harvester" || e.k === "supplytruck") s.cargo = Math.round(e.cargo);
+      // Resolve every serialized value first — reuse requires a full-content
+      // match against the immutable cached object.
+      const k = e.k === "spy" && this.tick >= e.spottedUntil ? "infantry" : e.k;
+      const x = Math.round(e.x * 100) / 100;
+      const y = Math.round(e.y * 100) / 100;
+      const hp = Math.max(0, Math.round(e.hp));
+      const d = Math.round(e.d * 10);
+      let cargo: number | undefined;
+      if (e.k === "harvester" || e.k === "supplytruck") cargo = Math.round(e.cargo);
       // troop transports reuse the same wire scalar: cargo = passengers aboard
       // (interpretation stays kind-dependent, exactly like ore load vs supply load)
-      else if (transportCapOf(e.k) > 0) s.cargo = e.passengers?.length ?? 0;
+      else if (transportCapOf(e.k) > 0) cargo = e.passengers?.length ?? 0;
+      let fl: number | undefined;
+      let am: number | undefined;
       if (this.config.logistics !== false && !isBuilding(e.k)) {
-        const fl = Math.round(e.fuel);
-        const am = Math.round(e.ammo);
-        if (fl < 100) s.fl = fl;
-        if (am < 100) s.am = am;
+        const flr = Math.round(e.fuel);
+        const amr = Math.round(e.ammo);
+        if (flr < 100) fl = flr;
+        if (amr < 100) am = amr;
       }
-      if (e.vet > 0) s.vet = e.vet;
-      if (e.hold) s.hold = true;
-      if (this.isStealthed(e)) s.sub = true;
-      if (e.k === "spy" && this.tick >= e.spottedUntil) s.disg = "spy";
-      if (e.fpvAlt !== undefined) s.alt = Math.round(e.fpvAlt * 100) / 100;
-      if (e.rally) s.rally = [e.rally[0], e.rally[1]];
-      if (!isBuilding(e.k) && (e.order || e.orderQueue.length)) {
-        const wp: [number, number, OrderKind][] = [];
+      const vet = e.vet > 0 ? e.vet : undefined;
+      const hold = e.hold ? true : undefined;
+      const sub = this.isStealthed(e) ? true : undefined;
+      const disg: EntKind | undefined = e.k === "spy" && this.tick >= e.spottedUntil ? "spy" : undefined;
+      const alt = e.fpvAlt !== undefined ? Math.round(e.fpvAlt * 100) / 100 : undefined;
+      // waypoints compare WITHOUT building anything: attack/board pins resolve
+      // to their target's current position in both paths, so an equal list costs
+      // zero garbage and licenses reusing the cached object; the tuples are only
+      // constructed when the ent is being rebuilt anyway
+      const hasWp = !isBuilding(e.k) && !!(e.order || e.orderQueue.length);
+      const prev = entCache.get(e.id);
+      if (prev) {
+        const rallySame = e.rally
+          ? prev.rally !== undefined && prev.rally[0] === e.rally[0] && prev.rally[1] === e.rally[1]
+          : prev.rally === undefined;
+        const wpSame = hasWp ? prev.wp !== undefined && this.wpMatchesSnap(prev.wp, e) : prev.wp === undefined;
+        if (
+          prev.o === e.o &&
+          prev.k === k &&
+          prev.x === x &&
+          prev.y === y &&
+          prev.hp === hp &&
+          prev.mhp === e.mhp &&
+          prev.d === d &&
+          prev.cargo === cargo &&
+          prev.fl === fl &&
+          prev.am === am &&
+          prev.vet === vet &&
+          prev.hold === hold &&
+          prev.sub === sub &&
+          prev.disg === disg &&
+          prev.alt === alt &&
+          rallySame &&
+          wpSame
+        ) {
+          ents[entsLen++] = prev; // unchanged — re-emit the same immutable reference
+          continue;
+        }
+      }
+      // rebuild path — the only place waypoint tuples are constructed
+      let wp: [number, number, OrderKind][] | undefined;
+      if (hasWp) {
+        const list: [number, number, OrderKind][] = [];
         const pushOrd = (ord: Order) => {
           let ox = ord.x,
             oy = ord.y;
@@ -4183,21 +4335,111 @@ export class World {
               oy = t.y;
             }
           }
-          wp.push([Math.round(ox * 10) / 10, Math.round(oy * 10) / 10, ord.kind]);
+          list.push([Math.round(ox * 10) / 10, Math.round(oy * 10) / 10, ord.kind]);
         };
         if (e.order) pushOrd(e.order);
         for (const q of e.orderQueue) pushOrd(q);
-        if (wp.length) s.wp = wp;
+        if (list.length) wp = list;
       }
-      ents.push(s);
+      const s: EntSnap = { id: e.id, o: e.o, k, x, y, hp, mhp: e.mhp, d };
+      if (cargo !== undefined) s.cargo = cargo;
+      if (fl !== undefined) s.fl = fl;
+      if (am !== undefined) s.am = am;
+      if (vet !== undefined) s.vet = vet;
+      if (hold !== undefined) s.hold = true;
+      if (sub !== undefined) s.sub = true;
+      if (disg !== undefined) s.disg = disg;
+      if (alt !== undefined) s.alt = alt;
+      // rally is copied (never shared with sim state) exactly like before —
+      // with memoization the copy only happens when the object is rebuilt anyway
+      if (e.rally) s.rally = [e.rally[0], e.rally[1]];
+      if (wp) s.wp = wp;
+      entCache.set(e.id, s);
+      ents[entsLen++] = s;
+      if (prev) {
+        // field-level sparse delta against the previous emission — diffEnts
+        // must find a difference precisely because the memo compare failed
+        const ed = diffEnts(prev, s);
+        if (ed) dEnts.push(ed);
+      } else {
+        dEnts.push(s); // brand-new ent rides the delta as its full object
+      }
+    }
+    // evict cache entries of dead/embarked entities. After the loop every live
+    // ent owns exactly one entry, so a size surplus is exactly the stale set —
+    // and the stale ids are exactly the delta's gone list.
+    let dGone: number[] | undefined;
+    if (entCache.size > this.ents.size) {
+      for (const id of entCache.keys()) {
+        if (!this.ents.has(id)) {
+          entCache.delete(id);
+          (dGone ??= []).push(id);
+        }
+      }
     }
     const players: Record<number, PlayerState> = {};
+    let dPlayers: Record<number, PlayerState> | undefined;
     for (const p of this.players.values()) {
+      const credits = Math.floor(p.credits);
+      const swOn = p.swLeft >= 0;
+      const swReady = swOn ? p.swLeft <= 0 && !p.lowPower : undefined;
+      const swLeftQ = swOn ? Math.ceil(p.swLeft) : undefined;
+      const reconOn = p.reconLeft >= 0;
+      const reconReady = reconOn ? p.reconLeft <= 0 && !p.lowPower : undefined;
+      const reconLeftQ = reconOn ? Math.ceil(p.reconLeft) : undefined;
+      const pbBarracks = this.prodBoostOf(p.slot, "barracks");
+      const pbFactory = this.prodBoostOf(p.slot, "factory");
+      const pbAirfield = this.prodBoostOf(p.slot, "airfield");
+      const pbShipyard = this.prodBoostOf(p.slot, "shipyard");
+      const prev = this.snapPlayerCache.get(p.slot);
+      if (prev) {
+        let queuesSame = true;
+        for (const cat of PROD_CATS) {
+          const cur = p.queues[cat];
+          const cached = prev.queues[cat];
+          if (!cur?.length) {
+            if (cached !== undefined) {
+              queuesSame = false;
+              break;
+            }
+          } else if (!cached || !prodItemArrEq(cur as ProdItem[], cached)) {
+            queuesSame = false;
+            break;
+          }
+        }
+        if (
+          queuesSame &&
+          prev.credits === credits &&
+          prev.pwrHave === p.pwrHave &&
+          prev.pwrUse === p.pwrUse &&
+          prev.lowPower === p.lowPower &&
+          prev.eliminated === p.eliminated &&
+          prev.team === p.team &&
+          prev.swReady === swReady &&
+          prev.swLeft === swLeftQ &&
+          (swOn ? prev.swTotal === SW_CHARGE_TICKS : prev.swTotal === undefined) &&
+          prev.reconReady === reconReady &&
+          prev.reconLeft === reconLeftQ &&
+          (reconOn ? prev.reconTotal === RECON_CHARGE_TICKS : prev.reconTotal === undefined) &&
+          prev.prodBoost !== undefined &&
+          prev.prodBoost.barracks === pbBarracks &&
+          prev.prodBoost.factory === pbFactory &&
+          prev.prodBoost.airfield === pbAirfield &&
+          prev.prodBoost.shipyard === pbShipyard &&
+          scalarArrEq(p.awaiting, prev.awaiting) &&
+          bqArrEq(p.bq, prev.bq) &&
+          scalarArrEq(p.awaitingDef, prev.awaitingDef ?? EMPTY_ARR) &&
+          bqArrEq(p.dq, prev.dq ?? EMPTY_BQ)
+        ) {
+          players[p.slot] = prev; // unchanged — re-emit the same immutable reference
+          continue;
+        }
+      }
       const qCopy: Partial<Record<ProdCat, ProdItem[]>> = {};
       for (const cat of PROD_CATS) if (p.queues[cat]?.length) qCopy[cat] = p.queues[cat]!.map((i) => ({ ...i }));
       const ps: PlayerState = {
         slot: p.slot,
-        credits: Math.floor(p.credits),
+        credits,
         pwrHave: p.pwrHave,
         pwrUse: p.pwrUse,
         lowPower: p.lowPower,
@@ -4209,26 +4451,65 @@ export class World {
         queues: qCopy,
         team: p.team,
       };
-      if (p.swLeft >= 0) {
-        ps.swReady = p.swLeft <= 0 && !p.lowPower;
-        ps.swLeft = Math.ceil(p.swLeft);
+      if (swOn) {
+        ps.swReady = swReady;
+        ps.swLeft = swLeftQ;
         ps.swTotal = SW_CHARGE_TICKS;
       }
-      if (p.reconLeft >= 0) {
-        ps.reconReady = p.reconLeft <= 0 && !p.lowPower;
-        ps.reconLeft = Math.ceil(p.reconLeft);
+      if (reconOn) {
+        ps.reconReady = reconReady;
+        ps.reconLeft = reconLeftQ;
         ps.reconTotal = RECON_CHARGE_TICKS;
       }
       ps.prodBoost = {
-        barracks: this.prodBoostOf(p.slot, "barracks"),
-        factory: this.prodBoostOf(p.slot, "factory"),
-        airfield: this.prodBoostOf(p.slot, "airfield"),
-        shipyard: this.prodBoostOf(p.slot, "shipyard"),
+        barracks: pbBarracks,
+        factory: pbFactory,
+        airfield: pbAirfield,
+        shipyard: pbShipyard,
       };
+      this.snapPlayerCache.set(p.slot, ps);
       players[p.slot] = ps;
+      (dPlayers ??= {})[p.slot] = ps; // rebuilt => content changed => belongs in the delta
+    }
+    // evict cache entries of removed player slots (same exact-guard logic as ents)
+    if (this.snapPlayerCache.size > this.players.size) {
+      for (const slot of this.snapPlayerCache.keys()) if (!this.players.has(slot)) this.snapPlayerCache.delete(slot);
+    }
+    // crates/bridges are version-counted at their (rare) mutation points — the
+    // emitted array is reference-reused between mutations instead of re-spread
+    // every frame, and reference equality downstream (diffSnaps) proves no-change
+    let cratesOut = this.snapCrates;
+    let dCrates: CrateSnap[] | undefined;
+    if (this.snapCratesVersion !== this.cratesVersion) {
+      cratesOut = [...this.crates.values()];
+      this.snapCrates = cratesOut;
+      this.snapCratesVersion = this.cratesVersion;
+      dCrates = cratesOut;
+    }
+    let bridgesOut = this.snapBridges;
+    let dBridges: number[] | undefined;
+    if (this.snapBridgesVersion !== this.bridgesVersion) {
+      bridgesOut = [...this.bridges];
+      this.snapBridges = bridgesOut;
+      this.snapBridgesVersion = this.bridgesVersion;
+      dBridges = bridgesOut;
     }
     const events = this.events;
     this.events = [];
-    return { ents, crates: [...this.crates.values()], bridges: [...this.bridges], players, events };
+    const ret = { ents, crates: cratesOut, bridges: bridgesOut, players, events };
+    // diff metadata for the broadcast fast path — valid only against the
+    // previously returned object (see the snapDelta field comment). Conservative
+    // difference vs diffSnaps: crates/bridges version bumps can over-include on
+    // a net-zero add+remove within one frame — same content, harmless resend.
+    // `diff` is nested so the spread that builds the wire message can never
+    // carry the `from` baseline reference along with it
+    const diff: NonNullable<World["snapDelta"]>["diff"] = { ents: dEnts };
+    if (dGone) diff.gone = dGone;
+    if (dCrates) diff.crates = dCrates;
+    if (dBridges) diff.bridges = dBridges;
+    if (dPlayers) diff.players = dPlayers;
+    this.snapDelta = { from: this.snapLastRet, diff };
+    this.snapLastRet = ret;
+    return ret;
   }
 }

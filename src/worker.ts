@@ -989,11 +989,18 @@ export class GameRoom extends Server<Env> {
         if (keyJson) {
           conn.send(keyJson);
         } else {
+          // snapshot() collects exactly this diff as a byproduct of its
+          // memoization compare (zero redundant work, no O(N) rebuild Map);
+          // it is valid only when our baseline IS the previous snapshot object
+          // — any interleaved snapshot() caller or a restored world falls back
+          // to the standalone diffSnaps.
+          const meta = w.snapDelta;
+          const fastDiff = meta && base && base.snap === meta.from ? meta.diff : null;
           deltaJson ??= JSON.stringify({
             t: "snapd",
             seq,
             tick,
-            ...diffSnaps(base!.snap, snap),
+            ...(fastDiff ?? diffSnaps(base!.snap, snap)),
             events: snap.events,
           } satisfies S2C);
           conn.send(deltaJson);
