@@ -2643,7 +2643,7 @@ export class FirstPersonController {
     rayCands.length = 0;
     for (const t of this.renderer.tracked.values()) {
       if (t.last.id === this.entId) continue;
-      const root = t.inst ? t.inst.proxy : t.vis.root;
+      const root = t.inst ? t.inst.proxy : t.vehInst ? t.vehInst.proxy : t.vis.root;
       if (!root.visible) continue;
       const cy = !isBuildingKind(t.last.k) && UNITS[t.last.k as UnitKind].domain === "air" ? 3.0 : 0.6;
       this._fpvTmpV.set(t.last.x, cy, t.last.y);

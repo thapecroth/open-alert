@@ -109,7 +109,9 @@ export class RtsBot {
   private awaitingSince = -1; // tick we first saw current `awaiting`
   private nextDefPlaceTry = 0;
   private awaitingDefSince = -1; // tick we first saw current `awaitingDef`
-  private deniedTiles = new Set<string>(); // "kind:tx,ty" that cmdPlace refused
+  // numeric tile keys (ty*4096+tx) per kind — the probes run hundreds of times
+  // per findSpot scan, and template-string keys were pure allocation churn
+  private deniedTiles = new Map<BuildingKind, Set<number>>(); // tiles cmdPlace refused
   private oreCache: [number, number, number][] = [];
   private oreAt = -1e9;
   private lastAssault = -1e9;
@@ -419,6 +421,16 @@ export class RtsBot {
     return base;
   }
 
+  private deniedHas(kind: BuildingKind, tx: number, ty: number): boolean {
+    return this.deniedTiles.get(kind)?.has(ty * 4096 + tx) ?? false;
+  }
+
+  private deniedAdd(kind: BuildingKind, tx: number, ty: number) {
+    let s = this.deniedTiles.get(kind);
+    if (!s) this.deniedTiles.set(kind, (s = new Set()));
+    s.add(ty * 4096 + tx);
+  }
+
   // Scan candidate top-left tiles in the adjacency band (gap <= 2, SHIPYARD_BUILD_DIST
   // for waterOnly, or expanding ring around goal for forwardRange); validate with world.canPlace.
   private findSpot(kind: BuildingKind): { tx: number; ty: number } | null {
@@ -437,7 +449,7 @@ export class RtsBot {
             const tx = gx + dx,
               ty = gy + dy;
             if (tx < 0 || ty < 0 || tx + d.w > w.w || ty + d.h > w.h) continue;
-            if (this.deniedTiles.has(`${kind}:${tx},${ty}`)) continue;
+            if (this.deniedHas(kind, tx, ty)) continue;
             if (w.canPlace(this.slot, kind, tx, ty) === null) return { tx, ty };
           }
         }
@@ -462,7 +474,7 @@ export class RtsBot {
           if (seen.has(k)) continue;
           seen.add(k);
           if (d.waterOnly && !w.isWater(tx, ty)) continue;
-          if (this.deniedTiles.has(`${kind}:${tx},${ty}`)) continue;
+          if (this.deniedHas(kind, tx, ty)) continue;
           if (w.canPlace(this.slot, kind, tx, ty) !== null) continue;
           const s = dist(tx + d.w / 2, ty + d.h / 2, goal.x, goal.y);
           if (s < bs) {
@@ -489,7 +501,7 @@ export class RtsBot {
     if (err) {
       this.denies++;
       this.lastDeny = err;
-      this.deniedTiles.add(`${kind}:${spot.tx},${spot.ty}`);
+      this.deniedAdd(kind, spot.tx, spot.ty);
     } else {
       // Placement is the only bot command that creates entities mid-think; fold
       // them into the existing snapshot instead of rescanning the world.

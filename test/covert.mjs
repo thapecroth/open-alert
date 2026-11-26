@@ -34,7 +34,10 @@ registerHooks({
 });
 
 const { World } = await import("../src/server/world.ts");
-const { LocalRoom } = await import("../src/client/localnet.ts");
+// The sim now lives behind a worker proxy in browsers (src/client/localnet.ts);
+// Node has no module workers, so the pause test drives the transport-agnostic
+// in-process host directly — same room engine, same synchronous internals.
+const { LocalSimHost } = await import("../src/client/sim-host.ts");
 
 let pass = 0, fail = 0;
 function ok(cond, name) {
@@ -137,7 +140,7 @@ function ent(w, id) {
 
 // ---------- 6. Pause freezes local sim ----------
 {
-  const room = new LocalRoom();
+  const room = new LocalSimHost();
   const msgs = [];
   room.onMsg = (m) => msgs.push(m);
   room.send({ t: "join", name: "Tester", token: "tt1" });

@@ -450,6 +450,16 @@ export class World {
   private regionSea!: Int32Array;
   private regionQ!: Int32Array; // flood-fill scratch
   private regionDirty!: boolean;
+  private regionLandSizes!: number[]; // tiles per land-region id — rebuilt with the grids
+  private regionSeaSizes!: number[];
+  // Baked per-tile passability for the A* expansion loops (1 = passable).
+  // Derived from block/cliff/water/bridgeMask and maintained INCREMENTALLY at
+  // every mutation point (building place/destroy footprint, bridge tile), so
+  // the masks are bit-exact mirrors of the passable()/passableSea() closures
+  // at all times — including mid-step mutations, which a paused incremental
+  // search must observe on resume exactly like the old live closure reads.
+  private passLand!: Uint8Array;
+  private passSea!: Uint8Array;
   private bld!: Int32Array; // ent id per tile
   private ore!: Int16Array; // remaining per tile
   private nextId!: number;
@@ -486,6 +496,19 @@ export class World {
   private sepUsed!: number[]; // indices of non-empty cells — avoids clearing 16k arrays/tick
   private subDetMask!: Map<number, number>; // sub ent id -> bitmask of slots that detect it this tick
   private gridTick!: number;
+  // canPlace unit-occupancy cache: bit0 = land-domain unit on tile, bit1 = sea.
+  // Entity positions only mutate inside step() (commands merely set orders), so
+  // within one tick every canPlace call observes the same occupancy — scan ents
+  // once instead of once per candidate tile (bot placement probes hundreds of
+  // candidates per think, making the old O(ents)-per-candidate scan the worst
+  // single-tick server cost). entsMut covers command-time entity mutations
+  // (sell/superweapon) within the same tick.
+  private occMask!: Uint8Array | null;
+  private occTick!: number;
+  private occMut!: number;
+  private entsMut!: number;
+  private oreSnapCache!: [number, number, number][] | null; // per-tick oreSnapshot memo
+  private oreSnapTick!: number;
   private names: Record<number, string>;
   // snapshot() memoization caches. Emitted EntSnap/PlayerState/array objects are
   // immutable by protocol contract (renderers retain them across frames for
@@ -546,6 +569,12 @@ export class World {
     this.slotCnt = new Int16Array(16);
     this.oreTakenMap = null;
     this.oreTiles = null;
+    this.occMask = null;
+    this.occTick = -1;
+    this.occMut = -1;
+    this.entsMut = 0;
+    this.oreSnapCache = null;
+    this.oreSnapTick = -1;
     this.bldIdx = new Map();
     this.bldAll = [];
     this.domeIdx = [];
@@ -579,6 +608,8 @@ export class World {
     this.bld = new Int32Array(area).fill(-1);
     this.ore = new Int16Array(area);
     this.bridgeMask = new Uint8Array(area);
+    this.passLand = new Uint8Array(area);
+    this.passSea = new Uint8Array(area);
     this.gridCols = Math.ceil(this.w / 8);
     this.gridRows = Math.ceil(this.h / 8);
     this.grid = Array.from({ length: this.gridCols * this.gridRows }, () => []);
@@ -599,7 +630,18 @@ export class World {
         }
       }
     }
+    for (let i = 0; i < area; i++) this.bakePassAt(i);
     return area;
+  }
+
+  // Re-bake the A* passability masks at tile i from the source arrays. Must be
+  // called at every block/bridgeMask mutation so passLand/passSea stay exact
+  // mirrors of the passable()/passableSea() closures for in-bounds tiles.
+  private bakePassAt(i: number) {
+    const blocked = this.block[i] !== 0 || this.cliff[i] !== 0;
+    const isWater = this.water[i] === 1;
+    this.passLand[i] = !blocked && (!isWater || this.bridgeMask[i] === 1) ? 1 : 0;
+    this.passSea[i] = !blocked && isWater ? 1 : 0;
   }
 
   constructor(slots: number[], opts?: WorldOpts) {
@@ -874,9 +916,17 @@ export class World {
   }
 
   oreSnapshot(): [number, number, number][] {
+    // Ore only mutates inside step() (harvesting, regen), so every caller in the
+    // same inter-step window sees identical state — build the scan once per tick.
+    // Consumers (bot oreCache) treat the result as read-only, so the array itself
+    // is shared rather than copied — thousands of tuple allocations per aligned
+    // bot-scan tick otherwise.
+    if (this.oreSnapCache && this.oreSnapTick === this.tick) return this.oreSnapCache;
     const out: [number, number, number][] = [];
     for (let y = 0; y < this.h; y++)
       for (let x = 0; x < this.w; x++) if (this.ore[this.idx(x, y)] > 0) out.push([x, y, this.ore[this.idx(x, y)]]);
+    this.oreSnapCache = out;
+    this.oreSnapTick = this.tick;
     return out;
   }
 
@@ -1100,8 +1150,10 @@ export class World {
     for (let y = ty; y < ty + d.h; y++)
       for (let x = tx; x < tx + d.w; x++)
         if (this.inBounds(x, y)) {
-          this.block[this.idx(x, y)] = 1;
-          this.bld[this.idx(x, y)] = e.id;
+          const i = this.idx(x, y);
+          this.block[i] = 1;
+          this.bld[i] = e.id;
+          this.bakePassAt(i);
         }
     return e;
   }
@@ -1139,6 +1191,7 @@ export class World {
     };
     this.ents.set(e.id, e);
     this.gridInsert(e);
+    this.entsMut++;
     if (e.o >= 0) this.slotCnt[e.o]++;
     this.events.push({ e: "spawn", id: e.id });
     return e;
@@ -1149,6 +1202,21 @@ export class World {
   private regionAround(x0: number, y0: number, pass: (x: number, y: number) => boolean, cap = 2048): Set<number> | null {
     const start = nearestPassable(x0, y0, pass, 10, this.w, this.h);
     if (!start) return new Set();
+    // O(1) cap answer: the BFS below explores exactly the passable-connected region
+    // of the seed tile, so it returns null iff that region holds >= cap tiles. The
+    // region grids measure the same connectivity (block/cliff/water/bridge tests are
+    // identical to the passable closures), so a big enough region can never yield a
+    // set — answer null without the doomed 2048-tile flood. Recomputing dirty regions
+    // here is bookkeeping only and keeps the grid bit-aligned with live passability.
+    if (pass === this.passable || pass === this.passableSea) {
+      if (this.regionDirty) this.recomputeRegions();
+      const grid = pass === this.passableSea ? this.regionSea : this.regionLand;
+      const sizes = pass === this.passableSea ? this.regionSeaSizes : this.regionLandSizes;
+      if (this.inBounds(start.x, start.y)) {
+        const rid = grid[this.idx(start.x, start.y)];
+        if (rid > 0 && sizes[rid] >= cap) return null;
+      }
+    }
     const s0 = this.idx(start.x, start.y);
     const seen = new Set<number>([s0]);
     const q = [s0];
@@ -1175,10 +1243,14 @@ export class World {
     const bx = b.x - def.w / 2,
       by = b.y - def.h / 2;
     const uDomain = UNITS[kind].domain;
-    // occupied tiles of the same domain, gathered once — avoids O(candidates × ents)
-    const occ = new Set<number>();
-    for (const u of this.ents.values())
-      if (!isBuilding(u.k) && domainOf(u.k) === uDomain) occ.add(this.idx(Math.floor(u.x), Math.floor(u.y)));
+    // Occupied tiles of the same domain, from the shared per-tick mask — the old
+    // per-call scan was O(ents) for every unit produced. idx() is injective per
+    // coordinate pair, so dropping out-of-bounds units (the mask is bounded)
+    // cannot change any in-bounds lookup below. spawnUnit bumps entsMut, so a
+    // second spawn in the same tick rebuilds the mask and sees the first unit.
+    const occMask = this.unitOccupancy();
+    const obit = uDomain === "sea" ? 2 : uDomain === "air" ? 4 : 1;
+    const occ = { has: (i: number) => (occMask[i] & obit) !== 0 };
     if (uDomain === "air") {
       // Air units spawn right over or around the airfield (ignoring buildings/cliffs/water)
       const cx = Math.floor(b.x),
@@ -1236,6 +1308,27 @@ export class World {
 
   // ---------- commands ----------
 
+  // Lazily (re)built per-tile occupancy bitmask for canPlace/spawnNearBuilding —
+  // bit0 land-domain unit present, bit1 sea, bit2 air. Rebuilt at most once per
+  // (tick, entsMut) pair and only when a placement query actually happens, so
+  // ticks without construction scanning pay nothing.
+  private unitOccupancy(): Uint8Array {
+    if (this.occMask && this.occTick === this.tick && this.occMut === this.entsMut) return this.occMask;
+    if (!this.occMask || this.occMask.length !== this.w * this.h) this.occMask = new Uint8Array(this.w * this.h);
+    else this.occMask.fill(0);
+    for (const u of this.ents.values()) {
+      if (isBuilding(u.k)) continue;
+      const dom = domainOf(u.k);
+      const ux = Math.floor(u.x),
+        uy = Math.floor(u.y);
+      if (ux < 0 || uy < 0 || ux >= this.w || uy >= this.h) continue;
+      this.occMask[uy * this.w + ux] |= dom === "sea" ? 2 : dom === "air" ? 4 : 1;
+    }
+    this.occTick = this.tick;
+    this.occMut = this.entsMut;
+    return this.occMask;
+  }
+
   canPlace(slot: number, kind: BuildingKind, tx: number, ty: number): string | null {
     const d = BUILDINGS[kind];
     if (tx < 0 || ty < 0 || tx + d.w > this.w || ty + d.h > this.h) return "off map";
@@ -1252,15 +1345,16 @@ export class World {
           if (this.ore[i] > 0) return "can't build on ore";
         }
       }
-    // no same-domain units standing inside the footprint (aircraft overhead don't block construction)
+    // no same-domain units standing inside the footprint (aircraft overhead don't block construction).
+    // Occupancy is keyed by (tick, entsMut): positions only change inside step(), so the
+    // per-tick mask is exactly the live scan the loop below replaces.
     const bDomain: UnitDomain = d.waterOnly ? "sea" : "land";
-    for (const u of this.ents.values()) {
-      if (isBuilding(u.k)) continue;
-      if (domainOf(u.k) !== bDomain) continue;
-      const ux = Math.floor(u.x),
-        uy = Math.floor(u.y);
-      if (ux >= tx && ux < tx + d.w && uy >= ty && uy < ty + d.h) return "units in the way";
-    }
+    const occ = this.unitOccupancy();
+    const obit = bDomain === "sea" ? 2 : 1;
+    for (let y = ty; y < ty + d.h; y++)
+      for (let x = tx; x < tx + d.w; x++) {
+        if (occ[this.idx(x, y)] & obit) return "units in the way";
+      }
     // adjacency: own building within gap <= 2 (or SHIPYARD_BUILD_DIST for waterOnly, or forwardRange for Forward Supply Hubs)
     const maxGap = d.waterOnly ? SHIPYARD_BUILD_DIST : (d.forwardRange ?? 2);
     for (const b of this.bldsOf(slot)) {
@@ -2172,6 +2266,9 @@ export class World {
     this.oreTakenMap = null;
     this.oreTiles = null;
     this.tickProduction();
+    // Positions mutate in the tickEnt loop below; any occupancy mask built during
+    // production (same tick, same entsMut) would be stale for post-step queries.
+    this.occTick = -1;
     this.rebuildSpatialGrid();
     for (const e of [...this.ents.values()]) {
       if (this.ents.has(e.id)) this.tickEnt(e);
@@ -2666,6 +2763,7 @@ export class World {
               this.bridges.add(t);
               this.bridgesVersion++;
               this.bridgeMask[t] = 1;
+              this.bakePassAt(t);
               this.regionDirty = true;
               e.bTiles.shift();
               e.bT = 18;
@@ -3543,6 +3641,7 @@ export class World {
   private embark(e: Ent, tgt: Ent) {
     if (!this.ents.has(e.id)) return;
     this.ents.delete(e.id);
+    this.entsMut++;
     if (e.o >= 0) this.slotCnt[e.o]--;
     e.order = null;
     e.orderQueue = [];
@@ -3576,6 +3675,7 @@ export class World {
     p.repath = 0;
     p.agro = null;
     this.ents.set(p.id, p);
+    this.entsMut++;
     if (p.o >= 0) this.slotCnt[p.o]++;
     return true;
   }
@@ -3590,11 +3690,14 @@ export class World {
       for (let y = by; y < by + d.h; y++)
         for (let x = bx; x < bx + d.w; x++)
           if (this.inBounds(x, y)) {
-            this.block[this.idx(x, y)] = 0;
-            this.bld[this.idx(x, y)] = -1;
+            const i = this.idx(x, y);
+            this.block[i] = 0;
+            this.bld[i] = -1;
+            this.bakePassAt(i);
           }
     }
     this.ents.delete(e.id);
+    this.entsMut++;
     if (e.o >= 0) this.slotCnt[e.o]--;
     if (wasBuilding) {
       this.bldDirty = true;
@@ -3642,6 +3745,10 @@ export class World {
       bmask = this.bridgeMask;
     land.fill(0);
     sea.fill(0);
+    // Region sizes fall out of the flood for free (qt resets per region) and let
+    // regionAround answer its cap question in O(1) — see regionAround.
+    const landSizes: number[] = [0],
+      seaSizes: number[] = [0];
     let nextLand = 0,
       nextSea = 0;
     for (let i = 0; i < area; i++) {
@@ -3687,6 +3794,7 @@ export class World {
             }
           }
         }
+        landSizes[id] = qt;
       }
       // sea flood: navigable water (bridges stay water underneath)
       if (isWater && sea[i] === 0) {
@@ -3728,8 +3836,11 @@ export class World {
             }
           }
         }
+        seaSizes[id] = qt;
       }
     }
+    this.regionLandSizes = landSizes;
+    this.regionSeaSizes = seaSizes;
     this.regionDirty = false;
   }
 
@@ -3769,7 +3880,7 @@ export class World {
     // but they use findPath's own scratch, so they never corrupt a paused
     // incremental search. They are rare enough to not need queue fairness.
     const e0 = PATH_STATS.expanded;
-    const r = findPath(sx, sy, gx, gy, sea ? this.passableSea : this.passable, maxExpand, this.w, this.h);
+    const r = findPath(sx, sy, gx, gy, sea ? this.passSea : this.passLand, maxExpand, this.w, this.h);
     this.astarExpandLeft -= PATH_STATS.expanded - e0;
     return r;
   }
@@ -3857,7 +3968,8 @@ export class World {
   // synchronous code produced.
   private loadPathJob(job: PathJob): boolean {
     const e = job.e;
-    const pass = job.sea ? this.passableSea : this.passable;
+    const pass = job.sea ? this.passSea : this.passLand;
+    const passFn = job.sea ? this.passableSea : this.passable;
     let gx = job.gx,
       gy = job.gy;
     if (job.kind === "chase") {
@@ -3866,7 +3978,7 @@ export class World {
       gx = tgt.x | 0;
       gy = tgt.y | 0;
     }
-    const spot = nearestPassable(gx, gy, pass, job.searchR, this.w, this.h);
+    const spot = nearestPassable(gx, gy, passFn, job.searchR, this.w, this.h);
     if (!spot) return false;
     // region gate — identical to pathfind(): endpoints in different connected
     // regions are provably unreachable, fail in O(1)
