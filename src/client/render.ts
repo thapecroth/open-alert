@@ -974,26 +974,51 @@ export class Renderer {
       if (Math.random() <= this.vfxScale) this.vfx.spawnContrail(x, y, z, scale);
     };
 
-    // Boot warm-up: prebuild every vehicle instancing template+pool while the
-    // menu is idle. First-contact frames otherwise pay template construction
-    // (donor build + merge passes), VBO/IBO uploads AND first-use shader
-    // compilation exactly when the battle starts — the classic RTS hitch.
-    // Pools are keyed by kind only, so warming them costs the same memory as
-    // building them lazily; nothing is duplicated. Shadow-proxy simplification
-    // stays async internally and resolves on its own.
-    const warmPools = () => {
-      for (const kind of VEHICLE_INSTANCED_KINDS) {
-        try {
-          this.ensureVehiclePool(kind);
-        } catch {
-          // Opportunistic warm-up — the lazy first-use path remains as fallback.
-        }
+  }
+
+  // Cooperative pool + shader warmer driven by the lobby prewarm pipeline.
+  // Builds one instancing template per macrotask slice, then incrementally
+  // compiles just the new shader programs against the real scene lighting
+  // (three.js skips already-compiled materials, so the compile pass after each
+  // kind is cheap and keeps every slice small). First-contact frames otherwise
+  // pay template construction (donor build + merge passes), VBO/IBO uploads AND
+  // first-use shader compilation exactly when the battle starts — the classic
+  // RTS hitch. Pools are keyed by kind only, so warming them costs the same
+  // memory as building them lazily; nothing is duplicated. The lazy first-use
+  // path remains as fallback whenever a match starts before warming finishes.
+  async warmPoolsAsync(isCancelled: () => boolean): Promise<void> {
+    const yieldLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const warmOne = (kind: EntKind, vehicle: boolean) => {
+      try {
+        if (vehicle) this.ensureVehiclePool(kind);
+        else this.ensureInstPool(kind, "#ffffff");
+      } catch {
+        // Opportunistic warm-up — the lazy first-use path remains as fallback.
       }
     };
-    const ric = (window as Window & { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void })
-      .requestIdleCallback;
-    if (ric) ric(warmPools, { timeout: 6000 });
-    else setTimeout(warmPools, 2500);
+    const compileNewPrograms = () => {
+      try {
+        this.gs.renderer.compile(this.gs.scene, this.gs.camera);
+      } catch {
+        // Shader precompile is best-effort; first-use compilation still applies.
+      }
+    };
+    for (const kind of VEHICLE_INSTANCED_KINDS) {
+      if (isCancelled()) return;
+      warmOne(kind, true);
+      await yieldLoop();
+      if (isCancelled()) return;
+      compileNewPrograms();
+      await yieldLoop();
+    }
+    for (const kind of INSTANCED_KINDS) {
+      if (isCancelled()) return;
+      warmOne(kind, false);
+      await yieldLoop();
+      if (isCancelled()) return;
+      compileNewPrograms();
+      await yieldLoop();
+    }
   }
 
   setPlayerPower(players: Record<number, PlayerState>): void {
@@ -2114,21 +2139,25 @@ export class Renderer {
     this.snaps = [];
     this.selection.clear();
     this.defenseRangesOn = false;
-    for (const p of this.instPools.values()) for (const part of p.parts) part.im.dispose();
-    this.instPools.clear();
-    for (const p of this.vehiclePools.values()) {
-      for (const part of p.parts) part.im.dispose();
-      for (const part of p.shadowParts) {
-        part.im.userData.shadowProxyDisposed = true;
-        part.im.geometry.dispose();
-        part.im.dispose();
-      }
+    // Instanced pools + vehicle templates survive the match reset: they are
+    // keyed purely by entity kind (no per-match state), cost real milliseconds
+    // to rebuild (donor probe + merge passes + VBO re-uploads + shader-variant
+    // recompilation), and the GPU memory is identical whether they sit idle or
+    // get recreated for the next battle. Only the per-match allocation
+    // bookkeeping is rewound — every slot becomes free and draws nothing until
+    // the next snap reuses it (slot reuse fully rewrites matrix/color state in
+    // the normal write path, so no stale transforms can flash).
+    for (const p of this.instPools.values()) {
+      p.owners.fill(-1);
+      p.free.length = 0;
+      p.used = 0;
+      for (const part of p.parts) part.im.count = 0;
     }
-    this.vehiclePools.clear();
-    this.vehicleTemplates.clear();
-    if (this.instGroup) {
-      scene.remove(this.instGroup);
-      this.instGroup = null;
+    for (const p of this.vehiclePools.values()) {
+      p.owners.fill(-1);
+      p.used = 0;
+      for (const part of p.parts) part.im.count = 0;
+      for (const part of p.shadowParts) part.im.count = 0;
     }
     this.seen.clear();
     this.hasInitialSnap = false;

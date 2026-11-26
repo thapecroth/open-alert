@@ -101,6 +101,88 @@ let prevAwaiting = "";
 let prevAwaitingDef = "";
 let prevLowPower = false;
 let iconColor = "";
+let iconRunColor = "";
+const ICON_KINDS: EntKind[] = [
+  "conyard",
+  "coalplant",
+  "fusion",
+  "barracks2",
+  "factory2",
+  "airfield2",
+  "shipyard2",
+  "derrick",
+  "coalmine",
+  ...BUILD_ORDER,
+  ...DEFENSE_ORDER,
+  ...TRAIN_ORDER.map((t) => t.unit),
+];
+// Sidebar thumbnails are expensive (per-kind offscreen render + pixel readback),
+// so they are generated incrementally and cached by faction color. The lobby
+// prewarms them with the player's predicted slot color; init only regenerates
+// when the prediction was wrong, and the time-sliced loop never blocks the
+// game-start transition either way.
+function ensureIcons(color: string) {
+  if (iconColor === color) return;
+  iconColor = color;
+  if (iconRunColor === color) return; // correct-color run already in flight — it applies itself when done
+  iconRunColor = color; // any in-flight run for a different color now cancels itself as stale
+  const isStale = () => iconRunColor !== color;
+  generateIcons(gs, ICON_KINDS, color, isStale).then((icons) => {
+    if (!isStale()) hud.setIcons(icons);
+  });
+}
+
+// ---------- lobby idle prewarm pipeline ----------
+// Everything expensive that game start used to pay synchronously is instead
+// prepared here while the player sits in the lobby: terrain/cliff/water scene
+// construction for the selected map (time-sliced generator), instanced unit
+// pool templates, and shader program compilation against the real scene
+// lighting. Each stage is cancellation-safe; starting the match or switching
+// the map invalidates in-flight work, and the init handler's loadMap becomes a
+// cheap no-op whenever the pipeline got there first.
+let prewarmGen = 0;
+let prewarmTargetMap: MapId | null = null;
+let shaderRewarmGen = 0;
+
+function schedulePrewarm(map: MapId) {
+  if (phase !== "lobby" || prewarmTargetMap === map) return;
+  prewarmTargetMap = map;
+  const gen = ++prewarmGen;
+  const cancelled = () => gen !== prewarmGen || phase !== "lobby";
+  void (async () => {
+    // Stage 1: terrain textures + cliff/water/artifact geometry, fully sliced.
+    await gs.prewarmMap(map, cancelled);
+    if (cancelled()) return;
+    // Stage 2: instanced pool templates + incremental shader compilation,
+    // one entity kind per slice.
+    await renderer.warmPoolsAsync(cancelled);
+  })();
+}
+
+function cancelPrewarm() {
+  prewarmGen++;
+  shaderRewarmGen++;
+  prewarmTargetMap = null;
+}
+
+// Quality changes can alter shader program variants (shadow defines, postfx).
+// The menu render loop re-warms scene materials naturally within a frame, but
+// zero-count instanced pool meshes never draw — re-run the cheap incremental
+// compile pass so their variants are warm too. ensure-calls no-op fast when
+// the pools already exist, and the map build (quality-independent) is never
+// restarted.
+function scheduleShaderRewarm() {
+  if (phase !== "lobby") return;
+  const gen = ++shaderRewarmGen;
+  const cancelled = () => gen !== shaderRewarmGen || phase !== "lobby";
+  void renderer.warmPoolsAsync(cancelled);
+}
+
+const sceneGraphicsOnChange = gs.graphics.onChange;
+gs.graphics.onChange = (s, g) => {
+  sceneGraphicsOnChange?.(s, g);
+  scheduleShaderRewarm();
+};
 let lastTrainSfx = 0;
 let lastHoverMs = 0;
 let matchPlayers: { id: string; slot: number; name: string; team: number }[] = [];
@@ -677,11 +759,21 @@ net.onMsg = (m: S2C) => {
         hud.hideEnd();
         hud.toast("Server updated / room reset — returned to lobby", true);
       }
-      if (phase === "lobby") hud.showLobby(m.players, m.you, currentMap, currentConfig);
+      if (phase === "lobby") {
+        hud.showLobby(m.players, m.you, currentMap, currentConfig);
+        // Icon prewarm: the lobby already knows which spawn/color slot we occupy,
+        // so the expensive thumbnail batch can bake incrementally during idle
+        // lobby time instead of inside the synchronous game-start handler.
+        const me = m.players.find((p) => p.id === m.you);
+        const predictedColor = me && me.slot >= 0 && !me.spectator ? PLAYER_COLORS[me.slot] : "#45d6ff";
+        ensureIcons(predictedColor);
+        schedulePrewarm(currentMap);
+      }
       break;
     }
     case "init": {
       if (fpv.active) fpv.exit("dead");
+      cancelPrewarm(); // lobby idle work stops here; anything already built carries over
       myId = m.you;
       mySlot = m.slot;
       matchPlayers = m.players;
@@ -735,29 +827,11 @@ net.onMsg = (m: S2C) => {
       lastCamZ = gs.camTarget.z;
       autoCamGoal = { x: gs.camTarget.x, z: gs.camTarget.z };
       setAutoCam(startAutoCam);
-      // Render real 3D model thumbnails for sidebar + selection panel (incl. all upgrades, defenses & coalmine)
-      const color = mySlot >= 0 ? PLAYER_COLORS[mySlot] : "#45d6ff";
-      if (iconColor !== color) {
-        iconColor = color;
-        generateIcons(
-          gs,
-          [
-            "conyard",
-            "coalplant",
-            "fusion",
-            "barracks2",
-            "factory2",
-            "airfield2",
-            "shipyard2",
-            "derrick",
-            "coalmine",
-            ...BUILD_ORDER,
-            ...DEFENSE_ORDER,
-            ...TRAIN_ORDER.map((t) => t.unit),
-          ],
-          color,
-        ).then((icons) => hud.setIcons(icons));
-      }
+      // Render real 3D model thumbnails for sidebar + selection panel (incl. all
+      // upgrades, defenses & coalmine). Normally already warm from the lobby;
+      // regenerates incrementally (never blocking the transition) if the slot
+      // color prediction missed.
+      ensureIcons(mySlot >= 0 ? PLAYER_COLORS[mySlot] : "#45d6ff");
       hud.toast(mySlot >= 0 ? "battle control online — good luck, commander" : "spectating", true);
       break;
     }

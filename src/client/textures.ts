@@ -44,14 +44,22 @@ function valueNoise2D(seed: number) {
     sample(x, y) * 0.55 + sample(x * 2.1 + 13.7, y * 2.1 + 7.3) * 0.3 + sample(x * 4.3 + 29.1, y * 4.3 + 19.4) * 0.15;
 }
 
-// Compute a crisp OpenGL tangent-space normal map from a normalized [0..1] heightfield via 3x3 Sobel gradient
-function heightBufferToNormalCanvas(
+// Drive a sliceable bake job to completion in one synchronous run. Used by the
+// legacy synchronous call sites — the work performed is bit-identical either
+// way; only the scheduling differs.
+export function driveBakeJob<T>(job: Generator<undefined, T, undefined>): T {
+  let r = job.next();
+  while (!r.done) r = job.next();
+  return r.value;
+}
+
+function* heightBufferToNormalCanvasJob(
   heights: Float32Array,
   w: number,
   h: number,
   strength: number,
   tileable = true,
-): HTMLCanvasElement {
+): Generator<undefined, HTMLCanvasElement, undefined> {
   const [nc, nctx] = makeCanvas(w, h);
   const nimg = nctx.createImageData(w, h);
   const nd = nimg.data;
@@ -63,6 +71,7 @@ function heightBufferToNormalCanvas(
   };
 
   for (let py = 0; py < h; py++) {
+    if ((py & 7) === 7) yield;
     for (let px = 0; px < w; px++) {
       const tl = sample(px - 1, py - 1);
       const t = sample(px, py - 1);
@@ -94,6 +103,17 @@ function heightBufferToNormalCanvas(
   }
   nctx.putImageData(nimg, 0, 0);
   return nc;
+}
+
+// Compute a crisp OpenGL tangent-space normal map from a normalized [0..1] heightfield via 3x3 Sobel gradient
+function heightBufferToNormalCanvas(
+  heights: Float32Array,
+  w: number,
+  h: number,
+  strength: number,
+  tileable = true,
+): HTMLCanvasElement {
+  return driveBakeJob(heightBufferToNormalCanvasJob(heights, w, h, strength, tileable));
 }
 
 function canvasToNormalCanvas(src: HTMLCanvasElement, strength: number, tileable = true): HTMLCanvasElement {
@@ -1847,11 +1867,21 @@ const BIOMES: Record<MapId, BiomePalette> = {
   },
 };
 
-export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
+export interface BattlefieldTextures {
   map: THREE.CanvasTexture;
   bumpMap: THREE.CanvasTexture;
   normalMap: THREE.CanvasTexture;
-} {
+}
+
+export function createBattlefieldTextures(mapId: MapId = "crossroads"): BattlefieldTextures {
+  return driveBakeJob(battlefieldTexturesJob(mapId));
+}
+
+// Sliceable form of the battlefield bake: yields every few rows of the
+// million-pixel albedo/height pass and inside the Sobel normal conversion, so a
+// cooperative driver can interleave the work with lobby rendering. The sync
+// wrapper above produces bit-identical pixels.
+export function* battlefieldTexturesJob(mapId: MapId = "crossroads"): Generator<undefined, BattlefieldTextures, undefined> {
   const S = 1024;
   const [dc, dctx] = makeCanvas(S, S);
   const [bc, bctx] = makeCanvas(S, S);
@@ -1995,6 +2025,7 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
   };
 
   for (let py = 0; py < S; py++) {
+    if ((py & 7) === 7) yield;
     const wy = (py / S) * H;
     for (let px = 0; px < S; px++) {
       const wx = (px / S) * W;
@@ -2390,7 +2421,7 @@ export function createBattlefieldTextures(mapId: MapId = "crossroads"): {
     }
   }
 
-  const normalCanvas = heightBufferToNormalCanvas(heightField, S, S, 1.55, false);
+  const normalCanvas = yield* heightBufferToNormalCanvasJob(heightField, S, S, 1.55, false);
 
   const map = new THREE.CanvasTexture(dc);
   map.colorSpace = THREE.SRGBColorSpace;

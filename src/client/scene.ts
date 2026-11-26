@@ -6,7 +6,9 @@ import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { MAP_W, MAP_H, MapId, MapArtifact, getMapLayout } from "../shared/gamedefs";
 import {
-  createBattlefieldTextures,
+  battlefieldTexturesJob,
+  driveBakeJob,
+  type BattlefieldTextures,
   createOceanWaterMaterial,
   getCliffRockMaterials,
   getChassisMat,
@@ -860,6 +862,11 @@ export class GameScene {
 
   // Map cliffs, navigable water, biome terrain & sculpted 3D world artifacts
   private mapId: MapId = "crossroads";
+  // True once loadMap has fully committed a build of `mapId`. Repeat loads of
+  // the same map are then cheap no-ops (crucial at game start: the exact same
+  // scene was already built during boot/lobby prewarm). A WebGL context restore
+  // or an actual map switch forces a rebuild.
+  private mapLoaded = false;
   private cliffSet = new Set<number>();
   private waterSet = new Set<number>();
   private mapGroup: THREE.Group | null = null;
@@ -921,7 +928,7 @@ export class GameScene {
     canvas.addEventListener("webglcontextrestored", () => {
       this.contextLost = false;
       this.applyGraphicsSettings();
-      this.loadMap(this.mapId);
+      this.loadMap(this.mapId, true);
     });
 
     this.scene = new THREE.Scene();
@@ -1767,7 +1774,11 @@ export class GameScene {
     if (this.oreMax !== nextOreMax) {
       this.oreMax = nextOreMax;
       this.oreCols = Math.max(1, Math.ceil(W / 16));
-      for (const im of this.oreRegions) { this.scene.remove(im); im.dispose(); }
+      for (const im of this.oreRegions) {
+        if (!im) continue; // sparse array — holes iterate as undefined with for..of
+        this.scene.remove(im);
+        im.dispose();
+      }
       this.oreRegions.length = 0;
       this.oreRegionFree.length = 0;
       this.oreRegionPeak.length = 0;
@@ -1784,72 +1795,123 @@ export class GameScene {
 
   // ---------- Elevated 3D Cliff Mesas & Map Loading ----------
 
-  loadMap(mapId: MapId): void {
-    this.mapId = mapId;
-    const layout = getMapLayout(mapId);
-    const dimsChanged = this.mapW !== layout.w || this.mapH !== layout.h;
-    this.mapW = layout.w;
-    this.mapH = layout.h;
-    if (dimsChanged) {
-      this.resizeWorldGeometry();
-    } else {
-      this.microRepeatUniform.value = this.mapW * 0.5;
+  loadMap(mapId: MapId, force = false): void {
+    if (!force && this.mapLoaded && this.mapId === mapId) return;
+    driveBakeJob(this.mapBuildJob(mapId));
+  }
+
+  // Cooperative lobby prewarm: runs the exact same build pipeline as loadMap
+  // but in sub-frame slices interleaved with rendering, so the lobby stays
+  // responsive. Cancellation before the final atomic commit is fully safe —
+  // the live scene still holds the previous map and the orphaned partial
+  // build is disposed inside the generator's finally block.
+  async prewarmMap(mapId: MapId, isCancelled: () => boolean): Promise<boolean> {
+    if (this.mapLoaded && this.mapId === mapId) return true;
+    const job = this.mapBuildJob(mapId);
+    for (;;) {
+      if (isCancelled()) {
+        job.return(undefined);
+        return false;
+      }
+      const t0 = performance.now();
+      let r = job.next();
+      while (!r.done && performance.now() - t0 < 8) r = job.next();
+      if (r.done) return true;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
+  }
 
-    const atm = BIOME_ATMOSPHERE[mapId] ?? BIOME_ATMOSPHERE.crossroads;
-    const prevMap = this.groundMat.map;
-    const prevNormal = this.groundMat.normalMap;
-    const prevBump = this.groundMat.bumpMap;
-    const { map, bumpMap, normalMap } = createBattlefieldTextures(mapId);
-    bumpMap.dispose();
-    this.groundMat.map = map;
-    this.groundMat.normalMap = normalMap;
-    this.groundMat.bumpMap = null;
-    this.groundMat.roughness = atm.groundRoughness;
-    this.groundMat.envMapIntensity = atm.groundEnv;
-    this.groundMat.needsUpdate = true;
-    prevMap?.dispose();
-    prevNormal?.dispose();
-    prevBump?.dispose();
-
-    this.applyBiomeAtmosphere(atm);
-
-    // Clear previous 3D cliff mesas, water surfaces, artifacts & props
-    if (this.mapGroup) {
-      this.scene.remove(this.mapGroup);
-      this.mapGroup.traverse((o) => {
+  // Everything a cancelled mid-build job may have allocated offline. Never
+  // touches the live scene — disposal here mirrors exactly what the atomic
+  // commit would have done with these resources had it taken ownership.
+  private disposePartialMapBuild(p: {
+    textures: BattlefieldTextures | null;
+    group: THREE.Group | null;
+    waterMat: THREE.MeshStandardMaterial | null;
+    foamMat: THREE.MeshBasicMaterial | null;
+    artifactMats: THREE.Material[];
+  }): void {
+    if (p.textures) {
+      p.textures.map.dispose();
+      p.textures.bumpMap.dispose();
+      p.textures.normalMap.dispose();
+      p.textures = null;
+    }
+    if (p.group) {
+      p.group.traverse((o) => {
         if (o instanceof THREE.Mesh || o instanceof THREE.InstancedMesh) {
           o.geometry.dispose();
         }
       });
-      this.mapGroup = null;
+      p.group = null;
     }
-    this.artifactAnims = [];
-    for (const m of this.artifactMats) m.dispose();
-    this.artifactMats = [];
-    if (this.waterMat) {
-      this.waterMat.normalMap?.dispose();
-      this.waterMat.bumpMap?.dispose();
-      this.waterMat.dispose();
-      this.waterMat = null;
+    for (const m of p.artifactMats) m.dispose();
+    p.artifactMats.length = 0;
+    if (p.waterMat) {
+      p.waterMat.normalMap?.dispose();
+      p.waterMat.bumpMap?.dispose();
+      p.waterMat.dispose();
+      p.waterMat = null;
     }
-    if (this.foamMat) {
-      this.foamMat.dispose();
-      this.foamMat = null;
+    if (p.foamMat) {
+      p.foamMat.dispose();
+      p.foamMat = null;
     }
+  }
 
-    const W = this.mapW;
-    const H = this.mapH;
-    this.cliffSet.clear();
-    for (const [cx, cy] of layout.cliffs) {
-      this.cliffSet.add(cy * W + cx);
+  // Sliceable map construction. Phase one builds terrain textures, cliff/water/
+  // artifact geometry fully offline (the generator yields at row/tile
+  // boundaries); phase two is one atomic synchronous commit that mutates the
+  // live scene. Abandoning the generator before the commit leaves the previous
+  // map intact, and the finally block disposes the orphaned partial build.
+  private *mapBuildJob(mapId: MapId): Generator<undefined, void, undefined> {
+    const partial = {
+      textures: null as BattlefieldTextures | null,
+      group: null as THREE.Group | null,
+      waterMat: null as THREE.MeshStandardMaterial | null,
+      foamMat: null as THREE.MeshBasicMaterial | null,
+      artifactMats: [] as THREE.Material[],
+      artifactAnims: [] as ((t: number, dt: number) => void)[],
+    };
+    let committed = false;
+    try {
+      yield* this.mapBuildInner(mapId, partial);
+      committed = true;
+    } finally {
+      if (!committed) this.disposePartialMapBuild(partial);
     }
-    this.waterSet.clear();
+  }
+
+  private *mapBuildInner(
+    mapId: MapId,
+    partial: {
+      textures: BattlefieldTextures | null;
+      group: THREE.Group | null;
+      waterMat: THREE.MeshStandardMaterial | null;
+      foamMat: THREE.MeshBasicMaterial | null;
+      artifactMats: THREE.Material[];
+      artifactAnims: ((t: number, dt: number) => void)[];
+    },
+  ): Generator<undefined, void, undefined> {
+    const layout = getMapLayout(mapId);
+    const atm = BIOME_ATMOSPHERE[mapId] ?? BIOME_ATMOSPHERE.crossroads;
+
+    // ---- offline build phase (no live-scene mutation until the commit) ----
+    partial.textures = yield* battlefieldTexturesJob(mapId);
+
+    const W = layout.w;
+    const H = layout.h;
+    const cliffSet = new Set<number>();
+    for (const [cx, cy] of layout.cliffs) {
+      cliffSet.add(cy * W + cx);
+    }
+    const waterSet = new Set<number>();
     for (const [wx, wy] of layout.water) {
-      this.waterSet.add(wy * W + wx);
+      waterSet.add(wy * W + wx);
     }
 
     const group = new THREE.Group();
+    partial.group = group;
 
     // Static map dressing is emitted as compact 48x48-tile instanced sectors rather
     // than single whole-map InstancedMesh objects. Three.js can then frustum-cull
@@ -1919,7 +1981,7 @@ export class GameScene {
     if (cliffs.length > 0) {
       const mats = getCliffRockMaterials(mapId);
       const hasCliff = (tx: number, ty: number) =>
-        tx >= 0 && ty >= 0 && tx < W && ty < H && this.cliffSet.has(ty * W + tx);
+        tx >= 0 && ty >= 0 && tx < W && ty < H && cliffSet.has(ty * W + tx);
 
       const isIslands = mapId === "islands";
       const isFortress = mapId === "fortress";
@@ -1974,6 +2036,7 @@ export class GameScene {
 
       const d = this.dummy;
       for (let i = 0; i < cliffs.length; i++) {
+        if ((i & 47) === 47) yield;
         const [tx, ty] = cliffs[i];
         const h1 = tileHash(tx, ty, 1);
         const h2 = tileHash(tx, ty, 2);
@@ -2351,7 +2414,7 @@ export class GameScene {
       const yWater = 0.03;
 
       const hasWaterTile = (tx: number, ty: number) =>
-        tx < 0 || ty < 0 || tx >= W || ty >= H ? true : this.waterSet.has(ty * W + tx);
+        tx < 0 || ty < 0 || tx >= W || ty >= H ? true : waterSet.has(ty * W + tx);
 
       const foamEdges: { x: number; z: number; ry: number }[] = [];
       const CH = GameScene.TERRAIN_CLUSTER;
@@ -2370,9 +2433,10 @@ export class GameScene {
         if (!hasWaterTile(tx + 1, ty)) foamEdges.push({ x: tx + 0.88, z: ty + 0.5, ry: -Math.PI / 2 });
       }
 
-      this.waterMat = createOceanWaterMaterial(mapId);
-      this.waterBaseEmissive = this.waterMat.emissiveIntensity;
+      partial.waterMat = createOceanWaterMaterial(mapId);
+      const waterMat = partial.waterMat;
       for (const tiles of chunks.values()) {
+        yield;
         const nTiles = tiles.length;
         const pos = new Float32Array(nTiles * 4 * 3);
         const norm = new Float32Array(nTiles * 4 * 3);
@@ -2433,7 +2497,7 @@ export class GameScene {
         waterGeo.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
         waterGeo.setIndex(new THREE.BufferAttribute(indices, 1));
 
-        const waterMesh = new THREE.Mesh(waterGeo, this.waterMat);
+        const waterMesh = new THREE.Mesh(waterGeo, waterMat);
         waterMesh.receiveShadow = true;
         waterMesh.renderOrder = 1;
         group.add(waterMesh);
@@ -2460,7 +2524,7 @@ export class GameScene {
                         : mapId === "coastline"
                           ? 0xb4dce8
                           : 0xc8f0f8;
-        this.foamMat = new THREE.MeshBasicMaterial({
+        partial.foamMat = new THREE.MeshBasicMaterial({
           color: foamColor,
           transparent: true,
           opacity: 0.42,
@@ -2476,18 +2540,85 @@ export class GameScene {
           d.updateMatrix();
           foamMatrices.push(d.matrix.clone());
         }
-        addChunkedInstances(foamGeo, this.foamMat, foamMatrices, false, false, 1);
+        addChunkedInstances(foamGeo, partial.foamMat, foamMatrices, false, false, 1);
       }
     }
 
     // Sculpted 3D Ocean & World Artifacts (static parts frozen with matrixAutoUpdate = false)
     if (layout.artifacts && layout.artifacts.length > 0) {
-      this.buildArtifacts(group, layout.artifacts, mapId);
+      yield;
+      this.buildArtifacts(group, layout.artifacts, mapId, partial.artifactMats, partial.artifactAnims);
     }
 
+    // ---- atomic commit: the live scene flips to the new map in one synchronous
+    // pass. No generator yields below this point, so a cancelled build can never
+    // observe a half-mutated scene (and ownership of every offline resource
+    // transfers here, which is why the partials are nulled as they move). ----
+    const textures = partial.textures!;
+    partial.textures = null;
+    this.mapId = mapId;
+    const dimsChanged = this.mapW !== layout.w || this.mapH !== layout.h;
+    this.mapW = layout.w;
+    this.mapH = layout.h;
+    if (dimsChanged) {
+      this.resizeWorldGeometry();
+    } else {
+      this.microRepeatUniform.value = this.mapW * 0.5;
+    }
+
+    const prevMap = this.groundMat.map;
+    const prevNormal = this.groundMat.normalMap;
+    const prevBump = this.groundMat.bumpMap;
+    textures.bumpMap.dispose();
+    this.groundMat.map = textures.map;
+    this.groundMat.normalMap = textures.normalMap;
+    this.groundMat.bumpMap = null;
+    this.groundMat.roughness = atm.groundRoughness;
+    this.groundMat.envMapIntensity = atm.groundEnv;
+    this.groundMat.needsUpdate = true;
+    prevMap?.dispose();
+    prevNormal?.dispose();
+    prevBump?.dispose();
+
+    this.applyBiomeAtmosphere(atm);
+
+    // Clear previous 3D cliff mesas, water surfaces, artifacts & props
+    if (this.mapGroup) {
+      this.scene.remove(this.mapGroup);
+      this.mapGroup.traverse((o) => {
+        if (o instanceof THREE.Mesh || o instanceof THREE.InstancedMesh) {
+          o.geometry.dispose();
+        }
+      });
+      this.mapGroup = null;
+    }
+    for (const m of this.artifactMats) m.dispose();
+    this.artifactMats = partial.artifactMats;
+    partial.artifactMats = [];
+    this.artifactAnims = partial.artifactAnims;
+    if (this.waterMat) {
+      this.waterMat.normalMap?.dispose();
+      this.waterMat.bumpMap?.dispose();
+      this.waterMat.dispose();
+      this.waterMat = null;
+    }
+    if (this.foamMat) {
+      this.foamMat.dispose();
+      this.foamMat = null;
+    }
+    this.waterMat = partial.waterMat;
+    partial.waterMat = null;
+    if (this.waterMat) this.waterBaseEmissive = this.waterMat.emissiveIntensity;
+    this.foamMat = partial.foamMat;
+    partial.foamMat = null;
+    this.cliffSet = cliffSet;
+    this.waterSet = waterSet;
+
     // Never add mapGroup to this.pickables so terrain & water never block unit selection!
+    partial.group = null;
     this.mapGroup = group;
     this.scene.add(group);
+    this.mapLoaded = true;
     this.raytracePass.setWaterLevel(0.03, this.hasWater());
     this.invalidateSunShadows(true);
     this.resetFog();
@@ -2495,9 +2626,15 @@ export class GameScene {
 
   // ---------- Sculpted 3D Ocean & World Artifacts ----------
 
-  private buildArtifacts(group: THREE.Group, artifacts: MapArtifact[], mapId: MapId): void {
+  private buildArtifacts(
+    group: THREE.Group,
+    artifacts: MapArtifact[],
+    mapId: MapId,
+    mats: THREE.Material[] = this.artifactMats,
+    anims: ((t: number, dt: number) => void)[] = this.artifactAnims,
+  ): void {
     const trackMat = <T extends THREE.Material>(m: T): T => {
-      this.artifactMats.push(m);
+      mats.push(m);
       return m;
     };
     const freezeStatic = (obj: THREE.Object3D): void => {
@@ -2698,7 +2835,7 @@ export class GameScene {
         foamRing.position.y = 0.045;
         foamRing.renderOrder = 1;
         root.add(foamRing);
-        this.artifactAnims.push((t) => {
+        anims.push((t) => {
           const pulse = 1 + Math.sin(t * 2.1 + phase) * 0.045;
           foamRing.scale.set(0.76 * pulse, 1.55 * pulse, 1);
         });
@@ -2739,7 +2876,7 @@ export class GameScene {
         beamPivot.add(b1, b2);
         root.add(beamPivot);
 
-        this.artifactAnims.push((t) => {
+        anims.push((t) => {
           beamPivot.rotation.y = t * 0.72 + phase;
         });
       } else if (art.kind === "buoy") {
@@ -2771,7 +2908,7 @@ export class GameScene {
         // Subtle waterline ripple ring
         addStatic(root, new THREE.RingGeometry(0.5, 0.78, 16), foamRingMat, 0, 0.04, 0, -Math.PI / 2, 0, 0, false, false);
 
-        this.artifactAnims.push((t) => {
+        anims.push((t) => {
           floater.position.y = 0.07 + Math.sin(t * 2.2 + phase) * 0.055;
           floater.rotation.z = Math.sin(t * 1.7 + phase) * 0.1;
           floater.rotation.x = Math.cos(t * 1.45 + phase) * 0.08;
@@ -2807,7 +2944,7 @@ export class GameScene {
         halo.castShadow = true;
         root.add(halo);
 
-        this.artifactAnims.push((t) => {
+        anims.push((t) => {
           halo.position.y = 3.45 + Math.sin(t * 1.9 + phase) * 0.16;
           halo.rotation.z = t * 0.9 + phase;
           halo.rotation.x = Math.PI / 2 + Math.sin(t * 1.2 + phase) * 0.22;
@@ -2837,7 +2974,7 @@ export class GameScene {
         keystone.position.set(0, 3.25, 0);
         root.add(keystone);
 
-        this.artifactAnims.push((t) => {
+        anims.push((t) => {
           keystone.position.y = 3.25 + Math.sin(t * 2.0 + phase) * 0.18;
           keystone.rotation.y = t * 1.1 + phase;
         });
@@ -2892,7 +3029,7 @@ export class GameScene {
         flare.position.set(-2.15, 3.65, 1.6);
         root.add(flare);
 
-        this.artifactAnims.push((t) => {
+        anims.push((t) => {
           const flick = 0.82 + Math.sin(t * 14.5 + phase) * 0.16 + Math.cos(t * 23.2 + phase) * 0.12;
           flare.scale.set(0.9 + flick * 0.18, flick * 1.15, 0.9 + flick * 0.18);
           flare.rotation.y = t * 5.0 + phase;
@@ -2935,7 +3072,7 @@ export class GameScene {
             oz: Math.sin(ei * 1.9 + phase) * 0.36,
           });
         }
-        this.artifactAnims.push((t) => {
+        anims.push((t) => {
           const pulse = 1 + Math.sin(t * 3.2 + phase) * 0.08;
           pool.scale.set(pulse, 1, pulse);
           for (const e of embers) {
@@ -2966,7 +3103,7 @@ export class GameScene {
         hover.add(holoRing);
         root.add(hover);
 
-        this.artifactAnims.push((t) => {
+        anims.push((t) => {
           hover.position.y = 2.35 + Math.sin(t * 1.65 + phase) * 0.24;
           hover.rotation.y = t * 0.55 + phase;
         });
@@ -2983,7 +3120,7 @@ export class GameScene {
         splashRing.position.y = 0.042;
         splashRing.renderOrder = 1;
         root.add(splashRing);
-        this.artifactAnims.push((t) => {
+        anims.push((t) => {
           const s = 1 + Math.sin(t * 2.25 + phase) * 0.06;
           splashRing.scale.set(s, s, 1);
         });
@@ -3306,7 +3443,14 @@ export class GameScene {
 
   clearOre() {
     this.oreSlots.clear();
-    for (const im of this.oreRegions) { this.scene.remove(im); im.dispose(); }
+    // oreRegions is sparse (indexed by 16x16 region number) — holes iterate as
+    // undefined with for..of and must be skipped, otherwise the second match's
+    // init handler dies here mid-reset.
+    for (const im of this.oreRegions) {
+      if (!im) continue;
+      this.scene.remove(im);
+      im.dispose();
+    }
     this.oreRegions.length = 0;
     this.oreRegionFree.length = 0;
     this.oreRegionPeak.length = 0;

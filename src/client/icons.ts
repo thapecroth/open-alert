@@ -5,6 +5,12 @@ import { EntKind } from "./util";
 
 const ICON_SIZE = 96;
 
+// One macrotask yield per model keeps icon generation off the critical path:
+// the render+readback for a single kind is a few ms even on software GL, but
+// 40+ kinds back-to-back would otherwise freeze the game-start transition for
+// multiple seconds inside the (synchronous) init handler.
+const yieldToEventLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
 /**
  * Renders each entity model to a PNG data-URL using a small offscreen scene
  * with matching lighting, so sidebar icons look like the units in-game.
@@ -13,6 +19,7 @@ export async function generateIcons(
   gs: GameScene,
   kinds: EntKind[],
   colorHex: string,
+  shouldCancel?: () => boolean,
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   const r = gs.renderer;
@@ -40,7 +47,11 @@ export async function generateIcons(
   const pixels = new Uint8Array(ICON_SIZE * ICON_SIZE * 4);
 
   const prevTarget = r.getRenderTarget();
-  for (const kind of kinds) {
+  const uniqueKinds = [...new Set(kinds)];
+  for (const kind of uniqueKinds) {
+    if (shouldCancel?.()) break;
+    await yieldToEventLoop();
+    if (shouldCancel?.()) break;
     const vis = makeEntVis(kind, colorHex, scene);
     // hide health bars + selection ring from the thumbnail
     vis.barBg.visible = false;
@@ -68,7 +79,14 @@ export async function generateIcons(
       r.setClearColor(0x0a1018, 0.55);
       r.clear();
       r.render(scene, cam);
-      r.readRenderTargetPixels(rt, 0, 0, ICON_SIZE, ICON_SIZE, pixels);
+      // Fenced async readback: the sync variant flushes the whole GL pipeline
+      // on the main thread (20ms+ per icon even on real GPUs, 100ms+ on
+      // software GL), which is what used to stall the first seconds of battle.
+      try {
+        await r.readRenderTargetPixelsAsync(rt, 0, 0, ICON_SIZE, ICON_SIZE, pixels);
+      } catch {
+        r.readRenderTargetPixels(rt, 0, 0, ICON_SIZE, ICON_SIZE, pixels);
+      }
       out.set(kind, pixelsToDataUrl(pixels));
     } catch {
       // icon generation is best-effort; buttons fall back to text only
