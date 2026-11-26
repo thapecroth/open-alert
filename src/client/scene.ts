@@ -705,6 +705,82 @@ const SKY_FRAG = /* glsl */ `
   }
 `;
 
+// GPU fog stamping shaders. One instanced screen-aligned quad is rasterized per
+// vision source into map-texel space. instanceMatrix translation.xy carries the
+// circle center in the flipped stamp plane (x, mapH-z); translation.z piggybacks
+// the radius so no extra instanced attributes or per-snapshot attribute uploads
+// are needed. The 1-tile quad padding only guarantees rasterizer coverage — the
+// fragment discard below is the exact circle boundary.
+const FOG_STAMP_PAD = 1.0;
+const FOG_SOURCE_CAP = 2048;
+
+const FOG_STAMP_VERT = /* glsl */ `
+  varying vec2 vStampPos;
+  varying vec2 vCenter;
+  varying float vRadius;
+
+  void main() {
+    vec4 instancedPos = instanceMatrix * vec4(position, 1.0);
+    vec4 worldPos = modelMatrix * instancedPos;
+    vec4 centerPos = modelMatrix * vec4(instanceMatrix[3].xyz, 1.0);
+    vStampPos = worldPos.xy;
+    vCenter = centerPos.xy;
+    vRadius = instanceMatrix[3].z;
+    gl_Position = projectionMatrix * viewMatrix * worldPos;
+  }
+`;
+
+const FOG_STAMP_FRAG = /* glsl */ `
+  varying vec2 vStampPos;
+  varying vec2 vCenter;
+  varying float vRadius;
+
+  void main() {
+    float r = max(vRadius, 0.0);
+    float rOut = r + 1.15;
+    float dist = length(vStampPos - vCenter);
+    if (dist >= rOut) discard;
+
+    // Exact analogue of the old CPU rasterizer: full visibility inside rIn,
+    // cubic smoothstep through the feather band, hard zero at rOut. The second
+    // channel is the independent binary explored-memory mark (dist <= r + 0.2).
+    float rIn = max(0.5, r - 1.5);
+    float span = max(0.1, rOut - rIn);
+    float f = dist <= rIn ? 1.0 : 1.0 - (dist - rIn) / span;
+    f = f * f * (3.0 - 2.0 * f);
+    float explored = dist <= r + 0.2 ? 1.0 : 0.0;
+    gl_FragColor = vec4(f, explored, 0.0, 1.0);
+  }
+`;
+
+const FOG_COMPOSITE_VERT = /* glsl */ `
+  varying vec2 vUv;
+
+  void main() {
+    vUv = position.xy * 0.5 + 0.5;
+    gl_Position = vec4(position.xy, 0.0, 1.0);
+  }
+`;
+
+const FOG_COMPOSITE_FRAG = /* glsl */ `
+  uniform sampler2D uVisTex;
+  uniform sampler2D uExploredTex;
+  varying vec2 vUv;
+
+  void main() {
+    float vis = texture2D(uVisTex, vUv).r;
+    float explored = step(0.5, texture2D(uExploredTex, vUv).g);
+
+    // Byte-exact palette of the legacy CPU DataTexture: unexplored shroud is
+    // rgb(7,12,20) at alpha 184; explored memory is rgb(10,18,28) at alpha 87.
+    // Visibility erodes alpha by the same Math.round(base * (1-v)) / 255 rule.
+    vec3 color = mix(vec3(7.0, 12.0, 20.0), vec3(10.0, 18.0, 28.0), explored) / 255.0;
+    float baseAlpha = mix(184.0, 87.0, explored);
+    float alpha = floor(baseAlpha * (1.0 - vis) + 0.5) / 255.0;
+    gl_FragColor = vec4(color, alpha);
+  }
+`;
+
 // Facade preserving the legacy engine API expected by main.ts / input.ts / tests
 class EngineShim {
   constructor(private gs: GameScene) {}
@@ -870,18 +946,39 @@ export class GameScene {
   private artifactAnims: ((t: number, dt: number) => void)[] = [];
   private artifactMats: THREE.Material[] = [];
 
-  // Live dynamic mapW x mapH Fog of War shroud plane (chunked like the ground)
+  // Live dynamic mapW x mapH Fog of War shroud plane (chunked like the ground).
+  // The old CPU path kept a Float32 visibility buffer, a Uint8 explored bitmap,
+  // and a full RGBA DataTexture copy. Those three whole-map CPU representations
+  // are now replaced by three small GPU targets: transient visibility (R),
+  // persistent explored memory (G), and the final RGBA shroud composite sampled
+  // by fogMesh. All stay at exactly one texel per map tile.
   private fogMesh!: THREE.Group;
   private fogMat!: THREE.MeshBasicMaterial;
-  private fogTex!: THREE.DataTexture;
   private fogW = MAP_W;
   private fogH = MAP_H;
-  private fogData = new Uint8Array(MAP_W * MAP_H * 4);
-  private fogExplored = new Uint8Array(MAP_W * MAP_H);
-  private fogVisBuf = new Float32Array(MAP_W * MAP_H);
+  private fogVisRT!: THREE.WebGLRenderTarget;
+  private fogExploredRT!: THREE.WebGLRenderTarget;
+  private fogCompositeRT!: THREE.WebGLRenderTarget;
+  private fogStampScene!: THREE.Scene;
+  private fogCompositeScene!: THREE.Scene;
+  private fogStampCamera!: THREE.OrthographicCamera;
+  private fogCompositeCamera!: THREE.OrthographicCamera;
+  private fogStampMesh!: THREE.InstancedMesh;
+  private readonly fogStampMatrix = new THREE.Matrix4();
+  private readonly fogMatrixUpdateRange = { start: 0, count: 0 };
+  // Render-state save slots used around offscreen fog passes. Keeping them as
+  // fields avoids allocating state objects on the snapshot hot path.
+  private fogPrevTarget: THREE.WebGLRenderTarget | null = null;
+  private readonly fogPrevClearColor = new THREE.Color();
+  private fogPrevClearAlpha = 0;
+  private fogPrevAutoClear = true;
   private reconReveals: { x: number; y: number; r: number; expiresAt: number }[] = [];
   private lastFogSlot = -1;
-  private lastFogSources: { x: number; y: number; r: number }[] = [];
+  // Scalar high-water snapshot of the last vision-source array. render.ts is
+  // free to reuse its pooled source objects every snapshot; forced recon fog
+  // refreshes still replay the exact positions/radii from the latest call.
+  private fogSourcePack = new Float32Array(0);
+  private fogSourceCount = 0;
 
   // Build-zone perimeter overlay
   private buildZoneGroup = new THREE.Group();
@@ -1720,22 +1817,18 @@ export class GameScene {
       this.camera.updateProjectionMatrix();
     }
 
-    // 5) Fog of War plane, DataTexture & backing typed arrays
+    // 5) Fog of War plane & GPU render targets. setSize() disposes only the GL
+    // backing while preserving the wrapper/texture objects, so material maps and
+    // composite uniforms never have to be rewired for a same-object resize.
     if (this.fogW !== W || this.fogH !== H) {
       this.fogW = W;
       this.fogH = H;
-      this.fogData = new Uint8Array(W * H * 4);
-      this.fogExplored = new Uint8Array(W * H);
-      this.fogVisBuf = new Float32Array(W * H);
-      this.fogTex.dispose();
-      this.fogTex = new THREE.DataTexture(this.fogData, W, H, THREE.RGBAFormat);
-      this.fogTex.magFilter = THREE.LinearFilter;
-      this.fogTex.minFilter = THREE.LinearFilter;
-      this.fogTex.generateMipmaps = false;
-      this.fogTex.wrapS = THREE.ClampToEdgeWrapping;
-      this.fogTex.wrapT = THREE.ClampToEdgeWrapping;
-      this.fogMat.map = this.fogTex;
-      this.fogMat.needsUpdate = true;
+      this.fogVisRT.setSize(W, H);
+      this.fogExploredRT.setSize(W, H);
+      this.fogCompositeRT.setSize(W, H);
+      this.fogStampCamera.right = W;
+      this.fogStampCamera.top = H;
+      this.fogStampCamera.updateProjectionMatrix();
       this.fillTerrainChunks(this.fogMesh, W, H, 0.038, this.fogMat, 2);
     }
 
@@ -2989,18 +3082,77 @@ export class GameScene {
 
   // ---------- Live Fog of War Shroud ----------
 
+  private makeFogTarget(w: number, h: number): THREE.WebGLRenderTarget {
+    const rt = new THREE.WebGLRenderTarget(w, h, {
+      depthBuffer: false,
+      stencilBuffer: false,
+      format: THREE.RGBAFormat,
+      type: THREE.UnsignedByteType,
+      magFilter: THREE.LinearFilter,
+      minFilter: THREE.LinearFilter,
+      wrapS: THREE.ClampToEdgeWrapping,
+      wrapT: THREE.ClampToEdgeWrapping,
+    });
+    rt.texture.generateMipmaps = false;
+    return rt;
+  }
+
   private buildFog() {
     this.fogW = this.mapW;
     this.fogH = this.mapH;
-    this.fogTex = new THREE.DataTexture(this.fogData, this.fogW, this.fogH, THREE.RGBAFormat);
-    this.fogTex.magFilter = THREE.LinearFilter;
-    this.fogTex.minFilter = THREE.LinearFilter;
-    this.fogTex.generateMipmaps = false;
-    this.fogTex.wrapS = THREE.ClampToEdgeWrapping;
-    this.fogTex.wrapT = THREE.ClampToEdgeWrapping;
+    this.fogVisRT = this.makeFogTarget(this.fogW, this.fogH);
+    this.fogExploredRT = this.makeFogTarget(this.fogW, this.fogH);
+    this.fogCompositeRT = this.makeFogTarget(this.fogW, this.fogH);
+
+    // Orthographic stamp space deliberately mirrors the DataTexture row mapping
+    // it replaces: x maps directly to u, while stamp-y is mapH-z so z=H lands in
+    // bottom row v=0 and z=0 lands in top row v=1 (render-target flipY=false).
+    this.fogStampScene = new THREE.Scene();
+    this.fogStampCamera = new THREE.OrthographicCamera(0, this.fogW, this.fogH, 0, 0.1, 240);
+    this.fogStampCamera.position.z = 100;
+    const stampMat = new THREE.ShaderMaterial({
+      vertexShader: FOG_STAMP_VERT,
+      fragmentShader: FOG_STAMP_FRAG,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+      // Camera-facing +Z PlaneGeometry quads use the default FrontSide. This is
+      // deliberate: transparent DoubleSide materials are otherwise rendered in
+      // two passes by three.js, doubling the stamp cost for an idempotent MAX blend.
+      blending: THREE.CustomBlending,
+      blendEquation: THREE.MaxEquation,
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneFactor,
+      blendEquationAlpha: THREE.MaxEquation,
+      blendSrcAlpha: THREE.OneFactor,
+      blendDstAlpha: THREE.OneFactor,
+    });
+    const stampGeo = new THREE.PlaneGeometry(2, 2);
+    this.fogStampMesh = new THREE.InstancedMesh(stampGeo, stampMat, FOG_SOURCE_CAP);
+    this.fogStampMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.fogStampMesh.count = 0;
+    this.fogStampMesh.frustumCulled = false;
+    this.fogStampScene.add(this.fogStampMesh);
+
+    this.fogCompositeScene = new THREE.Scene();
+    this.fogCompositeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const compositeMat = new THREE.ShaderMaterial({
+      vertexShader: FOG_COMPOSITE_VERT,
+      fragmentShader: FOG_COMPOSITE_FRAG,
+      uniforms: {
+        uVisTex: { value: this.fogVisRT.texture },
+        uExploredTex: { value: this.fogExploredRT.texture },
+      },
+      depthTest: false,
+      depthWrite: false,
+      blending: THREE.NoBlending,
+    });
+    const compositeQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), compositeMat);
+    compositeQuad.frustumCulled = false;
+    this.fogCompositeScene.add(compositeQuad);
 
     this.fogMat = new THREE.MeshBasicMaterial({
-      map: this.fogTex,
+      map: this.fogCompositeRT.texture,
       transparent: true,
       depthWrite: false,
       fog: false,
@@ -3012,27 +3164,148 @@ export class GameScene {
     this.resetFog();
   }
 
+  // Snapshot renderer state before tiny offscreen fog passes. updateFog runs
+  // from snapshot/event code rather than inside the composer, but saving the
+  // target+viewport owning state anyway keeps forced recon updates safe if the
+  // call site ever moves adjacent to another render-target pass.
+  private saveFogRenderState(): void {
+    this.fogPrevTarget = this.renderer.getRenderTarget();
+    this.renderer.getClearColor(this.fogPrevClearColor);
+    this.fogPrevClearAlpha = this.renderer.getClearAlpha();
+    this.fogPrevAutoClear = this.renderer.autoClear;
+    this.renderer.autoClear = false;
+    this.renderer.setClearColor(0x000000, 0);
+  }
+
+  private restoreFogRenderState(): void {
+    this.renderer.setRenderTarget(this.fogPrevTarget);
+    this.renderer.setClearColor(this.fogPrevClearColor, this.fogPrevClearAlpha);
+    this.renderer.autoClear = this.fogPrevAutoClear;
+    this.fogPrevTarget = null;
+  }
+
+  // Reset transient and persistent fog channels, then immediately composite the
+  // legacy opaque unexplored shroud. This is the GPU equivalent of the old full
+  // fogData byte initialization and is also the content restore point after a
+  // WebGL context reset (three.js recreates the target handles lazily).
+  private resetFogGpu(): void {
+    if (this.contextLost) return;
+    this.saveFogRenderState();
+    try {
+      this.renderer.setRenderTarget(this.fogVisRT);
+      this.renderer.clear(true, false, false);
+      this.renderer.setRenderTarget(this.fogExploredRT);
+      this.renderer.clear(true, false, false);
+      this.renderer.setRenderTarget(this.fogCompositeRT);
+      this.renderer.render(this.fogCompositeScene, this.fogCompositeCamera);
+    } finally {
+      this.restoreFogRenderState();
+    }
+  }
+
+  // Copy the caller's source array into the high-water scalar pack. This tiny
+  // O(sources) copy replaces the old accidental retain-by-reference contract:
+  // render.ts can pool/mutate its objects aggressively while forced recon
+  // refreshes here still use a stable snapshot of the latest authoritative call.
+  private packFogSources(visionSources: { x: number; y: number; r: number }[]): void {
+    const count = visionSources.length;
+    const needed = count * 3;
+    if (this.fogSourcePack.length < needed) {
+      let cap = Math.max(192, this.fogSourcePack.length || 192);
+      while (cap < needed) cap *= 2;
+      this.fogSourcePack = new Float32Array(cap);
+    }
+    const pack = this.fogSourcePack;
+    for (let i = 0; i < count; i++) {
+      const s = visionSources[i];
+      const p = i * 3;
+      pack[p] = s.x;
+      pack[p + 1] = s.y;
+      pack[p + 2] = s.r;
+    }
+    this.fogSourceCount = count;
+  }
+
+  // Pack one chunk of source circles into the persistent InstancedMesh. Only
+  // matrix elements are rewritten; no geometry, materials, arrays or objects
+  // are allocated on the normal snapshot path. x/y carry position while z is
+  // repurposed as radius metadata for the vertex shader.
+  private fillFogStampInstances(offset: number, count: number, recon: { x: number; y: number; r: number }[]): void {
+    const m = this.fogStampMatrix;
+    const H = this.mapH;
+    const pack = this.fogSourcePack;
+    const sourceCount = this.fogSourceCount;
+    for (let i = 0; i < count; i++) {
+      const si = offset + i;
+      let x: number;
+      let y: number;
+      let r: number;
+      if (si < sourceCount) {
+        const p = si * 3;
+        x = pack[p];
+        y = pack[p + 1];
+        r = pack[p + 2];
+      } else {
+        const z = recon[si - sourceCount];
+        x = z.x;
+        y = z.y;
+        r = z.r;
+      }
+      const halfSpan = r + 1.15 + FOG_STAMP_PAD;
+      m.makeScale(halfSpan, halfSpan, 1);
+      m.setPosition(x, H - y, r);
+      this.fogStampMesh.setMatrixAt(i, m);
+    }
+    this.fogStampMesh.count = count;
+    // Upload only the dense instance prefix. The full 2048-slot matrix backing
+    // would otherwise turn even a small scouting update into a pointless 128KB
+    // GPU buffer upload; the reused range object keeps this allocation-free.
+    const attr = this.fogStampMesh.instanceMatrix;
+    attr.updateRanges.length = 0;
+    this.fogMatrixUpdateRange.start = 0;
+    this.fogMatrixUpdateRange.count = count * 16;
+    attr.updateRanges.push(this.fogMatrixUpdateRange);
+    attr.needsUpdate = true;
+  }
+
+  // Rasterize all source discs on the GPU. The visibility target is cleared per
+  // update; the explored target deliberately is not, and MAX blending therefore
+  // makes explored memory monotonic until resetFog. A final one-quad composite
+  // reproduces the legacy RGBA bytes so fogMesh can remain an ordinary textured
+  // transparent ground overlay.
+  private renderFogGpu(recon: { x: number; y: number; r: number }[]): void {
+    if (this.contextLost) return;
+    const totalSources = this.fogSourceCount + recon.length;
+    this.saveFogRenderState();
+    try {
+      this.renderer.setRenderTarget(this.fogVisRT);
+      this.renderer.clear(true, false, false);
+      for (let offset = 0; offset < totalSources; offset += FOG_SOURCE_CAP) {
+        const count = Math.min(FOG_SOURCE_CAP, totalSources - offset);
+        this.fillFogStampInstances(offset, count, recon);
+        this.renderer.setRenderTarget(this.fogVisRT);
+        this.renderer.render(this.fogStampScene, this.fogStampCamera);
+        this.renderer.setRenderTarget(this.fogExploredRT);
+        this.renderer.render(this.fogStampScene, this.fogStampCamera);
+      }
+      this.renderer.setRenderTarget(this.fogCompositeRT);
+      this.renderer.render(this.fogCompositeScene, this.fogCompositeCamera);
+    } finally {
+      this.restoreFogRenderState();
+    }
+  }
+
   resetFog(): void {
     this.reconReveals = [];
     this.lastFogSlot = -1;
-    this.lastFogSources = [];
-    this.fogExplored.fill(0);
-    const d = this.fogData;
-    const total = this.mapW * this.mapH;
-    for (let i = 0; i < total; i++) {
-      const p = i * 4;
-      d[p] = 7;
-      d[p + 1] = 12;
-      d[p + 2] = 20;
-      d[p + 3] = 184; // ~0.72 unexplored shroud
-    }
-    this.fogTex.needsUpdate = true;
+    this.fogSourceCount = 0;
+    this.resetFogGpu();
   }
 
   addReconReveal(x: number, y: number, r: number, durationMs = 10000): void {
     this.reconReveals.push({ x, y, r, expiresAt: performance.now() + durationMs });
     if (this.lastFogSlot >= 0) {
-      this.updateFog(this.lastFogSlot, this.lastFogSources, true);
+      this.updateFogFromPacked(this.lastFogSlot, true);
     }
   }
 
@@ -3050,15 +3323,14 @@ export class GameScene {
     return this.reconReveals;
   }
 
-  // Fog is recomputed at most every 3rd call (~20Hz at 60fps). The shroud edge
-  // moves at unit speed — a 50ms refresh stride is imperceptible — but the
-  // per-frame cost (source×tile scan + full-map rewrite + a 150-200KB texture
-  // upload) drops ~3×. Forced updates (recon reveals, map reset) bypass the stride.
+  // Fog is recomputed at most every 3rd call. The shroud edge moves at unit
+  // speed — a short refresh stride is imperceptible — and the GPU path now makes
+  // each accepted update a handful of tiny offscreen draws instead of a
+  // source×tile CPU scan, full-map byte rewrite, and full-texture upload.
+  // Forced updates (recon reveals, map reset) bypass the stride.
   private fogStrideCount = 0;
 
-  updateFog(mySlot: number, visionSources: { x: number; y: number; r: number }[], force = false): void {
-    this.lastFogSlot = mySlot;
-    this.lastFogSources = visionSources;
+  private updateFogFromPacked(mySlot: number, force: boolean): void {
     if (mySlot < 0) {
       this.fogMesh.visible = false;
       return;
@@ -3066,60 +3338,14 @@ export class GameScene {
     if (!force && ++this.fogStrideCount % 3 !== 1) return;
     this.fogMesh.visible = true;
 
-    const W = this.mapW;
-    const H = this.mapH;
-    const vis = this.fogVisBuf;
-    const exp = this.fogExplored;
-    vis.fill(0);
-
     const recon = this.getActiveReconReveals();
-    const totalSources = visionSources.length + recon.length;
-    for (let i = 0; i < totalSources; i++) {
-      const s = i < visionSources.length ? visionSources[i] : recon[i - visionSources.length];
-      const rOut = s.r + 1.15;
-      const rIn = Math.max(0.5, s.r - 1.5);
-      const span = Math.max(0.1, rOut - rIn);
-      const rOut2 = rOut * rOut;
-      const x0 = Math.max(0, Math.floor(s.x - rOut));
-      const x1 = Math.min(W - 1, Math.ceil(s.x + rOut));
-      const y0 = Math.max(0, Math.floor(s.y - rOut));
-      const y1 = Math.min(H - 1, Math.ceil(s.y + rOut));
-      for (let ty = y0; ty <= y1; ty++) {
-        const dy = ty + 0.5 - s.y;
-        const rowOff = ty * W;
-        for (let tx = x0; tx <= x1; tx++) {
-          const dx = tx + 0.5 - s.x;
-          const d2 = dx * dx + dy * dy;
-          if (d2 < rOut2) {
-            const dist = Math.sqrt(d2);
-            const idx = rowOff + tx;
-            if (dist <= s.r + 0.2) exp[idx] = 1;
-            let f = dist <= rIn ? 1 : 1 - (dist - rIn) / span;
-            f = f * f * (3 - 2 * f);
-            if (f > vis[idx]) vis[idx] = f;
-          }
-        }
-      }
-    }
+    this.renderFogGpu(recon);
+  }
 
-    const d = this.fogData;
-    for (let ty = 0; ty < H; ty++) {
-      const rowOff = ty * W;
-      // DataTexture flipY=false maps row 0 to v=0 (+Z = H) and row H-1 to v=1 (z = 0)
-      const texRowOff = (H - 1 - ty) * W;
-      for (let tx = 0; tx < W; tx++) {
-        const idx = rowOff + tx;
-        const explored = exp[idx];
-        const v = vis[idx];
-        const baseAlpha = explored ? 87 : 184; // ~0.34 explored dimmed fog, ~0.72 unexplored shroud
-        const p = (texRowOff + tx) * 4;
-        d[p] = explored ? 10 : 7;
-        d[p + 1] = explored ? 18 : 12;
-        d[p + 2] = explored ? 28 : 20;
-        d[p + 3] = Math.round(baseAlpha * (1 - v));
-      }
-    }
-    this.fogTex.needsUpdate = true;
+  updateFog(mySlot: number, visionSources: { x: number; y: number; r: number }[], force = false): void {
+    this.lastFogSlot = mySlot;
+    this.packFogSources(visionSources);
+    this.updateFogFromPacked(mySlot, force);
   }
 
   // ---------- Build-Zone Overlay (+2 tile perimeter frames) ----------

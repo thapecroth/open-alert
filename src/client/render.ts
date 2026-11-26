@@ -427,6 +427,28 @@ interface Tracked {
   vehInst?: VehicleInstSlot | null; // rigid vehicle pool slot; lite rig still animates anchors
 }
 
+// Fog vision sources carry the normal reveal radius plus the three independent
+// stealth-counter radii. They are pooled/reused because applyVisibility runs on
+// every 5 Hz snapshot and late-game source counts reach hundreds.
+interface VisionSource {
+  x: number;
+  y: number;
+  r: number;
+  subDetectR: number;
+  usvDetectR: number;
+  stealthAirDetectR: number;
+}
+
+// Uniform enemy-visibility grid pitch. The largest current reveal circle is a
+// satlink-boosted radar/superweapon at 23.8 tiles; a ~max-radius cell keeps the
+// worst-case scan window at only 3x3 cells while exact per-source circle tests
+// below preserve every original radius bit-for-bit semantically.
+const VISION_GRID_CELL = 24;
+// Tiny conservative bbox expansion only guards floating-point floor boundary
+// cases; candidates are still accepted or rejected by the original exact
+// distance-squared tests, so this can never change a visibility outcome.
+const VISION_GRID_PAD = 1e-4;
+
 function isStaticBuildingRig(vis: EntVis): boolean {
   const r = vis.rig;
   return !r.crane && !r.spin && !r.spin2 && !r.flag && !r.turret && !r.pulse?.length;
@@ -931,6 +953,16 @@ export class Renderer {
   private lastVisSlot = -1;
   private playerLowPower = new Map<number, boolean>();
   private hiddenEntityId: number | null = null;
+
+  // Persistent fog-visibility spatial index. The object pool prevents a few
+  // hundred source records from being reallocated on every snapshot, while the
+  // head/next linked-list grid avoids per-cell arrays and Map churn entirely.
+  private readonly visionSources: VisionSource[] = [];
+  private readonly visionSourcePool: VisionSource[] = [];
+  private visionGridHeads = new Int32Array(0);
+  private visionGridNext = new Int32Array(0);
+  private visionGridCols = 0;
+  private visionGridRows = 0;
 
   // Bound VFX emitter callbacks & scratch buffers (zero per-frame allocations)
   private readonly emitSmoke: (x: number, y: number, z: number, dark: boolean) => void;
@@ -3039,6 +3071,24 @@ export class Renderer {
     return best;
   }
 
+  // Size/reuse the visibility grid backing store. Allocation happens only when
+  // the map dimensions or the high-water source count grow; normal 5 Hz calls
+  // just clear the small head table and reuse both typed arrays in place.
+  private prepareVisionGrid(sourceCount: number): void {
+    const cols = Math.max(1, Math.ceil(this.gs.mapW / VISION_GRID_CELL) + 1);
+    const rows = Math.max(1, Math.ceil(this.gs.mapH / VISION_GRID_CELL) + 1);
+    const cells = cols * rows;
+    if (this.visionGridHeads.length < cells) this.visionGridHeads = new Int32Array(cells);
+    if (this.visionGridNext.length < sourceCount) {
+      let cap = Math.max(64, this.visionGridNext.length || 64);
+      while (cap < sourceCount) cap *= 2;
+      this.visionGridNext = new Int32Array(cap);
+    }
+    this.visionGridCols = cols;
+    this.visionGridRows = rows;
+    this.visionGridHeads.fill(-1);
+  }
+
   // Live Fog of War + Fog-lite entity reveal: allied forces & active recon scans share sight,
   // enemy buildings remain visible once scouted, and spectators see everything.
   applyVisibility(mySlot: number, allies?: Set<number>) {
@@ -3064,14 +3114,16 @@ export class Renderer {
     }
     const visionMult = hasSatlink ? 1.4 : 1.0;
 
-    const visionSources: {
-      x: number;
-      y: number;
-      r: number;
-      subDetectR: number;
-      usvDetectR: number;
-      stealthAirDetectR: number;
-    }[] = [];
+    // Populate the persistent source array through the high-water object pool.
+    // scene.ts snapshots the scalar x/y/r data it needs for deferred recon
+    // refreshes, so these records can safely be rewritten in place on the next
+    // snapshot rather than thrown away and reallocated.
+    const visionSources = this.visionSources;
+    let sourceCount = 0;
+    let maxR = 0;
+    let maxSubDetectR = 0;
+    let maxUsvDetectR = 0;
+    let maxStealthAirDetectR = 0;
     for (const t of this.tracked.values()) {
       if (isFriendly(t.last.o)) {
         const k = t.last.k;
@@ -3108,10 +3160,45 @@ export class Renderer {
               : k === "radar" || k === "sam" || k === "irondome"
                 ? 12
                 : 0;
-        visionSources.push({ x: t.last.x, y: t.last.y, r, subDetectR, usvDetectR, stealthAirDetectR });
+        let m = this.visionSourcePool[sourceCount];
+        if (!m) {
+          m = { x: 0, y: 0, r: 0, subDetectR: 0, usvDetectR: 0, stealthAirDetectR: 0 };
+          this.visionSourcePool[sourceCount] = m;
+        }
+        m.x = t.last.x;
+        m.y = t.last.y;
+        m.r = r;
+        m.subDetectR = subDetectR;
+        m.usvDetectR = usvDetectR;
+        m.stealthAirDetectR = stealthAirDetectR;
+        visionSources[sourceCount++] = m;
+        if (r > maxR) maxR = r;
+        if (subDetectR > maxSubDetectR) maxSubDetectR = subDetectR;
+        if (usvDetectR > maxUsvDetectR) maxUsvDetectR = usvDetectR;
+        if (stealthAirDetectR > maxStealthAirDetectR) maxStealthAirDetectR = stealthAirDetectR;
       }
     }
+    visionSources.length = sourceCount;
     const reconZones = this.gs.getActiveReconReveals();
+
+    // Bin every friendly source exactly once into a uniform world-space grid.
+    // Enemies then inspect only the cells overlapped by their type-specific
+    // maximum detection radius. This rejects distant source×enemy pairs without
+    // a loop, while every surviving candidate still uses the unchanged exact
+    // radius below (including stealth-specific and zero-power radii).
+    this.prepareVisionGrid(sourceCount);
+    const gridHeads = this.visionGridHeads;
+    const gridNext = this.visionGridNext;
+    const gridCols = this.visionGridCols;
+    const gridRows = this.visionGridRows;
+    for (let i = 0; i < sourceCount; i++) {
+      const m = visionSources[i];
+      const cx = Math.max(0, Math.min(gridCols - 1, Math.floor(m.x / VISION_GRID_CELL)));
+      const cy = Math.max(0, Math.min(gridRows - 1, Math.floor(m.y / VISION_GRID_CELL)));
+      const cell = cy * gridCols + cx;
+      gridNext[i] = gridHeads[cell];
+      gridHeads[cell] = i;
+    }
 
     for (const [id, t] of this.tracked) {
       if (id === this.hiddenEntityId) {
@@ -3127,20 +3214,39 @@ export class Renderer {
       const isStealthedUsv = e.k === "usv" && Boolean(e.sub);
       const isStealthedAir = e.k === "stealthbomber" && Boolean(e.sub);
       let vis = false;
-      for (const m of visionSources) {
-        const dx = m.x - e.x;
-        const dy = m.y - e.y;
-        const lim = isStealthedSub
-          ? m.subDetectR
-          : isStealthedUsv
-            ? m.usvDetectR
-            : isStealthedAir
-              ? m.stealthAirDetectR
-              : m.r;
-        if (lim <= 0) continue;
-        if (dx * dx + dy * dy <= lim * lim) {
-          vis = true;
-          break;
+      const queryR = isStealthedSub
+        ? maxSubDetectR
+        : isStealthedUsv
+          ? maxUsvDetectR
+          : isStealthedAir
+            ? maxStealthAirDetectR
+            : maxR;
+      if (queryR > 0 && sourceCount > 0) {
+        const queryPad = queryR + VISION_GRID_PAD;
+        const cx0 = Math.max(0, Math.floor((e.x - queryPad) / VISION_GRID_CELL));
+        const cx1 = Math.min(gridCols - 1, Math.floor((e.x + queryPad) / VISION_GRID_CELL));
+        const cy0 = Math.max(0, Math.floor((e.y - queryPad) / VISION_GRID_CELL));
+        const cy1 = Math.min(gridRows - 1, Math.floor((e.y + queryPad) / VISION_GRID_CELL));
+        scanCells: for (let cy = cy0; cy <= cy1; cy++) {
+          for (let cx = cx0; cx <= cx1; cx++) {
+            for (let si = gridHeads[cy * gridCols + cx]; si >= 0; si = gridNext[si]) {
+              const m = visionSources[si];
+              const dx = m.x - e.x;
+              const dy = m.y - e.y;
+              const lim = isStealthedSub
+                ? m.subDetectR
+                : isStealthedUsv
+                  ? m.usvDetectR
+                  : isStealthedAir
+                    ? m.stealthAirDetectR
+                    : m.r;
+              if (lim <= 0) continue;
+              if (dx * dx + dy * dy <= lim * lim) {
+                vis = true;
+                break scanCells;
+              }
+            }
+          }
         }
       }
       if (!vis) {
