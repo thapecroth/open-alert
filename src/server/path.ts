@@ -1,6 +1,11 @@
 import { MAP_W, MAP_H } from "../shared/gamedefs";
 
-// A* over the tile grid. passable(x,y) must exclude building tiles.
+// A* over the tile grid. Passability is a baked per-tile mask (1 = passable,
+// 0 = blocked) which must exclude building tiles — a flat typed array rather
+// than a callback because the expansion loop probes 8-16 tiles per node and
+// closure+repeated-index arithmetic measured as a large fraction of search
+// cost. The mask is read live, so a resumable search paused across ticks sees
+// mid-search construction exactly like the old closure reads did.
 // Returns a list of waypoints in tile coords (excluding start, including goal),
 // or null if unreachable. Units add their own separation steering on top.
 
@@ -85,7 +90,7 @@ export function findPath(
   sy: number,
   gx: number,
   gy: number,
-  passable: (x: number, y: number) => boolean,
+  pass: Uint8Array,
   maxExpand = 6000,
   W = MAP_W,
   H = MAP_H,
@@ -181,20 +186,42 @@ export function findPath(
       PATH_STATS.ms += performance.now() - t0;
       return path;
     }
-    for (const [dx, dy, cost] of DIRS) {
-      const nx = cx + dx,
-        ny = cy + dy;
-      if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-      if (!passable(nx, ny)) continue;
-      // prevent diagonal corner cutting through blocked tiles
-      if (dx !== 0 && dy !== 0 && (!passable(cx + dx, cy) || !passable(cx, cy + dy))) continue;
-      const ni = ny * W + nx;
+    // Orthogonal passability is probed once per expansion and reused for the
+    // diagonal corner-cut validation — the mask is a pure read during a search,
+    // so this is exactly the old repeated-passable() logic with the redundant
+    // probes factored out (up to 16 closure calls per node down to 8 array reads).
+    // Neighbors are relaxed in the same order as DIRS with identical g/f values,
+    // preserving exact expansion order and tie-breaking.
+    const pE = cx + 1 < W && pass[cur + 1] === 1;
+    const pW = cx > 0 && pass[cur - 1] === 1;
+    const pS = cy + 1 < H && pass[cur + W] === 1;
+    const pN = cy > 0 && pass[cur - W] === 1;
+    const gc = g[cur];
+    for (let d = 0; d < 8; d++) {
+      const dx = DIRS[d][0],
+        dy = DIRS[d][1],
+        cost = DIRS[d][2];
+      let ni: number;
+      if (dx === 0) {
+        if (!(dy === 1 ? pS : pN)) continue;
+        ni = cur + (dy === 1 ? W : -W);
+      } else if (dy === 0) {
+        if (!(dx === 1 ? pE : pW)) continue;
+        ni = cur + dx;
+      } else {
+        // diagonal — the ortho flags double as both bounds check and corner-cut validation
+        if (!(dx === 1 ? pE : pW) || !(dy === 1 ? pS : pN)) continue;
+        ni = cur + dy * W + dx;
+        if (pass[ni] !== 1) continue;
+      }
       if (cstamp[ni] === stamp) continue;
-      const ng = g[cur] + cost;
+      const ng = gc + cost;
       if (ng < (gstamp[ni] === stamp ? g[ni] : Infinity)) {
         g[ni] = ng;
         gstamp[ni] = stamp;
         parent[ni] = cur;
+        const nx = cx + dx,
+          ny = cy + dy;
         push(ng + h(nx, ny), ni);
       }
     }
@@ -245,7 +272,7 @@ export class AstarEngine {
   private gy = 0;
   private W = 0;
   private H = 0;
-  private pass: ((x: number, y: number) => boolean) | null = null;
+  private pass: Uint8Array | null = null;
   private maxExpand = 0;
   private sIdx = 0;
 
@@ -320,7 +347,7 @@ export class AstarEngine {
     sy: number,
     gx: number,
     gy: number,
-    pass: (x: number, y: number) => boolean,
+    pass: Uint8Array,
     maxExpand: number,
     W: number,
     H: number,
@@ -421,20 +448,39 @@ export class AstarEngine {
         out = path;
         break outer;
       }
-      for (const [dx, dy, cost] of DIRS) {
-        const nx = cx + dx,
-          ny = cy + dy;
-        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-        if (!pass(nx, ny)) continue;
-        // prevent diagonal corner cutting through blocked tiles
-        if (dx !== 0 && dy !== 0 && (!pass(cx + dx, cy) || !pass(cx, cy + dy))) continue;
-        const ni = ny * W + nx;
+      // Same ortho-cached neighbor probing as findPath — mask reads are pure
+      // for the duration of an expansion, so factoring the repeated corner-cut
+      // probes into pE/pW/pS/pN preserves exact relaxation order and values.
+      const pE = cx + 1 < W && pass[cur + 1] === 1;
+      const pW = cx > 0 && pass[cur - 1] === 1;
+      const pS = cy + 1 < H && pass[cur + W] === 1;
+      const pN = cy > 0 && pass[cur - W] === 1;
+      const gc = g[cur];
+      for (let d = 0; d < 8; d++) {
+        const dx = DIRS[d][0],
+          dy = DIRS[d][1],
+          cost = DIRS[d][2];
+        let ni: number;
+        if (dx === 0) {
+          if (!(dy === 1 ? pS : pN)) continue;
+          ni = cur + (dy === 1 ? W : -W);
+        } else if (dy === 0) {
+          if (!(dx === 1 ? pE : pW)) continue;
+          ni = cur + dx;
+        } else {
+          // diagonal — ortho flags double as bounds + corner-cut validation
+          if (!(dx === 1 ? pE : pW) || !(dy === 1 ? pS : pN)) continue;
+          ni = cur + dy * W + dx;
+          if (pass[ni] !== 1) continue;
+        }
         if (cstamp[ni] === stamp) continue;
-        const ng = g[cur] + cost;
+        const ng = gc + cost;
         if (ng < (gstamp[ni] === stamp ? g[ni] : Infinity)) {
           g[ni] = ng;
           gstamp[ni] = stamp;
           parent[ni] = cur;
+          const nx = cx + dx,
+            ny = cy + dy;
           const hdx = Math.abs(nx - gx),
             hdy = Math.abs(ny - gy);
           this.hpPush(ng + Math.max(hdx, hdy) + (SQRT2 - 1) * Math.min(hdx, hdy), ni);
