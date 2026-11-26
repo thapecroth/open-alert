@@ -501,6 +501,13 @@ export class GraphicsManager {
     return this.gpu.appleSilicon || this.effPreset() !== "ultra" ? 0.5 : 0.75;
   }
 
+  getDynamicResolutionScale(): number {
+    // Governor-controlled render-scale factor only (1 = native target DPR).
+    // The final sharpening pass uses this loss signal, independently of the
+    // static per-preset DPR cap, so it never sharpens a native-res frame.
+    return this.settings.dynamicRes ? this.dynamicScale : 1;
+  }
+
   getShadowSize(): number {
     const spec = PRESET_SPECS[this.effPreset()].shadowSize;
     return this.autoTier >= 2 ? Math.min(spec, 1024) : spec;

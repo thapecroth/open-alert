@@ -15,6 +15,7 @@ import {
 import { GraphicsManager } from "./graphics";
 import { SHADOW_PROXY_LAYER } from "./models";
 import { RaytracePass } from "./raytrace";
+import { FXAASharpenPass } from "./fxaa-sharpen";
 
 interface BiomeAtmosphere {
   zenith: number;
@@ -809,6 +810,7 @@ export class GameScene {
 
   private raytracePass: RaytracePass;
   private bloomPass: UnrealBloomPass;
+  private fxaaPass: FXAASharpenPass;
   private contextLost = false;
   private frameCount = 0;
 
@@ -985,7 +987,7 @@ export class GameScene {
 
     this.composer.addPass(new RenderPass(this.scene, this.camera));
 
-    this.raytracePass = new RaytracePass(this.scene, this.camera, initW, initH);
+    this.raytracePass = new RaytracePass(this.scene, this.camera, initW, initH, rtType);
     this.raytracePass.setAppleSilicon(this.graphics.gpu.appleSilicon);
     this.raytracePass.setDepthTexture(this.composer.readBuffer.depthTexture ?? depthTex1);
     this.composer.addPass(this.raytracePass);
@@ -1000,6 +1002,12 @@ export class GameScene {
     );
     this.composer.addPass(this.bloomPass);
     this.composer.addPass(new OutputPass());
+
+    // Final LDR pass: OutputPass tone-maps/converts to sRGB first, then this
+    // combined FXAA + dynamic-resolution sharpen pass renders to the canvas.
+    // The zero-composer fast path bypasses it and keeps its native MSAA.
+    this.fxaaPass = new FXAASharpenPass();
+    this.composer.addPass(this.fxaaPass);
 
     this.graphics.onChange = () => this.applyGraphicsSettings();
 
@@ -3521,6 +3529,7 @@ export class GameScene {
     this.composer.setSize(w, h);
     const bScale = this.graphics.getBloomScale();
     this.bloomPass.setSize(Math.max(1, Math.floor(w * dpr * bScale)), Math.max(1, Math.floor(h * dpr * bScale)));
+    this.fxaaPass.setDynamicResolutionScale(this.graphics.getDynamicResolutionScale());
   }
 
   setLoop(cb: () => void) {
