@@ -1525,6 +1525,15 @@ export class GameScene {
   // single full-map PlaneGeometry produces) so shared whole-map textures and
   // the fog DataTexture stay pixel-identical.
   private static readonly TERRAIN_CHUNK = 16;
+  // Chunks are merged 2x2 into one static cluster mesh (positions baked into the
+  // geometry, identity transform) so each visible cluster is a single draw call.
+  // 32x32 tiles vs 48x48 (3x3): at the common RTS camera heights (11-40, roughly
+  // 30-55 tiles visible across) a 48-tile cluster is larger than the visible
+  // swath, so nearly every cluster straddles the frustum and culling degenerates
+  // to drawing everything. 32 still drops edge clusters (a typical view
+  // intersects a 2x2 cluster block) while already quartering node count and
+  // worst-case visible draw calls vs bare chunks (64 -> 16 on a 128x128 map).
+  private static readonly TERRAIN_CLUSTER = GameScene.TERRAIN_CHUNK * 2;
 
   private fillTerrainChunks(
     group: THREE.Group,
@@ -1540,6 +1549,8 @@ export class GameScene {
       if (child instanceof THREE.Mesh) child.geometry.dispose();
     }
     const CH = GameScene.TERRAIN_CHUNK;
+    const CL = GameScene.TERRAIN_CLUSTER;
+    const clusters = new Map<number, THREE.BufferGeometry[]>();
     for (let cz = 0; cz < H; cz += CH) {
       for (let cx = 0; cx < W; cx += CH) {
         const cw = Math.min(CH, W - cx);
@@ -1553,12 +1564,24 @@ export class GameScene {
         for (let i = 0; i < posA.count; i++) {
           uvA.setXY(i, (ox + posA.getX(i)) / W, 1 - (oz + posA.getZ(i)) / H);
         }
-        const m = new THREE.Mesh(geo, mat);
-        m.position.set(ox, y, oz);
-        m.renderOrder = renderOrder;
-        m.receiveShadow = receiveShadow;
-        group.add(m);
+        // Bake the chunk's world position into its vertices (after the UV remap,
+        // which is written against the pre-translation local positions) so chunks
+        // of a cluster merge into one static geometry at the identity transform.
+        geo.translate(ox, y, oz);
+        const key = Math.floor(cz / CL) * 1024 + Math.floor(cx / CL);
+        let list = clusters.get(key);
+        if (!list) clusters.set(key, (list = []));
+        list.push(geo);
       }
+    }
+    for (const geos of clusters.values()) {
+      // Uniform indexed PlaneGeometry attribute layout, so the merge cannot fail.
+      const merged = mergeGeometries(geos)!;
+      for (const g of geos) g.dispose();
+      const m = new THREE.Mesh(merged, mat);
+      m.renderOrder = renderOrder;
+      m.receiveShadow = receiveShadow;
+      group.add(m);
     }
   }
 
@@ -2318,8 +2341,10 @@ export class GameScene {
     }
 
     // Animated 3D Navigable Ocean Water Surface + Coastal Shoreline Foam
-    // Water is emitted per 16x16-tile chunk (same vertex layout as one merged
-    // mesh) so frustum culling can drop off-screen chunks on ocean-heavy maps.
+    // Water is emitted per 32x32-tile cluster (same vertex layout as one merged
+    // mesh, positions already world-baked) so frustum culling can drop off-screen
+    // chunks on ocean-heavy maps. Cluster granularity matches fillTerrainChunks:
+    // one merged mesh per cluster instead of 4 separate 16x16 chunk meshes.
     const waterTiles = layout.water;
     if (waterTiles.length > 0) {
       const uvScale = 0.22;
@@ -2329,7 +2354,7 @@ export class GameScene {
         tx < 0 || ty < 0 || tx >= W || ty >= H ? true : this.waterSet.has(ty * W + tx);
 
       const foamEdges: { x: number; z: number; ry: number }[] = [];
-      const CH = GameScene.TERRAIN_CHUNK;
+      const CH = GameScene.TERRAIN_CLUSTER;
       const chunks = new Map<number, [number, number][]>();
       for (const t of waterTiles) {
         const key = Math.floor(t[1] / CH) * 64 + Math.floor(t[0] / CH);
