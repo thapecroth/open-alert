@@ -355,15 +355,20 @@ export class LocalSimHost {
         }
         case "start": {
           if (this.players.size < 2) {
-            this.emit({ t: "deny", msg: "need at least 2 players — add a bot!" });
+            this.emit({ t: "deny", msg: "need at least 2 players — add a bot!", cmd: "start" });
             return;
           }
           const limit = this.mapSlotLimit();
           const invalid = [...this.players.values()].find((p) => p.slot >= limit);
           if (invalid) {
-            this.emit({ t: "deny", msg: `${invalid.name} is in slot ${invalid.slot + 1}, outside this map's ${limit} spawn slots` });
+            this.emit({ t: "deny", msg: `${invalid.name} is in slot ${invalid.slot + 1}, outside this map's ${limit} spawn slots`, cmd: "start" });
             return;
           }
+          // Mirror the authoritative room's ordered heads-up before world
+          // construction. Local transport answers synchronously, so this is
+          // mostly protocol parity — but it keeps the client transition logic
+          // on exactly one code path for online and offline starts.
+          this.emit({ t: "starting", map: this.map, host: me.name, hostId: me.id });
           this.startGame();
           return;
         }

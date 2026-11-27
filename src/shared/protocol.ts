@@ -241,8 +241,9 @@ export type S2C =
     }
   | { t: "chat"; name: string; color: string; text: string }
   | { t: "ping"; x: number; y: number; slot: number }
+  | { t: "starting"; map: MapId; host: string; hostId: string } // host start accepted; init follows after world construction
   | { t: "paused"; paused: boolean }
   | { t: "hbok" } // heartbeat ack — the only periodic server traffic in a quiet lobby; clients use it as a liveness probe
-  | { t: "deny"; msg: string };
+  | { t: "deny"; msg: string; cmd?: C2S["t"] };
 
 export const partyName = "game-room";

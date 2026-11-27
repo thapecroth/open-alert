@@ -494,6 +494,16 @@ function spawnTextColor(hex: string): string {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b > 150 ? "#071018" : "#ffffff";
 }
 
+const STARTING_TIPS = [
+  "Ore harvesters are your economy — build a refinery early and protect the miners.",
+  "Radar reveals the minimap and unlocks advanced anti-air, artillery and scouts.",
+  "Combat Engineers capture Oil Derricks, Coal Mines and even enemy buildings.",
+  "Low power disables radar, defenses and superweapons — keep a reactor margin.",
+  "Attack-move armies fight everything on the way instead of walking past danger.",
+  "Naval maps reward early shipyards; aircraft can scout safe lanes across the water.",
+  "Shift queues waypoints and production — plan the opening while the battle loads.",
+];
+
 export class Hud {
   onReady: (r: boolean) => void = () => {};
   onStart: () => void = () => {};
@@ -582,6 +592,9 @@ export class Hud {
   private resignConfirmTimer: ReturnType<typeof setTimeout> | null = null;
   private gfx: GraphicsBridge | null = null;
   private gfxLastMs = 0;
+  private startPending = false;
+  private lobbyAlertTimer: ReturnType<typeof setTimeout> | null = null;
+  private startOverlayHideTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     el("ready-btn").addEventListener("click", () => {
@@ -590,7 +603,10 @@ export class Hud {
       el("ready-btn").classList.toggle("on", this.ready);
       this.onReady(this.ready);
     });
-    el("start-btn").addEventListener("click", () => this.onStart());
+    el("start-btn").addEventListener("click", () => {
+      if (!this.startPending) this.onStart();
+    });
+    document.getElementById("lobby-alert-close")?.addEventListener("click", () => this.hideLobbyAlert());
     el("rematch-btn").addEventListener("click", () => this.onRematch());
     el("addbot-btn")?.addEventListener("click", () => {
       const diff = ((document.getElementById("bot-diff") as HTMLSelectElement | null)?.value as BotDiff) ?? "normal";
@@ -1819,6 +1835,76 @@ export class Hud {
     el("conn-status").textContent = s;
   }
 
+  setStartPending(pending: boolean) {
+    this.startPending = pending;
+    const btn = el<HTMLButtonElement>("start-btn");
+    btn.disabled = pending;
+    btn.classList.toggle("pending", pending);
+    btn.textContent = pending ? "STARTING…" : "START GAME";
+    btn.setAttribute("aria-busy", pending ? "true" : "false");
+  }
+
+  showLobbyAlert(msg: string, label = "ACTION BLOCKED", ms = 9000) {
+    const box = el("lobby-alert");
+    el("lobby-alert-label").textContent = label;
+    el("lobby-alert-text").textContent = msg;
+    box.classList.remove("hidden");
+    if (this.lobbyAlertTimer) clearTimeout(this.lobbyAlertTimer);
+    this.lobbyAlertTimer = setTimeout(() => this.hideLobbyAlert(), ms);
+  }
+
+  hideLobbyAlert() {
+    if (this.lobbyAlertTimer) {
+      clearTimeout(this.lobbyAlertTimer);
+      this.lobbyAlertTimer = null;
+    }
+    el("lobby-alert").classList.add("hidden");
+  }
+
+  showLobbyStarting(text: string) {
+    el("lobby-starting-text").textContent = text;
+    el("lobby-starting").classList.remove("hidden");
+  }
+
+  hideLobbyStarting() {
+    el("lobby-starting").classList.add("hidden");
+  }
+
+  showStartOverlay(mapId: MapId, sourceLabel: string) {
+    const overlay = el("starting-overlay");
+    if (this.startOverlayHideTimer) {
+      clearTimeout(this.startOverlayHideTimer);
+      this.startOverlayHideTimer = null;
+    }
+    const meta = MAP_LIST.find((m) => m.id === mapId);
+    el("starting-map").textContent = (meta?.name ?? mapId).toUpperCase();
+    el("starting-kicker").textContent = sourceLabel.toUpperCase();
+    const tip = STARTING_TIPS[Math.floor(Math.random() * STARTING_TIPS.length)];
+    el("starting-tip").textContent = `FIELD TIP — ${tip}`;
+    overlay.classList.remove("hidden", "fade-out");
+  }
+
+  hideStartOverlay() {
+    const overlay = el("starting-overlay");
+    if (overlay.classList.contains("hidden") || this.startOverlayHideTimer) return;
+    overlay.classList.add("fade-out");
+    this.startOverlayHideTimer = setTimeout(() => {
+      overlay.classList.add("hidden");
+      overlay.classList.remove("fade-out");
+      this.startOverlayHideTimer = null;
+    }, 240);
+  }
+
+  cancelStartOverlay() {
+    if (this.startOverlayHideTimer) {
+      clearTimeout(this.startOverlayHideTimer);
+      this.startOverlayHideTimer = null;
+    }
+    const overlay = el("starting-overlay");
+    overlay.classList.add("hidden");
+    overlay.classList.remove("fade-out");
+  }
+
   showLobby(players: LobbyPlayer[], you: string, mapId: MapId = "crossroads", config: GameConfig = DEFAULT_CONFIG) {
     this.playing = false;
     this.fpvMode = false;
@@ -2084,6 +2170,7 @@ export class Hud {
 
   hideLobby(spectating = false) {
     this.playing = true;
+    this.hideLobbyStarting();
     el("lobby").classList.add("hidden");
     for (const id of ["topbar", "minimap", "selinfo", "chat-box"]) {
       document.getElementById(id)?.classList.remove("hidden");
