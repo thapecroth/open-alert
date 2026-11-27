@@ -57,11 +57,38 @@ const VEHICLE_INSTANCED_KINDS = new Set<EntKind>([
   "railtank",
   "supplytruck",
   "harvester",
+  // Fixed-wing aircraft, helicopters, airships and surface/submarine warships
+  // use the same rigid hull+turret-chain shape as land armor. Their banking,
+  // pitch, heave and altitude all live on rig.body, so the existing anchor-chain
+  // compose reproduces them without a separate aircraft renderer.
+  "uav",
+  "ewdrone",
+  "interceptor",
+  "chopper",
+  "a10",
+  "ac130",
+  "bomber",
+  "stealthbomber",
+  "hypersonic",
+  "zeppelin",
+  "gunboat",
+  "destroyer",
+  "sub",
+  "dreadnought",
+  "carrier",
 ]);
+// Buildings join the rigid-instance path only after construction/material
+// transitions settle. The set is derived from the authoritative building table
+// so upgrade and neutral landmark kinds cannot drift out of the optimization.
+const BUILDING_INSTANCED_KINDS = new Set<EntKind>(Object.keys(BUILDINGS) as EntKind[]);
 const INSTANCE_CAP = 512;
 // 512 matches the swarm-pool ceiling: enough for extreme single-kind armor
 // hordes without preallocating megabytes of rarely-used instance attributes.
 const VEHICLE_INSTANCE_CAP = 512;
+// Building pools are per kind rather than per kind+color. Even a heavily
+// vertical-teched 8-player match rarely approaches triple digits of one kind;
+// 256 leaves generous headroom without preallocating vehicle-sized pools.
+const BUILDING_INSTANCE_CAP = 256;
 
 const instPickGeo = new THREE.BoxGeometry(1, 1, 1);
 const instPickMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
@@ -128,13 +155,17 @@ interface InstSlot {
 }
 
 // ---------- Instanced rigid-vehicle rendering ----------
-type VehicleAnchorKind = "body" | "turret" | "recoil" | "spin";
+// Anchor keys are intentionally open-ended: the fixed rig nodes cover vehicles,
+// ships and buildings, while AC-130 prop hubs add spinChild<N>/spin2Child<N>
+// keys because their animation rotates each child around its own axle rather
+// than rotating the parent group (which would make the props orbit the hull).
+type VehicleAnchorKind = string;
 
 interface VehicleNodeSpec {
   position: THREE.Vector3;
   rotation: THREE.Euler;
   scale: THREE.Vector3;
-  parentBase: "body" | "turret";
+  parentBase: "body" | "turret" | "spin" | "spin2";
   // Static transform of the animated node's parent relative to parentBase.
   // HIMARS/ballistic recoil, for example, lives inside a fixed pitched pod under
   // the rotating turret; only the recoil node itself translates per instance.
@@ -159,6 +190,9 @@ interface VehiclePartDef {
   isBar: boolean; // contact-shadow discs use the isBar tag but are hull visuals
   pulse: boolean; // scale-pulsed glow mesh
   bin: boolean; // harvester ore-load mesh (scale.y is cargo-driven)
+  shadow: boolean; // aircraft ground contact shadow (root-anchored, XZ scale breathes)
+  childAnchor: 0 | 1 | 2; // 0 fixed anchor, 1 spin child, 2 spin2 child
+  childIndex: number;
   baseScale: THREE.Vector3;
   shadowProxied?: boolean; // rigid geometry represented by the consolidated depth-only proxy
 }
@@ -170,8 +204,15 @@ interface VehicleRigSpec {
   turret?: VehicleNodeSpec;
   recoil?: VehicleNodeSpec;
   spin?: VehicleNodeSpec;
+  spin2?: VehicleNodeSpec;
+  crane?: VehicleNodeSpec;
+  flag?: VehicleNodeSpec;
+  spinChildren: VehicleNodeSpec[];
+  spin2Children: VehicleNodeSpec[];
   pulseScales: THREE.Vector3[];
   binScale?: THREE.Vector3;
+  shadowScale?: THREE.Vector3;
+  altitude?: number;
   smokePos?: THREE.Vector3;
   pickCenter: THREE.Vector3;
   pickScale: THREE.Vector3;
@@ -181,6 +222,8 @@ interface VehicleRigSpec {
 interface VehicleShadowPartDef {
   geometry: THREE.BufferGeometry; // position-only, baked into anchor space
   anchor: VehicleAnchorKind;
+  childAnchor: 0 | 1 | 2;
+  childIndex: number;
 }
 
 interface VehicleTemplate {
@@ -211,6 +254,7 @@ interface VehicleInstPool {
   shadowParts: VehicleShadowInstPart[];
   owners: Int32Array;
   used: number;
+  cap: number;
   // Conservative union of live instance positions. InstancedMesh cannot cull
   // individual instances, but this still drops the whole kind pool when every
   // vehicle of that kind is outside the camera/shadow frustum.
@@ -240,16 +284,29 @@ interface VehicleInstSlot {
   sigTurret: number;
   sigRecoil: number;
   sigSpin: number;
+  sigSpin2: number;
+  sigCrane: number;
+  sigFlag: number;
   sigPulse: number;
   sigBin: number;
+  sigShadowX: number;
+  sigShadowZ: number;
+  sigSpinKids: number[];
+  sigSpin2Kids: number[];
 }
 
+const MAX_SPIN_CHILD_ANCHORS = 8;
 const _vehRootM = new THREE.Matrix4();
 const _vehBodyM = new THREE.Matrix4();
 const _vehTurretM = new THREE.Matrix4();
 const _vehRecoilM = new THREE.Matrix4();
 const _vehSpinM = new THREE.Matrix4();
+const _vehSpin2M = new THREE.Matrix4();
+const _vehCraneM = new THREE.Matrix4();
+const _vehFlagM = new THREE.Matrix4();
 const _vehNodeM = new THREE.Matrix4();
+const _vehSpinChildM = Array.from({ length: MAX_SPIN_CHILD_ANCHORS }, () => new THREE.Matrix4());
+const _vehSpin2ChildM = Array.from({ length: MAX_SPIN_CHILD_ANCHORS }, () => new THREE.Matrix4());
 const _vehFlashColor = new THREE.Color(2.4, 2.15, 1.65);
 const vehRigDummyGeo = new THREE.BufferGeometry();
 const vehRigDummyMat = new THREE.MeshBasicMaterial();
@@ -371,6 +428,24 @@ function writeMulScaledMatrix(
   out[base + 13] = ae[1] * le[12] + ae[5] * le[13] + ae[9] * le[14] + ae[13] * le[15];
   out[base + 14] = ae[2] * le[12] + ae[6] * le[13] + ae[10] * le[14] + ae[14] * le[15];
   out[base + 15] = ae[3] * le[12] + ae[7] * le[13] + ae[11] * le[14] + ae[15] * le[15];
+}
+
+// Compose animated-node local matrices exactly as the scene graph would have:
+// parentRel carries any static intermediate group chain, then the node's own
+// animated position/rotation/scale is applied beneath the animated base anchor.
+function composeVehicleNodeMatrix(
+  node: THREE.Object3D,
+  spec: VehicleNodeSpec,
+  baseM: THREE.Matrix4,
+  out: THREE.Matrix4,
+): void {
+  node.updateMatrix();
+  if (spec.parentRelIdentity) {
+    out.multiplyMatrices(baseM, node.matrix);
+  } else {
+    _vehNodeM.multiplyMatrices(spec.parentRel, node.matrix);
+    out.multiplyMatrices(baseM, _vehNodeM);
+  }
 }
 
 const MAX_EXTRAP_T = 1.38;
@@ -1006,26 +1081,51 @@ export class Renderer {
       if (Math.random() <= this.vfxScale) this.vfx.spawnContrail(x, y, z, scale);
     };
 
-    // Boot warm-up: prebuild every vehicle instancing template+pool while the
-    // menu is idle. First-contact frames otherwise pay template construction
-    // (donor build + merge passes), VBO/IBO uploads AND first-use shader
-    // compilation exactly when the battle starts — the classic RTS hitch.
-    // Pools are keyed by kind only, so warming them costs the same memory as
-    // building them lazily; nothing is duplicated. Shadow-proxy simplification
-    // stays async internally and resolves on its own.
-    const warmPools = () => {
-      for (const kind of VEHICLE_INSTANCED_KINDS) {
-        try {
-          this.ensureVehiclePool(kind);
-        } catch {
-          // Opportunistic warm-up — the lazy first-use path remains as fallback.
-        }
+  }
+
+  // Cooperative pool + shader warmer driven by the lobby prewarm pipeline.
+  // Builds one instancing template per macrotask slice, then incrementally
+  // compiles just the new shader programs against the real scene lighting
+  // (three.js skips already-compiled materials, so the compile pass after each
+  // kind is cheap and keeps every slice small). First-contact frames otherwise
+  // pay template construction (donor build + merge passes), VBO/IBO uploads AND
+  // first-use shader compilation exactly when the battle starts — the classic
+  // RTS hitch. Pools are keyed by kind only, so warming them costs the same
+  // memory as building them lazily; nothing is duplicated. The lazy first-use
+  // path remains as fallback whenever a match starts before warming finishes.
+  async warmPoolsAsync(isCancelled: () => boolean): Promise<void> {
+    const yieldLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const warmOne = (kind: EntKind, vehicle: boolean) => {
+      try {
+        if (vehicle) this.ensureVehiclePool(kind);
+        else this.ensureInstPool(kind, "#ffffff");
+      } catch {
+        // Opportunistic warm-up — the lazy first-use path remains as fallback.
       }
     };
-    const ric = (window as Window & { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void })
-      .requestIdleCallback;
-    if (ric) ric(warmPools, { timeout: 6000 });
-    else setTimeout(warmPools, 2500);
+    const compileNewPrograms = () => {
+      try {
+        this.gs.renderer.compile(this.gs.scene, this.gs.camera);
+      } catch {
+        // Shader precompile is best-effort; first-use compilation still applies.
+      }
+    };
+    for (const kind of VEHICLE_INSTANCED_KINDS) {
+      if (isCancelled()) return;
+      warmOne(kind, true);
+      await yieldLoop();
+      if (isCancelled()) return;
+      compileNewPrograms();
+      await yieldLoop();
+    }
+    for (const kind of INSTANCED_KINDS) {
+      if (isCancelled()) return;
+      warmOne(kind, false);
+      await yieldLoop();
+      if (isCancelled()) return;
+      compileNewPrograms();
+      await yieldLoop();
+    }
   }
 
   setPlayerPower(players: Record<number, PlayerState>): void {
@@ -1051,7 +1151,7 @@ export class Renderer {
       range > 0 && (selected || (this.defenseRangesOn && (t.last.o === this.lastVisSlot || this.lastVisSlot < 0)));
     if (show && !t.rangeRing) {
       t.rangeRing = makeRangeRing(range);
-      t.vis.root.add(t.rangeRing);
+      (t.vehInst ? t.vehInst.proxy : t.vis.root).add(t.rangeRing);
     }
     if (t.rangeRing) t.rangeRing.visible = show;
   }
@@ -1311,7 +1411,7 @@ export class Renderer {
     };
     const copyNode = (
       obj: THREE.Object3D,
-      parentBase: "body" | "turret",
+      parentBase: "body" | "turret" | "spin" | "spin2",
       baseObj: THREE.Object3D,
     ): VehicleNodeSpec => {
       // A direct child of the animated base has an exactly-identity parentRel.
@@ -1343,28 +1443,74 @@ export class Renderer {
         : copyNode(rig.recoil, "body", body);
     }
     const spinSpec = rig.spin ? copyNode(rig.spin, "body", body) : undefined;
+    const spin2Spec = rig.spin2 ? copyNode(rig.spin2, "body", body) : undefined;
+    const craneSpec = rig.crane ? copyNode(rig.crane, "body", body) : undefined;
+    const flagSpec = rig.flag ? copyNode(rig.flag, "body", body) : undefined;
 
-    const anchorObject = (anchor: VehicleAnchorKind): THREE.Object3D =>
-      anchor === "turret" && rig.turret
-        ? rig.turret
-        : anchor === "recoil" && rig.recoil
-          ? rig.recoil
-          : anchor === "spin" && rig.spin
-            ? rig.spin
-            : body;
+    // AC-130 port/starboard prop hubs rotate around their own axes. They are
+    // children of the spin groups, but rotating the groups themselves would
+    // swing the nacelles around the fuselage — so each hub becomes its own
+    // composed child anchor. Other spinner models rotate the parent group and
+    // deliberately stay on the cheaper fixed spin/spin2 anchors.
+    const spinChildren: VehicleNodeSpec[] = [];
+    const spin2Children: VehicleNodeSpec[] = [];
+    const anchorObjects = new Map<VehicleAnchorKind, THREE.Object3D>();
+    if (rig.turret) anchorObjects.set("turret", rig.turret);
+    if (rig.recoil) anchorObjects.set("recoil", rig.recoil);
+    if (rig.spin) anchorObjects.set("spin", rig.spin);
+    if (rig.spin2) anchorObjects.set("spin2", rig.spin2);
+    if (rig.crane) anchorObjects.set("crane", rig.crane);
+    if (rig.flag) anchorObjects.set("flag", rig.flag);
+    if (kind === "ac130") {
+      if (rig.spin) {
+        for (const child of rig.spin.children) {
+          if (!(child instanceof THREE.Group)) continue;
+          const key = `spinChild${spinChildren.length}`;
+          anchorObjects.set(key, child);
+          spinChildren.push(copyNode(child, "spin", rig.spin));
+        }
+      }
+      if (rig.spin2) {
+        for (const child of rig.spin2.children) {
+          if (!(child instanceof THREE.Group)) continue;
+          const key = `spin2Child${spin2Children.length}`;
+          anchorObjects.set(key, child);
+          spin2Children.push(copyNode(child, "spin2", rig.spin2));
+        }
+      }
+    }
+
+    const anchorObject = (anchor: VehicleAnchorKind): THREE.Object3D => anchorObjects.get(anchor) ?? body;
     const classify = (mesh: THREE.Mesh): VehicleAnchorKind => {
-      for (let p: THREE.Object3D | null = mesh.parent; p && p !== body; p = p.parent) {
-        if (rig.recoil && p === rig.recoil) return "recoil";
-        if (rig.turret && p === rig.turret) return "turret";
-        if (rig.spin && p === rig.spin) return "spin";
+      // Include the mesh itself: building flags are simultaneously the animated
+      // object and the visual part. Otherwise nearest animated ancestor wins.
+      for (let p: THREE.Object3D | null = mesh; p && p !== body; p = p.parent) {
+        for (const [key, obj] of anchorObjects) if (p === obj) return key;
       }
       return "body";
     };
+    const childMeta = (anchor: VehicleAnchorKind): { childAnchor: 0 | 1 | 2; childIndex: number } => {
+      if (anchor.startsWith("spinChild")) return { childAnchor: 1, childIndex: Number(anchor.slice(9)) || 0 };
+      if (anchor.startsWith("spin2Child")) return { childAnchor: 2, childIndex: Number(anchor.slice(10)) || 0 };
+      return { childAnchor: 0, childIndex: -1 };
+    };
 
     const parts: VehiclePartDef[] = [];
+    const donorProxyShadowParts: VehicleShadowPartDef[] = [];
     body.traverse((o) => {
       if (!(o instanceof THREE.Mesh) || o instanceof THREE.SkinnedMesh || !o.visible) return;
       const anchor = classify(o);
+      if (o.userData.shadowProxy) {
+        // Building donors carry already-consolidated position-only shadow blobs
+        // in exact anchor space. Clone them into the template instead of either
+        // instancing their invisible depth material in the main pass or letting
+        // donor disposal/async simplification destroy the template geometry.
+        const g = o.geometry.clone();
+        g.computeBoundingSphere();
+        g.computeBoundingBox();
+        donorProxyShadowParts.push({ geometry: g, anchor, ...childMeta(anchor) });
+        return;
+      }
       const srcMat = o.material as THREE.Material;
       const accentVariant = typeof srcMat.userData?.instAccentVariant === "number"
         ? (srcMat.userData.instAccentVariant as number)
@@ -1391,9 +1537,38 @@ export class Renderer {
         isBar: Boolean(o.userData.isBar),
         pulse: Boolean(rig.pulse?.includes(o)),
         bin: rig.bin === o,
+        shadow: false,
+        ...childMeta(anchor),
         baseScale,
       });
     });
+
+    // Aircraft contact shadows live on the entity root, not inside rig.body, so
+    // the body traversal never sees them. Harvest them as root-anchored parts;
+    // their authored elliptical scale is preserved in `local` while anim.ts'
+    // bob-driven breathing is applied as a per-instance XZ scale multiplier.
+    if (rig.shadow && rig.shadow.visible) {
+      const local = relMatrix(probe.root, rig.shadow);
+      parts.push({
+        geometry: rig.shadow.geometry,
+        material: rig.shadow.material as THREE.Material,
+        local,
+        localMode: 2,
+        localPos: new THREE.Vector3(local.elements[12], local.elements[13], local.elements[14]),
+        anchor: "root",
+        accentVariant: undefined,
+        castShadow: false,
+        receiveShadow: false,
+        renderOrder: rig.shadow.renderOrder,
+        isBar: true,
+        pulse: false,
+        bin: false,
+        shadow: true,
+        childAnchor: 0,
+        childIndex: -1,
+        baseScale: ((rig.shadow.userData.baseShadowScale as THREE.Vector3 | undefined) ?? rig.shadow.scale).clone(),
+      });
+    }
 
     // Depth-pass collapse: visual material/UV/color distinctions are irrelevant
     // to the shadow depth material. Bake every rigid caster in each articulated
@@ -1418,9 +1593,13 @@ export class Renderer {
         if (!merged) continue;
         merged.computeBoundingSphere();
         merged.computeBoundingBox();
-        shadowParts.push({ geometry: merged, anchor });
+        shadowParts.push({ geometry: merged, anchor, ...childMeta(anchor) });
         for (const def of group) def.shadowProxied = true;
       }
+      // Building donors already did the expensive per-anchor shadow merge once;
+      // reuse those blobs verbatim instead of reconstructing them from visual
+      // casters whose castShadow flags were deliberately disabled by the proxy pass.
+      shadowParts.push(...donorProxyShadowParts);
     }
 
 
@@ -1513,6 +1692,9 @@ export class Renderer {
           isBar: first.isBar,
           pulse: false,
           bin: false,
+          shadow: false,
+          childAnchor: first.childAnchor,
+          childIndex: first.childIndex,
           baseScale: new THREE.Vector3(1, 1, 1),
         });
       }
@@ -1540,8 +1722,15 @@ export class Renderer {
         turret: turretSpec,
         recoil: recoilSpec,
         spin: spinSpec,
+        spin2: spin2Spec,
+        crane: craneSpec,
+        flag: flagSpec,
+        spinChildren,
+        spin2Children,
         pulseScales: (rig.pulse ?? []).map((p) => ((p.userData.baseScale as THREE.Vector3 | undefined) ?? p.scale).clone()),
         binScale: rig.bin?.scale.clone(),
+        shadowScale: rig.shadow ? ((rig.shadow.userData.baseShadowScale as THREE.Vector3 | undefined) ?? rig.shadow.scale).clone() : undefined,
+        altitude: rig.altitude,
         smokePos: rig.smokePos?.clone(),
         pickCenter,
         pickScale,
@@ -1549,7 +1738,10 @@ export class Renderer {
       },
     };
     // The donor's sprite/ring materials are per-build trash. Geometry and vehicle
-    // materials stay alive through the template/pool references above.
+    // materials stay alive through the template/pool references above. Submarine,
+    // stealth and power-glow donors use per-build clones; mark the exact materials
+    // the template retained so donor disposal cannot invalidate pool rendering.
+    for (const def of template.parts) def.material.userData.rigidTemplateKeep = true;
     this.disposeVis(probe);
     this.vehicleTemplates.set(kind, template);
     return template;
@@ -1565,13 +1757,14 @@ export class Renderer {
       this.gs.scene.add(this.instGroup);
     }
     const template = this.getVehicleTemplate(kind);
+    const cap = isBuildingKind(kind) ? BUILDING_INSTANCE_CAP : VEHICLE_INSTANCE_CAP;
     const parts: VehicleInstPart[] = [];
     for (const def of template.parts) {
       const unified = def.material.userData?.unifiedArmorSingleton === true;
       const mat = def.accentVariant !== undefined ? getInstWhiteAccentMat(def.material) : def.material;
-      const im = new THREE.InstancedMesh(def.geometry, mat, VEHICLE_INSTANCE_CAP);
+      const im = new THREE.InstancedMesh(def.geometry, mat, cap);
       im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      const colors = new Float32Array(VEHICLE_INSTANCE_CAP * 3);
+      const colors = new Float32Array(cap * 3);
       colors.fill(1);
       im.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
       im.instanceColor.setUsage(THREE.DynamicDrawUsage);
@@ -1580,7 +1773,7 @@ export class Renderer {
         // baked vertex mask (aAccent) picks which of these tints a vertex reads;
         // non-accent verts use none of them.
         for (const attrName of ["aAccV0", "aAccV1", "aAccV2"]) {
-          const arr = new Float32Array(VEHICLE_INSTANCE_CAP * 3);
+          const arr = new Float32Array(cap * 3);
           arr.fill(1);
           const attr = new THREE.InstancedBufferAttribute(arr, 3);
           attr.setUsage(THREE.DynamicDrawUsage);
@@ -1592,14 +1785,14 @@ export class Renderer {
       im.receiveShadow = def.receiveShadow;
       im.renderOrder = def.renderOrder;
       _instM.makeScale(0, 0, 0);
-      for (let i = 0; i < VEHICLE_INSTANCE_CAP; i++) im.setMatrixAt(i, _instM);
+      for (let i = 0; i < cap; i++) im.setMatrixAt(i, _instM);
       im.count = 0;
       this.instGroup.add(im);
       parts.push({ im, def, matrixMinSlot: Infinity, matrixMaxSlot: -1, matrixUpdateRange: { start: 0, count: 0 } });
     }
     const shadowParts: VehicleShadowInstPart[] = [];
     for (const def of template.shadowParts) {
-      const im = new THREE.InstancedMesh(def.geometry, vehShadowProxyMat, VEHICLE_INSTANCE_CAP);
+      const im = new THREE.InstancedMesh(def.geometry, vehShadowProxyMat, cap);
       im.name = "vehicle-shadow-proxy";
       im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       im.frustumCulled = true;
@@ -1608,7 +1801,7 @@ export class Renderer {
       im.layers.set(SHADOW_PROXY_LAYER);
       im.raycast = () => {};
       _instM.makeScale(0, 0, 0);
-      for (let i = 0; i < VEHICLE_INSTANCE_CAP; i++) im.setMatrixAt(i, _instM);
+      for (let i = 0; i < cap; i++) im.setMatrixAt(i, _instM);
       im.count = 0;
       simplifyShadowProxyGeometry(im, (geometry) => {
         def.geometry = geometry;
@@ -1620,8 +1813,9 @@ export class Renderer {
       template,
       parts,
       shadowParts,
-      owners: new Int32Array(VEHICLE_INSTANCE_CAP).fill(-1),
+      owners: new Int32Array(cap).fill(-1),
       used: 0,
+      cap,
       bounds: new THREE.Sphere(new THREE.Vector3(), 0),
       boundsFrame: -1,
     };
@@ -1634,7 +1828,7 @@ export class Renderer {
   private reserveVehicleInstance(e: EntSnap): VehicleReservation | null {
     const colorHex = this.slotColors.get(e.o) ?? "#888888";
     const pool = this.ensureVehiclePool(e.k);
-    const idx = pool.used < VEHICLE_INSTANCE_CAP ? pool.used++ : -1;
+    const idx = pool.used < pool.cap ? pool.used++ : -1;
     if (idx < 0) return null;
     for (const part of pool.parts) if (part.im.count < pool.used) part.im.count = pool.used;
     for (const part of pool.shadowParts) if (part.im.count < pool.used) part.im.count = pool.used;
@@ -1662,6 +1856,29 @@ export class Renderer {
     if (spec.spin) {
       rig.spin = copyNode(spec.spin);
       vis.spin = rig.spin;
+      // Child hubs are deliberately parented to the lightweight spinner group:
+      // AC-130 animation enumerates spin.children and rotates each hub around
+      // its own axis, exactly matching the authored model hierarchy.
+      for (const childSpec of spec.spinChildren.slice(0, MAX_SPIN_CHILD_ANCHORS)) rig.spin.add(copyNode(childSpec));
+    }
+    if (spec.spin2) {
+      rig.spin2 = copyNode(spec.spin2);
+      for (const childSpec of spec.spin2Children.slice(0, MAX_SPIN_CHILD_ANCHORS)) rig.spin2.add(copyNode(childSpec));
+    }
+    if (spec.crane) rig.crane = copyNode(spec.crane);
+    if (spec.flag) {
+      const m = new THREE.Mesh(vehRigDummyGeo, vehRigDummyMat);
+      m.position.copy(spec.flag.position);
+      m.rotation.copy(spec.flag.rotation);
+      m.scale.copy(spec.flag.scale);
+      rig.flag = m;
+    }
+    if (spec.altitude !== undefined) rig.altitude = spec.altitude;
+    if (spec.shadowScale) {
+      const m = new THREE.Mesh(vehRigDummyGeo, vehRigDummyMat);
+      m.scale.copy(spec.shadowScale);
+      m.userData.baseShadowScale = spec.shadowScale.clone();
+      rig.shadow = m;
     }
     if (spec.pulseScales.length) {
       rig.pulse = spec.pulseScales.map((base) => {
@@ -1717,9 +1934,12 @@ export class Renderer {
     this.writeVehicleColors(slot);
   }
 
-  private makeVehicleInstProxy(e: EntSnap, vis: EntVis, reservation: VehicleReservation): VehicleInstSlot {
+  private makeVehicleInstProxy(e: EntSnap, vis: EntVis, reservation: VehicleReservation, applySpec = true): VehicleInstSlot {
     const { pool, idx, colorHex } = reservation;
-    this.applyVehicleRigSpec(vis, pool.template.rig);
+    // Lite vehicle rigs need reconstructed animation stand-ins. Buildings and
+    // alpha-capable stealth units keep their full rig while migrated, preserving
+    // power-glow materials and in-flight subAlpha/subY state exactly.
+    if (applySpec) this.applyVehicleRigSpec(vis, pool.template.rig);
     const proxy = new THREE.Group();
     proxy.position.set(e.x, 0, e.y);
     const pick = new THREE.Mesh(instPickGeo, instPickMat);
@@ -1750,8 +1970,15 @@ export class Renderer {
       sigTurret: NaN,
       sigRecoil: NaN,
       sigSpin: NaN,
+      sigSpin2: NaN,
+      sigCrane: NaN,
+      sigFlag: NaN,
       sigPulse: NaN,
       sigBin: NaN,
+      sigShadowX: NaN,
+      sigShadowZ: NaN,
+      sigSpinKids: [],
+      sigSpin2Kids: [],
     };
     this.writeVehicleColors(slot);
     return slot;
@@ -1817,14 +2044,86 @@ export class Renderer {
     pool.owners[last] = -1;
   }
 
+  private rigidInstanceWanted(t: Tracked): boolean {
+    const kind = t.last.k;
+    const supported = VEHICLE_INSTANCED_KINDS.has(kind) || BUILDING_INSTANCED_KINDS.has(kind);
+    if (!supported) return false;
+    if (t.isBuilding) {
+      // Construction growth and holographic preview are whole-rig transform /
+      // material transitions. Keep the legacy mesh until both have settled, and
+      // fall back while low-power emissive dimming needs per-mesh cloned colors.
+      if (t.anim.buildAge < 1 || t.anim.matMode === "holo" || t.lastLowPower) return false;
+    }
+    if ((kind === "sub" || kind === "stealthbomber") && (t.anim.subAlpha <= 0.985 || t.anim.subY < -0.001)) return false;
+    return true;
+  }
+
+  // Rigid instancing is migratory rather than all-or-nothing. The full visual is
+  // retained offscene while instanced, so transitioning out (submarine dive,
+  // stealth cloak, low power) resumes with exactly the same articulated/material
+  // state instead of reconstructing a rig mid-animation.
+  private syncRigidInstancing(t: Tracked): void {
+    const kind = t.last.k;
+    const supported = VEHICLE_INSTANCED_KINDS.has(kind) || BUILDING_INSTANCED_KINDS.has(kind);
+    if (!supported) return;
+    const want = this.rigidInstanceWanted(t);
+    if (want && !t.vehInst) {
+      const reservation = this.reserveVehicleInstance(t.last);
+      if (!reservation) return;
+      const keepFullRig = t.isBuilding || kind === "sub" || kind === "stealthbomber";
+      const slot = this.makeVehicleInstProxy(t.last, t.vis, reservation, !keepFullRig);
+      t.vehInst = slot;
+      this.gs.scene.add(slot.proxy);
+      this.gs.scene.remove(t.vis.root);
+      const pi = this.gs.pickables.indexOf(t.vis.root);
+      if (pi >= 0) this.gs.pickables.splice(pi, 1);
+      if (!this.gs.pickables.includes(slot.proxy)) this.gs.pickables.push(slot.proxy);
+      if (t.supplyAura && t.supplyAura.parent !== slot.proxy) {
+        t.supplyAura.parent?.remove(t.supplyAura);
+        slot.proxy.add(t.supplyAura);
+      }
+      if (t.rangeRing && t.rangeRing.parent !== slot.proxy) {
+        t.rangeRing.parent?.remove(t.rangeRing);
+        slot.proxy.add(t.rangeRing);
+      }
+      slot.lvis = false;
+      slot.sigX = NaN;
+      slot.sigY = NaN;
+      slot.sigYaw = NaN;
+    } else if (!want && t.vehInst) {
+      const slot = t.vehInst;
+      this.freeVehicleInstance(slot);
+      this.gs.scene.remove(slot.proxy);
+      const pi = this.gs.pickables.indexOf(slot.proxy);
+      if (pi >= 0) this.gs.pickables.splice(pi, 1);
+      t.vehInst = undefined;
+      if (!t.vis.root.parent) this.gs.scene.add(t.vis.root);
+      if (!this.gs.pickables.includes(t.vis.root)) this.gs.pickables.push(t.vis.root);
+      if (t.supplyAura && t.supplyAura.parent !== t.vis.root) {
+        t.supplyAura.parent?.remove(t.supplyAura);
+        t.vis.root.add(t.supplyAura);
+      }
+      if (t.rangeRing && t.rangeRing.parent !== t.vis.root) {
+        t.rangeRing.parent?.remove(t.rangeRing);
+        t.vis.root.add(t.rangeRing);
+      }
+    }
+  }
+
   private writeVehicleInstance(t: Tracked): void {
     const slot = t.vehInst!;
     const pool = slot.pool;
     const visible = t.vis.root.visible && t.last.id !== this.hiddenEntityId;
+    // Buildings never apply server facing to their root in the legacy scene path;
+    // only their turret animation consumes heading. Preserve that exactly while
+    // mobile rigid units continue to yaw the whole hull.
+    const entityYaw = t.isBuilding ? 0 : t.visYaw;
+    const rootRotY = t.isBuilding ? 0 : Math.PI / 2 - entityYaw;
     slot.proxy.position.set(t.visX, 0, t.visY);
-    slot.proxy.rotation.y = Math.PI / 2 - t.visYaw;
+    slot.proxy.rotation.y = rootRotY;
     slot.proxy.visible = visible;
     t.vis.root.position.set(t.visX, 0, t.visY);
+    t.vis.root.rotation.y = rootRotY;
 
     const wasVisible = slot.lvis;
     if (!visible) {
@@ -1860,6 +2159,12 @@ export class Renderer {
     const binScaleY = rig.bin && spec.binScale && Math.abs(spec.binScale.y) > 1e-6
       ? rig.bin.scale.y / spec.binScale.y
       : 1;
+    const shadowScaleX = rig.shadow && spec.shadowScale && Math.abs(spec.shadowScale.x) > 1e-6
+      ? rig.shadow.scale.x / spec.shadowScale.x
+      : 1;
+    const shadowScaleZ = rig.shadow && spec.shadowScale && Math.abs(spec.shadowScale.z) > 1e-6
+      ? rig.shadow.scale.z / spec.shadowScale.z
+      : 1;
 
     // Idle fast-path: skip the entire fan-out for parts that cannot have moved
     // enough to affect a pixel. Rigid parts depend only on the anchor chain and
@@ -1873,6 +2178,24 @@ export class Renderer {
     const turretSig = rig.turret ? rig.turret.rotation.y + rig.turret.rotation.x * 2.1 + rig.turret.rotation.z * 4.3 : 0;
     const recoilSig = rig.recoil ? rig.recoil.position.z + rig.recoil.position.x * 2.7 + rig.recoil.rotation.x * 1.3 : 0;
     const spinSig = rig.spin ? rig.spin.rotation.x * 3.1 + rig.spin.rotation.y * 1.9 + rig.spin.rotation.z * 5.7 : 0;
+    const spin2Sig = rig.spin2 ? rig.spin2.rotation.x * 2.9 + rig.spin2.rotation.y * 2.3 + rig.spin2.rotation.z * 4.9 : 0;
+    const craneSig = rig.crane
+      ? rig.crane.position.x * 1.7 + rig.crane.position.z * 2.3 + rig.crane.rotation.x * 3.9 + rig.crane.rotation.y * 2.1 + rig.crane.rotation.z * 1.3
+      : 0;
+    const flagSig = rig.flag ? rig.flag.rotation.x * 2.7 + rig.flag.rotation.y * 5.1 + rig.flag.rotation.z * 1.9 : 0;
+    const spinKidSig = (kids: THREE.Object3D[] | undefined, store: number[]): boolean => {
+      if (!kids?.length) return store.length !== 0;
+      if (store.length !== kids.length) return true;
+      for (let i = 0; i < kids.length; i++) {
+        const sig = kids[i].rotation.x * 3.7 + kids[i].rotation.y * 2.3 + kids[i].rotation.z * 5.9;
+        if (store[i] !== sig) return true;
+      }
+      return false;
+    };
+    const spinKids = spec.spinChildren.length && rig.spin ? rig.spin.children : undefined;
+    const spin2Kids = spec.spin2Children.length && rig.spin2 ? rig.spin2.children : undefined;
+    const spinKidsDirty = spinKidSig(spinKids, slot.sigSpinKids);
+    const spin2KidsDirty = spinKidSig(spin2Kids, slot.sigSpin2Kids);
     const settled =
       t.anim.moveBlend < 0.03 &&
       t.anim.speed < 0.2 &&
@@ -1888,34 +2211,48 @@ export class Renderer {
     const turretSame =
       slot.sigTurret === turretSig ||
       (settled && Math.abs(slot.sigTurret - turretSig) <= 0.002);
-    const bodyChainDirty = !(
-      wasVisible &&
-      slot.sigX === t.visX &&
-      slot.sigY === t.visY &&
-      slot.sigYaw === t.visYaw &&
-      bodySame
-    );
+    const rootDirty = !(wasVisible && slot.sigX === t.visX && slot.sigY === t.visY && slot.sigYaw === rootRotY);
+    const bodyChainDirty = rootDirty || !bodySame;
     const turretChainDirty = bodyChainDirty || !turretSame;
     const recoilUsesTurret = spec.recoil?.parentBase === "turret" && !!(rig.turret && spec.turret);
     const recoilChainDirty =
       (recoilUsesTurret ? turretChainDirty : bodyChainDirty) ||
       slot.sigRecoil !== recoilSig;
     const spinChainDirty = bodyChainDirty || slot.sigSpin !== spinSig;
-    const anyChainDirty = bodyChainDirty || turretChainDirty || recoilChainDirty || spinChainDirty;
-    // Pulse/bin parts rewrite only when their scale factors actually changed —
-    // glow pulses oscillate continuously while firing but freeze at rest.
-    const pulseDirty = !wasVisible || pulseScale !== slot.sigPulse || binScaleY !== slot.sigBin;
+    const spin2ChainDirty = bodyChainDirty || slot.sigSpin2 !== spin2Sig;
+    const craneChainDirty = bodyChainDirty || slot.sigCrane !== craneSig;
+    const flagChainDirty = bodyChainDirty || slot.sigFlag !== flagSig;
+    const spinChildChainDirty = spinChainDirty || spinKidsDirty;
+    const spin2ChildChainDirty = spin2ChainDirty || spin2KidsDirty;
+    const anyChainDirty =
+      bodyChainDirty ||
+      turretChainDirty ||
+      recoilChainDirty ||
+      spinChainDirty ||
+      spin2ChainDirty ||
+      craneChainDirty ||
+      flagChainDirty ||
+      spinChildChainDirty ||
+      spin2ChildChainDirty;
+    // Pulse/bin/contact-shadow parts rewrite only when their scale factors
+    // actually changed; rigid parts independently follow their anchor dirty bit.
+    const pulseDirty =
+      !wasVisible ||
+      pulseScale !== slot.sigPulse ||
+      binScaleY !== slot.sigBin ||
+      shadowScaleX !== slot.sigShadowX ||
+      shadowScaleZ !== slot.sigShadowZ;
     // Maintain one conservative pool sphere in world space (instGroup itself is
     // identity). This is deliberately cheap online sphere union work, not a full
     // InstancedMesh.computeBoundingSphere() pass over every part every frame.
-    const entityRadius = spec.cullRadius;
+    const entityRadius = Math.max(spec.cullRadius, t.cullR);
     if (pool.boundsFrame !== this.frameIdx) {
       pool.boundsFrame = this.frameIdx;
-      pool.bounds.center.set(t.visX, 0.55, t.visY);
+      pool.bounds.center.set(t.visX, t.cullY, t.visY);
       pool.bounds.radius = entityRadius;
     } else {
       const dx = t.visX - pool.bounds.center.x;
-      const dy = 0.55 - pool.bounds.center.y;
+      const dy = t.cullY - pool.bounds.center.y;
       const dz = t.visY - pool.bounds.center.z;
       const distSq = dx * dx + dy * dy + dz * dz;
       const slack = pool.bounds.radius - entityRadius;
@@ -1941,43 +2278,56 @@ export class Renderer {
 
     rig.body.updateMatrix();
     _instPos.set(t.visX, 0, t.visY);
-    _instQ.setFromAxisAngle(_instUp, Math.PI / 2 - t.visYaw);
+    _instQ.setFromAxisAngle(_instUp, rootRotY);
     _vehRootM.compose(_instPos, _instQ, _instOne);
     _vehBodyM.multiplyMatrices(_vehRootM, rig.body.matrix);
 
     let hasTurret = false;
     if (rig.turret && spec.turret) {
-      rig.turret.updateMatrix();
-      if (spec.turret.parentRelIdentity) {
-        _vehTurretM.multiplyMatrices(_vehBodyM, rig.turret.matrix);
-      } else {
-        _vehNodeM.multiplyMatrices(spec.turret.parentRel, rig.turret.matrix);
-        _vehTurretM.multiplyMatrices(_vehBodyM, _vehNodeM);
-      }
+      composeVehicleNodeMatrix(rig.turret, spec.turret, _vehBodyM, _vehTurretM);
       hasTurret = true;
     }
     let hasRecoil = false;
     if (rig.recoil && spec.recoil) {
-      rig.recoil.updateMatrix();
-      const base = spec.recoil.parentBase === "turret" && hasTurret ? _vehTurretM : _vehBodyM;
-      if (spec.recoil.parentRelIdentity) {
-        _vehRecoilM.multiplyMatrices(base, rig.recoil.matrix);
-      } else {
-        _vehNodeM.multiplyMatrices(spec.recoil.parentRel, rig.recoil.matrix);
-        _vehRecoilM.multiplyMatrices(base, _vehNodeM);
-      }
+      composeVehicleNodeMatrix(
+        rig.recoil,
+        spec.recoil,
+        spec.recoil.parentBase === "turret" && hasTurret ? _vehTurretM : _vehBodyM,
+        _vehRecoilM,
+      );
       hasRecoil = true;
     }
     let hasSpin = false;
     if (rig.spin && spec.spin) {
-      rig.spin.updateMatrix();
-      if (spec.spin.parentRelIdentity) {
-        _vehSpinM.multiplyMatrices(_vehBodyM, rig.spin.matrix);
-      } else {
-        _vehNodeM.multiplyMatrices(spec.spin.parentRel, rig.spin.matrix);
-        _vehSpinM.multiplyMatrices(_vehBodyM, _vehNodeM);
-      }
+      composeVehicleNodeMatrix(rig.spin, spec.spin, _vehBodyM, _vehSpinM);
       hasSpin = true;
+    }
+    let hasSpin2 = false;
+    if (rig.spin2 && spec.spin2) {
+      composeVehicleNodeMatrix(rig.spin2, spec.spin2, _vehBodyM, _vehSpin2M);
+      hasSpin2 = true;
+    }
+    let hasCrane = false;
+    if (rig.crane && spec.crane) {
+      composeVehicleNodeMatrix(rig.crane, spec.crane, _vehBodyM, _vehCraneM);
+      hasCrane = true;
+    }
+    let hasFlag = false;
+    if (rig.flag && spec.flag) {
+      composeVehicleNodeMatrix(rig.flag, spec.flag, _vehBodyM, _vehFlagM);
+      hasFlag = true;
+    }
+    const hasSpinKids = hasSpin && spec.spinChildren.length > 0 && rig.spin!.children.length > 0;
+    if (hasSpinKids) {
+      for (let i = 0; i < Math.min(spec.spinChildren.length, rig.spin!.children.length, MAX_SPIN_CHILD_ANCHORS); i++) {
+        composeVehicleNodeMatrix(rig.spin!.children[i], spec.spinChildren[i], _vehSpinM, _vehSpinChildM[i]);
+      }
+    }
+    const hasSpin2Kids = hasSpin2 && spec.spin2Children.length > 0 && rig.spin2!.children.length > 0;
+    if (hasSpin2Kids) {
+      for (let i = 0; i < Math.min(spec.spin2Children.length, rig.spin2!.children.length, MAX_SPIN_CHILD_ANCHORS); i++) {
+        composeVehicleNodeMatrix(rig.spin2!.children[i], spec.spin2Children[i], _vehSpin2M, _vehSpin2ChildM[i]);
+      }
     }
 
     // These signatures describe the matrices written below. In particular the
@@ -1986,48 +2336,71 @@ export class Renderer {
     if (bodyChainDirty) {
       slot.sigX = t.visX;
       slot.sigY = t.visY;
-      slot.sigYaw = t.visYaw;
+      slot.sigYaw = rootRotY;
       slot.sigBody = bodySig;
     }
     if (turretChainDirty) slot.sigTurret = turretSig;
     if (recoilChainDirty) slot.sigRecoil = recoilSig;
     if (spinChainDirty) slot.sigSpin = spinSig;
+    if (spin2ChainDirty) slot.sigSpin2 = spin2Sig;
+    if (craneChainDirty) slot.sigCrane = craneSig;
+    if (flagChainDirty) slot.sigFlag = flagSig;
+    if (spinChildChainDirty && spinKids) {
+      slot.sigSpinKids.length = spinKids.length;
+      for (let i = 0; i < spinKids.length; i++) {
+        slot.sigSpinKids[i] = spinKids[i].rotation.x * 3.7 + spinKids[i].rotation.y * 2.3 + spinKids[i].rotation.z * 5.9;
+      }
+    }
+    if (spin2ChildChainDirty && spin2Kids) {
+      slot.sigSpin2Kids.length = spin2Kids.length;
+      for (let i = 0; i < spin2Kids.length; i++) {
+        slot.sigSpin2Kids[i] = spin2Kids[i].rotation.x * 3.7 + spin2Kids[i].rotation.y * 2.3 + spin2Kids[i].rotation.z * 5.9;
+      }
+    }
     slot.sigPulse = pulseScale;
     slot.sigBin = binScaleY;
+    slot.sigShadowX = shadowScaleX;
+    slot.sigShadowZ = shadowScaleZ;
 
     const base16 = slot.idx * 16;
     for (const part of pool.parts) {
       const def = part.def;
-      const animated = def.pulse || def.bin;
-      const anchorKind =
-        def.anchor === "turret" && hasTurret
-          ? "turret"
-          : def.anchor === "recoil" && hasRecoil
-            ? "recoil"
-            : def.anchor === "spin" && hasSpin
-              ? "spin"
-              : "body";
-      const anchorDirty =
-        anchorKind === "turret"
-          ? turretChainDirty
-          : anchorKind === "recoil"
-            ? recoilChainDirty
-            : anchorKind === "spin"
-              ? spinChainDirty
-              : bodyChainDirty;
+      const animated = def.pulse || def.bin || def.shadow;
+      let anchorM = _vehBodyM;
+      let anchorDirty = bodyChainDirty;
+      if (def.childAnchor === 1 && hasSpinKids && def.childIndex < MAX_SPIN_CHILD_ANCHORS) {
+        anchorM = _vehSpinChildM[def.childIndex];
+        anchorDirty = spinChildChainDirty;
+      } else if (def.childAnchor === 2 && hasSpin2Kids && def.childIndex < MAX_SPIN_CHILD_ANCHORS) {
+        anchorM = _vehSpin2ChildM[def.childIndex];
+        anchorDirty = spin2ChildChainDirty;
+      } else if (def.anchor === "turret" && hasTurret) {
+        anchorM = _vehTurretM;
+        anchorDirty = turretChainDirty;
+      } else if (def.anchor === "recoil" && hasRecoil) {
+        anchorM = _vehRecoilM;
+        anchorDirty = recoilChainDirty;
+      } else if (def.anchor === "spin" && hasSpin) {
+        anchorM = _vehSpinM;
+        anchorDirty = spinChainDirty;
+      } else if (def.anchor === "spin2" && hasSpin2) {
+        anchorM = _vehSpin2M;
+        anchorDirty = spin2ChainDirty;
+      } else if (def.anchor === "crane" && hasCrane) {
+        anchorM = _vehCraneM;
+        anchorDirty = craneChainDirty;
+      } else if (def.anchor === "flag" && hasFlag) {
+        anchorM = _vehFlagM;
+        anchorDirty = flagChainDirty;
+      } else if (def.anchor === "root") {
+        anchorM = _vehRootM;
+        anchorDirty = rootDirty;
+      }
       if (!anchorDirty && !animated) continue;
       if (!pulseDirty && animated && !anchorDirty) continue;
-      const anchorM =
-        anchorKind === "turret"
-          ? _vehTurretM
-          : anchorKind === "recoil"
-            ? _vehRecoilM
-            : anchorKind === "spin"
-              ? _vehSpinM
-              : _vehBodyM;
-      const sx = def.pulse ? pulseScale : 1;
+      const sx = def.pulse ? pulseScale : def.shadow ? shadowScaleX : 1;
       const sy = (def.pulse ? pulseScale : 1) * (def.bin ? binScaleY : 1);
-      const sz = def.pulse ? pulseScale : 1;
+      const sz = def.pulse ? pulseScale : def.shadow ? shadowScaleZ : 1;
       const out = part.im.instanceMatrix.array as Float32Array;
       if (def.localMode !== 2) {
         // Fast path for baked/translation-only parts: copy the anchor basis (with
@@ -2067,31 +2440,38 @@ export class Renderer {
     // Proxy geometries are already baked in anchor space, so their instance
     // matrix is exactly the anchor chain — no per-part local multiply at all.
     for (const part of pool.shadowParts) {
-      const anchorKind =
-        part.def.anchor === "turret" && hasTurret
-          ? "turret"
-          : part.def.anchor === "recoil" && hasRecoil
-            ? "recoil"
-            : part.def.anchor === "spin" && hasSpin
-              ? "spin"
-              : "body";
-      const anchorDirty =
-        anchorKind === "turret"
-          ? turretChainDirty
-          : anchorKind === "recoil"
-            ? recoilChainDirty
-            : anchorKind === "spin"
-              ? spinChainDirty
-              : bodyChainDirty;
+      let anchorM = _vehBodyM;
+      let anchorDirty = bodyChainDirty;
+      const def = part.def;
+      if (def.childAnchor === 1 && hasSpinKids && def.childIndex < MAX_SPIN_CHILD_ANCHORS) {
+        anchorM = _vehSpinChildM[def.childIndex];
+        anchorDirty = spinChildChainDirty;
+      } else if (def.childAnchor === 2 && hasSpin2Kids && def.childIndex < MAX_SPIN_CHILD_ANCHORS) {
+        anchorM = _vehSpin2ChildM[def.childIndex];
+        anchorDirty = spin2ChildChainDirty;
+      } else if (def.anchor === "turret" && hasTurret) {
+        anchorM = _vehTurretM;
+        anchorDirty = turretChainDirty;
+      } else if (def.anchor === "recoil" && hasRecoil) {
+        anchorM = _vehRecoilM;
+        anchorDirty = recoilChainDirty;
+      } else if (def.anchor === "spin" && hasSpin) {
+        anchorM = _vehSpinM;
+        anchorDirty = spinChainDirty;
+      } else if (def.anchor === "spin2" && hasSpin2) {
+        anchorM = _vehSpin2M;
+        anchorDirty = spin2ChainDirty;
+      } else if (def.anchor === "crane" && hasCrane) {
+        anchorM = _vehCraneM;
+        anchorDirty = craneChainDirty;
+      } else if (def.anchor === "flag" && hasFlag) {
+        anchorM = _vehFlagM;
+        anchorDirty = flagChainDirty;
+      } else if (def.anchor === "root") {
+        anchorM = _vehRootM;
+        anchorDirty = rootDirty;
+      }
       if (!anchorDirty) continue;
-      const anchorM =
-        anchorKind === "turret"
-          ? _vehTurretM
-          : anchorKind === "recoil"
-            ? _vehRecoilM
-            : anchorKind === "spin"
-              ? _vehSpinM
-              : _vehBodyM;
       copyMatrixElementsToArray(anchorM, part.im.instanceMatrix.array as Float32Array, base16);
       this.markVehicleMatrixDirty(part, slot.idx);
     }
@@ -2109,13 +2489,13 @@ export class Renderer {
       }
     });
     if (vis.rig.subMats) {
-      for (const m of vis.rig.subMats) m?.dispose?.();
+      for (const m of vis.rig.subMats) if (!m?.userData.rigidTemplateKeep) m?.dispose?.();
     }
     if (vis.rig.powerGlow) {
       for (const gm of vis.rig.powerGlow) {
         const m = (gm.userData._origMat as THREE.Material | THREE.Material[] | undefined) ?? gm.material;
-        if (Array.isArray(m)) m.forEach((x) => x.dispose());
-        else m.dispose();
+        if (Array.isArray(m)) m.forEach((x) => { if (!x.userData.rigidTemplateKeep) x.dispose(); });
+        else if (!m.userData.rigidTemplateKeep) m.dispose();
       }
     }
     (vis.ring?.material as THREE.Material | undefined)?.dispose?.();
@@ -2146,21 +2526,25 @@ export class Renderer {
     this.snaps = [];
     this.selection.clear();
     this.defenseRangesOn = false;
-    for (const p of this.instPools.values()) for (const part of p.parts) part.im.dispose();
-    this.instPools.clear();
-    for (const p of this.vehiclePools.values()) {
-      for (const part of p.parts) part.im.dispose();
-      for (const part of p.shadowParts) {
-        part.im.userData.shadowProxyDisposed = true;
-        part.im.geometry.dispose();
-        part.im.dispose();
-      }
+    // Instanced pools + vehicle templates survive the match reset: they are
+    // keyed purely by entity kind (no per-match state), cost real milliseconds
+    // to rebuild (donor probe + merge passes + VBO re-uploads + shader-variant
+    // recompilation), and the GPU memory is identical whether they sit idle or
+    // get recreated for the next battle. Only the per-match allocation
+    // bookkeeping is rewound — every slot becomes free and draws nothing until
+    // the next snap reuses it (slot reuse fully rewrites matrix/color state in
+    // the normal write path, so no stale transforms can flash).
+    for (const p of this.instPools.values()) {
+      p.owners.fill(-1);
+      p.free.length = 0;
+      p.used = 0;
+      for (const part of p.parts) part.im.count = 0;
     }
-    this.vehiclePools.clear();
-    this.vehicleTemplates.clear();
-    if (this.instGroup) {
-      scene.remove(this.instGroup);
-      this.instGroup = null;
+    for (const p of this.vehiclePools.values()) {
+      p.owners.fill(-1);
+      p.used = 0;
+      for (const part of p.parts) part.im.count = 0;
+      for (const part of p.shadowParts) part.im.count = 0;
     }
     this.seen.clear();
     this.hasInitialSnap = false;
@@ -2218,7 +2602,12 @@ export class Renderer {
       // Rigid vehicles additionally keep a lightweight turret/recoil/spin rig in
       // the lite vis, whose per-frame node state drives their instance matrices.
       const wantsSwarmInst = !isBuilding && INSTANCED_KINDS.has(e.k);
-      const wantsVehicleInst = !isBuilding && !wantsSwarmInst && VEHICLE_INSTANCED_KINDS.has(e.k);
+      const wantsVehicleInst =
+        !isBuilding &&
+        !wantsSwarmInst &&
+        VEHICLE_INSTANCED_KINDS.has(e.k) &&
+        e.k !== "sub" &&
+        e.k !== "stealthbomber";
       const vehReservation = wantsVehicleInst ? this.reserveVehicleInstance(e) : null;
       const vis = makeEntVis(e.k, color, scene, wantsSwarmInst || vehReservation !== null);
       vis.root.position.set(e.x, 0, e.y);
@@ -2417,7 +2806,12 @@ export class Renderer {
         const color = this.slotColors.get(e.o) ?? "#888888";
         const nextIsBuilding = isBuildingKind(e.k);
         const wantsSwarmInst = !nextIsBuilding && INSTANCED_KINDS.has(e.k);
-        const wantsVehicleInst = !nextIsBuilding && !wantsSwarmInst && VEHICLE_INSTANCED_KINDS.has(e.k);
+        const wantsVehicleInst =
+          !nextIsBuilding &&
+          !wantsSwarmInst &&
+          VEHICLE_INSTANCED_KINDS.has(e.k) &&
+          e.k !== "sub" &&
+          e.k !== "stealthbomber";
         const vehReservation = wantsVehicleInst ? this.reserveVehicleInstance(e) : null;
         const vis = makeEntVis(e.k, color, scene, wantsSwarmInst || vehReservation !== null);
         vis.root.position.copy(prevPos);
@@ -2826,6 +3220,8 @@ export class Renderer {
             }
           }
           t.lastLowPower = lowPwr;
+          this.syncRigidInstancing(t);
+          if (t.vehInst) this.writeVehicleInstance(t);
         } else {
           if (!this.framePosTrackedInto(id, t, snapA, snapB, interpT, pos)) continue;
           const dxVis = pos.x - t.visX;
@@ -2901,9 +3297,10 @@ export class Renderer {
             t.anim.prevY = py;
             t.anim.prevHeading = t.visYaw;
           }
+          t.lastLowPower = lowPwr;
+          this.syncRigidInstancing(t);
           if (t.vehInst) this.writeVehicleInstance(t);
           }
-          t.lastLowPower = lowPwr;
         }
 
         if (this.selection.has(id) && t.vis.root.visible) {
