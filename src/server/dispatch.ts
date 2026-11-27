@@ -1,8 +1,9 @@
 // Shared in-game command validation + application, used 1:1 by the authoritative
-// multiplayer worker (src/worker.ts) and the in-process single-player room
-// (src/client/localnet.ts). Both transports receive the same C2S wire messages
-// and must apply them with identical sanitization — extracting it here keeps
-// the two from drifting apart.
+// multiplayer worker (src/worker.ts) and the single-player local room engine
+// (src/client/sim-host.ts, hosted in a Web Worker via src/client/sim-worker.ts
+// behind the src/client/localnet.ts proxy). Both transports receive the same
+// C2S wire messages and must apply them with identical sanitization —
+// extracting it here keeps the two from drifting apart.
 //
 // Deliberately NOT shared (documented for the integration review):
 //  - lobby lifecycle (join/ready/start/addbot/setTeam/setConfig/rematch...):

@@ -41,9 +41,17 @@ const EMERALD = "#3af082";
 
 const geoBox = new THREE.BoxGeometry(1, 1, 1);
 const geoCyl = new THREE.CylinderGeometry(0.5, 0.5, 1, 10);
+const geoCylMed = new THREE.CylinderGeometry(0.5, 0.5, 1, 8);
+const geoCylThin = new THREE.CylinderGeometry(0.5, 0.5, 1, 6);
 const geoCylTaper = new THREE.CylinderGeometry(0.35, 0.52, 1, 10);
+const geoCylTaperMed = new THREE.CylinderGeometry(0.35, 0.52, 1, 8);
+const geoCylTaperThin = new THREE.CylinderGeometry(0.35, 0.52, 1, 6);
 const geoSph = new THREE.SphereGeometry(0.5, 10, 7);
+const geoSphSmall = new THREE.SphereGeometry(0.5, 8, 6);
+const geoSphGlowSmall = new THREE.SphereGeometry(0.5, 8, 5);
 const geoCone = new THREE.ConeGeometry(0.5, 1, 10);
+const geoConeMed = new THREE.ConeGeometry(0.5, 1, 8);
+const geoConeThin = new THREE.ConeGeometry(0.5, 1, 6);
 const geoRotorDisc = new THREE.CircleGeometry(1, 16);
 geoRotorDisc.rotateX(-Math.PI / 2);
 
@@ -199,6 +207,7 @@ function makeFenestronFinGeo(): THREE.BufferGeometry {
     bevelThickness: 0.012,
     bevelSize: 0.01,
     bevelSegments: 1,
+    curveSegments: 8,
   });
   g.center();
   g.rotateY(-Math.PI / 2);
@@ -264,7 +273,7 @@ function makeNacelleGeo(): THREE.BufferGeometry {
     const r = Math.max(0.01, 0.115 * Math.pow(Math.sin(u * Math.PI), 0.58) * (0.85 + 0.22 * u));
     pts.push(new THREE.Vector2(r, y));
   }
-  const g = new THREE.LatheGeometry(pts, 14);
+  const g = new THREE.LatheGeometry(pts, 10);
   g.rotateX(Math.PI / 2);
   return g;
 }
@@ -384,6 +393,7 @@ function makeSubSailGeo(): THREE.BufferGeometry {
     bevelThickness: 0.03,
     bevelSize: 0.02,
     bevelSegments: 1,
+    curveSegments: 8,
   });
   g.center();
   g.rotateX(Math.PI / 2);
@@ -627,7 +637,7 @@ function makeRpgWarheadGeo(): THREE.BufferGeometry {
     new THREE.Vector2(0.022, 0.34), // piezoelectric standoff probe
     new THREE.Vector2(0.002, 0.38),
   ];
-  const g = new THREE.LatheGeometry(pts, 12);
+  const g = new THREE.LatheGeometry(pts, 8);
   g.rotateX(Math.PI / 2); // +Y -> +Z
   return g;
 }
@@ -794,6 +804,7 @@ function makeA10TailFinGeo(): THREE.BufferGeometry {
     bevelThickness: 0.008,
     bevelSize: 0.007,
     bevelSegments: 1,
+    curveSegments: 8,
   });
   g.center();
   g.rotateY(-Math.PI / 2);
@@ -810,7 +821,7 @@ function makeA10EnginePodGeo(): THREE.BufferGeometry {
     new THREE.Vector2(0.132, 0.33), // rounded intake lip
     new THREE.Vector2(0.105, 0.35),
   ];
-  const g = new THREE.LatheGeometry(pts, 13);
+  const g = new THREE.LatheGeometry(pts, 10);
   g.rotateX(Math.PI / 2);
   return g;
 }
@@ -924,17 +935,17 @@ const geoA10EnginePod = makeA10EnginePodGeo();
 const geoAc130Fuselage = makeAc130FuselageGeo();
 const geoAc130Wing = makeAc130WingGeo();
 const geoAc130TailFin = makeAc130TailFinGeo();
-const geoA10ExhaustRing = new THREE.TorusGeometry(0.095, 0.024, 6, 12);
+const geoA10ExhaustRing = new THREE.TorusGeometry(0.095, 0.024, 5, 12);
 const geoPropBlurDisc = new THREE.CircleGeometry(0.28, 12);
 const geoPropBlurRing = new THREE.RingGeometry(0.24, 0.285, 12);
 const geoGunboatTurret = makeNavalTurretGeo(0.36, 0.16, 0.44);
 const geoDestroyerTurret = makeNavalTurretGeo(0.5, 0.22, 0.6);
-const geoSubShroud = new THREE.TorusGeometry(0.17, 0.024, 6, 12);
-const geoEwHaloOuter = new THREE.TorusGeometry(0.76, 0.022, 5, 18);
+const geoSubShroud = new THREE.TorusGeometry(0.17, 0.024, 5, 12);
+const geoEwHaloOuter = new THREE.TorusGeometry(0.76, 0.022, 4, 18);
 geoEwHaloOuter.rotateX(Math.PI / 2);
-const geoEwHaloInner = new THREE.TorusGeometry(0.52, 0.015, 5, 14);
+const geoEwHaloInner = new THREE.TorusGeometry(0.52, 0.015, 4, 14);
 geoEwHaloInner.rotateX(Math.PI / 2);
-const geoEwHaloArc = new THREE.TorusGeometry(0.86, 0.014, 6, 18, Math.PI * 0.45);
+const geoEwHaloArc = new THREE.TorusGeometry(0.86, 0.014, 4, 18, Math.PI * 0.45);
 geoEwHaloArc.rotateX(Math.PI / 2);
 
 const ewHaloPurpleMat = new THREE.MeshBasicMaterial({
@@ -975,7 +986,7 @@ const geoZepRingTable: { z: number; geo: THREE.TorusGeometry; isAccent: boolean 
   ] as [number, number, boolean][]
 ).map(([z, rad, isAccent]) => ({
   z,
-  geo: new THREE.TorusGeometry(rad, isAccent ? 0.042 : 0.026, 6, 14),
+  geo: new THREE.TorusGeometry(rad, isAccent ? 0.042 : 0.026, 5, 14),
   isAccent,
 }));
 
@@ -1001,6 +1012,18 @@ function rbox(
   r = 0.04,
   cast = true,
 ): THREE.Mesh {
+  // Thin unlit glow strips read as plain luminous rectangles even in FPV; skipping
+  // the bevel lattice there removes 96 triangles per strip without changing shading.
+  if (
+    mat instanceof THREE.MeshBasicMaterial &&
+    !mat.map &&
+    Math.min(w, h, d) <= 0.05 &&
+    Math.max(w, h, d) <= 0.3
+  ) {
+    const m = mesh(geoBox, mat, cast, cast);
+    m.scale.set(w, h, d);
+    return m;
+  }
   return mesh(getRoundedBoxGeo(w, h, d, r), mat, cast, cast);
 }
 
@@ -1011,19 +1034,33 @@ function box(w: number, h: number, d: number, mat: THREE.Material, cast = true):
 }
 
 function cyl(d: number, h: number, mat: THREE.Material, taper = false, cast = true): THREE.Mesh {
-  const m = mesh(taper ? geoCylTaper : geoCyl, mat, cast, cast);
+  const g = taper
+    ? d <= 0.06
+      ? geoCylTaperThin
+      : d <= 0.12
+        ? geoCylTaperMed
+        : geoCylTaper
+    : d <= 0.08
+      ? geoCylThin
+      : d <= 0.3
+        ? geoCylMed
+        : geoCyl;
+  const m = mesh(g, mat, cast, cast);
   m.scale.set(d, h, d);
   return m;
 }
 
 function sph(d: number, mat: THREE.Material, cast = true): THREE.Mesh {
-  const m = mesh(geoSph, mat, cast, cast);
+  const glow = mat instanceof THREE.MeshBasicMaterial;
+  const g = d < 0.3 ? (glow ? geoSphGlowSmall : geoSphSmall) : geoSph;
+  const m = mesh(g, mat, cast, cast);
   m.scale.setScalar(d);
   return m;
 }
 
 function cone(d: number, h: number, mat: THREE.Material, cast = true): THREE.Mesh {
-  const m = mesh(geoCone, mat, cast, cast);
+  const g = d <= 0.1 ? geoConeThin : d <= 0.15 ? geoConeMed : geoCone;
+  const m = mesh(g, mat, cast, cast);
   m.scale.set(d, h, d);
   return m;
 }
@@ -1305,7 +1342,8 @@ export function buildAirSeaModel(
       add(nose, 0, 0.01, 1.08);
 
       // Glossy tinted fighter bubble canopy
-      const canopy = sph(0.24, getGlassMat("#4db8f0"));
+      const canopy = mesh(geoSph, getGlassMat("#4db8f0"));
+      canopy.scale.setScalar(0.24);
       canopy.scale.multiply(new THREE.Vector3(0.76, 0.62, 2.05));
       add(canopy, 0, 0.13, 0.34);
 
@@ -2139,7 +2177,8 @@ export function buildAirSeaModel(
       add(mesh(geoReaperFuselage, droneBodyMat), 0, 0, 0);
 
       // Iconic bulbous satellite-dome forehead nose hump!
-      const satNose = sph(0.24, droneWingMat);
+      const satNose = mesh(geoSph, droneWingMat);
+      satNose.scale.setScalar(0.24);
       satNose.scale.multiply(new THREE.Vector3(0.86, 0.72, 2.05));
       add(satNose, 0, 0.065, 0.44);
       // Satin faction dorsal stripe along spine
@@ -2657,7 +2696,7 @@ export function buildAirSeaModel(
 
       // Underslung glowing purple-cyan phased EW jammer radome
       add(cyl(0.36, 0.09, gunm), 0, -0.08, 0.04);
-      const radomeCore = sph(0.28, ewPurpleGlow, false);
+      const radomeCore = mesh(geoSph, ewPurpleGlow, false, false);
       radomeCore.scale.set(1.0, 0.56, 1.0);
       add(radomeCore, 0, -0.145, 0.04);
       pulse.push(radomeCore);

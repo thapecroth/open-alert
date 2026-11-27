@@ -43,7 +43,7 @@ registerHooks({
 });
 
 const { World } = await import("../src/server/world.ts");
-const { AIBot } = await import("../src/server/bot.ts");
+const { AIBot, RtsBot } = await import("../src/server/bot.ts");
 const { diffSnaps } = await import("../src/shared/snapdelta.ts");
 const { PATH_STATS } = await import("../src/server/path.ts");
 
@@ -57,6 +57,22 @@ const WIN = Number(arg("win", "400")) || 400;
 const CSV = arg("csv", "");
 const PLAYERS = Number(arg("players", "8")) || 8;
 const START_CREDITS = Number(arg("credits", "20000")) || 20000;
+const SEED = arg("seed", "");
+const FINGERPRINT = process.argv.includes("--fingerprint");
+
+// --seed N: deterministic Math.random (mulberry32) so before/after optimization
+// runs evolve the identical game — enables exact behavioral-equivalence checking
+// via --fingerprint (rolling hash of entity state, outside the timed region).
+if (SEED) {
+  let s = (Number(SEED) || 1) >>> 0;
+  Math.random = () => {
+    s |= 0;
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 // ---------- scenario ----------
 const slots = Array.from({ length: PLAYERS }, (_, i) => i);
@@ -74,6 +90,7 @@ const bots = slots.map((s, i) => new AIBot(`bot-${s}`, { diff: i < 4 ? "brutal" 
 const proto = World.prototype;
 const subs = Object.create(null);
 const SUBSTEP = [
+  "processPathQueue",
   "tickProduction",
   "rebuildSpatialGrid",
   "tickEnt",
@@ -87,7 +104,7 @@ const SUBSTEP = [
   "regenOre",
   "checkEnd",
 ];
-const INSIDE = ["nearestEnemy", "stepAlong", "pathNear", "tryFire", "tickHarvester", "tickDirect"];
+const INSIDE = ["nearestEnemy", "stepAlong", "pathNear", "tryFire", "tickHarvester", "tickDirect", "recomputeRegions", "nearestOre", "oreSnapshot", "spawnNearBuilding"];
 for (const name of [...SUBSTEP, ...INSIDE]) {
   const orig = proto[name];
   if (typeof orig !== "function") throw new Error(`no such method: ${name}`);
@@ -101,8 +118,25 @@ for (const name of [...SUBSTEP, ...INSIDE]) {
   };
 }
 
+// bot internals — same wrapping, recorded under b_* keys (TS-private compiles to plain methods)
+const BOTSUB = ["scanWorld", "place", "findSpot", "defend", "slow", "assault", "manageSupplyTrucks", "scout", "rally", "produce", "repairs", "manageAirlift", "grabCrates", "captureDerricks", "wakeHarvesters", "fireSuperweapon", "upgrade"];
+for (const name of BOTSUB) {
+  const orig = RtsBot.prototype[name];
+  if (typeof orig !== "function") continue;
+  RtsBot.prototype[name] = function (...args) {
+    const t0 = performance.now();
+    try {
+      return orig.apply(this, args);
+    } finally {
+      subs["b_" + name] = (subs["b_" + name] ?? 0) + (performance.now() - t0);
+    }
+  };
+}
+
 // ---------- measured evolution ----------
 const series = []; // per-tick records
+let fpTick = 0;
+const fpSeries = [];
 let snapBase = null;
 let snapCount = 0;
 const t0All = performance.now();
@@ -153,7 +187,34 @@ for (let t = 0; t < MAXTICKS && world.winner === null; t++) {
   const rec = { tick: world.tick, ents: world.ents.size, ms: tickMs, botMs, snapMs, diffMs, jsonMs, wireBytes, astarMs: PATH_STATS.ms, astarCalls: PATH_STATS.calls, astarExp: PATH_STATS.expanded, astarFail: PATH_STATS.failed, astarCapped: PATH_STATS.capped };
   for (const k of SUBSTEP) rec["s_" + k] = subs[k] ?? 0;
   for (const k of INSIDE) rec["i_" + k] = subs[k] ?? 0;
+  for (const k of BOTSUB) rec["b_" + k] = subs["b_" + k] ?? 0;
   series.push(rec);
+  if (FINGERPRINT) {
+    // rolling gameplay-state hash — map iteration order is insertion-stable, and
+    // identical sim logic yields bit-identical floats, so any behavioral drift
+    // shows up as a digest divergence at exactly the first diverging tick
+    let h = fpTick;
+    h = (h * 33 + world.ents.size) >>> 0;
+    for (const e of world.ents.values()) {
+      h = (h * 33 + e.id) >>> 0;
+      h = (h * 33 + Math.round(e.x * 64)) >>> 0;
+      h = (h * 33 + Math.round(e.y * 64)) >>> 0;
+      h = (h * 33 + Math.round(e.hp)) >>> 0;
+    }
+    fpTick = h;
+    fpSeries.push(h);
+  }
+}
+if (FINGERPRINT) {
+  console.log(`[fingerprint] final=${fpTick.toString(16)} ticks=${fpSeries.length} (compare across builds; identical games match exactly)`);
+  writeFileSyncSafe(`/tmp/fp-${MAP}-${SEED || "rand"}.txt`, fpSeries.map((h, i) => `${i + 1} ${h.toString(16)}`).join("\n"));
+}
+function writeFileSyncSafe(path, data) {
+  try {
+    writeFileSync(path, data);
+  } catch {
+    /* best effort */
+  }
 }
 console.log(`[perfserv] map=${MAP} ${world.w}x${world.h} evolved ${series.length} ticks in ${(performance.now() - t0All).toFixed(0)}ms, peak ents=${Math.max(...series.map((r) => r.ents))}`);
 
@@ -212,6 +273,59 @@ for (const th of [10, 25, 50, 100]) {
   const c = win.filter((r) => r.ms > th).length;
   console.log(`ticks > ${th}ms: ${c}/${n} (${((c / n) * 100).toFixed(1)}%)`);
 }
+
+// ---------- worst-tick spike attribution ----------
+// The mean table hides what makes the p99/max ticks bad. Print the top-8
+// worst ticks in the heavy window with their per-subsystem breakdown, plus a
+// global-series scan (spikes can land outside the heaviest-entity window).
+const SPIKE_KEYS = [
+  ["bots", (r) => r.botMs],
+  ["  b.scanWorld", (r) => r.b_scanWorld],
+  ["  b.place", (r) => r.b_place],
+  ["  b.findSpot", (r) => r.b_findSpot],
+  ["  b.defend", (r) => r.b_defend],
+  ["  b.slow", (r) => r.b_slow],
+  ["  b.produce", (r) => r.b_produce],
+  ["  b.airlift", (r) => r.b_manageAirlift],
+  ["  b.crates", (r) => r.b_grabCrates],
+  ["  b.scout", (r) => r.b_scout],
+  ["  oreSnapshot", (r) => r.i_oreSnapshot],
+  ["  spawnNearBld", (r) => r.i_spawnNearBuilding],
+  ["  b.assault", (r) => r.b_assault],
+  ["  b.supplyTrucks", (r) => r.b_manageSupplyTrucks],
+  ["processPathQueue", (r) => r.s_processPathQueue],
+  ["tickEnt", (r) => r.s_tickEnt],
+  ["  stepAlong", (r) => r.i_stepAlong],
+  ["  nearestEnemy", (r) => r.i_nearestEnemy],
+  ["  tickHarvester", (r) => r.i_tickHarvester],
+  ["  recomputeRegions", (r) => r.i_recomputeRegions],
+  ["  nearestOre", (r) => r.i_nearestOre],
+  ["separate", (r) => r.s_separate],
+  ["rebuildSpatialGrid", (r) => r.s_rebuildSpatialGrid],
+  ["tickProduction", (r) => r.s_tickProduction],
+  ["tickEwJamming", (r) => r.s_tickEwJamming],
+  ["tickCrates", (r) => r.s_tickCrates],
+  ["tickLogistics", (r) => r.s_tickLogistics],
+  ["depots+derr+vet", (r) => (r.s_tickDepots ?? 0) + (r.s_tickDerricks ?? 0) + (r.s_tickVetRegen ?? 0)],
+  ["regenOre", (r) => r.s_regenOre],
+  ["checkEnd", (r) => r.s_checkEnd],
+  ["snap+diff+json", (r) => (r.snapMs ?? 0) + (r.diffMs ?? 0) + (r.jsonMs ?? 0)],
+  ["A*(incl. atomic)", (r) => r.astarMs],
+];
+const dumpSpikes = (label, arr) => {
+  const worst = [...arr].sort((a, b) => b.ms - a.ms).slice(0, 8);
+  console.log(`\n[spikes ${label}] top worst ticks:`);
+  for (const r of worst) {
+    const parts = SPIKE_KEYS.map(([k, f]) => [k, f(r) ?? 0])
+      .filter(([, v]) => v > 0.15)
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `${k}=${v.toFixed(2)}`)
+      .join(" ");
+    console.log(`  tick ${r.tick} ms=${r.ms.toFixed(2)} ents=${r.ents} astarExp=${r.astarExp} astarCalls=${r.astarCalls} :: ${parts}`);
+  }
+};
+dumpSpikes("heavy window", win);
+dumpSpikes("ALL ticks", series);
 
 if (CSV) {
   const out = {

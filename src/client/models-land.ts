@@ -36,17 +36,31 @@ const WHITE_GLOW = "#d8f4ff";
 const HEAL_GLOW = "#3ce080";
 
 // ---------- Shared Sculpted & Beveled Geometries ----------
+const geoBox = new THREE.BoxGeometry(1, 1, 1);
 const geoRBox = new RoundedBoxGeometry(1, 1, 1, 1, 0.085);
 const geoRBoxSharp = new RoundedBoxGeometry(1, 1, 1, 1, 0.045);
 const geoRBoxSoft = new RoundedBoxGeometry(1, 1, 1, 2, 0.16);
+const geoRBoxSoftSmall = new RoundedBoxGeometry(1, 1, 1, 1, 0.16);
 const geoCyl = new THREE.CylinderGeometry(0.5, 0.5, 1, 10);
+const geoCylMed = new THREE.CylinderGeometry(0.5, 0.5, 1, 8);
+const geoCylThin = new THREE.CylinderGeometry(0.5, 0.5, 1, 6);
 const geoCylOct = new THREE.CylinderGeometry(0.5, 0.5, 1, 8);
 const geoCylTaper = new THREE.CylinderGeometry(0.36, 0.52, 1, 10);
+const geoCylTaperMed = new THREE.CylinderGeometry(0.36, 0.52, 1, 8);
+const geoCylTaperThin = new THREE.CylinderGeometry(0.36, 0.52, 1, 6);
 const geoSph = new THREE.SphereGeometry(0.5, 10, 7);
-const geoCap = new THREE.CapsuleGeometry(0.25, 0.5, 3, 8);
+const geoSphSmall = new THREE.SphereGeometry(0.5, 8, 6);
+const geoSphGlowSmall = new THREE.SphereGeometry(0.5, 8, 5);
+const geoCap = new THREE.CapsuleGeometry(0.25, 0.5, 2, 6);
 const geoCone = new THREE.ConeGeometry(0.5, 1, 10);
+const geoConeMed = new THREE.ConeGeometry(0.5, 1, 8);
+const geoConeThin = new THREE.ConeGeometry(0.5, 1, 6);
 const geoTorus = new THREE.TorusGeometry(0.5, 0.08, 6, 14);
+const geoTorusMed = new THREE.TorusGeometry(0.5, 0.08, 5, 12);
+const geoTorusSmall = new THREE.TorusGeometry(0.5, 0.08, 5, 10);
 const geoTorusThin = new THREE.TorusGeometry(0.5, 0.046, 5, 14);
+const geoTorusThinMed = new THREE.TorusGeometry(0.5, 0.046, 5, 12);
+const geoTorusThinSmall = new THREE.TorusGeometry(0.5, 0.046, 4, 10);
 
 const geoContactDisc = new THREE.PlaneGeometry(2, 2);
 geoContactDisc.rotateX(-Math.PI / 2);
@@ -163,6 +177,7 @@ function makeHorseheadGeo(): THREE.BufferGeometry {
     bevelThickness: 0.022,
     bevelSize: 0.02,
     bevelSegments: 1,
+    curveSegments: 8,
   });
   g.center();
   g.rotateY(-Math.PI / 2);
@@ -242,14 +257,14 @@ function makeCentrifugeGeo(): THREE.BufferGeometry {
 }
 
 // Aerodynamic ogive missile warhead cone (LatheGeometry, base y=-0.5, tip y=0.5)
-function makeMissileConeGeo(): THREE.BufferGeometry {
+function makeMissileConeGeo(radialSegments = 12): THREE.BufferGeometry {
   const pts: THREE.Vector2[] = [];
   for (let i = 0; i <= 8; i++) {
     const t = i / 8;
     const r = Math.max(0.002, 0.5 * Math.pow(1 - t, 0.72));
     pts.push(new THREE.Vector2(r, t - 0.5));
   }
-  return new THREE.LatheGeometry(pts, 12);
+  return new THREE.LatheGeometry(pts, radialSegments);
 }
 
 // Orbital Ion Uplink curved emitter aperture collar (LatheGeometry)
@@ -381,6 +396,8 @@ const geoParabolicDish = makeParabolicDishGeo();
 const geoSilo = makeSiloGeo();
 const geoCentrifuge = makeCentrifugeGeo();
 const geoMissileCone = makeMissileConeGeo();
+const geoMissileConeSmall = makeMissileConeGeo(8);
+const geoMissileConeTiny = makeMissileConeGeo(6);
 const geoIonAperture = makeIonApertureGeo();
 const geoRadome = makeRadomeGeo();
 const geoLaserSpire = makeLaserSpireGeo();
@@ -390,7 +407,7 @@ const geoOreLoad = makeOreLoadGeo(1.02, 0.42, 0.92);
 const geoCoalHeap = makeOreLoadGeo(0.86, 0.46, 0.86);
 const geoFusionPlasma = new THREE.TorusGeometry(0.68, 0.135, 8, 18);
 const geoFusionPlasmaCore = new THREE.TorusGeometry(0.68, 0.062, 6, 16);
-const geoSatOrbitTrack = new THREE.TorusGeometry(0.64, 0.018, 5, 18);
+const geoSatOrbitTrack = new THREE.TorusGeometry(0.64, 0.018, 4, 18);
 
 // ---------- Lazily Cached Contact Shadow Material ----------
 let contactShadowMatCache: THREE.MeshBasicMaterial | null = null;
@@ -415,38 +432,68 @@ function meshOf(geo: THREE.BufferGeometry, mat: THREE.Material, cast = true, rec
 }
 
 function rbox(w: number, h: number, d: number, mat: THREE.Material, sharp = false): THREE.Mesh {
-  const m = meshOf(sharp ? geoRBoxSharp : geoRBox, mat);
+  // Thin unlit glow strips read as plain luminous rectangles even in FPV; skipping
+  // the bevel lattice there removes 96 triangles per strip without changing shading.
+  const flatGlow =
+    mat instanceof THREE.MeshBasicMaterial &&
+    !mat.map &&
+    Math.min(w, h, d) <= 0.05 &&
+    Math.max(w, h, d) <= 0.3;
+  const m = meshOf(flatGlow ? geoBox : sharp ? geoRBoxSharp : geoRBox, mat);
   m.scale.set(w, h, d);
   return m;
 }
 
 function softBox(w: number, h: number, d: number, mat: THREE.Material): THREE.Mesh {
-  const m = meshOf(geoRBoxSoft, mat);
+  const small = Math.max(w, h, d) <= 0.15;
+  const m = meshOf(small ? geoRBoxSoftSmall : geoRBoxSoft, mat);
   m.scale.set(w, h, d);
   return m;
 }
 
 function cyl(d: number, h: number, mat: THREE.Material, style: "round" | "oct" | "taper" = "round"): THREE.Mesh {
-  const g = style === "oct" ? geoCylOct : style === "taper" ? geoCylTaper : geoCyl;
+  let g: THREE.BufferGeometry;
+  if (style === "oct") {
+    g = geoCylOct;
+  } else if (style === "taper") {
+    // Tapered cylinders are often aerodynamic pod/fuselage pieces; only the truly
+    // thin ones drop below the authored 10-sided silhouette.
+    g = d <= 0.06 ? geoCylTaperThin : d <= 0.12 ? geoCylTaperMed : geoCylTaper;
+  } else {
+    g = d <= 0.08 ? geoCylThin : d <= 0.3 ? geoCylMed : geoCyl;
+  }
   const m = meshOf(g, mat);
   m.scale.set(d, h, d);
   return m;
 }
 
 function sph(d: number, mat: THREE.Material, isGlow = false): THREE.Mesh {
-  const m = meshOf(geoSph, mat, !isGlow, !isGlow);
+  const g = d < 0.3 ? (isGlow ? geoSphGlowSmall : geoSphSmall) : geoSph;
+  const m = meshOf(g, mat, !isGlow, !isGlow);
   m.scale.setScalar(d);
   return m;
 }
 
 function cone(d: number, h: number, mat: THREE.Material, isGlow = false): THREE.Mesh {
-  const m = meshOf(geoCone, mat, !isGlow, !isGlow);
+  const g = d <= 0.1 ? geoConeThin : d <= 0.15 ? geoConeMed : geoCone;
+  const m = meshOf(g, mat, !isGlow, !isGlow);
   m.scale.set(d, h, d);
   return m;
 }
 
 function torus(d: number, mat: THREE.Material, thin = false): THREE.Mesh {
-  const m = meshOf(thin ? geoTorusThin : geoTorus, mat);
+  const g = thin
+    ? d <= 0.45
+      ? geoTorusThinSmall
+      : d <= 0.75
+        ? geoTorusThinMed
+        : geoTorusThin
+    : d <= 0.45
+      ? geoTorusSmall
+      : d <= 0.75
+        ? geoTorusMed
+        : geoTorus;
+  const m = meshOf(g, mat);
   m.scale.setScalar(d);
   return m;
 }
@@ -776,7 +823,7 @@ function buildSoldierRig(
         tube.rotation.x = Math.PI / 2;
         tube.position.set(mx, my, 0.23);
         pod.add(tube);
-        const wh = meshOf(geoMissileCone, matWarhead, false, false);
+        const wh = meshOf(geoMissileConeTiny, matWarhead, false, false);
         wh.scale.set(0.05, 0.095, 0.05);
         wh.rotation.x = Math.PI / 2;
         wh.position.set(mx, my, 0.285);
@@ -1027,7 +1074,7 @@ export function buildLandModel(kind: EntKind, colorHex: string, body: THREE.Grou
           [-0.055, -0.05],
           [0.055, -0.05],
         ]) {
-          const tip = meshOf(geoMissileCone, matMiniWh, false, false);
+          const tip = meshOf(geoMissileConeTiny, matMiniWh, false, false);
           tip.scale.set(0.058, 0.09, 0.058);
           tip.rotation.x = Math.PI / 2;
           add(tip, sx + rx, 0.07 + ry, 0.21, turret);
@@ -1132,7 +1179,7 @@ export function buildLandModel(kind: EntKind, colorHex: string, body: THREE.Grou
           const tube = cyl(0.145, 0.16, matLt);
           tube.rotation.x = Math.PI / 2;
           add(tube, mx, my, 0.72, recoil);
-          const warhead = meshOf(geoMissileCone, matRktWh, false, false);
+          const warhead = meshOf(geoMissileConeSmall, matRktWh, false, false);
           warhead.scale.set(0.135, 0.24, 0.135);
           warhead.rotation.x = Math.PI / 2;
           add(warhead, mx, my, 0.84, recoil);
@@ -2319,7 +2366,7 @@ export function buildLandModel(kind: EntKind, colorHex: string, body: THREE.Grou
           add(rbox(0.28, 0.26, 0.1, matGun, true), cx, cy, 0.58, recoil);
           add(rbox(0.28, 0.26, 0.1, matDk, true), cx, cy, -0.58, recoil);
           // Crisp Patriot warhead nose peeking from launch cap
-          const wh = meshOf(geoMissileCone, matSamTip, false, false);
+          const wh = meshOf(geoMissileConeSmall, matSamTip, false, false);
           wh.scale.set(0.12, 0.2, 0.12);
           wh.rotation.x = Math.PI / 2;
           add(wh, cx, cy, 0.68, recoil);
@@ -2410,7 +2457,7 @@ export function buildLandModel(kind: EntKind, colorHex: string, body: THREE.Grou
             const cell = cyl(0.086, 0.14, matDk);
             cell.rotation.x = Math.PI / 2;
             add(cell, sx + mx, 0.06 + my, 0.51, recoil);
-            const tip = meshOf(geoMissileCone, matTipCyan, false, false);
+            const tip = meshOf(geoMissileConeTiny, matTipCyan, false, false);
             tip.scale.set(0.072, 0.13, 0.072);
             tip.rotation.x = Math.PI / 2;
             add(tip, sx + mx, 0.06 + my, 0.6, recoil);
@@ -2661,7 +2708,7 @@ export function buildLandModel(kind: EntKind, colorHex: string, body: THREE.Grou
           rearCap.rotation.x = Math.PI / 2;
           add(rearCap, cx, cy, -0.71, recoil);
           // Pointed exo-atmospheric THAAD interceptor warhead nose peeking from tube
-          const tip = meshOf(geoMissileCone, matKkvTip, false, false);
+          const tip = meshOf(geoMissileConeTiny, matKkvTip, false, false);
           tip.scale.set(0.095, 0.2, 0.095);
           tip.rotation.x = Math.PI / 2;
           add(tip, cx, cy, 0.84, recoil);
@@ -3155,7 +3202,7 @@ export function buildLandModel(kind: EntKind, colorHex: string, body: THREE.Grou
           const collar = cyl(0.155, 0.05, matGold);
           collar.rotation.x = Math.PI / 2;
           add(collar, mx, my, 0.84, recoil);
-          const nose = meshOf(geoMissileCone, matHyperCone, false, false);
+          const nose = meshOf(geoMissileConeSmall, matHyperCone, false, false);
           nose.scale.set(0.135, 0.26, 0.135);
           nose.rotation.x = Math.PI / 2;
           add(nose, mx, my, 0.92, recoil);
