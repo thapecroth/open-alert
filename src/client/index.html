@@ -91,6 +91,19 @@
       <div id="groupbar" class="hidden"></div>
     </div>
     <div id="toasts"></div>
+
+    <div id="starting-overlay" class="hidden" aria-live="polite" aria-atomic="true">
+      <div class="starting-card">
+        <img class="starting-emblem" src="/favicon.svg" alt="" />
+        <div class="starting-kicker" id="starting-kicker">STARTING GAME</div>
+        <h1 class="starting-title">OPEN ALERT</h1>
+        <div class="starting-mapline">DEPLOYING TO <strong id="starting-map">TWIN CROSSROADS</strong></div>
+        <div class="starting-progress" aria-hidden="true"><span></span></div>
+        <div class="starting-status"><span class="starting-spinner" aria-hidden="true"></span>ESTABLISHING BATTLE CONTROL…</div>
+        <div class="starting-tip" id="starting-tip"></div>
+      </div>
+    </div>
+
     <canvas id="minimap" width="160" height="160" class="hidden"></canvas>
     <div id="order-label" class="hidden"></div>
     <div id="hover-tip" class="hidden"></div>
@@ -529,6 +542,10 @@
           <label class="cfg-toggle cfg-chk"><input id="cfg-logistics" type="checkbox" checked /><span>Logistics (Fuel/Ammo)</span></label>
         </div>
         <ul id="player-list"></ul>
+        <div id="lobby-starting" class="hidden" role="status">
+          <span class="lobby-starting-spinner" aria-hidden="true"></span>
+          <span id="lobby-starting-text">STARTING GAME — LOADING…</span>
+        </div>
         <div class="row lobby-actions">
           <button id="ready-btn">READY</button>
           <div class="bot-controls">
@@ -546,6 +563,11 @@
             <button id="addbot-btn" class="hidden">+ BOT</button>
           </div>
           <button id="start-btn" class="hidden">START GAME</button>
+        </div>
+        <div id="lobby-alert" class="hidden" role="alert">
+          <span id="lobby-alert-label" class="lobby-alert-label">ACTION BLOCKED</span>
+          <span id="lobby-alert-text" class="lobby-alert-text"></span>
+          <button id="lobby-alert-close" type="button" title="Dismiss message">×</button>
         </div>
         <p class="hint" id="lobby-hint">waiting for players…</p>
       </div>

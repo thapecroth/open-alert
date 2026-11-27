@@ -88,6 +88,8 @@ let mySlot = -1;
 let myTeam = 0;
 let myId = "";
 let lobbyHumans = 1; // non-spectator, non-bot count from latest lobby state — gates the pause button
+let iAmLobbyHost = false;
+let lastLobbyPhase: "lobby" | "playing" | "ended" = "lobby";
 let phase: "lobby" | "playing" | "ended" = "lobby";
 // Important-only error telemetry — reports uncaught exceptions/rejections/
 // console.errors with room+phase+slot context so client failures are fetchable
@@ -550,10 +552,169 @@ function countOf(kind: BuildingKind) {
   return ownCounts().get(kind) ?? 0;
 }
 
+// ---------- game-start feedback state ----------
+// The start click must never feel like a dead button. The pending state is
+// optimistic and immediate; the loading overlay is deliberately not — it only
+// appears when battle-control handoff is still incomplete after 400ms, so warm
+// prewarmed starts transition without a full-screen flash.
+const START_PENDING_TIMEOUT_MS = 5000;
+const START_OVERLAY_DELAY_MS = 400;
+const START_OVERLAY_FAILSAFE_MS = 15000;
+
+let startPending = false;
+let startClickAt: number | null = null;
+let startPendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+interface MatchLoadingState {
+  map: MapId;
+  sourceLabel: string;
+  startedAt: number;
+  snapSeen: boolean;
+  snapAt: number | null;
+  visible: boolean;
+  showTimer: ReturnType<typeof setTimeout> | null;
+  failsafeTimer: ReturnType<typeof setTimeout> | null;
+}
+let matchLoading: MatchLoadingState | null = null;
+
+function clearStartPending() {
+  if (startPendingTimer) {
+    clearTimeout(startPendingTimer);
+    startPendingTimer = null;
+  }
+  startPending = false;
+  hud.setStartPending(false);
+}
+
+function beginMatchLoading(map: MapId, sourceLabel: string, startedAt = performance.now()) {
+  if (matchLoading) {
+    // `starting` and `init` are two milestones of the same transition. Keep the
+    // original clock (that is what the anti-flash threshold is measuring) and
+    // merely refresh the presentation data.
+    matchLoading.map = map;
+    matchLoading.sourceLabel = sourceLabel;
+    return;
+  }
+  const st: MatchLoadingState = {
+    map,
+    sourceLabel,
+    startedAt,
+    snapSeen: false,
+    snapAt: null,
+    visible: false,
+    showTimer: null,
+    failsafeTimer: null,
+  };
+  matchLoading = st;
+  const showCheck = () => {
+    st.showTimer = null;
+    if (matchLoading !== st) return;
+    if (st.snapSeen) {
+      // A snapshot that arrived only moments ago is about to paint — defer the
+      // decision briefly instead of flashing the overlay for one frame. If the
+      // machine is too weak to paint that frame promptly, the age grows past
+      // this grace window and the overlay legitimately appears.
+      const age = performance.now() - (st.snapAt ?? performance.now());
+      if (age < 140) {
+        st.showTimer = setTimeout(showCheck, 140 - age + 1);
+        return;
+      }
+    }
+    st.visible = true;
+    hud.showStartOverlay(st.map, st.sourceLabel);
+  };
+  // The host-side clock starts at the click (network time is part of the
+  // perceived transition), but the state object itself is only created once
+  // the server has accepted the start or init arrives — invalid starts therefore
+  // never put up a misleading full-screen loader before their deny.
+  st.showTimer = setTimeout(showCheck, Math.max(0, START_OVERLAY_DELAY_MS - (performance.now() - startedAt)));
+  st.failsafeTimer = setTimeout(() => {
+    st.failsafeTimer = null;
+    if (matchLoading !== st) return;
+    console.warn("match-start loading failsafe fired — revealing the game/lobby regardless");
+    finishMatchLoading(st);
+  }, START_OVERLAY_FAILSAFE_MS);
+}
+
+function finishMatchLoading(st: MatchLoadingState) {
+  if (matchLoading !== st) return;
+  if (st.showTimer) clearTimeout(st.showTimer);
+  if (st.failsafeTimer) clearTimeout(st.failsafeTimer);
+  matchLoading = null;
+  // Normal completion already hid this via hideLobby(); on the failsafe path
+  // this is what prevents a stale LOADING strip from surviving forever.
+  hud.hideLobbyStarting();
+  if (st.visible) hud.hideStartOverlay();
+  else hud.cancelStartOverlay();
+}
+
+function cancelMatchLoading() {
+  const st = matchLoading;
+  if (!st) return;
+  if (st.showTimer) clearTimeout(st.showTimer);
+  if (st.failsafeTimer) clearTimeout(st.failsafeTimer);
+  matchLoading = null;
+  hud.cancelStartOverlay();
+}
+
+function noteMatchLoadingInit(map: MapId) {
+  if (!matchLoading) {
+    const label =
+      startPending || iAmLobbyHost
+        ? "STARTING GAME"
+        : lastLobbyPhase === "lobby"
+          ? "HOST STARTED THE GAME"
+          : "CONNECTING TO MATCH";
+    beginMatchLoading(map, label, startClickAt ?? undefined);
+  } else {
+    matchLoading.map = map;
+  }
+}
+
+function noteMatchSnapshot() {
+  const st = matchLoading;
+  if (!st || st.snapSeen) return;
+  st.snapSeen = true;
+  st.snapAt = performance.now();
+  // The render loop's next RAF callback was scheduled before this one, so one
+  // RAF is enough to let the first entity-bearing frame actually paint before
+  // the overlay fades. If the frame never comes (hidden tab / GPU stall), the
+  // 15s failsafe above still guarantees removal.
+  requestAnimationFrame(() => finishMatchLoading(st));
+}
+
+function beginStartRequest() {
+  if (startPending) return;
+  startPending = true;
+  startClickAt = performance.now();
+  hud.hideLobbyAlert();
+  hud.setStartPending(true);
+  // Arm before send: the in-process local fallback can answer synchronously.
+  startPendingTimer = setTimeout(() => {
+    startPendingTimer = null;
+    if (!startPending) return;
+    startPending = false;
+    startClickAt = null;
+    hud.setStartPending(false);
+    if (phase === "lobby") {
+      const acknowledged = !!matchLoading;
+      hud.hideLobbyStarting();
+      cancelMatchLoading();
+      hud.showLobbyAlert(
+        acknowledged
+          ? "Game start was accepted, but battle control did not arrive — check the connection or try again."
+          : "No response from server — check the connection, then click START again.",
+        "START TIMED OUT",
+      );
+    }
+  }, START_PENDING_TIMEOUT_MS);
+  net.send({ t: "start" });
+}
+
 // ---------- hud wiring ----------
 
 hud.onReady = (r) => net.send({ t: "ready", ready: r });
-hud.onStart = () => net.send({ t: "start" });
+hud.onStart = () => beginStartRequest();
 hud.onRematch = () => net.send({ t: "rematch" });
 hud.onAddBot = (diff, profile) => net.send({ t: "addbot", diff, profile });
 hud.onSetBotConfig = (id, diff, profile) => net.send({ t: "setBotConfig", id, diff, profile });
@@ -747,6 +908,9 @@ net.onMsg = (m: S2C) => {
     case "lobby": {
       myId = m.you;
       lobbyHumans = m.players.filter((p) => !p.spectator && !p.bot).length;
+      const lobbyMe = m.players.find((p) => p.id === m.you);
+      iAmLobbyHost = !!lobbyMe?.host;
+      lastLobbyPhase = m.phase ?? "lobby";
       currentMap = m.map ?? "crossroads";
       if (m.config) currentConfig = { ...DEFAULT_CONFIG, ...m.config };
       if (phase === "ended") {
@@ -762,6 +926,9 @@ net.onMsg = (m: S2C) => {
         setAutoCam(false);
         renderer.reset();
         input.reset();
+        clearStartPending();
+        cancelMatchLoading();
+        hud.hideLobbyStarting();
         hud.resetMatch();
         hud.hideEnd();
         hud.toast("Server updated / room reset — returned to lobby", true);
@@ -778,7 +945,19 @@ net.onMsg = (m: S2C) => {
       }
       break;
     }
+    case "starting": {
+      const mine = m.hostId === myId;
+      const label = mine ? "STARTING GAME" : `${m.host} STARTED THE GAME`;
+      hud.hideLobbyAlert();
+      hud.showLobbyStarting(`${label} — LOADING…`);
+      beginMatchLoading(m.map, label, mine ? (startClickAt ?? undefined) : undefined);
+      break;
+    }
     case "init": {
+      noteMatchLoadingInit(m.map ?? currentMap);
+      clearStartPending();
+      startClickAt = null;
+      hud.hideLobbyAlert();
       if (fpv.active) fpv.exit("dead");
       cancelPrewarm(); // lobby idle work stops here; anything already built carries over
       myId = m.you;
@@ -1063,11 +1242,17 @@ net.onMsg = (m: S2C) => {
           if (!expected?.includes(input.placing)) input.exitPlacing();
         }
       }
+      noteMatchSnapshot();
       break;
     }
     case "end": {
       if (fpv.active) fpv.exit("dead");
       phase = "ended";
+      // Normally the first snapshot has long since finished the transition;
+      // this covers a rare instant end before that first frame and must never
+      // leave a dead loading layer above the end screen.
+      cancelMatchLoading();
+      hud.hideLobbyStarting();
       setAutoCam(false);
       hud.setPauseVisible(false);
       const mine =
@@ -1091,11 +1276,31 @@ net.onMsg = (m: S2C) => {
       hud.setPaused(m.paused);
       hud.toast(m.paused ? "⏸ game paused" : "▶ game resumed", true);
       break;
-    case "deny":
+    case "deny": {
       input.clearPlacePending();
       audio.playUi("deny");
-      hud.toast(m.msg);
+      // Denies are otherwise uncorrelated command responses. Start denies carry
+      // an explicit cmd tag so a nearby addbot/slot deny cannot cancel the wrong
+      // in-flight request or masquerade as the start result.
+      const startDenied = m.cmd === "start";
+      const wasStartPending = startPending && startDenied;
+      if (startDenied) {
+        clearStartPending();
+        startClickAt = null;
+      }
+      if (phase === "lobby") {
+        // Lobby denies are the moment the player most needs an explanation
+        // ("why didn't START do anything?"). A 2.6s toast is too easy to miss,
+        // so surface them as a durable in-panel alert instead; in-game denies
+        // keep the lighter toast treatment.
+        hud.hideLobbyStarting();
+        if (wasStartPending) cancelMatchLoading();
+        hud.showLobbyAlert(m.msg, startDenied ? "START BLOCKED" : "ACTION BLOCKED");
+      } else {
+        hud.toast(m.msg);
+      }
       break;
+    }
   }
 };
 

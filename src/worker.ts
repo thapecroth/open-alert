@@ -359,29 +359,35 @@ export class GameRoom extends Server<Env> {
       case "start":
         if (me && this.isHost(me) && this.phase !== "playing") {
           const actives = [...this.players.values()].filter((p) => p.connected && !p.spectator && p.slot >= 0);
-          if (actives.length < 2) return send(conn, { t: "deny", msg: "need at least 2 players — add a bot!" });
+          if (actives.length < 2) return send(conn, { t: "deny", msg: "need at least 2 players — add a bot!", cmd: "start" });
           const limit = this.mapSlotLimit();
           const invalid = actives.find((p) => p.slot >= limit);
           if (invalid) {
             return send(conn, {
               t: "deny",
               msg: `${invalid.name} is in slot ${invalid.slot + 1}, outside this map's ${limit} spawn slots`,
+              cmd: "start",
             } satisfies S2C);
           }
           const unready = actives.filter((p) => !p.bot && p.id !== me.id && !p.ready);
-          if (unready.length) return send(conn, { t: "deny", msg: `${unready[0].name} is not ready` });
+          if (unready.length) return send(conn, { t: "deny", msg: `${unready[0].name} is not ready`, cmd: "start" });
           const firstTeam = actives[0].team;
           if (firstTeam > 0 && actives.every((p) => p.team === firstTeam)) {
-            return send(conn, { t: "deny", msg: "need opponents on another team" });
+            return send(conn, { t: "deny", msg: "need opponents on another team", cmd: "start" });
           }
+          // Cold procedural map construction can take tens of milliseconds on the
+          // grand theaters. Give every client an ordered heads-up before doing
+          // that synchronous work; because ws delivery is FIFO, this still lands
+          // ahead of the init burst even though the gap is small on warm maps.
+          this.broadcast(JSON.stringify({ t: "starting", map: this.map, host: me.name, hostId: me.id } satisfies S2C));
           this.startGame();
         } else if (this.phase === "lobby") {
           // Never drop a start click silently: an unbound connection means the
           // client's command raced ahead of its rejoin (half-open reconnect gap),
           // and a non-host click means the UI/host state desynced — both need
           // visible feedback instead of a dead button.
-          if (!me) send(conn, { t: "deny", msg: "still reconnecting — click START again" } satisfies S2C);
-          else if (!this.isHost(me)) send(conn, { t: "deny", msg: "only the host can start the game" } satisfies S2C);
+          if (!me) send(conn, { t: "deny", msg: "still reconnecting — click START again", cmd: "start" } satisfies S2C);
+          else if (!this.isHost(me)) send(conn, { t: "deny", msg: "only the host can start the game", cmd: "start" } satisfies S2C);
         }
         return;
       case "addbot":
@@ -989,11 +995,18 @@ export class GameRoom extends Server<Env> {
         if (keyJson) {
           conn.send(keyJson);
         } else {
+          // snapshot() collects exactly this diff as a byproduct of its
+          // memoization compare (zero redundant work, no O(N) rebuild Map);
+          // it is valid only when our baseline IS the previous snapshot object
+          // — any interleaved snapshot() caller or a restored world falls back
+          // to the standalone diffSnaps.
+          const meta = w.snapDelta;
+          const fastDiff = meta && base && base.snap === meta.from ? meta.diff : null;
           deltaJson ??= JSON.stringify({
             t: "snapd",
             seq,
             tick,
-            ...diffSnaps(base!.snap, snap),
+            ...(fastDiff ?? diffSnaps(base!.snap, snap)),
             events: snap.events,
           } satisfies S2C);
           conn.send(deltaJson);

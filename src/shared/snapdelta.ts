@@ -23,7 +23,7 @@ export interface SnapDiff {
 }
 
 // scalar fields compared with !== ; rally/wp need element-wise compare because
-// snapshot() allocates fresh arrays every frame even when logically identical
+// a rebuilt object may carry fresh array instances even when logically identical
 const SCALARS = ["o", "k", "x", "y", "hp", "mhp", "d", "cargo", "fl", "am", "vet", "hold", "sub", "alt", "disg"] as const;
 
 const arrEq = (a: readonly unknown[] | undefined, b: readonly unknown[] | undefined): boolean => {
@@ -42,6 +42,10 @@ const arrEq = (a: readonly unknown[] | undefined, b: readonly unknown[] | undefi
 // null when nothing changed; otherwise a partial carrying only changed fields
 // (null value = field vanished). A brand-new ent diff is the ent itself.
 export function diffEnts(prev: EntSnap, next: EntSnap): EntDelta | null {
+  // snapshot() memoizes per-entity objects, so an unchanged ent rides both
+  // frames as the SAME reference — immutable contents make that a proof of
+  // no-change and the whole scalar loop can be skipped (the common case)
+  if (prev === next) return null;
   let out: EntDelta | null = null;
   for (const f of SCALARS) {
     const a = prev[f] as unknown;
@@ -63,16 +67,17 @@ export function diffEnts(prev: EntSnap, next: EntSnap): EntDelta | null {
 }
 
 // Diff two full snapshots. `next` objects are immutable in practice (snapshot()
-// rebuilds them every frame), so unchanged slices are reused by reference and
-// new ents ride the delta as their full object — no copying anywhere.
+// memoizes and copy-on-write rebuilds them), so unchanged slices are reused by
+// reference and new ents ride the delta as their full object — no copying anywhere.
 export function diffSnaps(prev: SnapCore, next: SnapCore): SnapDiff {
   const prevById = new Map<number, EntSnap>();
   for (const e of prev.ents) prevById.set(e.id, e);
   const ents: EntDelta[] = [];
-  const nextIds = new Set<number>();
   for (const e of next.ents) {
-    nextIds.add(e.id);
     const p = prevById.get(e.id);
+    // consume the match — whatever remains in prevById at the end is the gone
+    // set, so no parallel nextIds Set (and its per-entry garbage) is needed
+    prevById.delete(e.id);
     if (!p) {
       ents.push(e);
       continue;
@@ -81,25 +86,24 @@ export function diffSnaps(prev: SnapCore, next: SnapCore): SnapDiff {
     if (d) ents.push(d);
   }
   const diff: SnapDiff = { ents };
-  let gone: number[] | undefined;
-  for (const id of prevById.keys()) {
-    if (!nextIds.has(id)) (gone ??= []).push(id);
-  }
-  if (gone) diff.gone = gone;
+  if (prevById.size) diff.gone = [...prevById.keys()];
   // players/crates/bridges change rarely-enough that a serialized compare is
-  // the cheapest correct check (construction order in world.ts is deterministic)
+  // the cheapest correct check (construction order in world.ts is deterministic).
+  // Memoized snapshot() output makes identical references the common case, and
+  // reference equality on immutable data is a proof of no-change — the string
+  // compare (and its per-frame string garbage) only runs after a real rebuild.
   const nextCrates = next.crates ?? [];
   const prevCrates = prev.crates ?? [];
-  if (JSON.stringify(nextCrates) !== JSON.stringify(prevCrates)) diff.crates = nextCrates;
+  if (nextCrates !== prevCrates && JSON.stringify(nextCrates) !== JSON.stringify(prevCrates)) diff.crates = nextCrates;
   const nextBridges = next.bridges ?? [];
   const prevBridges = prev.bridges ?? [];
-  if (JSON.stringify(nextBridges) !== JSON.stringify(prevBridges)) diff.bridges = nextBridges;
+  if (nextBridges !== prevBridges && JSON.stringify(nextBridges) !== JSON.stringify(prevBridges)) diff.bridges = nextBridges;
   let players: Record<number, PlayerState> | undefined;
   for (const k in next.players) {
     const slot = k as unknown as number;
     const ps = next.players[slot];
     const prevPs = prev.players[slot];
-    if (!prevPs || JSON.stringify(ps) !== JSON.stringify(prevPs)) (players ??= {})[slot] = ps;
+    if (!prevPs || (ps !== prevPs && JSON.stringify(ps) !== JSON.stringify(prevPs))) (players ??= {})[slot] = ps;
   }
   if (players) diff.players = players;
   return diff;
@@ -144,6 +148,14 @@ export class SnapReassembler {
   private bridges: number[] | undefined;
   private seq = -1;
   private synced = false;
+  // Copy-on-write emission cache: emitted ents arrays / players records are
+  // NEVER mutated after emission (test harnesses retain reassembled frames and
+  // the client reads them synchronously). When a frame changes nothing in them,
+  // the previous emission is reference-reused; any change allocates a fresh copy.
+  private entsOut: EntSnap[] = [];
+  private entsOutValid = false;
+  private playersOut: Record<number, PlayerState> = {};
+  private playersOutValid = false;
 
   reset() {
     this.ents.clear();
@@ -152,6 +164,8 @@ export class SnapReassembler {
     this.bridges = undefined;
     this.seq = -1;
     this.synced = false;
+    this.entsOutValid = false;
+    this.playersOutValid = false;
   }
 
   // Any full-state "snap" message is a keyframe — including legacy server
@@ -166,6 +180,10 @@ export class SnapReassembler {
     this.bridges = k.bridges;
     this.seq = typeof k.seq === "number" ? k.seq : -1;
     this.synced = true;
+    // the keyframe itself is emitted as-is, so the first delta after it must
+    // rebuild both emission structures from the freshly replaced state
+    this.entsOutValid = false;
+    this.playersOutValid = false;
     return k;
   }
 
@@ -188,26 +206,41 @@ export class SnapReassembler {
       return null;
     }
     this.seq = d.seq;
+    let entsDirty = !this.entsOutValid;
     for (const ed of d.ents) {
       if (!ed || typeof ed.id !== "number") continue;
       this.ents.set(ed.id, applyEntDelta(this.ents.get(ed.id), ed));
+      entsDirty = true;
     }
-    if (d.gone) for (const id of d.gone) this.ents.delete(id);
+    if (d.gone) {
+      for (const id of d.gone) {
+        if (this.ents.delete(id)) entsDirty = true;
+      }
+    }
     if (d.players) {
       for (const k in d.players) this.players[k as unknown as number] = d.players[k as unknown as number];
+      this.playersOutValid = false;
     }
     if (d.crates !== undefined) this.crates = d.crates;
     if (d.bridges !== undefined) this.bridges = d.bridges;
-    const players: Record<number, PlayerState> = {};
-    for (const k in this.players) players[k as unknown as number] = this.players[k as unknown as number];
+    if (entsDirty) {
+      this.entsOut = [...this.ents.values()];
+      this.entsOutValid = true;
+    }
+    if (!this.playersOutValid) {
+      const players: Record<number, PlayerState> = {};
+      for (const k in this.players) players[k as unknown as number] = this.players[k as unknown as number];
+      this.playersOut = players;
+      this.playersOutValid = true;
+    }
     return {
       t: "snap",
       seq: d.seq,
       tick: d.tick,
-      ents: [...this.ents.values()],
+      ents: this.entsOut,
       crates: this.crates,
       bridges: this.bridges,
-      players,
+      players: this.playersOut,
       events: d.events,
     };
   }

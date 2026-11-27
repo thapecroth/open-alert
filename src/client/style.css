@@ -503,6 +503,87 @@ button.on { background: #1d4459; border-color: var(--acc); color: #eef8ff; }
 }
 .toast.info { background: rgba(12, 24, 34, 0.94); border-color: var(--acc-dim); color: var(--text); }
 
+/* ---------- Match-start loading overlay ----------
+   Deliberately presentation-only: main.ts reveals it after a 400ms anti-flash
+   delay and removes it after the first rendered snapshot. pointer-events are
+   off so even a failure can never trap input behind the overlay. */
+#starting-overlay {
+  position: fixed; inset: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: center;
+  padding: 22px; pointer-events: none;
+  background:
+    radial-gradient(ellipse at center, rgba(12, 31, 44, 0.88), rgba(5, 9, 14, 0.965) 72%),
+    linear-gradient(180deg, rgba(6, 10, 16, 0.86), rgba(6, 10, 16, 0.94));
+  opacity: 1; transition: opacity 0.22s ease-out;
+}
+#starting-overlay.hidden { display: none !important; }
+#starting-overlay.fade-out { opacity: 0; }
+.starting-card {
+  width: min(520px, 92vw); text-align: center;
+  padding: 28px 34px 24px; border-radius: 10px;
+  border: 1px solid rgba(74, 216, 255, 0.42);
+  background: linear-gradient(180deg, rgba(13, 23, 32, 0.96), rgba(8, 14, 21, 0.94));
+  box-shadow:
+    0 24px 70px rgba(0, 0, 0, 0.62),
+    0 0 34px rgba(74, 216, 255, 0.12),
+    inset 0 1px 0 rgba(126, 224, 255, 0.12);
+}
+.starting-emblem {
+  width: 58px; height: 58px; border-radius: 13px;
+  filter: drop-shadow(0 0 14px rgba(74, 216, 255, 0.35));
+}
+.starting-kicker {
+  margin-top: 12px; color: var(--amber);
+  font-size: 12px; font-weight: 700; letter-spacing: 2.4px;
+  min-height: 16px;
+}
+.starting-title {
+  font-family: "Orbitron", monospace; color: var(--acc);
+  letter-spacing: 7px; font-size: 29px; margin: 4px 0 8px;
+  text-shadow: 0 0 20px rgba(74, 216, 255, 0.28);
+}
+.starting-mapline {
+  color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: 1.7px;
+}
+.starting-mapline strong {
+  color: var(--text); font-size: 14px; letter-spacing: 1px;
+}
+.starting-progress {
+  position: relative; height: 7px; margin: 20px 6px 12px; overflow: hidden;
+  border-radius: 5px; border: 1px solid rgba(74, 216, 255, 0.26);
+  background:
+    linear-gradient(90deg, rgba(74, 216, 255, 0.08), rgba(255, 196, 61, 0.07)),
+    #081018;
+}
+.starting-progress span {
+  position: absolute; top: 0; bottom: 0; width: 38%; left: -40%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, transparent, rgba(74, 216, 255, 0.82), rgba(255, 196, 61, 0.78), transparent);
+  animation: starting-shimmer 1.15s linear infinite;
+}
+@keyframes starting-shimmer {
+  from { transform: translateX(0); }
+  to { transform: translateX(390%); }
+}
+.starting-status {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  color: var(--text); font-size: 13px; font-weight: 700; letter-spacing: 1.25px;
+}
+.starting-spinner, .lobby-starting-spinner {
+  width: 12px; height: 12px; flex: 0 0 12px; border-radius: 50%;
+  border: 2px solid rgba(74, 216, 255, 0.2); border-top-color: var(--acc);
+  animation: starting-spin 0.75s linear infinite;
+}
+@keyframes starting-spin {
+  to { transform: rotate(360deg); }
+}
+.starting-tip {
+  margin: 18px auto 0; max-width: 430px;
+  padding-top: 12px; border-top: 1px solid rgba(34, 51, 66, 0.72);
+  color: var(--muted); font-size: 12.5px; line-height: 1.45; font-weight: 600;
+}
+.starting-tip b { color: var(--amber); letter-spacing: 0.8px; }
+
 #chat-box {
   position: fixed; left: 10px; bottom: 12px; width: 290px; z-index: 5;
   font-size: 13px;
@@ -666,7 +747,52 @@ button.tbadge.own:hover { border-color: var(--text); color: #fff; }
 #bot-diff, #bot-profile { padding: 7px 8px; font-size: 12px; }
 #ready-btn, #start-btn, #rematch-btn, #addbot-btn { padding: 9px 22px; font-size: 14px; }
 #start-btn { border-color: var(--amber); color: var(--amber); }
+#start-btn.pending {
+  border-color: var(--acc); color: #dff6ff; background: #123243;
+  box-shadow: 0 0 14px rgba(74, 216, 255, 0.16), inset 0 0 12px rgba(74, 216, 255, 0.08);
+}
+#start-btn.pending:disabled { opacity: 1; cursor: progress; }
+#start-btn.pending::before {
+  content: ""; display: inline-block; width: 11px; height: 11px; margin-right: 8px;
+  vertical-align: -1px; border-radius: 50%;
+  border: 2px solid rgba(74, 216, 255, 0.22); border-top-color: var(--acc);
+  animation: starting-spin 0.75s linear infinite;
+}
 #addbot-btn { border-color: var(--acc-dim); color: var(--acc); }
+#lobby-starting {
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  margin: -4px 0 10px; padding: 7px 12px; border-radius: 5px;
+  border: 1px solid rgba(74, 216, 255, 0.48); background: rgba(13, 37, 50, 0.88);
+  color: #dff6ff; font-size: 12.5px; font-weight: 700; letter-spacing: 1px;
+  box-shadow: 0 0 16px rgba(74, 216, 255, 0.1);
+}
+#lobby-starting.hidden { display: none !important; }
+#lobby-alert {
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  margin: 11px auto 0; padding: 8px 9px 8px 12px; max-width: 100%;
+  border-radius: 5px; border: 1px solid #9a3d3d;
+  background: linear-gradient(180deg, rgba(54, 18, 19, 0.96), rgba(34, 13, 15, 0.94));
+  color: #ffd7d7; box-shadow: 0 0 18px rgba(255, 84, 84, 0.13);
+  font-size: 13px; font-weight: 700; line-height: 1.3;
+  animation: lobby-alert-in 0.16s ease-out;
+}
+#lobby-alert.hidden { display: none !important; }
+.lobby-alert-label {
+  flex: 0 0 auto; padding: 2px 6px; border-radius: 3px;
+  border: 1px solid rgba(255, 120, 120, 0.55); background: rgba(90, 25, 27, 0.82);
+  color: #ff9d9d; font-size: 10.5px; letter-spacing: 0.9px; white-space: nowrap;
+}
+.lobby-alert-text { min-width: 0; overflow-wrap: anywhere; }
+#lobby-alert-close {
+  flex: 0 0 auto; width: 22px; height: 22px; padding: 0; line-height: 1;
+  border-color: rgba(255, 120, 120, 0.35); background: rgba(26, 9, 11, 0.72);
+  color: #ffb7b7; font-size: 15px;
+}
+#lobby-alert-close:hover:not(:disabled) { border-color: var(--danger); color: #fff; background: #3a1719; }
+@keyframes lobby-alert-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 .hint { margin-top: 14px; font-size: 12px; color: var(--muted); }
 .help-panel { min-width: 520px; max-height: 92vh; overflow-y: auto; text-align: left; }
 .help-panel table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
