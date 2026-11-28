@@ -3175,8 +3175,23 @@ export class World {
         // adjacent reach counts as "at" the tile — a strict arriveR is
         // unreachable when another unit hugs the ore face (perma-jam)
         const ox = e.oreIdx % this.w, oy = (e.oreIdx / this.w) | 0;
-        const arrived = this.stepAlong(e, 0.45) || dist(e.x, e.y, ox + 0.5, oy + 0.5) <= 0.85;
-        if (arrived) e.hstate = "mining";
+        const close = dist(e.x, e.y, ox + 0.5, oy + 0.5) <= 0.85;
+        if (close) {
+          e.hstate = "mining";
+        } else if (this.stepAlong(e, 0.45)) {
+          // stepAlong "arrived" nowhere near the ore face: the path came back
+          // empty, which requestPath only produces for a genuine gave-up —
+          // a completed walk always ends within arriveR (≤0.45) of the target.
+          // Treating that as arrival oscillated toOre↔mining every tick
+          // (mining's drift check instantly resets), wedging the harvester
+          // permanently and burning an A* request per tick. Back off instead —
+          // auto-resume re-picks ore once holdUntil lapses, by which time the
+          // obstruction may be gone (bridges built, units moved) and
+          // connectivity-aware nearestOre avoids truly unreachable tiles.
+          e.hstate = null;
+          e.order = null;
+          e.holdUntil = this.tick + 150;
+        }
       } else if (e.hstate === "toRef") {
         const ref = this.nearestRefinery(e);
         if (!ref) {
@@ -3374,6 +3389,16 @@ export class World {
       for (let i = 0; i < this.ore.length; i++) if (this.ore[i] > 0) list.push(i);
       this.oreTiles = list;
     }
+    // Connectivity-aware: ore across water/cliffs is worthless to a ground
+    // harvester — it can never be reached, and targeting it wedges the unit
+    // forever (empty path = unreachable). Filter to the harvester's own land
+    // region when one is known. Ore tiles are ground-passable, so they carry
+    // region ids themselves. A harvester momentarily standing on a regionless
+    // tile (region 0) skips filtering entirely rather than starving.
+    let region = 0;
+    if (self) {
+      region = this.landRegion(x, y);
+    }
     let best = -1,
       bd = Infinity,
       bestT = -1,
@@ -3383,6 +3408,7 @@ export class World {
     for (let k = 0; k < this.oreTiles.length; k++) {
       const i = this.oreTiles[k];
       if (this.ore[i] <= 0) continue; // mined out mid-step — list rebuilds next step
+      if (region > 0 && this.regionLand[i] !== region) continue;
       const dx = (i % w) - x,
         dy = ((i / w) | 0) - y;
       const d = dx * dx + dy * dy;
