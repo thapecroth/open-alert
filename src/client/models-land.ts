@@ -604,7 +604,9 @@ function buildSoldierRig(
     body.add(pouch);
   }
 
-  // Articulated hip-pivoted armored legs (legL, legR) with knee pads & heavy boots
+  // Articulated hip-pivoted armored legs (legL, legR) with REAL knee joints:
+  // the shin + boot hang off a pivot at the knee so the lower leg can flex
+  // backward through the swing phase — rigid pendulum legs read as toy soldiers.
   const makeLeg = (sx: number) => {
     const hip = new THREE.Group();
     hip.position.set(sx, 0.33, 0);
@@ -615,22 +617,30 @@ function buildSoldierRig(
     const thighArmor = softBox(0.115, 0.14, 0.125, matCer);
     thighArmor.position.set(sx > 0 ? 0.01 : -0.01, -0.09, 0.01);
     hip.add(thighArmor);
-    // Armored angular knee pad
+    // Knee pivot at the joint line; everything below the knee is its child
+    const kneePivot = new THREE.Group();
+    kneePivot.position.set(0, -0.175, 0);
+    hip.add(kneePivot);
+    // Armored angular knee pad rides at the pivot itself
     const knee = softBox(0.095, 0.075, 0.085, matLt);
-    knee.position.set(0, -0.175, 0.055);
-    hip.add(knee);
-    // Lower shin greave + heavy armored boot
+    knee.position.set(0, 0, 0.055);
+    kneePivot.add(knee);
+    // Lower shin greave + heavy armored boot (positions relative to the pivot)
     const shin = rbox(0.105, 0.12, 0.115, matDk, true);
-    shin.position.set(0, -0.23, 0.005);
-    hip.add(shin);
+    shin.position.set(0, -0.055, 0.005);
+    kneePivot.add(shin);
     const boot = rbox(0.118, 0.09, 0.175, matGun, true);
-    boot.position.set(0, -0.285, 0.032);
-    hip.add(boot);
+    boot.position.set(0, -0.11, 0.032);
+    kneePivot.add(boot);
     body.add(hip);
-    return hip;
+    return { hip, knee: kneePivot };
   };
-  const legL = makeLeg(-0.088);
-  const legR = makeLeg(0.088);
+  const legLp = makeLeg(-0.088);
+  const legRp = makeLeg(0.088);
+  const legL = legLp.hip;
+  const legR = legRp.hip;
+  const kneeL = legLp.knee;
+  const kneeR = legRp.knee;
 
   // Armored chest rig + collar + faction chest accent
   const torsoW = role === "rocket" ? 0.36 : 0.32;
@@ -832,7 +842,7 @@ function buildSoldierRig(
     }
   }
 
-  return { legL, legR, armL, armR, head, recoil };
+  return { legL, legR, kneeL, kneeR, armL, armR, head, recoil };
 }
 
 // ---------- Main Land Model Builder ----------

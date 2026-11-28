@@ -11,6 +11,8 @@ export interface AnimRig {
   body: THREE.Group;
   legL?: THREE.Group;
   legR?: THREE.Group;
+  kneeL?: THREE.Group;
+  kneeR?: THREE.Group;
   armL?: THREE.Group;
   armR?: THREE.Group;
   head?: THREE.Group;
@@ -364,7 +366,7 @@ function mergeStaticBody(body: THREE.Group, rig: AnimRig, donorMode = false): vo
   };
   rigid(rig.turret); rigid(rig.recoil); rigid(rig.spiderLegs);
   rigid(rig.crane);
-  rigid(rig.legL); rigid(rig.legR); rigid(rig.armL); rigid(rig.armR);
+  rigid(rig.legL); rigid(rig.legR); rigid(rig.kneeL); rigid(rig.kneeR); rigid(rig.armL); rigid(rig.armR);
   rigid(rig.head);
   // spin/spin2 children counter-rotate individually (props, radars) and the glow/
   // pulse/shadow meshes animate their own scale/opacity — never merge those.

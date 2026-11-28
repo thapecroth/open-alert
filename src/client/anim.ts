@@ -232,6 +232,15 @@ export function stepEntityAnim(
     if (rig.legL) rig.legL.rotation.x = -strideL * 0.78 * m;
     if (rig.legR) rig.legR.rotation.x = -strideR * 0.78 * m;
 
+    // Knee articulation: the lower leg flexes backward through the swing phase
+    // and extends before foot strike. cos(phase) is positive exactly while leg L
+    // swings forward (sin rising); squaring narrows the pulse so the knee is
+    // nearly straight at both strike and toe-off — no more rigid pendulum legs.
+    const swingL = Math.max(0, Math.cos(st.phase));
+    const swingR = Math.max(0, -Math.cos(st.phase));
+    if (rig.kneeL) rig.kneeL.rotation.x = swingL * swingL * 1.05 * m;
+    if (rig.kneeR) rig.kneeR.rotation.x = swingR * swingR * 1.05 * m;
+
     // Arms pump naturally in opposition (rifleman keeps pulse rifle braced steadily with subtle stride rhythm)
     if (k === "infantry") {
       const rifleRhythm = Math.sin(st.phase * 2) * 0.05 * m;
