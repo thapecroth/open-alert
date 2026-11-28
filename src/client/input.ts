@@ -1100,8 +1100,16 @@ export class Input {
       else if (hasHarv && t && t.last.o === slot && t.last.k === "refinery") kind = "harvest";
     }
     this.net.send({ t: "order", ids, kind, x: ground.x, y: ground.z, target, ...(queue ? { queue: true } : {}) });
-    this.orderMarker(ground, kind, queue);
-    const base = kind === "amove" ? "ATTACK-MOVE" : kind.toUpperCase();
+    // Engineers "attack" buildings only to capture them — label the order for
+    // what it actually does instead of the mechanical attack verb it shares.
+    const seize =
+      kind === "attack" &&
+      target != null &&
+      t &&
+      isBuildingKind(t.last.k) &&
+      ids.some((id) => this.r.tracked.get(id)?.last.k === "engineer");
+    this.orderMarker(ground, kind, queue, seize ? 0xffb02e : undefined);
+    const base = seize ? "SEIZE" : kind === "amove" ? "ATTACK-MOVE" : kind.toUpperCase();
     this.flashLabel(queue ? `+ ${base} WAYPOINT` : base, 750);
     this.onUiSound(kind === "attack" || kind === "amove" ? "attack" : "move");
   }
