@@ -1088,6 +1088,11 @@ export function getMapLayout(id: MapId = "crossroads"): MapLayout {
     // SW corner shelf — the doubled map keeps spawn margins in absolute tiles,
     // so the original continent ring needs this explicit outer foothold.
     paintPoly(waterSet, noiseRing(4, 90, 6, 5.5, 712, 0.15), false);
+    // SE corner shelf — same spawn-margin shortfall as SW: seed 702's continent
+    // ring technically grazes the corner but leaves the spawn pocket joined to
+    // the continent by a one-row alley that any natural 3x2 building placement
+    // (refinery!) seals shut — landlocking spawn 1's whole economy.
+    paintPoly(waterSet, noiseRing(89, 86, 4.5, 4, 713, 0.15), false);
     // stone causeways linking shelves to their neighboring continents (tree, no loops)
     paintLine(waterSet, chaikin([[41, 12], [44, 14], [46, 16]], false, 1), 3.4, false); // NW-N shelf
     paintLine(waterSet, chaikin([[57, 14], [60, 15], [63, 17]], false, 1), 3.4, false); // N shelf-NE
