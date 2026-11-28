@@ -3,6 +3,45 @@ import type { EntSnap } from "../shared/protocol";
 import type { EntVis } from "./models";
 import { isBuildingKind } from "./util";
 
+// Joint angles & body offsets for humanoid rigs, written every frame the gait
+// runs. The instanced-swarm path has no per-entity rig to rotate — it consumes
+// this pose to compose per-part instance matrices instead (writeInstance).
+export interface HumanoidPose {
+  active: boolean; // false = static rest pose (fully idle) — matrix cache stays valid
+  hipL: number;
+  hipR: number;
+  kneeL: number;
+  kneeR: number;
+  armL: number;
+  armR: number;
+  headX: number;
+  headY: number;
+  bodyPosY: number;
+  bodyPosZ: number;
+  bodyRotX: number;
+  bodyRotY: number;
+  bodyRotZ: number;
+}
+
+export function makeHumanoidPose(): HumanoidPose {
+  return {
+    active: false,
+    hipL: 0,
+    hipR: 0,
+    kneeL: 0,
+    kneeR: 0,
+    armL: 0,
+    armR: 0,
+    headX: 0,
+    headY: 0,
+    bodyPosY: 0,
+    bodyPosZ: 0,
+    bodyRotX: 0,
+    bodyRotY: 0,
+    bodyRotZ: 0,
+  };
+}
+
 export interface AnimState {
   phase: number;
   speed: number;
@@ -18,6 +57,7 @@ export interface AnimState {
   hullKick: number;
   kickLocalYaw: number;
   turretWorldYaw: number;
+  pose: HumanoidPose;
   turretHold: number;
   buildAge: number;
   isNewBuilding: boolean;
@@ -53,6 +93,13 @@ const HOLO_BUILD_MAT = new THREE.MeshStandardMaterial({
 
 export function createAnimState(e: EntSnap, animateConstruct: boolean): AnimState {
   const newBld = animateConstruct && isBuildingKind(e.k);
+  const pose = makeHumanoidPose();
+  // Humanoids idle in the weapon-braced standing pose, not the zero-angle donor
+  // pose — seed it so never-moving soldiers match settled ones exactly.
+  if (e.k === "infantry" || e.k === "rocket" || e.k === "engineer") {
+    pose.armL = e.k === "infantry" ? -0.45 : e.k === "rocket" ? -0.3 : 0;
+    pose.armR = e.k === "infantry" ? -0.58 : e.k === "rocket" ? -0.35 : 0;
+  }
   return {
     phase: (e.id * 1.37) % (Math.PI * 2),
     speed: 0,
@@ -68,6 +115,7 @@ export function createAnimState(e: EntSnap, animateConstruct: boolean): AnimStat
     hullKick: 0,
     kickLocalYaw: 0,
     turretWorldYaw: Math.PI / 2 - e.d / 10,
+    pose,
     turretHold: 0,
     buildAge: newBld ? 0 : 1,
     isNewBuilding: newBld,
@@ -124,6 +172,129 @@ function setBodyMatMode(body: THREE.Group, st: AnimState, target: "normal" | "hi
   }
   st.matMode = target;
   st.flashing = target === "hit";
+}
+
+interface IdleTerms {
+  bob: number;
+  lean: number;
+  scan: number;
+  headPitch: number;
+}
+
+// Canonical humanoid gait: advances the stride clock and writes every joint
+// angle into st.pose. Shared by the rig path (stepEntityAnim mirrors pose into
+// leg/arm/head nodes) and the instanced-swarm path (writeInstance composes
+// per-part matrices from it). Pass idle=null for the instanced path — idle
+// breathing is invisible at swarm zoom and a constant rest pose keeps the
+// instance-matrix cache hot.
+export function humanoidGait(st: AnimState, k: string, m: number, safeDt: number, idle: IdleTerms | null): void {
+  const baseArmL = k === "infantry" ? -0.45 : k === "rocket" ? -0.3 : 0;
+  const baseArmR = k === "infantry" ? -0.58 : k === "rocket" ? -0.35 : 0;
+  const p = st.pose;
+
+  st.phase += safeDt * (4.8 + st.speed * 5.2);
+  const s = Math.sin(st.phase);
+  // Athletic asymmetric leg stride: crisp forward knee-lift (pow 0.85) + snappy rear push-off (pow 1.15)
+  const strideL = s > 0 ? Math.pow(s, 0.85) : -Math.pow(-s, 1.15);
+  const strideR = -s > 0 ? Math.pow(-s, 0.85) : -Math.pow(s, 1.15);
+  p.hipL = -strideL * 0.78 * m;
+  p.hipR = -strideR * 0.78 * m;
+
+  // Knee articulation: the lower leg flexes backward through the swing phase
+  // and extends before foot strike. cos(phase) is positive exactly while leg L
+  // swings forward (sin rising); squaring narrows the pulse so the knee is
+  // nearly straight at both strike and toe-off.
+  const swingL = Math.max(0, Math.cos(st.phase));
+  const swingR = Math.max(0, -Math.cos(st.phase));
+  p.kneeL = swingL * swingL * 1.05 * m;
+  p.kneeR = swingR * swingR * 1.05 * m;
+
+  // Arms pump naturally in opposition (rifleman keeps pulse rifle braced steadily with subtle stride rhythm)
+  if (k === "infantry") {
+    const rifleRhythm = Math.sin(st.phase * 2) * 0.05 * m;
+    p.armL = baseArmL + (s * 0.22 + rifleRhythm) * m;
+    p.armR = baseArmR + (-s * 0.14 - rifleRhythm) * m;
+  } else if (k === "engineer") {
+    p.armL = baseArmL + s * 0.56 * m;
+    p.armR = baseArmR - s * 0.52 * m;
+  } else {
+    p.armL = baseArmL + s * 0.48 * m;
+    p.armR = baseArmR - s * 0.48 * m;
+  }
+
+  // Smooth double-frequency athletic run bounce + natural counter-motion
+  const runBounce = 0.042 + 0.048 * Math.sin(st.phase * 2 - Math.PI / 2);
+  p.bodyPosY = (idle ? idle.bob : 0) * (1 - m) + runBounce * m;
+  p.bodyRotX = (idle ? idle.lean : 0) * (1 - m) + 0.16 * m;
+  p.bodyRotY = -s * 0.14 * m;
+  p.bodyRotZ = s * 0.065 * m;
+
+  // Subtle head counter-stabilization keeps soldier's gaze locked ahead while sprinting
+  p.headY = s * 0.08 * m + (idle ? idle.scan : 0) * (1 - m);
+  p.headX = (idle ? idle.headPitch : 0) * (1 - m) - 0.07 * m;
+
+  // Sharp braced kickback on weapon fire
+  if (st.recoil > 0) {
+    const kick = Math.sin(st.recoil * Math.PI * 0.5);
+    p.bodyRotX -= kick * 0.16;
+    p.bodyPosZ = -kick * 0.055;
+    p.armR -= kick * 0.22;
+    if (k === "infantry") p.armL -= kick * 0.14;
+  } else {
+    p.bodyPosZ *= Math.exp(-14 * safeDt);
+  }
+
+  p.active = m > 0.015 || st.recoil > 0;
+}
+
+// Lightweight locomotion + gait driver for swarm-instanced humanoids, which
+// never run stepEntityAnim. Measures speed exactly like the full anim step so
+// stride frequency tracks real ground velocity, then writes st.pose for
+// writeInstance. Idle breath is intentionally absent: a constant standing
+// pose means zero instance-matrix rewrites for stationary soldiers.
+export function advanceInstancedHumanoid(st: AnimState, k: string, x: number, y: number, dt: number): void {
+  const safeDt = Math.max(0.0005, Math.min(0.1, dt));
+  const dx = x - st.prevX;
+  const dy = y - st.prevY;
+  st.prevX = x;
+  st.prevY = y;
+  const dist = Math.hypot(dx, dy);
+  const instSpeed = dist > 4 ? 0 : Math.min(7.5, dist / safeDt);
+  st.prevSpeed = st.speed;
+  const speedAlpha = instSpeed >= st.speed ? 1 - Math.exp(-14 * safeDt) : 1 - Math.exp(-4.8 * safeDt);
+  st.speed += (instSpeed - st.speed) * speedAlpha;
+
+  const targetMove = Math.min(1, Math.max(0, (st.speed - 0.14) / 0.65));
+  const blendAlpha = targetMove >= st.moveBlend ? 1 - Math.exp(-12 * safeDt) : 1 - Math.exp(-5.5 * safeDt);
+  st.moveBlend += (targetMove - st.moveBlend) * blendAlpha;
+  const mb = st.moveBlend;
+  const m = mb * mb * (3 - 2 * mb);
+
+  if (st.recoil > 0.001) st.recoil = Math.max(0, st.recoil - safeDt * 5.0);
+  else st.recoil = 0;
+
+  if (m < 0.015 && st.recoil <= 0 && !st.pose.active) {
+    // Fully idle and already at the constant rest pose — skip the trig entirely.
+    st.phase += safeDt * 2.4; // keep the clock warm so re-entry doesn't jump
+    return;
+  }
+  humanoidGait(st, k, m, safeDt, null);
+  if (!st.pose.active) {
+    // Settled into the constant standing pose: kill residual sub-threshold
+    // noise so instance matrices go bit-stable and the write cache engages.
+    const p = st.pose;
+    p.hipL = 0;
+    p.hipR = 0;
+    p.kneeL = 0;
+    p.kneeR = 0;
+    p.bodyPosY = 0;
+    p.bodyPosZ = 0;
+    p.bodyRotX = 0;
+    p.bodyRotY = 0;
+    p.bodyRotZ = 0;
+    p.headX = 0;
+    p.headY = 0;
+  }
 }
 
 function getBaseRecoilZ(recoil: THREE.Group, fallback: number): number {
@@ -212,70 +383,32 @@ export function stepEntityAnim(
 
   // ---------- 1. Humanoid Infantry Animation (Fluid Athletic Stride & Continuous Blend) ----------
   if (k === "infantry" || k === "engineer" || k === "rocket") {
-    const baseArmL = k === "infantry" ? -0.45 : k === "rocket" ? -0.3 : 0;
-    const baseArmR = k === "infantry" ? -0.58 : k === "rocket" ? -0.35 : 0;
-
     // Continuous stride frequency proportional to actual speed + independent idle breath clock
-    st.phase += safeDt * (4.8 + st.speed * 5.2);
     const idleT = nowSec * 2.1 + last.id * 1.37;
     const breath = Math.sin(idleT);
-    const idleBob = breath * 0.016;
-    const idleLean = breath * 0.018;
-    const idleScan = Math.sin(idleT * 0.55 + last.id) * 0.3;
-    const idleHeadPitch = Math.sin(idleT * 0.35 + last.id) * 0.05;
-
-    const s = Math.sin(st.phase);
-    // Athletic asymmetric leg stride: crisp forward knee-lift (pow 0.85) + snappy rear push-off (pow 1.15)
-    const strideL = s > 0 ? Math.pow(s, 0.85) : -Math.pow(-s, 1.15);
-    const strideR = -s > 0 ? Math.pow(-s, 0.85) : -Math.pow(s, 1.15);
-
-    if (rig.legL) rig.legL.rotation.x = -strideL * 0.78 * m;
-    if (rig.legR) rig.legR.rotation.x = -strideR * 0.78 * m;
-
-    // Knee articulation: the lower leg flexes backward through the swing phase
-    // and extends before foot strike. cos(phase) is positive exactly while leg L
-    // swings forward (sin rising); squaring narrows the pulse so the knee is
-    // nearly straight at both strike and toe-off — no more rigid pendulum legs.
-    const swingL = Math.max(0, Math.cos(st.phase));
-    const swingR = Math.max(0, -Math.cos(st.phase));
-    if (rig.kneeL) rig.kneeL.rotation.x = swingL * swingL * 1.05 * m;
-    if (rig.kneeR) rig.kneeR.rotation.x = swingR * swingR * 1.05 * m;
-
-    // Arms pump naturally in opposition (rifleman keeps pulse rifle braced steadily with subtle stride rhythm)
-    if (k === "infantry") {
-      const rifleRhythm = Math.sin(st.phase * 2) * 0.05 * m;
-      if (rig.armL) rig.armL.rotation.x = baseArmL + (s * 0.22 + rifleRhythm) * m;
-      if (rig.armR) rig.armR.rotation.x = baseArmR + (-s * 0.14 - rifleRhythm) * m;
-    } else if (k === "engineer") {
-      if (rig.armL) rig.armL.rotation.x = baseArmL + s * 0.56 * m;
-      if (rig.armR) rig.armR.rotation.x = baseArmR - s * 0.52 * m;
-    } else {
-      if (rig.armL) rig.armL.rotation.x = baseArmL + s * 0.48 * m;
-      if (rig.armR) rig.armR.rotation.x = baseArmR - s * 0.48 * m;
-    }
-
-    // Smooth double-frequency athletic run bounce (peaks mid-flight, dips on foot plant) + natural counter-motion
-    const runBounce = 0.042 + 0.048 * Math.sin(st.phase * 2 - Math.PI / 2);
-    rig.body.position.y = idleBob * (1 - m) + runBounce * m;
-    rig.body.rotation.x = idleLean * (1 - m) + 0.16 * m;
-    rig.body.rotation.y = -s * 0.14 * m;
-    rig.body.rotation.z = s * 0.065 * m;
-
-    // Subtle head counter-stabilization keeps soldier's gaze locked ahead while sprinting
+    humanoidGait(st, k, m, safeDt, {
+      bob: breath * 0.016,
+      lean: breath * 0.018,
+      scan: Math.sin(idleT * 0.55 + last.id) * 0.3,
+      headPitch: Math.sin(idleT * 0.35 + last.id) * 0.05,
+    });
+    // Mirror the canonical pose into the rig's joints (instanced-kind entities
+    // have no rig — writeInstance consumes st.pose directly instead).
+    const p = st.pose;
+    if (rig.legL) rig.legL.rotation.x = p.hipL;
+    if (rig.legR) rig.legR.rotation.x = p.hipR;
+    if (rig.kneeL) rig.kneeL.rotation.x = p.kneeL;
+    if (rig.kneeR) rig.kneeR.rotation.x = p.kneeR;
+    if (rig.armL) rig.armL.rotation.x = p.armL;
+    if (rig.armR) rig.armR.rotation.x = p.armR;
+    rig.body.position.y = p.bodyPosY;
+    rig.body.position.z = p.bodyPosZ;
+    rig.body.rotation.x = p.bodyRotX;
+    rig.body.rotation.y = p.bodyRotY;
+    rig.body.rotation.z = p.bodyRotZ;
     if (rig.head) {
-      rig.head.rotation.y = s * 0.08 * m + idleScan * (1 - m);
-      rig.head.rotation.x = idleHeadPitch * (1 - m) - 0.07 * m;
-    }
-
-    // Sharp braced kickback on weapon fire
-    if (st.recoil > 0) {
-      const kick = Math.sin(st.recoil * Math.PI * 0.5);
-      rig.body.rotation.x -= kick * 0.16;
-      rig.body.position.z = -kick * 0.055;
-      if (rig.armR) rig.armR.rotation.x -= kick * 0.22;
-      if (rig.armL && k === "infantry") rig.armL.rotation.x -= kick * 0.14;
-    } else {
-      rig.body.position.z *= Math.exp(-14 * safeDt);
+      rig.head.rotation.y = p.headY;
+      rig.head.rotation.x = p.headX;
     }
 
     if (rig.recoil) {

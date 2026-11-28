@@ -27,7 +27,7 @@ import {
   bakeGlowGeometry,
   getMergedGlowMat,
 } from "./models";
-import { createAnimState, stepEntityAnim, triggerFireAnim, triggerHitFlash, AnimState } from "./anim";
+import { createAnimState, stepEntityAnim, triggerFireAnim, triggerHitFlash, advanceInstancedHumanoid, AnimState } from "./anim";
 import { VfxSystem, WaypointOverlay } from "./vfx";
 import { BUILDINGS, isBuildingKind, type BuildingKind, type EntKind } from "./util";
 import { GameScene } from "./scene";
@@ -107,6 +107,31 @@ const _instZero = new THREE.Vector3(0.0001, 0.0001, 0.0001);
 const _instM = new THREE.Matrix4();
 const _instP = new THREE.Matrix4();
 const _instUp = new THREE.Vector3(0, 1, 0);
+// Humanoid chain-composition scratch — module-level so per-frame writes allocate nothing
+const _hmE = new THREE.Euler();
+const _hmQ = new THREE.Quaternion();
+const _hmV = new THREE.Vector3();
+const _hmZero = new THREE.Vector3(0, 0, 0);
+const _hmRot = new THREE.Matrix4();
+const _hmTmp = new THREE.Matrix4();
+const _hmBody = new THREE.Matrix4();
+const _hmLegL = new THREE.Matrix4();
+const _hmLegR = new THREE.Matrix4();
+const _hmKneeL = new THREE.Matrix4();
+const _hmKneeR = new THREE.Matrix4();
+const _hmArmL = new THREE.Matrix4();
+const _hmArmR = new THREE.Matrix4();
+const _hmHead = new THREE.Matrix4();
+const _hmW: Record<SwarmAnchorId, THREE.Matrix4> = {
+  body: new THREE.Matrix4(),
+  legL: new THREE.Matrix4(),
+  legR: new THREE.Matrix4(),
+  kneeL: new THREE.Matrix4(),
+  kneeR: new THREE.Matrix4(),
+  armL: new THREE.Matrix4(),
+  armR: new THREE.Matrix4(),
+  head: new THREE.Matrix4(),
+};
 const _instColor = new THREE.Color();
 const _instWhite = new THREE.Color(0xffffff);
 let instWhiteAccentMat: THREE.MeshStandardMaterial | null = null;
@@ -131,16 +156,40 @@ function accentHexForVariant(colorHex: string, variant: number): string {
   return `#${_instColor.getHexString()}`;
 }
 
+type SwarmAnchorId = "body" | "legL" | "legR" | "kneeL" | "kneeR" | "armL" | "armR" | "head";
+
 interface InstPoolPart {
   im: THREE.InstancedMesh;
   local: THREE.Matrix4; // part transform relative to model root
   accentVariant?: number; // faction-tinted part: 0=base, 1=dimmed, 2=lifted
+  // Humanoid pools only: which animated anchor owns this part, and the part's
+  // rest transform in that anchor's space. relAnchor = anchorWorld^-1 × meshWorld
+  // captured at rest — composing anchorChain × relAnchor at runtime reproduces
+  // the exact authored pose when all joint angles are zero.
+  anchor?: SwarmAnchorId;
+  relAnchor?: THREE.Matrix4;
 }
+
+// Rest offsets of the soldier rig's animated anchors, each expressed in its
+// PARENT anchor's space (knees in leg space, limbs/head in body space). Capture
+// as matrices rather than positions so intermediate static nesting in the
+// authored model can never skew the runtime chain composition.
+interface SwarmRigSpec {
+  legL: THREE.Matrix4;
+  legR: THREE.Matrix4;
+  kneeL: THREE.Matrix4;
+  kneeR: THREE.Matrix4;
+  armL: THREE.Matrix4;
+  armR: THREE.Matrix4;
+  head: THREE.Matrix4;
+}
+
 interface InstPool {
   parts: InstPoolPart[];
   owners: Int32Array; // instIdx -> entity id
   free: number[];
   used: number; // high-water index
+  rig?: SwarmRigSpec | null; // humanoid pools only — presence enables animated writes
 }
 interface InstSlot {
   pool: InstPool;
@@ -1185,6 +1234,7 @@ export class Renderer {
     // donorMode bakes faction-accent verts white + variant-masked inside the
     // unified armor merge so per-instance accent colors can flow through the
     // aAccV0/1/2 instance attributes instead of fixed material colors.
+    const humanoid = kind === "infantry" || kind === "rocket" || kind === "engineer";
     const probe = makeEntVis(kind, color, this.gs.scene, false, true);
     probe.root.updateMatrixWorld(true);
     const parts: InstPoolPart[] = [];
@@ -1222,9 +1272,52 @@ export class Renderer {
       for (let i = 0; i < INSTANCE_CAP; i++) im.setMatrixAt(i, _instM);
       im.count = 0; // draw only live slots — never burn vertex work on empty ones
       this.instGroup!.add(im);
-      parts.push({ im, local: o.matrixWorld.clone(), accentVariant });
+      // Humanoid pools: resolve which animated anchor owns this mesh by walking
+      // up the donor hierarchy — deepest anchors first (knees nest inside legs).
+      let anchor: SwarmAnchorId | undefined;
+      let relAnchor: THREE.Matrix4 | undefined;
+      if (humanoid) {
+        const pr = probe.rig;
+        const chain: [SwarmAnchorId, THREE.Object3D | undefined][] = [
+          ["kneeL", pr.kneeL], ["kneeR", pr.kneeR],
+          ["legL", pr.legL], ["legR", pr.legR],
+          ["armL", pr.armL], ["armR", pr.armR],
+          ["head", pr.head],
+        ];
+        let found: THREE.Object3D | undefined;
+        let foundId: SwarmAnchorId = "body";
+        for (let q: THREE.Object3D | null = o; q; q = q.parent) {
+          const hit = chain.find(([, node]) => node === q);
+          if (hit) { found = hit[1]; foundId = hit[0]; break; }
+          if (q === pr.body) { found = pr.body; foundId = "body"; break; }
+        }
+        const anchorNode = found ?? pr.body;
+        anchor = found ? foundId : "body";
+        relAnchor = new THREE.Matrix4().copy(anchorNode.matrixWorld).invert().multiply(o.matrixWorld);
+      }
+      parts.push({ im, local: o.matrixWorld.clone(), accentVariant, anchor, relAnchor });
     });
-    const p: InstPool = { parts, owners: new Int32Array(INSTANCE_CAP).fill(-1), free: [], used: 0 };
+    // Capture the anchors' rest offsets in parent-anchor space. Composition at
+    // runtime: bodyChain × restOffset × jointRotation reproduces the authored
+    // hierarchy exactly when all angles are zero (rest-pose bit-stability).
+    let rig: SwarmRigSpec | null = null;
+    if (humanoid) {
+      const pr = probe.rig;
+      const off = (node: THREE.Object3D | undefined, parent: THREE.Object3D): THREE.Matrix4 =>
+        node
+          ? new THREE.Matrix4().copy(parent.matrixWorld).invert().multiply(node.matrixWorld)
+          : new THREE.Matrix4();
+      rig = {
+        legL: off(pr.legL, pr.body),
+        legR: off(pr.legR, pr.body),
+        kneeL: pr.kneeL && pr.legL ? off(pr.kneeL, pr.legL) : new THREE.Matrix4(),
+        kneeR: pr.kneeR && pr.legR ? off(pr.kneeR, pr.legR) : new THREE.Matrix4(),
+        armL: off(pr.armL, pr.body),
+        armR: off(pr.armR, pr.body),
+        head: off(pr.head, pr.body),
+      };
+    }
+    const p: InstPool = { parts, owners: new Int32Array(INSTANCE_CAP).fill(-1), free: [], used: 0, rig };
     this.instPools.set(key, p);
     return p;
   }
@@ -1328,7 +1421,11 @@ export class Renderer {
   private writeInstance(t: Tracked) {
     const inst = t.inst!;
     const visible = t.vis.root.visible && t.last.id !== this.hiddenEntityId;
-    if (inst.lx === t.visX && inst.ly === t.visY && inst.lyaw === t.visYaw && inst.lvis === visible) {
+    const rig = inst.pool.rig;
+    // Humanoid poses are bit-stable while idle, so the cache engages exactly as
+    // before for stationary soldiers; an active pose forces a rewrite each frame.
+    const poseActive = rig != null && t.anim.pose.active;
+    if (!poseActive && inst.lx === t.visX && inst.ly === t.visY && inst.lyaw === t.visYaw && inst.lvis === visible) {
       inst.proxy.visible = t.vis.root.visible;
       return; // nothing changed — skip ~40 matrix writes + the full-buffer upload
     }
@@ -1336,9 +1433,11 @@ export class Renderer {
     inst.ly = t.visY;
     inst.lyaw = t.visYaw;
     inst.lvis = visible;
-    _instPos.set(t.visX, 0, t.visY);
-    _instQ.setFromAxisAngle(_instUp, Math.PI / 2 - t.visYaw);
-    _instM.compose(_instPos, _instQ, visible ? _instOne : _instZero);
+    _instM.compose(_instPos.set(t.visX, 0, t.visY), _instQ.setFromAxisAngle(_instUp, Math.PI / 2 - t.visYaw), visible ? _instOne : _instZero);
+    const base = inst.idx * 16;
+    if (rig) {
+      this.writeHumanoidInstance(t, inst, rig, base);
+    } else {
     // Entity transforms are always yaw + uniform scale + translation. Exploit
     // that sparsity and write each instanceMatrix directly: 24 multiplies per
     // part instead of Matrix4.multiplyMatrices' generic 64, with no temp copy.
@@ -1352,7 +1451,6 @@ export class Renderer {
     const etx = em[12];
     const ety = em[13];
     const etz = em[14];
-    const base = inst.idx * 16;
     for (const part of inst.pool.parts) {
       const lm = part.local.elements;
       const out = part.im.instanceMatrix.array as Float32Array;
@@ -1376,12 +1474,52 @@ export class Renderer {
       out[base + 15] = 1;
       part.im.instanceMatrix.needsUpdate = true;
     }
+    }
     inst.proxy.position.set(t.visX, 0, t.visY);
     inst.proxy.rotation.y = Math.PI / 2 - t.visYaw;
     inst.proxy.visible = t.vis.root.visible;
     // vis.root isn't in the scene for instanced kinds but its position is the
     // canonical entity position for entScreenPos/badges — keep it live
     t.vis.root.position.set(t.visX, 0, t.visY);
+  }
+
+  // Humanoid swarm write: compose the animated anchor chain (body → limbs →
+  // knees) from st.pose exactly as the authored hierarchy would, then emit
+  // entityM × anchorChain × relAnchor per part. At zero angles this collapses
+  // to the captured rest pose bit-for-bit; a zero-scale entityM (hidden entity)
+  // propagates through the chain untouched, so visibility needs no special case.
+  private writeHumanoidInstance(t: Tracked, inst: InstSlot, rig: SwarmRigSpec, base: number) {
+    const pose = t.anim.pose;
+    _hmE.set(pose.bodyRotX, pose.bodyRotY, pose.bodyRotZ);
+    _hmQ.setFromEuler(_hmE);
+    _hmBody.compose(_hmV.set(0, pose.bodyPosY, pose.bodyPosZ), _hmQ, _instOne);
+
+    _hmLegL.multiplyMatrices(_hmBody, rig.legL).multiply(_hmRot.makeRotationX(pose.hipL));
+    _hmLegR.multiplyMatrices(_hmBody, rig.legR).multiply(_hmRot.makeRotationX(pose.hipR));
+    _hmKneeL.multiplyMatrices(_hmLegL, rig.kneeL).multiply(_hmRot.makeRotationX(pose.kneeL));
+    _hmKneeR.multiplyMatrices(_hmLegR, rig.kneeR).multiply(_hmRot.makeRotationX(pose.kneeR));
+    _hmArmL.multiplyMatrices(_hmBody, rig.armL).multiply(_hmRot.makeRotationX(pose.armL));
+    _hmArmR.multiplyMatrices(_hmBody, rig.armR).multiply(_hmRot.makeRotationX(pose.armR));
+    _hmE.set(pose.headX, pose.headY, 0);
+    _hmQ.setFromEuler(_hmE);
+    _hmHead.multiplyMatrices(_hmBody, rig.head).multiply(_hmTmp.compose(_hmZero, _hmQ, _instOne));
+
+    _hmW.body.multiplyMatrices(_instM, _hmBody);
+    _hmW.legL.multiplyMatrices(_instM, _hmLegL);
+    _hmW.legR.multiplyMatrices(_instM, _hmLegR);
+    _hmW.kneeL.multiplyMatrices(_instM, _hmKneeL);
+    _hmW.kneeR.multiplyMatrices(_instM, _hmKneeR);
+    _hmW.armL.multiplyMatrices(_instM, _hmArmL);
+    _hmW.armR.multiplyMatrices(_instM, _hmArmR);
+    _hmW.head.multiplyMatrices(_instM, _hmHead);
+
+    for (const part of inst.pool.parts) {
+      const out = part.im.instanceMatrix.array as Float32Array;
+      _hmTmp.multiplyMatrices(_hmW[part.anchor ?? "body"], part.relAnchor ?? part.local);
+      const e = _hmTmp.elements;
+      for (let i = 0; i < 16; i++) out[base + i] = e[i];
+      part.im.instanceMatrix.needsUpdate = true;
+    }
   }
 
   // ---------- Instanced rigid-vehicle pools ----------
@@ -3244,7 +3382,9 @@ export class Renderer {
           py = t.visY;
           if (t.inst) {
             // Instanced swarm ent: write the pool matrix + mirror the proxy —
-            // no scene subtree, no per-part anim, no ambient VFX emitters.
+            // no scene subtree, no ambient VFX emitters. Humanoid kinds still
+            // advance their gait pose — writeInstance composes it per-part.
+            if (t.inst.pool.rig) advanceInstancedHumanoid(t.anim, t.last.k, px, py, dt);
             this.writeInstance(t);
             t.anim.prevX = px;
             t.anim.prevY = py;
