@@ -907,7 +907,7 @@ net.onMsg = (m: S2C) => {
   switch (m.t) {
     case "lobby": {
       myId = m.you;
-      lobbyHumans = m.players.filter((p) => !p.spectator && !p.bot).length;
+      lobbyHumans = m.players.filter((p) => !p.spectator && !p.bot && p.connected !== false).length;
       const lobbyMe = m.players.find((p) => p.id === m.you);
       iAmLobbyHost = !!lobbyMe?.host;
       lastLobbyPhase = m.phase ?? "lobby";

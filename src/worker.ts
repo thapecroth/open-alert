@@ -542,10 +542,12 @@ export class GameRoom extends Server<Env> {
       return;
     }
     if (m.t === "pause") {
-      // Pause only works when the requester is the sole human — solo games vs bots
+      // Pause only works when the requester is the sole human — solo games vs bots.
+      // Disconnected humans don't count: their records persist for reconnect, but
+      // they can't observe the pause or be harmed by it, so they must not block it.
       let humans = 0;
       for (const [opid, p] of this.players) {
-        if (!p.spectator && !this.bots.has(opid)) humans++;
+        if (!p.spectator && p.connected && !this.bots.has(opid)) humans++;
       }
       if (humans > 1) {
         send(conn, { t: "deny", msg: "pause only works in solo games vs bots" });
@@ -1069,7 +1071,12 @@ export class GameRoom extends Server<Env> {
         }
       }
       w.step();
-      if (w.tick % SNAP_EVERY === 0) {
+      // Game-ending ticks must ALWAYS flush a snapshot ahead of the end broadcast:
+      // deaths inside the final step (the elimination-deciding kills) otherwise
+      // never reach clients on odd ticks — the alarm chain stops here, so those
+      // units would render forever as frozen ghosts behind the end screen.
+      const ending = w.winner !== null && !this.endSent;
+      if (ending || w.tick % SNAP_EVERY === 0) {
         this.broadcastSnap(w);
       }
       if (w.tick % 50 === 0) {

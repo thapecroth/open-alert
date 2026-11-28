@@ -467,10 +467,15 @@ export class LocalSimHost {
       }
     }
     w.step();
-    if (w.tick % SNAP_EVERY === 0) {
+    // Game-ending ticks must ALWAYS flush a snapshot ahead of the end message:
+    // deaths inside the final step (the elimination-deciding kills) otherwise
+    // never reach clients on odd ticks — the timer stops here, so those units
+    // would render forever as frozen ghosts behind the end screen.
+    const ending = w.winner !== null && !this.endSent;
+    if (ending || w.tick % SNAP_EVERY === 0) {
       this.emit({ t: "snap", tick: w.tick, ...w.snapshot() });
     }
-    if (w.winner !== null && !this.endSent) {
+    if (ending) {
       this.endSent = true;
       const names: Record<number, string> = {};
       for (const p of this.players.values()) names[p.slot] = p.name;
