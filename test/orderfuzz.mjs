@@ -462,6 +462,7 @@ if (bar) {
 
 // ============================ [6] engineer orders ============================
 let engIds = [];
+let capTargetEnt = null;
 {
   const engs = mine(A, "engineer");
   engIds = engs.map((e) => e.id);
@@ -495,21 +496,40 @@ let engIds = [];
     const dEng = await denyProbe(A, () => send(A, { t: "order", ids: [eng.id], kind: "attack", x: cyA.x, y: cyA.y, target: cyA.id }));
     check("6c engineer attack own building denied", /nothing to order/.test(dEng ?? ""), `deny=${dEng}`);
 
-    // capture march on enemy conyard — assert it paths toward it; capture may follow.
-    // window scales with the measured walk (engineers are the slowest unit)
-    const dCap0 = dEnt(engs[0], cyB);
-    send(A, { t: "order", ids: engIds.filter((id) => ent(A, id)), kind: "attack", x: cyB.x, y: cyB.y, target: cyB.id });
-    const approached = await waitFor(() => {
-      const alive = engIds.map((id) => ent(A, id)).filter(Boolean);
-      return !alive.length || Math.min(...alive.map((e) => dEnt(e, cyB))) < dCap0 - 15;
-    }, walkMs(Math.max(10, dCap0 - 15), SPEED2.inf));
-    const closest = Math.min(...engIds.map((id) => dEnt(ent(A, id), cyB)));
-    const cap = A.events.some((e) => e.e === "cap" && e.slot === A.slot);
-    const deadAll = engIds.every((id) => !ent(A, id));
-    check("6d engineer attack on enemy building paths toward it", approached || cap,
-      `d0=${dCap0.toFixed(1)} closest=${closest.toFixed(1)} capEvent=${cap} allDead=${deadAll}`);
-    if (cap) note("engineer captured the enemy conyard");
-    else if (deadAll) note("engineer(s) died approaching (enemy idle units defend)");
+    // capture march — assert it paths toward the target; capture may follow.
+    // The window scales with the measured walk (engineers are the slowest unit).
+    // Target must be a LIVE capturable building — the enemy conyard is NOT one:
+    // tankB has been ordered onto it since the battle kickoff and it is rubble
+    // long before the barracks trains a single engineer (observed: cyB destroyed
+    // ~49s in vs this order ~64s in — an attack order on the dead id then comes
+    // back "nothing to order" and the engineers never march at all). Neutral
+    // derricks/coalmines are never auto-attacked (nearestEnemy skips owner -1)
+    // and nothing in this test targets them, so the nearest one to the enemy
+    // base is the honest live capture target: same tryCapture edge-dist
+    // walk-in path, same geometry as the original conyard march.
+    capTargetEnt = (lastSnap(A)?.ents ?? [])
+      .filter((x) => x.o === -1 && (x.k === "derrick" || x.k === "coalmine"))
+      .sort((p, q) => dEnt(p, cyB) - dEnt(q, cyB))[0] ?? null;
+    if (!capTargetEnt) {
+      check("6d engineer capture-march paths toward live target", null, "no neutral capturable building on map — skipped");
+    } else {
+      const engLive = engIds.map((id) => ent(A, id)).filter(Boolean);
+      const dCap0 = Math.min(...engLive.map((e) => dEnt(e, capTargetEnt)));
+      const n6d = A.msgs.length;
+      send(A, { t: "order", ids: engIds.filter((id) => ent(A, id)), kind: "attack", x: capTargetEnt.x, y: capTargetEnt.y, target: capTargetEnt.id });
+      const approached = await waitFor(() => {
+        const alive = engIds.map((id) => ent(A, id)).filter(Boolean);
+        return !alive.length || Math.min(...alive.map((e) => dEnt(e, capTargetEnt))) < dCap0 - 15;
+      }, walkMs(Math.max(10, dCap0 - 15), SPEED2.inf));
+      const closest = Math.min(...engIds.map((id) => dEnt(ent(A, id), capTargetEnt)));
+      const cap = A.events.some((e) => e.e === "cap" && e.slot === A.slot);
+      const deadAll = engIds.every((id) => !ent(A, id));
+      const denied = deniesSince(A, n6d);
+      check("6d engineer capture-march paths toward live target", (approached || cap) && denied.length === 0,
+        `d0=${dCap0.toFixed(1)} closest=${closest.toFixed(1)} capEvent=${cap} allDead=${deadAll} tgt=${capTargetEnt.k}#${capTargetEnt.id} denies=${JSON.stringify(denied)}`);
+      if (cap) note(`engineer captured the neutral ${capTargetEnt.k}`);
+      else if (deadAll) note("engineer(s) died approaching (enemy idle units defend)");
+    }
   } else {
     check("6 engineer suite", null, "no engineers spawned — skipped");
   }
@@ -531,7 +551,12 @@ let engIds = [];
     `tgt=${tgtInf ? `hp ${tgtInf.hp}/${tgtInf.mhp}` : "KILLED"} atk=${ent(A, tankA.id) ? `hp ${ent(A, tankA.id).hp}` : "dead"} win=${(winA / 1000).toFixed(0)}s`);
 
   const winB = walkMs(Math.max(10, dB0 - 7), SPEED2.tank);
-  const approachedB = await waitFor(() => !ent(A, tankB.id) || ent(A, cyB.id)?.hp < cyB.mhp || dEnt(ent(A, tankB.id), ent(A, cyB.id)) < dB0 - 15, Math.min(winB, 60000));
+  // a DESTROYED target building is approach evidence too — same mirror as 3a/3b2:
+  // cyB is typically rubble long before this verdict runs (tankB is fast, the
+  // verdict waits for the whole engineer/harvest act), ent()?.hp < mhp is false
+  // for a destroyed building and the distance to it is Infinity, so without the
+  // !ent(cyB) term this check was a coin-flip on whether tankB happened to die
+  const approachedB = await waitFor(() => !ent(A, tankB.id) || !ent(A, cyB.id) || ent(A, cyB.id)?.hp < cyB.mhp || dEnt(ent(A, tankB.id), ent(A, cyB.id)) < dB0 - 15, Math.min(winB, 60000));
   check("3b attack enemy building → homes in", approachedB, `dNow=${dEnt(ent(A, tankB.id), ent(A, cyB.id)).toFixed(1)}`);
   // a dead target building IS combat evidence (mirrors the unit check above):
   // ent()?.hp < mhp evaluates false for a destroyed building, which used to be
@@ -588,7 +613,7 @@ let engIds = [];
 {
   const cap = A.events.some((e) => e.e === "cap" && e.slot === A.slot);
   const engAlive = engIds.some((id) => ent(A, id));
-  note(`capture outcome: cap=${cap} engAlive=${engAlive} cyB.owner=${ent(A, cyB.id)?.o} cyB.hp=${ent(A, cyB.id)?.hp}`);
+  note(`capture outcome: cap=${cap} engAlive=${engAlive} tgt.owner=${capTargetEnt ? ent(A, capTargetEnt.id)?.o : "n/a"} tgt.hp=${capTargetEnt ? ent(A, capTargetEnt.id)?.hp : "n/a"}`);
 }
 
 // ============================ [11] rapid alternating orders ============================
