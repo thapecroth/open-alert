@@ -192,7 +192,24 @@ export function humanoidGait(st: AnimState, k: string, m: number, safeDt: number
   const baseArmR = k === "infantry" ? -0.58 : k === "rocket" ? -0.35 : 0;
   const p = st.pose;
 
-  st.phase += safeDt * (4.8 + st.speed * 5.2);
+  // Foot-locked stride frequency. A planted foot must sweep backward relative
+  // to the body exactly as fast as the body advances, or it visibly slides.
+  // Per half-stride the foot sweeps 2·L·sin(amp) in body space (peak-to-peak),
+  // so its mean sweep speed is 2·L·sin(amp)·ω/π; matching that to ground speed
+  // gives ω = π·v / (2·L·sin(amp)). L = hip-pivot height 0.33 (the leg exactly
+  // reaches the ground: boot bottom ≈ 0). The instanced swarm renders UNSCALED —
+  // the body.scale 1.04/0.98/1.06 cancels out of the rest-offset chain capture,
+  // verified against live instance matrices (knee pivot world y = 0.155 exactly)
+  // — so one unscaled constant serves all three kinds; the rare rig-fallback
+  // path carries the body scale but is at most 4% off, imperceptible. Infantry
+  // speed ~1 u/s → ω ≈ 6.8 rad/s; the cap only guards non-locomotion speed
+  // spikes (teleport-follow, knockback) — at cap the legs spin at a
+  // fast-but-readable ~2 cycles/s and residual slide absorbs the excess. The
+  // floor keeps a slow living cadence through deceleration tails instead of
+  // freezing mid-stride; it only dominates below ~0.35 u/s where stride
+  // amplitude is nearly faded out anyway, so its slide is imperceptible.
+  const strideOmega = (Math.PI * st.speed) / (2 * 0.33 * Math.sin(0.78));
+  st.phase += safeDt * Math.min(13, Math.max(strideOmega, 2.4));
   const s = Math.sin(st.phase);
   // Athletic asymmetric leg stride: crisp forward knee-lift (pow 0.85) + snappy rear push-off (pow 1.15)
   const strideL = s > 0 ? Math.pow(s, 0.85) : -Math.pow(-s, 1.15);
