@@ -161,15 +161,39 @@ function analyze(id) {
   const w = new World(slots, { map: id });
   let oreNearSpawn = 0, oreTotal = 0;
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (w.ore[idx(x, y)] > 0) oreTotal++;
+  // Connectivity-aware fairness: ore must sit inside the spawn's OWN connected
+  // landmass (geometric proximity across a channel is worthless — nearestOre is
+  // euclidean, so off-island ore is what harvesters chase forever), and there
+  // must be flat in-region footing for a refinery-sized base. This is the check
+  // that would have caught the islands SE-spawn landlock.
+  let oreInRegionSpawn = 0, minFlatSpots = 1e9;
   for (let i = 0; i < maxP; i++) {
     const s = spawns[i];
-    let found = false;
-    for (let dy = -10; dy <= 10 && !found; dy++)
-      for (let dx = -10; dx <= 10 && !found; dx++) {
+    const ci = compOf[idx(s.x, s.y)];
+    let found = false,
+      foundRegion = false;
+    for (let dy = -10; dy <= 10; dy++)
+      for (let dx = -10; dx <= 10; dx++) {
         const x = s.x + dx, y = s.y + dy;
-        if (x >= 0 && y >= 0 && x < W && y < H && w.ore[idx(x, y)] > 0) found = true;
+        if (x < 0 || y < 0 || x >= W || y >= H || w.ore[idx(x, y)] <= 0) continue;
+        found = true;
+        if (ci >= 0 && compOf[idx(x, y)] === ci) foundRegion = true;
       }
     if (found) oreNearSpawn++;
+    if (foundRegion) oreInRegionSpawn++;
+    // flat refinery-sized (3x2) footings in-region within cheb 12 — base room
+    let flat = 0;
+    for (let ty = s.y - 12; ty <= s.y + 12; ty++)
+      for (let tx = s.x - 12; tx <= s.x + 12; tx++) {
+        let good = true;
+        for (let dy = 0; dy < 2 && good; dy++)
+          for (let dx = 0; dx < 3 && good; dx++) {
+            const x = tx + dx, y = ty + dy;
+            if (!landPass(x, y) || w.ore[idx(x, y)] > 0 || (ci >= 0 && compOf[idx(x, y)] !== ci)) good = false;
+          }
+        if (good) flat++;
+      }
+    if (flat < minFlatSpots) minFlatSpots = flat;
   }
 
   // ---- derricks/coalmines on dry land ----
@@ -210,7 +234,7 @@ function analyze(id) {
     maxSeaRun: maxRun,
     spawnsOk, landLinked, sitesOk, oreNearSpawn, oreTiles: oreTotal,
     astarOk, astarNote: astarNote.trim(), genMs: +genMs.toFixed(0),
-    minIsleSize, tinyIsles, spawnsWithShore,
+    minIsleSize, tinyIsles, spawnsWithShore, oreInRegionSpawn, minFlatSpots,
   };
 }
 
@@ -233,6 +257,8 @@ for (const id of ids) {
   ok(row.tinyIsles === 0, `${id}: no micro-island spawns (tiny=${row.tinyIsles})`);
   ok(row.sitesOk, `${id}: derricks/coalmines on dry land`);
   ok(row.oreNearSpawn === row.maxP, `${id}: ore near every spawn ${row.oreNearSpawn}/${row.maxP}`);
+  ok(row.oreInRegionSpawn === row.maxP, `${id}: ore inside every spawn's own landmass ${row.oreInRegionSpawn}/${row.maxP}`);
+  ok(row.minFlatSpots >= 3, `${id}: flat refinery footings in-region (min=${row.minFlatSpots})`);
   ok(row.oreTiles > 0, `${id}: ore present`);
   if (row.naval) {
     ok(row.waterPct >= 42, `${id}: oceanic water fraction ${row.waterPct}%`);
