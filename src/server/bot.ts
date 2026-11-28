@@ -98,6 +98,8 @@ export class RtsBot {
   airlifts = 0; // completed troop-transport missions (troops actually dropped)
   airliftBlock = ""; // why the last airlift evaluation bailed (empty = mission active or fired)
   airliftLog: string[] = []; // ring of recent mission outcomes for post-game analysis
+  retaskBlock = ""; // why the last idle-unit sweep declined to act (empty = it issued orders)
+  retasks = 0; // idle-sweep orders issued (reinforcements + pushes + spy infiltrations)
   errors: string[] = []; // swallowed exceptions (should stay empty)
 
   private diff: BotDiff;
@@ -132,6 +134,7 @@ export class RtsBot {
   private airlift: Airlift | null = null; // active transport mission (at most one)
   private missionIds = new Set<number>(); // chopper + troop ids of the active mission — sweep exclusion list
   private lastAirliftEnd = -1e9; // tick the last mission ended (restart throttle)
+  private nextRetask = 200; // first idle-unit sweep (ticks) — cadence afterwards scales with difficulty
 
   // Lazily built at most once per think: cheap idle ticks stay O(1), while
   // placement/defense/slow ticks share one fused pass instead of 8-12 scans.
@@ -245,6 +248,12 @@ export class RtsBot {
     if (t >= this.nextSlow) {
       this.nextSlow = t + this.slowStep + ((Math.random() * 14) | 0);
       this.slow(me, t);
+    }
+    // idle-unit sweep — more frequent than the strategic slow loop so units whose
+    // orders just completed spend seconds idle, not half a wave interval
+    if (t >= this.nextRetask) {
+      this.nextRetask = t + (this.diff === "easy" ? 80 : this.diff === "brutal" ? 26 : 45) + ((Math.random() * 10) | 0);
+      this.retaskIdle(t);
     }
   }
 
@@ -1547,6 +1556,15 @@ export class RtsBot {
     return best ?? this.enemyBasePt(ref) ?? this.nearestEnemyEnt(ref);
   }
 
+  // Wave sizing/cadence shared by the scheduled assault and the idle-unit sweep,
+  // so an ahead-of-schedule push is measured against the wave it displaces.
+  private assaultPacing(): { waveMin: number; interval: number } {
+    const waveMin = Math.min(this.armyCap - 2, this.phase === "late" ? this.waveMin + 3 : this.waveMin);
+    const lateMult = this.diff === "easy" ? 0.85 : this.diff === "normal" ? 0.72 : 0.6;
+    const interval = this.phase === "late" ? Math.round(this.assaultEvery * lateMult) : this.assaultEvery;
+    return { waveMin, interval };
+  }
+
   // slow loop: launch waves at the nearest enemy base; keep far-away troops
   // grinding on whatever enemy structure is nearest to them.
   private assault(t: number) {
@@ -1600,9 +1618,7 @@ export class RtsBot {
     // phase-aware assault: early holds (economy first), mid raids their
     // economy (brutal or non-easy rusher only), late pushes the base
     if (this.phase === "early") return;
-    const waveMin = Math.min(this.armyCap - 2, this.phase === "late" ? this.waveMin + 3 : this.waveMin);
-    const lateMult = this.diff === "easy" ? 0.85 : this.diff === "normal" ? 0.72 : 0.6;
-    const interval = this.phase === "late" ? Math.round(this.assaultEvery * lateMult) : this.assaultEvery;
+    const { waveMin, interval } = this.assaultPacing();
     const canEcoRaid = this.diff === "brutal" || (this.profile === "rusher" && this.diff !== "easy");
     const raid = this.phase === "mid" && canEcoRaid ? this.ecoRaidTarget(base) : null;
     const goal = raid ?? tgt;
@@ -1667,6 +1683,186 @@ export class RtsBot {
       this.lastAssault = t;
       this.waves++;
     }
+  }
+
+  // ---------- idle re-tasking ----------
+
+  // Periodic sweep for combat units sitting at home with completed orders. Without
+  // this, a unit that finished its rally/wave order waits out the full inter-wave
+  // interval doing nothing (observed 90s+ mid-game). Two behaviors, both reusing
+  // the assault target selection rather than parallel structure:
+  //
+  //   reinforce: a squad is already fighting in the field — idle units at home
+  //     attack-move to join it instead of waiting out the next wave timer. Land
+  //     units count toward the squad only when they share the base's land region,
+  //     or reinforcements would walk into the sea chasing airlifted beachheads.
+  //   push: no squad out there, but a wave-sized force is massed idle at home and
+  //     the wave timer is mostly elapsed — attack ahead of schedule AS A GROUP
+  //     (never a trickle: minimum sizes scale with difficulty). Counts as a wave
+  //     launch so the pacing machinery stays coherent.
+  //
+  // Excluded: harvesters/supplytrucks (self-managed), engineers (captureDerricks /
+  // wave escort), airlift crews and the reserved transport (mission integrity),
+  // units with queued orders or hold-position set, and anything already away from
+  // home (assault()'s stranded sweep re-engages those every slow tick).
+  private retaskIdle(t: number) {
+    const w = this.world;
+    const base = this.baseCenter();
+    if (!base) {
+      this.retaskBlock = "no-base";
+      return;
+    }
+    // No threat gate here on purpose: defend() re-tasks every in-range defender
+    // whether it has orders or not, so a unit still idle during a siege is one the
+    // defense already passed on — pulling it forward costs nothing, and defend()
+    // yanks it back anyway if a real threat enters its radius.
+    const goal = this.enemyBasePt(base) ?? this.nearestEnemyEnt(base);
+    if (!goal) {
+      this.retaskBlock = "no-goal"; // no enemy left on the field
+      return;
+    }
+    const baseRegion = this.regionNear(base.x, base.y);
+    const taxi = this.reservedTransport();
+
+    const homeLand: Ent[] = [];
+    const homeSea: Ent[] = [];
+    const support: Ent[] = []; // ewdrone tag-alongs — helpless alone, valuable with the group
+    const spies: Ent[] = [];
+    let landField = 0,
+      lfX = 0,
+      lfY = 0,
+      seaField = 0,
+      sfX = 0,
+      sfY = 0;
+
+    for (const e of this.scan.myUnits) {
+      if (isB(e.k)) continue; // paranoia — myUnits never holds buildings
+      const dom = UNITS[e.k].domain;
+      const armed = UNITS[e.k].dmg > 0;
+      const dHome = dist(e.x, e.y, base.x, base.y);
+      // field forces: armed units already operating away from home
+      if (armed && e.id !== taxi && !this.missionIds.has(e.id) && dHome > HOME_RADIUS) {
+        if (dom === "sea") {
+          seaField++;
+          sfX += e.x;
+          sfY += e.y;
+        } else if (dom === "air" || (baseRegion !== 0 && this.regionNear(e.x, e.y) === baseRegion)) {
+          landField++;
+          lfX += e.x;
+          lfY += e.y;
+        }
+      }
+      // candidates must be truly idle: no order, nothing queued, not holding position, not player-driven
+      if (e.order || e.orderQueue.length || e.hold || e.direct) continue;
+      if (this.missionIds.has(e.id) || e.id === taxi) continue; // airlift crew / reserved transport standby
+      if (e.k === "harvester" || e.k === "supplytruck" || e.k === "engineer") continue; // self-managed, or captureDerricks'/wave-escort business
+      if (dHome > HOME_RADIUS) continue; // away-idle belongs to assault()'s stranded sweep
+      if (e.k === "spy") {
+        spies.push(e);
+        continue;
+      }
+      if (!armed) {
+        if (e.k === "ewdrone") support.push(e);
+        continue;
+      }
+      (dom === "sea" ? homeSea : homeLand).push(e);
+    }
+
+    // spies infiltrate alone: disguised units are invisible to auto-defense, and an
+    // amove sabotages the first enemy building they pass — the worst outcome is
+    // losing a unit that was otherwise furniture at the base
+    let acted = false;
+    for (const s of spies) {
+      this.trycmd(() => w.cmdOrder(this.slot, [s.id], "amove", goal.x, goal.y));
+      acted = true;
+      this.retasks++;
+    }
+
+    const reinfFieldMin = this.diff === "easy" ? 5 : this.diff === "brutal" ? 2 : 3;
+    const reinfGroupMin = this.diff === "easy" ? 3 : this.diff === "brutal" ? 1 : 2;
+    let landSent = false,
+      seaSent = false;
+
+    // reinforce: join the squad already in the field at its current centroid
+    if (landField >= reinfFieldMin && homeLand.length >= reinfGroupMin) {
+      const ids = homeLand.map((e) => e.id);
+      for (const s of support) ids.push(s.id);
+      this.trycmd(() => w.cmdOrder(this.slot, ids, "amove", lfX / landField, lfY / landField));
+      landSent = true;
+      acted = true;
+      this.retasks++;
+    }
+    if (seaField >= 2 && homeSea.length >= 1) {
+      this.trycmd(() =>
+        w.cmdOrder(
+          this.slot,
+          homeSea.map((e) => e.id),
+          "amove",
+          sfX / seaField,
+          sfY / seaField,
+        ),
+      );
+      seaSent = true;
+      acted = true;
+      this.retasks++;
+    }
+
+    // push: attack ahead of schedule as one group — never a trickle. Two tiers:
+    //   full mass: a wave-sized force sits idle and the timer is mostly elapsed —
+    //     the wave would fire soon anyway; attacking a bit early loses nothing.
+    //   stalemate: the army never reaches waveMin (attrition, high turtle bar), so
+    //     the scheduled wave can never fire at all — once the wait stretches far
+    //     past the interval, a smaller credible force goes anyway, because raiding
+    //     beats rusting. Difficulty gates keep easy passive and normal patient
+    //     until late game; turtles hold out longer before breaking the stalemate.
+    if (this.diff !== "easy" && this.phase !== "early") {
+      const { waveMin, interval } = this.assaultPacing();
+      // waves-overdue measured from the first wave's due time when none has
+      // launched yet — gating on lastAssault alone would lock out an army that
+      // never masses waveMin for its maiden wave, which is the exact stalemate
+      // the smaller-force tier exists to break
+      const sinceWave = this.lastAssault >= 0 ? t - this.lastAssault : t - this.firstWaveAt;
+      let frac = this.diff === "brutal" ? 0.55 : 0.75;
+      if (this.profile === "turtle") frac += 0.15;
+      const phaseOk = this.diff === "brutal" || this.phase === "late";
+      const fullMass = phaseOk && homeLand.length >= waveMin && sinceWave >= interval * frac;
+      const staleMin = this.diff === "brutal" ? 4 : 5;
+      const staleAfter = interval * (this.profile === "turtle" ? 2 : 1.5);
+      const stalemate = phaseOk && homeLand.length >= Math.min(waveMin, staleMin) && sinceWave >= staleAfter;
+      if (!landSent && (fullMass || stalemate)) {
+        const raid = this.phase === "mid" && (this.diff === "brutal" || this.profile === "rusher") ? this.ecoRaidTarget(base) : null;
+        const g = raid ?? goal;
+        const ids = homeLand.map((e) => e.id);
+        for (const s of support) ids.push(s.id);
+        this.trycmd(() => w.cmdOrder(this.slot, ids, "amove", g.x, g.y));
+        this.lastAssault = t;
+        this.waves++;
+        landSent = true;
+        acted = true;
+        this.retasks++;
+      }
+      if (!seaSent && homeSea.length >= 2 && phaseOk && sinceWave >= interval * frac) {
+        const seaGoal = this.navalTarget(base) ?? goal;
+        this.trycmd(() =>
+          w.cmdOrder(
+            this.slot,
+            homeSea.map((e) => e.id),
+            "amove",
+            seaGoal.x,
+            seaGoal.y,
+          ),
+        );
+        acted = true;
+        this.retasks++;
+      }
+    }
+    if (!acted) {
+      this.retaskBlock = !homeLand.length && !homeSea.length && !spies.length
+        ? "none-idle"
+        : landField < reinfFieldMin
+          ? `field-${landField}/${reinfFieldMin}:home${homeLand.length}`
+          : `group-${homeLand.length}/${reinfGroupMin}`;
+    } else this.retaskBlock = "";
   }
 
   // ---------- slow strategy tick ----------
